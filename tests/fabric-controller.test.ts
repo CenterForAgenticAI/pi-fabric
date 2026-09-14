@@ -6,6 +6,7 @@ import { FabricActivityStore } from "../src/activity/store.js";
 import type { FabricState } from "../src/fabric-state.js";
 import { FabricUiController } from "../src/ui/controller.js";
 import type { FabricDashboard } from "../src/ui/dashboard.js";
+import { FabricWidget } from "../src/ui/widget.js";
 import "../src/ui/dashboard.js";
 import "../src/ui/model-picker.js";
 
@@ -415,6 +416,59 @@ describe("FabricUiController dashboard wiring", () => {
       await vi.advanceTimersByTimeAsync(10_000);
       expect(state.activity.runs).toHaveBeenCalledTimes(1);
       expect(runSummaries).toHaveBeenCalledTimes(3);
+    } finally {
+      controller.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("ticks the activity widget elapsed clock while nested calls are idle", async () => {
+    vi.useFakeTimers();
+    const state = stubState();
+    state.config.ui.widget = "auto";
+    state.config.ui.refreshMs = 500;
+    state.config.ui.maxRows = 6;
+    vi.mocked(state.actors.list).mockReturnValue([]);
+    const activity = new FabricActivityStore();
+    Object.assign(state, { activity });
+    let widget: FabricWidget | undefined;
+    const requestRender = vi.fn();
+    const tui = { requestRender } as unknown as TUI;
+    const context = {
+      mode: "tui",
+      ui: {
+        notify: vi.fn(),
+        setWidget: vi.fn((_key: string, content: unknown) => {
+          if (typeof content === "function") {
+            widget = (content as (t: TUI, theme: Theme) => FabricWidget)(tui, theme);
+          }
+        }),
+      },
+    } as unknown as ExtensionContext;
+    const controller = new FabricUiController(state);
+    try {
+      controller.start(context);
+      activity.start("live", { name: "T06 slice A" });
+      for (let index = 0; index < 6; index++) {
+        const callId = `c${index}`;
+        activity.beginCall("live", { callId, ref: "pi.read", args: { path: `${index}.ts` } });
+        activity.finishCall("live", callId, { success: true, result: "ok" });
+      }
+      await vi.advanceTimersByTimeAsync(110);
+      expect(widget).toBeDefined();
+      const first = widget!.render(80).join("\n");
+      expect(first).toContain("T06 slice A");
+      expect(first).toContain("6/6 calls");
+      expect(first).toMatch(/0s/);
+      expect(controller.snapshot().runs[0]?.status).toBe("running");
+      requestRender.mockClear();
+      await vi.advanceTimersByTimeAsync(5_000);
+      const elapsedMs =
+        controller.snapshot().now - controller.snapshot().runs[0]!.startedAt;
+      const second = widget!.render(80).join("\n");
+      expect(elapsedMs).toBeGreaterThanOrEqual(5_000);
+      expect(second).toMatch(/5s/);
+      expect(requestRender).toHaveBeenCalled();
     } finally {
       controller.stop();
       vi.useRealTimers();
