@@ -83,6 +83,9 @@ export class NodeProcessRuntime {
       this.#interpreter === "bun"
         ? ["--eval", NODE_PROCESS_CHILD_SOURCE]
         : [
+            // Guest import() through importModuleDynamically needs the vm
+            // modules flag; Bun's vm ignores the option (see __fabricImport).
+            "--experimental-vm-modules",
             `--max-old-space-size=${Math.max(16, Math.floor(options.memoryLimitBytes / (1024 * 1024)))}`,
             "--input-type=module",
             "--eval",

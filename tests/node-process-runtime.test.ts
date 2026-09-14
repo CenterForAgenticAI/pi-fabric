@@ -335,3 +335,27 @@ return { models, process: typeof process };
     expect(result.error).toContain("bun boom");
   });
 });
+
+describe("process runtime dynamic imports", () => {
+  it("resolves guest import() on the node vm", async () => {
+    const result = await new NodeProcessRuntime().execute(
+      'const diff = await import("diff"); return { diffChars: typeof diff.diffChars };',
+      async () => undefined,
+      options,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.value).toEqual({ diffChars: "function" });
+  });
+
+  it.skipIf(!hasBun)("bridges __fabricImport for bun guests", async () => {
+    const result = await new BunProcessRuntime().execute(
+      'const diff = await __fabricImport("diff"); return { diffChars: typeof diff.diffChars };',
+      async () => undefined,
+      options,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.value).toEqual({ diffChars: "function" });
+  });
+});

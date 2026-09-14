@@ -1384,6 +1384,9 @@ interface FabricConsole {
 }
 declare const console: FabricConsole;
 declare const π: Readonly<Record<string, string>>;
+// Process runtimes only: node/bun children bridge native-module imports;
+// quickjs has no module loader and rejects __fabricImport at runtime.
+declare function __fabricImport(specifier: string): Promise<any>;
 declare function print(...args: unknown[]): void;
 declare function setTimeout(handler: (...args: any[]) => void, timeout?: number): number;
 declare function clearTimeout(handle: number): void;
