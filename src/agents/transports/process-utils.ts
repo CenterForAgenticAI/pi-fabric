@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 
 export interface ExecFileResult {
@@ -32,13 +33,51 @@ export const executeFile = (
     );
   });
 
-export const commandAvailable = async (command: string): Promise<boolean> => {
+/** Windows resolves bare names through PATHEXT; POSIX needs the execute bit. */
+const executableNames = (command: string, env: NodeJS.ProcessEnv): string[] => {
+  if (process.platform !== "win32" || path.extname(command) !== "") return [command];
+  const extensions = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .map((extension) => extension.trim().toLowerCase())
+    .filter((extension) => extension !== "");
+  return [command, ...extensions.map((extension) => command + extension)];
+};
+
+const unquotePathEntry = (entry: string): string => {
+  const trimmed = entry.trim();
+  return trimmed.length > 1 && trimmed.startsWith('"') && trimmed.endsWith('"')
+    ? trimmed.slice(1, -1)
+    : trimmed;
+};
+
+const isExecutableFile = async (candidate: string): Promise<boolean> => {
   try {
-    await executeFile("sh", ["-lc", `command -v ${shellQuote(command)}`], { timeoutMs: 2_000 });
-    return true;
+    const stats = await fs.promises.stat(candidate);
+    if (!stats.isFile()) return false;
+    // Windows has no execute bit; PATHEXT already narrowed the candidate name.
+    return process.platform === "win32" || (stats.mode & 0o111) !== 0;
   } catch {
     return false;
   }
+};
+
+/**
+ * PATH lookup that never shells out: Windows runners reach this code with no
+ * `sh` on PATH, and a login shell may rewrite PATH behind the caller's back.
+ */
+export const commandAvailable = async (
+  command: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> => {
+  const names = executableNames(command, env);
+  for (const entry of (env.PATH ?? "").split(path.delimiter)) {
+    const directory = unquotePathEntry(entry);
+    if (directory === "") continue;
+    for (const name of names) {
+      if (await isExecutableFile(path.join(directory, name))) return true;
+    }
+  }
+  return false;
 };
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`;

@@ -175,6 +175,38 @@ describe("ParticipantDirectory", () => {
     expect(directory.mesh.get("sessions/quiesce")).toBeUndefined();
   });
 
+  it("stamps the host lease after participant writes that outlast it", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-topology-"));
+    roots.push(root);
+    const identity: MeshIdentity = {
+      id: "session:slow",
+      name: "main",
+      kind: "main",
+      sessionId: "slow",
+    };
+    const directory = createDirectory(path.join(root, "mesh"), identity, identity.id, () => [
+      rootRecord(identity.id, identity.id, "slow"),
+      agentRecord("agent:slow", identity.id, identity.id, identity.id),
+    ]);
+    const publish = directory.mesh.put.bind(directory.mesh);
+    // A contended Windows mesh makes each participant write outlast the 300ms
+    // lease; the host lease must still be fresh once the refresh completes.
+    vi.spyOn(directory.mesh, "put").mockImplementation(async (input) => {
+      if (input.key.startsWith("topology/participants/")) {
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      }
+      return publish(input);
+    });
+
+    await directory.start();
+
+    expect(directory.get("agent:slow")).toMatchObject({
+      capabilities: ["steer", "followUp", "stop"],
+      local: true,
+      stale: false,
+    });
+  });
+
   it("does not claim an actor still owned by a live legacy root", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-topology-"));
     roots.push(root);

@@ -524,20 +524,6 @@ export class ParticipantDirectory implements FabricParticipantSource {
     for (const [id, record] of desired) this.#localRecords.set(id, record);
     if (!this.options.enabled) return;
 
-    const host: FabricHostRecord = {
-      format: 1,
-      id: this.options.hostId,
-      rootId: this.options.rootId,
-      identity: this.options.identity,
-      startedAt: this.#startedAt,
-      updatedAt: now,
-      expiresAt: now + this.#leaseMs,
-    };
-    await this.mesh.put({
-      key: keyFor(HOST_PREFIX, this.options.hostId),
-      value: host,
-      identity: this.options.identity,
-    });
     const root = [...desired.values()].find(
       (participant) => participant.kind === "root" && participant.id === this.options.rootId,
     );
@@ -633,6 +619,26 @@ export class ParticipantDirectory implements FabricParticipantSource {
       if (desired.has(participant.id)) continue;
       await this.mesh.delete({ key: entry.key, ifVersion: entry.version }).catch(() => undefined);
     }
+
+    // Stamp this host's lease last, once every slower write above is done: a
+    // refresh that outruns its own lease must not publish an already-expired
+    // lease, which would make peers — and this host's own list() — read the
+    // records it just wrote as stale.
+    const leaseAt = Date.now();
+    const host: FabricHostRecord = {
+      format: 1,
+      id: this.options.hostId,
+      rootId: this.options.rootId,
+      identity: this.options.identity,
+      startedAt: this.#startedAt,
+      updatedAt: leaseAt,
+      expiresAt: leaseAt + this.#leaseMs,
+    };
+    await this.mesh.put({
+      key: keyFor(HOST_PREFIX, this.options.hostId),
+      value: host,
+      identity: this.options.identity,
+    });
   }
 
   /**

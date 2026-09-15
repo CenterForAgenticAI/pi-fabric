@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { commandAvailable } from "../src/agents/transports/process-utils.js";
@@ -56,6 +58,22 @@ describe("script runtime resolution", () => {
     if (!node && !bun) return; // neither runtime discoverable in this environment
     const runtime = await resolveScriptRuntime({ execPath: "/usr/local/bin/pi", env: {} });
     expect(["node", "bun"]).toContain(path.basename(runtime).replace(/\.exe$/, ""));
+  });
+
+  // A shell-based lookup silently finds nothing on Windows runners (no `sh`),
+  // which previously broke the bun-process executor there.
+  it("finds executables by scanning PATH without a shell", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-path-scan-"));
+    const probe = `fabric-path-probe-${process.pid}`;
+    const file = path.join(directory, process.platform === "win32" ? `${probe}.exe` : probe);
+    fs.writeFileSync(file, "", { mode: 0o755 });
+    const env = { ...process.env, PATH: directory + path.delimiter + (process.env.PATH ?? "") };
+    try {
+      expect(await commandAvailable(probe, env)).toBe(true);
+      expect(await commandAvailable(`${probe}-missing`, env)).toBe(false);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("throws a clear error when the bundled binary has no runtime and no override", () => {
