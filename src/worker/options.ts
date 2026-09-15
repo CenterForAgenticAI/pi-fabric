@@ -59,6 +59,18 @@ export const parseWorkerOptions = (
   const worktree = optional(args, "worktree");
   const maxTokens = optional(args, "max-tokens");
   const runnerSessionId = optional(args, "runner-session-id");
+  const inheritedSessionPinsSource = optional(args, "inherited-session-pins");
+  const inheritedSessionPins = inheritedSessionPinsSource
+    ? JSON.parse(inheritedSessionPinsSource) as AgentWorkerOptions["inheritedSessionPins"]
+    : undefined;
+  if (
+    inheritedSessionPinsSource !== undefined &&
+    (!Array.isArray(inheritedSessionPins) ||
+      inheritedSessionPins.length === 0 ||
+      inheritedSessionPins.some((pin) => typeof pin?.pool !== "string" || pin.pool.trim() === ""))
+  ) {
+    throw new Error("Invalid worker inherited session pins");
+  }
   const mainAgentId = optional(args, "main-agent-id");
   const fabricSessionId = optional(args, "fabric-session-id");
   const runner = required(args, "runner");
@@ -127,5 +139,6 @@ export const parseWorkerOptions = (
     ...(branch ? { branch } : {}),
     ...(worktree ? { worktree } : {}),
     ...(maxTokens ? { maxTokens: Number(maxTokens) } : {}),
+    ...(inheritedSessionPins && inheritedSessionPins.length > 0 ? { inheritedSessionPins } : {}),
   };
 };

@@ -24,6 +24,11 @@ import {
 } from "./claude-cli.js";
 import { mapVedaTools, normalizeVedaModel } from "./veda-cli.js";
 import { resolvePiBinary } from "./pi-binary.js";
+import {
+  inheritedSessionPinsFromEnv,
+  serializeInheritedSessionPins,
+  type InheritedSessionPin,
+} from "./session-pins.js";
 import { tokenUsagePayloadFromValue } from "../lifecycle/types.js";
 import type { FabricTokenUsagePayload } from "../lifecycle/types.js";
 import { AgentAdmission, assertAgentTask, beginAgentSettlement, createAgentLifecycle, finishAgentSettlement, terminalAgentStatuses, type AgentLifecycleState } from "./lifecycle.js";
@@ -384,6 +389,7 @@ export class AgentManager {
     | ((model: string | undefined) => Promise<string | void>)
     | undefined;
   readonly #resolveParticipantGuidance: AgentParticipantGuidanceResolver | undefined;
+  readonly #resolveInheritedSessionPins: (() => InheritedSessionPin[] | undefined) | undefined;
   readonly #piModelPreparations = new Map<string, Promise<string | undefined>>();
   readonly #budget: BudgetLedgerState | undefined;
   readonly #budgetOwned: boolean;
@@ -422,6 +428,7 @@ export class AgentManager {
       onLifecycle?: (event: FabricLifecyclePublishRequest) => void;
       preparePiModel?: (model: string | undefined) => Promise<string | void>;
       resolveParticipantGuidance?: AgentParticipantGuidanceResolver;
+      resolveInheritedSessionPins?: () => InheritedSessionPin[] | undefined;
     } = {},
   ) {
     this.#semaphore = new AgentAdmission(config.maxConcurrent, Infinity, config.maxDepth);
@@ -442,6 +449,7 @@ export class AgentManager {
     this.#onLifecycle = options.onLifecycle;
     this.#preparePiModel = options.preparePiModel;
     this.#resolveParticipantGuidance = options.resolveParticipantGuidance;
+    this.#resolveInheritedSessionPins = options.resolveInheritedSessionPins;
     this.#currentDepth = Math.max(0, Number(process.env.PI_FABRIC_DEPTH ?? "0") || 0);
     this.#fullCodeMode = options.fullCodeMode ?? true;
     this.#kernel = options.kernel ?? (() => "typescript");
@@ -509,6 +517,18 @@ export class AgentManager {
 
   resolveCwd(requestedCwd?: string): string {
     return resolveAgentCwd(this.cwd, requestedCwd);
+  }
+
+  #inheritedSessionPins(request: AgentRunRequest): InheritedSessionPin[] | undefined {
+    const explicit = request.inheritedSessionPins;
+    if (explicit && explicit.length > 0) return explicit;
+    const resolved = this.#resolveInheritedSessionPins?.();
+    if (resolved && resolved.length > 0) return resolved;
+    if (this.#currentDepth > 0) {
+      const fromEnv = inheritedSessionPinsFromEnv();
+      if (fromEnv.length > 0) return fromEnv;
+    }
+    return undefined;
   }
 
   /** Resolve once at the caller boundary, before launch or resident/trajectory handoff. */
@@ -675,6 +695,9 @@ export class AgentManager {
       const thinking = request.thinking ?? this.config.thinking;
       const recursive = runner === "pi" && request.recursive === true;
       const extensions = recursive ? true : (request.extensions ?? this.config.extensions);
+      const inheritedSessionPins = runner === "pi" && extensions
+        ? this.#inheritedSessionPins(request)
+        : undefined;
       // In a full-code parent every extension-enabled Pi child runs Fabric
       // through fabric_exec — not only recursively spawned agents. An explicit
       // extensions: false request opts the child back out to the native tool
@@ -749,6 +772,9 @@ export class AgentManager {
         ...(systemPrompt ? ["--system-prompt", systemPrompt] : []),
         ...(sessionFile ? ["--session-file", sessionFile] : []),
         ...(sessionExportFile ? ["--session-export-file", sessionExportFile] : []),
+        ...(inheritedSessionPins && inheritedSessionPins.length > 0
+          ? ["--inherited-session-pins", serializeInheritedSessionPins(inheritedSessionPins)]
+          : []),
         ...(request.actorId ? ["--actor-id", request.actorId] : []),
         ...(request.actorName ? ["--actor-name", request.actorName] : []),
         ...(request.capabilityRequirements

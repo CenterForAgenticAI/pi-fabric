@@ -108,6 +108,7 @@ import {
   type FabricProviderDiscovery,
 } from "./protocol.js";
 import { AgentManager } from "./agents/manager.js";
+import { resolveInheritedSessionPins } from "./agents/session-pins.js";
 import { ResidencyClient } from "./residency/client.js";
 import { RESIDENT_HOST_FORMAT, residentRoot } from "./residency/protocol.js";
 import type { FabricRuntimePaths } from "./runtime-paths.js";
@@ -535,6 +536,8 @@ export class FabricRuntimeState {
             fabricExtensionPath: this.#paths.extension,
           }
         : {}),
+      resolveInheritedSessionPins: () =>
+        resolveInheritedSessionPins(context.sessionManager?.getEntries?.() ?? []),
       resolveParticipantGuidance: ({ model, runner }) => {
         const targetModel = model ?? (runner === "pi" && context.model
           ? `${context.model.provider}/${context.model.id}`

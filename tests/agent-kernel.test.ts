@@ -32,7 +32,7 @@ const createManager = (
 };
 
 beforeEach(() => {
-  for (const key of ["PI_FABRIC_DEPTH", "PI_FABRIC_BUDGET", "PI_FABRIC_BUDGET_FILE", "PI_FABRIC_BUDGET_ID", "PI_FABRIC_KERNEL", "PI_FABRIC_PYTHON_RUNTIME"]) {
+  for (const key of ["PI_FABRIC_DEPTH", "PI_FABRIC_BUDGET", "PI_FABRIC_BUDGET_FILE", "PI_FABRIC_BUDGET_ID", "PI_FABRIC_KERNEL", "PI_FABRIC_PYTHON_RUNTIME", "PI_MULTIPROVIDER_SESSION_PINS"]) {
     vi.stubEnv(key, undefined);
   }
 });
@@ -142,6 +142,54 @@ describe("agent kernel resolution", () => {
     expect(options.fabricExtensionPath).toContain("index");
     expect(options.tools).toContain("fabric_exec");
     expect(options.fullCodeMode).toBe(false);
+  });
+});
+
+describe("inherited switch-account pins", () => {
+  it("forwards host-supplied pins to Pi workers with extensions", async () => {
+    const launch = vi.spyOn(ProcessTransport.prototype, "launch");
+    const manager = createManager();
+    await manager.spawn({
+      task: "pin",
+      transport: "process",
+      inheritedSessionPins: [{ pool: "anthropic", accountId: "work", label: "Work" }],
+    });
+    const options = parseWorkerOptions(["node", "worker.js", ...launch.mock.calls[0]![0].workerArguments]);
+    expect(options.inheritedSessionPins).toEqual([
+      { pool: "anthropic", accountId: "work", label: "Work" },
+    ]);
+  });
+
+  it("resolves parent session pins at spawn time", async () => {
+    const launch = vi.spyOn(ProcessTransport.prototype, "launch");
+    const manager = createManager({
+      resolveInheritedSessionPins: () => [{ pool: "openai", accountId: "personal" }],
+    });
+    await manager.spawn({ task: "pin", transport: "process" });
+    const options = parseWorkerOptions(["node", "worker.js", ...launch.mock.calls[0]![0].workerArguments]);
+    expect(options.inheritedSessionPins).toEqual([{ pool: "openai", accountId: "personal" }]);
+  });
+
+  it("does not forward pins to extension-disabled Pi children", async () => {
+    const launch = vi.spyOn(ProcessTransport.prototype, "launch");
+    const manager = createManager({}, { ...DEFAULT_FABRIC_CONFIG.agents, extensions: false });
+    await manager.spawn({
+      task: "pin",
+      transport: "process",
+      inheritedSessionPins: [{ pool: "anthropic", accountId: "work" }],
+    });
+    const options = parseWorkerOptions(["node", "worker.js", ...launch.mock.calls[0]![0].workerArguments]);
+    expect(options.inheritedSessionPins).toBeUndefined();
+  });
+
+  it("nested workers reuse PI_MULTIPROVIDER_SESSION_PINS when no journal is present", async () => {
+    vi.stubEnv("PI_FABRIC_DEPTH", "1");
+    vi.stubEnv("PI_MULTIPROVIDER_SESSION_PINS", JSON.stringify([{ pool: "anthropic", accountId: "nested" }]));
+    const launch = vi.spyOn(ProcessTransport.prototype, "launch");
+    const manager = createManager();
+    await manager.spawn({ task: "pin", transport: "process" });
+    const options = parseWorkerOptions(["node", "worker.js", ...launch.mock.calls[0]![0].workerArguments]);
+    expect(options.inheritedSessionPins).toEqual([{ pool: "anthropic", accountId: "nested" }]);
   });
 });
 

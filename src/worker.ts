@@ -326,6 +326,11 @@ const main = async (): Promise<void> => {
     detached: process.platform !== "win32",
     env: {
       ...process.env,
+      ...(options.inheritedSessionPins && options.inheritedSessionPins.length > 0
+        ? {
+            PI_MULTIPROVIDER_SESSION_PINS: JSON.stringify(options.inheritedSessionPins),
+          }
+        : {}),
       PI_FABRIC_DEPTH: String(options.depth),
       PI_FABRIC_PARENT_RUN: options.id,
       PI_FABRIC_AGENT_NAME: options.name,
