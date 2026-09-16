@@ -190,6 +190,25 @@ export class NodeProcessRuntime {
         }
         if (message.type !== "call") return;
         extendDeadline(message.ref, message.args);
+        if (message.ref === "fabric.$timer") {
+          const ms = Math.max(0, Number(message.args?.ms ?? 0));
+          let timer: NodeJS.Timeout | undefined;
+          const timerTask = new Promise<void>((resolveTask) => {
+            timer = setTimeout(() => {
+              if (!settled && !finishing) {
+                send(child, { type: "response", id: message.id, ok: true, value: undefined });
+              }
+              resolveTask();
+            }, ms);
+            timer!.unref?.();
+          });
+          hostTasks.add(timerTask);
+          void timerTask.finally(() => {
+            hostTasks.delete(timerTask);
+            if (timer) clearTimeout(timer);
+          });
+          return;
+        }
         const task = runAbortable(hostAbortController.signal, () =>
           hostCall(message.ref, message.args, hostAbortController.signal),
         ).then(

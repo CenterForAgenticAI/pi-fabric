@@ -381,3 +381,33 @@ describe("process runtime dynamic imports", () => {
     expect(result.value).toEqual({ diffChars: "function" });
   });
 });
+
+describe("process runtime guest timers", () => {
+  it("resolves guest setTimeout via fabric.$timer intercept (node)", async () => {
+    const result = await new NodeProcessRuntime().execute(
+      'await new Promise((r) => setTimeout(r, 50)); return "timer-ok";',
+      async (ref) => {
+        if (ref === "fabric.$timer") throw new Error("should not reach hostCall");
+        return undefined;
+      },
+      options,
+    );
+
+    expect(result.terminationReason).toBe("completed");
+    expect(result.value).toBe("timer-ok");
+  });
+
+  it.skipIf(!hasBun)("resolves guest setTimeout via fabric.$timer intercept (bun)", async () => {
+    const result = await new BunProcessRuntime().execute(
+      'await new Promise((r) => setTimeout(r, 50)); return "timer-ok";',
+      async (ref) => {
+        if (ref === "fabric.$timer") throw new Error("should not reach hostCall");
+        return undefined;
+      },
+      options,
+    );
+
+    expect(result.terminationReason).toBe("completed");
+    expect(result.value).toBe("timer-ok");
+  });
+});
