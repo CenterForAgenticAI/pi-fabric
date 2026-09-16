@@ -192,15 +192,17 @@ describe("conversation through the real Pi TUI", () => {
       try {
         await vi.waitFor(() => expect(terminal.output).toContain("Working"));
         const before = view.render(terminal.columns).map(stripTerminalSequences);
-        const border = before.findIndex((line) => /^─+$/.test(line));
-        expect(before[border - 1]).toBe("");
+        // The dock's top border carries the streaming status; the transcript ends above it.
+        const editorTop = before.findIndex((line) => /^── [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Working ─+$/.test(line));
+        expect(editorTop).toBeGreaterThan(1);
+        expect(before[editorTop - 1]).toBe("");
         const start = state.view("child").scroll;
         terminal.input("\x1b[<64;4;4M");
         const after = view.render(terminal.columns).map(stripTerminalSequences);
         const delta = start - state.view("child").scroll;
         expect(delta).toBeGreaterThan(0);
         expect(state.view("child").following).toBe(false);
-        expect(after.slice(1 + delta, border)).toEqual(before.slice(1, border - delta));
+        expect(after.slice(1 + delta, editorTop)).toEqual(before.slice(1, editorTop - delta));
       } finally {
         view.dispose();
         handle.hide();

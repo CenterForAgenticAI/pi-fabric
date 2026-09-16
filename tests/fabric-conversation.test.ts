@@ -26,6 +26,10 @@ const theme = {
   bold: (text: string) => text,
 } as unknown as Theme;
 
+/** Row of the editor's top border while the streaming indicator is embedded. */
+const editorStatusRow = (lines: string[]): number =>
+  lines.findIndex((line) => /^── [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Working ─+$/.test(line));
+
 const flush = async (): Promise<void> => {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 };
@@ -229,25 +233,31 @@ describe.each(["regular", "fullscreen"] as const)("native conversation dock in %
     expect(history).toHaveLength(100);
   });
 
-  it("scrolls Working away with the transcript tail and restores it at the end", () => {
+  it("pins Working in the editor border while the transcript scrolls away", () => {
     vi.useFakeTimers();
     vi.spyOn(FabricConversationTranscriptRenderer.prototype, "render").mockReturnValue(
       Array.from({ length: 100 }, (_, i) => `history ${i}`),
     );
     const h = makeHarness({ mode });
-    expect(h.view.render(100).join("\n")).toContain("Working");
-    h.view.handleInput("\x1b[<64;4;4M");
     let lines = h.view.render(100);
-    const border = lines.findIndex((line) => /^─+$/.test(line));
-    expect(lines.join("\n")).not.toContain("Working");
-    expect(lines[border - 1]).toBe("history 99");
+    let editorTop = editorStatusRow(lines);
+    expect(editorTop).toBeGreaterThan(0);
+    expect(lines.slice(0, editorTop).join("\n")).not.toContain("Working");
+    h.view.handleInput("\x1b[<64;4;4M");
+    lines = h.view.render(100);
+    editorTop = editorStatusRow(lines);
+    expect(editorTop).toBeGreaterThan(0);
+    // Scrolled back: the transcript end left the window, the dock kept the status.
+    expect(lines[editorTop - 1]).toMatch(/^history \d+$/);
+    expect(lines[editorTop - 1]).not.toBe("history 99");
     h.view.handleInput("\x1b[F");
     lines = h.view.render(100);
-    expect(lines[border - 2]?.trim()).toBe("⠋ Working");
-    expect(lines[border - 1]).toBe("");
+    editorTop = editorStatusRow(lines);
+    expect(lines[editorTop - 2]).toBe("history 99");
+    expect(lines[editorTop - 1]).toBe("");
   });
 
-  it("does not decorate an older page as if it were the transcript end", () => {
+  it("keeps the dock indicator out of an older page's transcript end", () => {
     vi.useFakeTimers();
     vi.spyOn(FabricConversationTranscriptRenderer.prototype, "render").mockReturnValue(
       Array.from({ length: 100 }, (_, i) => `history ${i}`),
@@ -255,9 +265,10 @@ describe.each(["regular", "fullscreen"] as const)("native conversation dock in %
     const transcript = nativeTranscript([], { hasNewer: true });
     const h = makeHarness({ mode, transcript: () => transcript });
     const lines = h.view.render(100);
-    const border = lines.findIndex((line) => /^─+$/.test(line));
-    expect(lines.join("\n")).not.toContain("Working");
-    expect(lines[border - 1]).toBe("history 99");
+    const editorTop = editorStatusRow(lines);
+    expect(editorTop).toBeGreaterThan(0);
+    expect(lines.slice(0, editorTop).join("\n")).not.toContain("Working");
+    expect(lines[editorTop - 1]).toBe("history 99");
   });
 
   it("preserves the prepend anchor when Working ends during a page load", () => {
@@ -309,29 +320,32 @@ describe.each(["regular", "fullscreen"] as const)("native conversation dock in %
     expect(lines.slice(border - 3, border)).toEqual(["history-last", tail, ""]);
   });
 
-  it("animates native Working inside the transcript and stops on idle, picker, switch and disposal", async () => {
+  it("animates the border indicator and stops on idle, picker, switch and disposal", async () => {
     vi.useFakeTimers();
     const colors = vi.spyOn(theme, "fg");
     const targets = makeTargets();
     const transcript = nativeTranscript([userMessage("settled history"), assistantMessage("unchanged history")]);
     const h = makeHarness({ mode, targets: () => targets, transcript: () => transcript });
-    const native = new WorkingStatusIndicator(h.tui, "Working");
-    const nativeLines = native.render(100).map(stripTerminalSequences);
-    native.dispose();
     const invalidations = vi.spyOn(FabricConversationTranscriptRenderer.prototype, "invalidate");
     let lines = h.view.render(100);
-    const workingRow = lines.findIndex((line) => line.includes("Working"));
-    const border = lines.findIndex((line) => /^─+$/.test(line));
-    expect(lines.slice(workingRow - 1, workingRow + 1).map(stripTerminalSequences)).toEqual(nativeLines);
-    expect(workingRow).toBeLessThan(border - 2);
-    expect(colors).toHaveBeenCalledWith("accent", "⠋");
-    expect(colors).toHaveBeenCalledWith("muted", "Working");
+    let statusRow = editorStatusRow(lines);
+    expect(statusRow).toBeGreaterThan(0);
+    // Embedded placement must equal Pi's own at the same width (status width 95).
+    const native = new WorkingStatusIndicator(h.tui, "Working");
+    const nativeStatus = stripTerminalSequences(native.renderInBorder(95));
+    native.dispose();
+    expect(lines[statusRow]).toBe(`── ${nativeStatus} ${"─".repeat(100 - visibleWidth(nativeStatus) - 4)}`);
+    expect(lines.slice(0, statusRow).join("\n")).not.toContain("Working");
+    // Pi paints the embedded spinner and label with the thinking-level border color.
+    expect(colors).toHaveBeenCalledWith("borderMuted", "⠋");
+    expect(colors).toHaveBeenCalledWith("borderMuted", "Working");
     invalidations.mockClear();
     vi.mocked(h.tui.requestRender).mockClear();
     await vi.advanceTimersByTimeAsync(80);
     expect(h.tui.requestRender).toHaveBeenCalledTimes(1);
     lines = h.view.render(100);
-    expect(lines[workingRow]?.trim()).toBe("⠙ Working");
+    statusRow = editorStatusRow(lines);
+    expect(lines[statusRow]).toContain("⠙ Working");
     expect(invalidations).not.toHaveBeenCalled();
     targets[1]!.status = "idle";
     expect(h.view.refresh()).toBe(true);

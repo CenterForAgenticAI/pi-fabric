@@ -3,18 +3,17 @@ import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component, Focusable, KeyId, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import {
   CURSOR_MARKER,
-  Editor,
   fuzzyFilter,
   getKeybindings,
   Input,
   Key,
-  Loader,
   Text,
   matchesKey,
   truncateToWidth,
   visibleWidth,
   type EditorTheme,
 } from "@earendil-works/pi-tui";
+import { BorderStatusEditor, BorderWorkingIndicator } from "./border-status-editor.js";
 import { FabricConversationTranscriptRenderer, type FabricConversationTranscriptRendererOptions } from "./conversation-render.js";
 import { conversationFooter, type FabricConversationAppearance } from "./conversation-chrome.js";
 import type { AgentUsage } from "../agents/types.js";
@@ -245,8 +244,8 @@ export class FabricConversationView implements Component, Focusable {
   private readonly options: FabricConversationOptions;
   private readonly state: FabricConversationState;
   private readonly renderer: FabricConversationTranscriptRenderer;
-  private editor: Editor | undefined;
-  private suspendedEditor: Editor | undefined;
+  private editor: BorderStatusEditor | undefined;
+  private suspendedEditor: BorderStatusEditor | undefined;
   private editorEpoch = -1;
   private pickerInput: Input | undefined;
   private pickerRows: PickerRow[] = [];
@@ -272,7 +271,7 @@ export class FabricConversationView implements Component, Focusable {
   private observationKey = "";
   private observedTranscript: NativeConversationTranscript | undefined;
   private pickerKey = "";
-  private working: Loader | undefined;
+  private working: BorderWorkingIndicator | undefined;
   private workingTargetId: string | undefined;
   private readonly textSelection = new ConversationTextSelection();
   private selectionWidth = 0;
@@ -319,14 +318,18 @@ export class FabricConversationView implements Component, Focusable {
     }
   }
 
-  private createEditor(withHistory = true): Editor {
+  private createEditor(withHistory = true): BorderStatusEditor {
     // Own method only: assignment through Pi's live proxy would mutate Main.
     const editorTui = Object.create(this.tui, { requestRender: { value: () => {
       if (!this.disposed && this.editor === editor) this.tui.requestRender();
     } } }) as TUI;
-    const editor = new Editor(editorTui, conversationEditorTheme(this.theme, () => this.currentTarget()?.thinking), {
+    const editor = new BorderStatusEditor(editorTui, conversationEditorTheme(this.theme, () => this.currentTarget()?.thinking), {
       paddingX: this.options.appearance?.editorPaddingX ?? 0,
     });
+    // The border carries the streaming indicator, so every editor instance —
+    // including one rebuilt for a new epoch or a queue-row swap — inherits the
+    // indicator that is live right now.
+    editor.setWorkingStatusIndicator(this.working);
     editor.focused = this.focusState && this.mode === "conversation";
     if (!withHistory) return editor;
     editor.setAutocompleteProvider(conversationCommandCompletion(() =>
@@ -344,7 +347,7 @@ export class FabricConversationView implements Component, Focusable {
     return editor;
   }
 
-  private releaseEditor(editor: Editor | undefined): void {
+  private releaseEditor(editor: BorderStatusEditor | undefined): void {
     if (!editor) return;
     editor.setAutocompleteProvider(conversationCommandCompletion(() => false));
     editor.focused = false;
@@ -400,6 +403,7 @@ export class FabricConversationView implements Component, Focusable {
       this.editor = this.suspendedEditor;
       this.suspendedEditor = undefined;
       this.editor.focused = this.focusState && this.mode === "conversation";
+      this.attachWorkingIndicator();
       // An acknowledgement may have cleared the composer while a row was open.
       restoredText = this.currentId ? this.state.view(this.currentId).draft : text;
     }
@@ -511,9 +515,13 @@ export class FabricConversationView implements Component, Focusable {
     // keeps user backgrounds and editor rules flush with both terminal edges.
     let editorLines = this.mode === "conversation" && !(queue?.editingActive && queue.mode === "extension") ? this.renderEditorLines(width) : [];
     const editorBudget = Math.min(editorLines.length, Math.max(1, rows - (rows >= 6 ? 3 : 0)));
+    // The editor border carries the streaming indicator, so the transcript tail
+    // only needs its history-row fallback while the top border is unmounted.
+    let editorShowsTopBorder = editorLines.length > 0;
     if (editorLines.length > editorBudget) {
       const cursor = Math.max(0, editorLines.findIndex((line) => line.includes(CURSOR_MARKER)));
       const start = Math.max(0, Math.min(cursor - Math.floor(editorBudget / 2), editorLines.length - editorBudget));
+      editorShowsTopBorder = start === 0;
       editorLines = editorLines.slice(start, start + editorBudget);
     }
     let remaining = rows - editorLines.length;
@@ -544,7 +552,7 @@ export class FabricConversationView implements Component, Focusable {
     this.editorHeight = editorLines.length;
     const body = remaining <= 0 ? [] : this.mode === "picker"
       ? this.pickerLines(width, remaining)
-      : this.windowBody(transcriptLines, remaining, this.transcriptTail(width, remaining));
+      : this.windowBody(transcriptLines, remaining, this.transcriptTail(width, remaining, editorShowsTopBorder));
     this.bodyTop = head.length;
     const scroll = this.currentId ? this.state.view(this.currentId).scroll : 0;
     this.bodyHeight = this.mode === "conversation" ? Math.max(0, Math.min(remaining, this.lastBody.length - scroll)) : 0;
@@ -603,16 +611,27 @@ export class FabricConversationView implements Component, Focusable {
     this.stopWorkingIndicator();
     const id = this.currentId;
     this.workingTargetId = id;
-    // Pi's standalone WorkingStatusIndicator delegates to this public Loader.
-    this.working = new Loader({ requestRender: () => {
+    // Pi paints the embedded indicator in the thinking-level border color, so
+    // the border owns both the spinner and the label rather than accent/muted.
+    const color = (text: string): string => this.editor?.borderColor(text) ?? this.theme.fg("borderMuted", text);
+    this.working = new BorderWorkingIndicator({ requestRender: () => {
       if (!this.disposed && this.mode === "conversation" && this.currentId === id) this.tui.requestRender();
-    } } as TUI, (text) => this.theme.fg("accent", text), (text) => this.theme.fg("muted", text), "Working");
+    } } as TUI, color, "Working");
+    this.attachWorkingIndicator();
+  }
+
+  /** Every editor instance that can be mounted (composer, suspended queue-row
+   *  composer) carries the live indicator, and nothing keeps a stale one. */
+  private attachWorkingIndicator(): void {
+    this.editor?.setWorkingStatusIndicator(this.working);
+    this.suspendedEditor?.setWorkingStatusIndicator(this.working);
   }
 
   private stopWorkingIndicator(): void {
     this.working?.stop();
     this.working = undefined;
     this.workingTargetId = undefined;
+    this.attachWorkingIndicator();
   }
 
   invalidate(): void {
@@ -1441,18 +1460,20 @@ export class FabricConversationView implements Component, Focusable {
     });
   }
 
-  private transcriptTail(width: number, budget: number): string[] {
+  private transcriptTail(width: number, budget: number, editorVisible: boolean): string[] {
     if (this.commandNotification && this.commandNotification.epoch !== this.state.epoch) this.clearCommandNotification();
     const notification = this.commandNotification;
     if (this.observedTranscript?.hasNewer && !notification) return [];
     // These rows belong to the end of history, never to the fixed input dock.
+    // The streaming indicator is not one of them while the composer is mounted:
+    // its border carries the status, exactly as Pi's embedded indicator does.
     const tail = notification ? ["", ...notification.component.render(width)] : [];
     // Reserve wrapped success geometry too, including after a resize.
     if (notification?.pendingResult) {
       const reserved = 1 + notification.pendingResult.render(width).length;
       while (tail.length < reserved) tail.push("");
     }
-    if (!this.observedTranscript?.hasNewer) tail.push(...this.working?.render(width) ?? []);
+    if (!editorVisible && !this.observedTranscript?.hasNewer) tail.push(...this.working?.render(width) ?? []);
     if (budget > 1) tail.push("");
     return tail;
   }
