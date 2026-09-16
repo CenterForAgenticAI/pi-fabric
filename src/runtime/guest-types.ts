@@ -184,6 +184,8 @@ type FabricLifecycleEventType =
   | "run.failed"
   | "run.stopped"
   | "run.timed_out"
+  | "run.resumed"
+  | "run.detached"
   | "tokens.usage"
   | "component.state";
 type FabricLifecycleDelivery = "steer" | "followUp";

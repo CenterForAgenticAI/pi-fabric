@@ -444,6 +444,100 @@ describe("AgentManager", () => {
   },
   30_000);
 
+  it("resumes a run whose worker was stopped mid-run and carries its progress forward", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+    });
+    managers.push(manager);
+
+    const result = await manager.run({ task: "RESUME_AFTER_STOP", transport: "process" });
+
+    expect(result.status).toBe("completed");
+    expect(result.text).toBe("resumed attempt 2");
+    // The resumed attempt kept the stopped attempt's counters and usage, so the
+    // settled result reports the whole run instead of only its final slice.
+    expect(result.turns).toBe(6);
+    expect(result.toolCalls).toBe(4);
+    expect(result.usage.input).toBe(110);
+    expect(result.usage.cost).toBeCloseTo(0.011, 6);
+    // The resumed child is told what it is continuing, not handed a bare task.
+    expect(result.task).toContain("[Fabric continuation]");
+    const runDirectory = manager.runDirectory(result.id)!;
+    expect(fs.readFileSync(path.join(runDirectory, "resume-attempts"), "utf8")).toBe("2");
+  },
+  30_000);
+
+  it("resumes a run whose transport died after doing work", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+    });
+    managers.push(manager);
+
+    const result = await manager.run({ task: "RESUME_AFTER_CRASH", transport: "process" });
+
+    expect(result.status).toBe("completed");
+    expect(result.text).toBe("resumed attempt 2");
+    expect(result.turns).toBe(1);
+  },
+  30_000);
+
+  it("never resumes a run an operator stopped, and aborts only unused runs", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+    });
+    managers.push(manager);
+
+    const handle = await manager.spawn({ task: "LIVE_WITH_PROGRESS", transport: "process" });
+    const runDirectory = manager.runDirectory(handle.id)!;
+    await vi.waitFor(
+      () => expect((manager.status(handle.id) as AgentRunRecord).turns).toBe(4),
+      { timeout: 10_000 },
+    );
+    const stopped = await manager.stop(handle.id);
+    expect(stopped.status).toBe("stopped");
+    // An explicit stop is terminal: no relaunch follows it.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(fs.readFileSync(path.join(runDirectory, "resume-attempts"), "utf8")).toBe("1");
+  },
+  30_000);
+
+  it("detaches a run with work in flight when its caller aborts", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+    });
+    managers.push(manager);
+
+    const controller = new AbortController();
+    const handle = await manager.spawn(
+      { task: "LIVE_WITH_PROGRESS", transport: "process" },
+      controller.signal,
+    );
+    await vi.waitFor(
+      () => expect((manager.status(handle.id) as AgentRunRecord).turns).toBe(4),
+      { timeout: 10_000 },
+    );
+    controller.abort();
+
+    // The caller is gone, but the run it started is not: it keeps working and
+    // reports its own terminal state instead of being killed mid-flight.
+    const result = await manager.wait(handle.id);
+    expect(result.status).toBe("completed");
+    expect(result.text).toBe("live attempt 1 complete");
+  },
+  30_000);
+
   it("keeps full results in the API and compact projections for the dashboard", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);

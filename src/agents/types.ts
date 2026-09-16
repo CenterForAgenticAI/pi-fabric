@@ -230,6 +230,19 @@ export interface AgentWorkerOptions {
   branch?: string;
   worktree?: string;
   inheritedSessionPins?: InheritedSessionPin[];
+  carryOver?: AgentRunCarryOver;
+}
+
+/**
+ * Cumulative totals a relaunched worker seeds its fresh run record with. The
+ * worker owns the run record, so passing the prefix here (instead of adding it
+ * host-side) keeps every reader — status file, live UI rows, settled result,
+ * and the budget ledger's settle residual — on one cumulative number.
+ */
+export interface AgentRunCarryOver {
+  turns: number;
+  toolCalls: number;
+  usage: AgentUsage;
 }
 
 export interface AgentTransportLaunch {

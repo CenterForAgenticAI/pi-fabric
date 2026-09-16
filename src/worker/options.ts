@@ -1,4 +1,4 @@
-import type { AgentWorkerOptions } from "../agents/types.js";
+import type { AgentRunCarryOver, AgentWorkerOptions } from "../agents/types.js";
 
 const argumentMap = (argv: readonly string[]): Map<string, string> => {
   const result = new Map<string, string>();
@@ -21,6 +21,42 @@ const required = (args: Map<string, string>, name: string): string => {
 
 const optional = (args: Map<string, string>, name: string): string | undefined =>
   args.get(name) || undefined;
+
+const nonNegative = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+
+/** Cumulative totals a relaunched attempt seeds its fresh run record with. */
+const carryOverTotals = (value: unknown): AgentRunCarryOver | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const source = value as Record<string, unknown>;
+  const usage =
+    typeof source.usage === "object" && source.usage !== null && !Array.isArray(source.usage)
+      ? (source.usage as Record<string, unknown>)
+      : undefined;
+  const turns = nonNegative(source.turns);
+  const toolCalls = nonNegative(source.toolCalls);
+  const input = usage ? nonNegative(usage.input) : undefined;
+  const output = usage ? nonNegative(usage.output) : undefined;
+  const cacheRead = usage ? nonNegative(usage.cacheRead) : undefined;
+  const cacheWrite = usage ? nonNegative(usage.cacheWrite) : undefined;
+  const cost = usage ? nonNegative(usage.cost) : undefined;
+  if (
+    turns === undefined ||
+    toolCalls === undefined ||
+    input === undefined ||
+    output === undefined ||
+    cacheRead === undefined ||
+    cacheWrite === undefined ||
+    cost === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    turns: Math.floor(turns),
+    toolCalls: Math.floor(toolCalls),
+    usage: { input, output, cacheRead, cacheWrite, cost },
+  };
+};
 
 export const parseWorkerOptions = (
   argv: readonly string[] = process.argv,
@@ -58,6 +94,7 @@ export const parseWorkerOptions = (
   const branch = optional(args, "branch");
   const worktree = optional(args, "worktree");
   const maxTokens = optional(args, "max-tokens");
+  const carryOverSource = optional(args, "carry-over");
   const runnerSessionId = optional(args, "runner-session-id");
   const inheritedSessionPinsSource = optional(args, "inherited-session-pins");
   const inheritedSessionPins = inheritedSessionPinsSource
@@ -70,6 +107,15 @@ export const parseWorkerOptions = (
       inheritedSessionPins.some((pin) => typeof pin?.pool !== "string" || pin.pool.trim() === ""))
   ) {
     throw new Error("Invalid worker inherited session pins");
+  }
+  let carryOver: AgentRunCarryOver | undefined;
+  if (carryOverSource) {
+    try {
+      carryOver = carryOverTotals(JSON.parse(carryOverSource));
+    } catch {
+      carryOver = undefined;
+    }
+    if (!carryOver) throw new Error("Invalid worker carry-over");
   }
   const mainAgentId = optional(args, "main-agent-id");
   const fabricSessionId = optional(args, "fabric-session-id");
@@ -139,6 +185,7 @@ export const parseWorkerOptions = (
     ...(branch ? { branch } : {}),
     ...(worktree ? { worktree } : {}),
     ...(maxTokens ? { maxTokens: Number(maxTokens) } : {}),
+    ...(carryOver ? { carryOver } : {}),
     ...(inheritedSessionPins && inheritedSessionPins.length > 0 ? { inheritedSessionPins } : {}),
   };
 };

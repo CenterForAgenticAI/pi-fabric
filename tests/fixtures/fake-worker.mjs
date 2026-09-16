@@ -43,6 +43,117 @@ if (task.includes("HANG")) {
   stay();
   process.on("SIGTERM", () => process.exit(0));
   process.on("SIGINT", () => process.exit(0));
+} else if (task.includes("RESUME_AFTER_STOP") || task.includes("RESUME_AFTER_CRASH")) {
+  // Simulates a long participant losing its first attempt mid-run: either the
+  // worker caught an external signal (a terminal "stopped" record, as SIGTERM
+  // produces) or its transport simply died with work already done. Attempts are
+  // counted beside the status file, and the cumulative prefix the manager passes
+  // back through --carry-over seeds the next attempt's record exactly as a real
+  // worker does.
+  const marker = path.join(path.dirname(statusFile), "resume-attempts");
+  const attempt = fs.existsSync(marker) ? Number(fs.readFileSync(marker, "utf8")) + 1 : 1;
+  fs.writeFileSync(marker, String(attempt));
+  const carryOver = args.has("carry-over") ? JSON.parse(args.get("carry-over")) : undefined;
+  const running = {
+    id: args.get("id"),
+    name: args.get("name"),
+    task,
+    status: "running",
+    runner: args.get("runner") ?? "pi",
+    transport: args.get("transport"),
+    cwd: args.get("cwd"),
+    startedAt: Date.now(),
+    updatedAt: Date.now(),
+    turns: carryOver?.turns ?? 0,
+    toolCalls: carryOver?.toolCalls ?? 0,
+    text: "",
+    exitCode: null,
+    usage: carryOver?.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+  };
+  const addUsage = (delta) => ({
+    input: running.usage.input + delta.input,
+    output: running.usage.output + delta.output,
+    cacheRead: running.usage.cacheRead + delta.cacheRead,
+    cacheWrite: running.usage.cacheWrite + delta.cacheWrite,
+    cost: running.usage.cost + delta.cost,
+  });
+  fs.mkdirSync(path.dirname(statusFile), { recursive: true });
+  fs.writeFileSync(statusFile, JSON.stringify(running));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  if (attempt === 1 && task.includes("RESUME_AFTER_STOP")) {
+    const stoppedAt = Date.now();
+    fs.writeFileSync(
+      statusFile,
+      JSON.stringify({
+        ...running,
+        status: "stopped",
+        error: "Agent stopped",
+        updatedAt: stoppedAt,
+        finishedAt: stoppedAt,
+        turns: 5,
+        toolCalls: 3,
+        usage: addUsage({ input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.01 }),
+      }),
+    );
+    process.exit(1);
+  }
+  if (attempt === 1) process.exit(3);
+  const finishedAt = Date.now();
+  fs.writeFileSync(
+    statusFile,
+    JSON.stringify({
+      ...running,
+      status: "completed",
+      updatedAt: finishedAt,
+      finishedAt,
+      turns: running.turns + 1,
+      toolCalls: running.toolCalls + 1,
+      text: `resumed attempt ${attempt}`,
+      usage: addUsage({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.001 }),
+    }),
+  );
+} else if (task.includes("LIVE_WITH_PROGRESS")) {
+  // A live attempt that already did work, keeps running, and finishes on its own
+  // unless a stop or a kill gets there first. Attempts are counted beside the
+  // status file so tests can prove whether a relaunch happened.
+  process.on("SIGTERM", () => process.exit(0));
+  process.on("SIGINT", () => process.exit(0));
+  const marker = path.join(path.dirname(statusFile), "resume-attempts");
+  const attempt = fs.existsSync(marker) ? Number(fs.readFileSync(marker, "utf8")) + 1 : 1;
+  fs.writeFileSync(marker, String(attempt));
+  const startedAt = Date.now();
+  const running = {
+    id: args.get("id"),
+    name: args.get("name"),
+    task,
+    status: "running",
+    runner: args.get("runner") ?? "pi",
+    transport: args.get("transport"),
+    cwd: args.get("cwd"),
+    startedAt,
+    updatedAt: startedAt,
+    turns: 4,
+    toolCalls: 2,
+    text: "",
+    exitCode: null,
+    usage: { input: 40, output: 20, cacheRead: 0, cacheWrite: 0, cost: 0.002 },
+  };
+  fs.mkdirSync(path.dirname(statusFile), { recursive: true });
+  fs.writeFileSync(statusFile, JSON.stringify(running));
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  const finishedAt = Date.now();
+  fs.writeFileSync(
+    statusFile,
+    JSON.stringify({
+      ...running,
+      status: "completed",
+      updatedAt: finishedAt,
+      finishedAt,
+      turns: 5,
+      toolCalls: 3,
+      text: `live attempt ${attempt} complete`,
+    }),
+  );
 } else if (task.includes("STREAM_PREVIEW")) {
   const startedAt = Date.now();
   const running = {

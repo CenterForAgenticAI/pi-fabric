@@ -43,6 +43,7 @@ import type {
   FabricSteeringMode,
   FabricAgentLog,
   AgentHandleInfo,
+  AgentRunCarryOver,
   AgentRunRecord,
   AgentRunRequest,
   AgentRunResult,
@@ -51,6 +52,7 @@ import type {
   AgentTransportAdapter,
   AgentTransportHandle,
   AgentTransportLaunch,
+  AgentUsage,
 } from "./types.js";
 import { WorktreeManager } from "./worktree-manager.js";
 import { writeHandoffSession } from "./handoff.js";
@@ -78,6 +80,8 @@ import {
   type FabricLifecyclePublishRequest,
 } from "../lifecycle/types.js";
 import {
+  AGENT_RESUME_MAX_ATTEMPTS,
+  AGENT_RESUME_RETRY_BASE_DELAY_MS,
   AGENT_STARTUP_MAX_ATTEMPTS,
   AGENT_STARTUP_RETRY_BASE_DELAY_MS,
   AGENT_STATUS_POLL_INTERVAL_MS,
@@ -160,6 +164,15 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
   adapter: AgentTransportAdapter;
   launch: AgentTransportLaunch;
   startupAttempts: number;
+  /** Mid-run resumes already spent on this run (see AGENT_RESUME_MAX_ATTEMPTS). */
+  resumeAttempts: number;
+  /** Set by an explicit stop — tool, dashboard, or session shutdown. A requested
+   *  stop is terminal and must never be resumed behind the operator's back. */
+  stopRequested: boolean;
+  /** Monotonic progress maxima seen for this run across attempts. The worker's
+   *  own terminal record keeps its counters, but a host-synthesized stop or
+   *  transport-death record resets them to zero, so recovery reads this. */
+  observedProgress: { turns: number; toolCalls: number; usage: AgentUsage };
   // The dead-transport failure we are retrying past; preferred over a bare
   // timed_out verdict if the run deadline lands mid-retry.
   lastRetriedTransportFailure?: AgentRunResult;
@@ -193,6 +206,46 @@ const TRANSPORT_EXITED_WITHOUT_RESULT_PREFIX = "Agent transport exited without a
 
 const transportExitedWithoutResult = (error: string | undefined): boolean =>
   typeof error === "string" && error.startsWith(TRANSPORT_EXITED_WITHOUT_RESULT_PREFIX);
+
+/**
+ * A stop worth resuming: the worker caught a signal mid-run, or its transport
+ * died while the run still had work in flight. Timeouts and token-limit kills are
+ * policy verdicts, and an explicit stop is operator intent — none of them resume.
+ */
+const recoverableStop = (record: AgentRunRecord): boolean =>
+  record.status === "stopped" ||
+  (record.status === "failed" && transportExitedWithoutResult(record.error));
+
+const MAX_RESUME_NOTE_CHARS = 2_000;
+
+const setWorkerArgument = (args: string[], name: string, value: string): void => {
+  const index = args.indexOf(`--${name}`);
+  if (index >= 0) args[index + 1] = value;
+  else args.push(`--${name}`, value);
+};
+
+/**
+ * Task text a resumed attempt receives: the original task plus a bounded note
+ * naming the interruption, so a Pi child without a session file picks up where
+ * the stopped attempt left off instead of restarting blind.
+ */
+const resumeTask = (
+  task: string,
+  record: AgentRunRecord,
+  progress: { turns: number; toolCalls: number },
+  runDirectory: string,
+): string => {
+  const summary = summarizeRunLog(runDirectory, 6);
+  const turns = Math.max(record.turns, progress.turns);
+  const toolCalls = Math.max(record.toolCalls, progress.toolCalls);
+  const note = [
+    "[Fabric continuation] A previous attempt at this exact task was interrupted before it finished.",
+    `It ended with status "${record.status}"${record.error ? ` (${record.error})` : ""} after ${turns} turns and ${toolCalls} tool calls, so the working tree already contains what that attempt completed.`,
+    "Inspect the current state first, do not redo work that is already done, and carry the task through to completion.",
+    ...(summary ? [`Last observed run activity: ${summary}`] : []),
+  ].join(" ");
+  return `${note.slice(0, MAX_RESUME_NOTE_CHARS)}\n\n${task}`;
+};
 
 const retryablePiStartupError = (error: string | undefined): boolean =>
   typeof error === "string" &&
@@ -849,10 +902,17 @@ export class AgentManager {
         settled: false,
         background: false,
         lastLivenessCheckAt: 0,
+        resumeAttempts: 0,
+        stopRequested: false,
+        observedProgress: {
+          turns: 0,
+          toolCalls: 0,
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+        },
         usageEmitted: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
       };
       if (signal) {
-        managed.abortHandler = () => void this.stop(id);
+        managed.abortHandler = () => this.#handleCallerAbort(id);
         signal.addEventListener("abort", managed.abortHandler, { once: true });
       }
       this.#runs.set(id, managed);
@@ -890,13 +950,59 @@ export class AgentManager {
   }
 
   detachSignal(id: string): void {
-    const managed = this.#requireRun(id);
+    this.#detach(this.#requireRun(id), "caller detached; the run continues");
+  }
+
+  /**
+   * An abort belongs to the caller, not to the run it started: a returned guest
+   * program, a cancelled tool call, or a spent sandbox deadline must not discard
+   * hours of participant work. A run that already produced progress is detached
+   * and keeps going to a real terminal state; a run that never started working is
+   * still stopped, because releasing it loses nothing.
+   */
+  #handleCallerAbort(id: string): void {
+    const managed = this.#runs.get(id);
+    if (!managed || managed.settled || this.#closing) return;
+    if (!this.#observedWork(managed)) {
+      void this.stop(id);
+      return;
+    }
+    this.#detach(managed, "caller aborted; the run continues");
+  }
+
+  #detach(managed: ManagedAgent, reason: string): void {
+    const attached = managed.abortSignal !== undefined || managed.abortHandler !== undefined;
     if (managed.abortSignal && managed.abortHandler) {
       managed.abortSignal.removeEventListener("abort", managed.abortHandler);
     }
     managed.abortSignal = undefined;
     managed.abortHandler = undefined;
+    if (managed.background) return;
     managed.background = true;
+    if (attached) {
+      this.#emitLifecycle(managed, "run.detached", Date.now(), { data: { reason } });
+    }
+  }
+
+  #observedWork(managed: ManagedAgent): boolean {
+    const { turns, toolCalls } = managed.observedProgress;
+    if (turns > 0 || toolCalls > 0) return true;
+    const record = managed.latestRecord ?? readRecord(managed.statusFile);
+    return record !== undefined && (record.turns > 0 || record.toolCalls > 0);
+  }
+
+  /**
+   * Track element-wise maxima of the run's counters. Usage components only grow
+   * within a run, so a per-field maximum stays the cumulative total even when a
+   * host-synthesized stop or transport-death record resets the counters to zero.
+   */
+  #observeProgress(managed: ManagedAgent, record: AgentRunRecord): void {
+    const seen = managed.observedProgress;
+    if (record.turns > seen.turns) seen.turns = record.turns;
+    if (record.toolCalls > seen.toolCalls) seen.toolCalls = record.toolCalls;
+    for (const key of ["input", "output", "cacheRead", "cacheWrite", "cost"] as const) {
+      if (record.usage[key] > seen.usage[key]) seen.usage[key] = record.usage[key];
+    }
   }
 
   status(id: string): AgentRunRecord | AgentHandleInfo {
@@ -969,6 +1075,9 @@ export class AgentManager {
 
   async stop(id: string): Promise<AgentRunResult> {
     const managed = this.#requireRun(id);
+    // A requested stop is terminal: record the intent before any transport work
+    // so recovery never restarts a run the operator, a tool, or shutdown ended.
+    managed.stopRequested = true;
     if (managed.settled) return this.wait(id);
     managed.background = false;
     const existing = readRecord(managed.statusFile);
@@ -1177,6 +1286,56 @@ export class AgentManager {
     await delay(retryDelayMs);
     if (managed.settled || this.#closing || managed.abortSignal?.aborted) return false;
     managed.startupAttempts++;
+    return this.#relaunch(managed, record);
+  }
+
+  /**
+   * An unexpected mid-run stop — the worker caught a signal, or its transport
+   * died with work already done — is recoverable. Relaunch the same run in the
+   * same directory, seeded with the cumulative prefix of the attempt it lost, so
+   * a long participant finishes instead of reporting a terminal stop that throws
+   * away hours of work. Explicit stops, timeouts, and spent deadlines stay
+   * terminal; AGENT_RESUME_MAX_ATTEMPTS bounds the retries.
+   */
+  async #resumeStopped(
+    managed: ManagedAgent,
+    record: AgentRunRecord,
+    deadline: number,
+  ): Promise<boolean> {
+    if (
+      managed.settled ||
+      this.#closing ||
+      managed.stopRequested ||
+      managed.resumeAttempts >= AGENT_RESUME_MAX_ATTEMPTS ||
+      !this.#observedWork(managed) ||
+      !recoverableStop(record)
+    ) {
+      return false;
+    }
+    const retryDelayMs = AGENT_RESUME_RETRY_BASE_DELAY_MS * 2 ** managed.resumeAttempts;
+    if (Date.now() + retryDelayMs >= deadline) return false;
+    await this.#waitForTransportExit(managed);
+    await delay(retryDelayMs);
+    if (managed.settled || this.#closing || managed.stopRequested) return false;
+    managed.resumeAttempts += 1;
+    const { turns, toolCalls, usage } = managed.observedProgress;
+    return this.#relaunch(managed, record, {
+      task: resumeTask(managed.task, record, { turns, toolCalls }, managed.runDirectory),
+      carryOver: { turns, toolCalls, usage: { ...usage } },
+    });
+  }
+
+  /**
+   * Relaunch the same worker run in place. Shared by the startup retry (a child
+   * that died before producing a result) and the mid-run resume, which differ
+   * only in the task the child is handed and the cumulative prefix its fresh
+   * record starts from.
+   */
+  async #relaunch(
+    managed: ManagedAgent,
+    record: AgentRunRecord,
+    resume?: { task: string; carryOver: AgentRunCarryOver },
+  ): Promise<boolean> {
     try {
       if (managed.runner === "pi") {
         const model = await this.#prepareModel(managed.model);
@@ -1190,21 +1349,59 @@ export class AgentManager {
           delete managed.model;
         }
       }
+      if (resume) {
+        fs.writeFileSync(path.join(managed.runDirectory, "task.txt"), resume.task, {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+        setWorkerArgument(
+          managed.launch.workerArguments,
+          "carry-over",
+          JSON.stringify(resume.carryOver),
+        );
+      }
+      // The relaunched child owns a fresh status/lifecycle pair, so drain what
+      // the previous attempt published (token usage above all) before discarding
+      // the journal it landed in.
+      this.#drainLifecycle(managed);
       fs.rmSync(managed.statusFile, { force: true });
+      if (managed.settled || this.#closing || managed.stopRequested) return false;
       managed.transport = await managed.adapter.launch(managed.launch);
+      if (managed.settled || this.#closing || managed.stopRequested) {
+        // A stop landed while the relaunch was in flight. Release the child we
+        // just started so it cannot outlive the monitor and the stop path can
+        // publish its terminal record.
+        await managed.transport.stop().catch(() => undefined);
+        return false;
+      }
       delete managed.latestRecord;
       delete managed.latestUiRecord;
       managed.lastLivenessCheckAt = 0;
       managed.lifecycleOffset = 0;
       managed.lifecycleRemainder = Buffer.alloc(0);
       fs.rmSync(managed.lifecycleFile, { force: true });
+      if (resume) {
+        this.#emitLifecycle(managed, "run.resumed", Date.now(), {
+          data: {
+            attempt: managed.resumeAttempts,
+            attemptsAllowed: AGENT_RESUME_MAX_ATTEMPTS,
+            previousStatus: record.status,
+            ...(record.error ? { previousError: record.error } : {}),
+            carriedTurns: resume.carryOver.turns,
+            carriedToolCalls: resume.carryOver.toolCalls,
+          },
+        });
+      }
       this.#invalidateUiList();
       return true;
     } catch (error) {
       const retryError = error instanceof Error ? error.message : String(error);
       const failed = {
         ...record,
-        error: `${record.error ?? "Agent startup failed"} · retry launch failed: ${retryError}`,
+        // Keep the run's real progress: the relaunch failed, not the attempt.
+        turns: Math.max(record.turns, managed.observedProgress.turns),
+        toolCalls: Math.max(record.toolCalls, managed.observedProgress.toolCalls),
+        error: `${record.error ?? "Agent run failed"} · relaunch failed: ${retryError}`,
       };
       writeRecord(managed.statusFile, failed);
       managed.latestRecord = failed;
@@ -1219,6 +1416,7 @@ export class AgentManager {
       this.#drainLifecycle(managed);
       const record = readRecord(managed.statusFile);
       if (record) {
+        this.#observeProgress(managed, record);
         const previous = managed.latestRecord;
         managed.latestRecord = record;
         if (
@@ -1236,6 +1434,7 @@ export class AgentManager {
         managed.runnerSessionId = record.runnerSessionId;
       }
       if (record && terminalStatuses.has(record.status)) {
+        if (await this.#resumeStopped(managed, record, deadline)) continue;
         if (await this.#retryStartup(managed, record, deadline)) continue;
         this.#settle(managed, this.#withTransportMetadata(record, managed) as AgentRunResult);
         return;
@@ -1293,6 +1492,7 @@ export class AgentManager {
                 ? `Agent transport exited without a result; last run log: ${logSummary}`
                 : "Agent transport exited without a result",
             );
+            if (await this.#resumeStopped(managed, failed, deadline)) continue;
             if (await this.#retryStartup(managed, failed, deadline)) {
               managed.lastRetriedTransportFailure = failed;
               continue;
