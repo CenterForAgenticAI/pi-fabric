@@ -5,7 +5,7 @@ import { renameAtomic } from "./core/atomic-write.js";
 import { quarantineDamagedFile } from "./core/damaged-file.js";
 import { normalizeModelAliases } from "./core/model-resolution.js";
 import { PI_CORE_TOOL_NAME_SET } from "./core/pi-tools.js";
-import { DEFAULT_SHELL_HANG_MS } from "./core/shell-jobs.js";
+import { DEFAULT_SHELL_HANG_MS, SHELL_HANG_MAX_MS } from "./core/shell-jobs.js";
 import {
   CURRENT_FABRIC_CONFIG_VERSION,
   migrateFabricConfigDocument,
@@ -53,9 +53,10 @@ interface FabricExecutorConfig {
   /** Exact-ref deadline floors (ms) for known long-running host calls, e.g.
    * "extensions.subagent". Keys are exact refs; no wildcard matching. */
   hostCallTimeouts: Record<string, number>;
-  /** Wait budget for nested pi.bash / pi.powershell. 0 disables auto-spill.
-   * After this, the await settles successfully with a live output path while
-   * the process keeps running. Explicit shell timeout remains a hard cap. */
+  /** Wait budget for nested pi.bash / pi.powershell (default 2m, max 10m).
+   * 0 disables auto-spill. After this, the await settles successfully with a
+   * live output path while the process keeps running. `background: true`
+   * detaches immediately. Explicit shell timeout remains a hard cap. */
   shellHangMs: number;
   memoryLimitBytes: number;
   maxOutputChars: number;
@@ -816,7 +817,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         executor.shellHangMs,
         DEFAULT_FABRIC_CONFIG.executor.shellHangMs,
         0,
-        executorMaxTimeoutMs,
+        Math.min(executorMaxTimeoutMs, SHELL_HANG_MAX_MS),
       ),
       memoryLimitBytes: boundedInteger(
         executor.memoryLimitBytes,

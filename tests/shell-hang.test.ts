@@ -18,6 +18,7 @@ const invokeBash = async (
   command: string,
   hangMs: number,
   signal?: AbortSignal,
+  extra: Record<string, unknown> = {},
 ) => {
   const jobs = new FabricShellJobStore();
   stores.push(jobs);
@@ -31,7 +32,7 @@ const invokeBash = async (
   registries.push(registry);
   const result = await registry.invoke(
     "pi.bash",
-    { command },
+    { command, ...extra },
     {
       cwd: process.cwd(),
       signal: signal ?? new AbortController().signal,
@@ -96,8 +97,24 @@ describe("pi.bash auto-spill", () => {
   });
 
   it("normalizes shellHangMs including off", () => {
-    expect(normalizeFabricConfig({}).executor.shellHangMs).toBe(60_000);
+    expect(normalizeFabricConfig({}).executor.shellHangMs).toBe(120_000);
     expect(normalizeFabricConfig({ executor: { shellHangMs: 0 } }).executor.shellHangMs).toBe(0);
     expect(normalizeFabricConfig({ executor: { shellHangMs: -5 } }).executor.shellHangMs).toBe(0);
+    expect(normalizeFabricConfig({ executor: { shellHangMs: 20 * 60_000 } }).executor.shellHangMs).toBe(600_000);
+  });
+
+  it("spills immediately when background:true", async () => {
+    const { result, jobs } = await invokeBash("printf start; sleep 8; printf done", 120_000, undefined, { background: true });
+    expect(result.ok).toBe(true);
+    expect(result.details?.running).toBe(true);
+    expect(result.details?.logPath).toBeTruthy();
+    const pid = result.details?.pid;
+    expect(pid).toEqual(expect.any(Number));
+    if (typeof pid === "number") {
+      expect(() => process.kill(pid, 0)).not.toThrow();
+      try { process.kill(-pid, "SIGKILL"); } catch { process.kill(pid, "SIGKILL"); }
+    }
+    expect(jobs.list().some((job) => job.status === "spilled")).toBe(true);
+    expect(result.details?.elapsedMs ?? 1_000).toBeLessThan(2_000);
   });
 });

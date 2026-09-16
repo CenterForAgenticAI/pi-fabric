@@ -389,7 +389,8 @@ type FabricExtensionsApi = Record<string, FabricCapturedTool>;
 // proxy normalizes them to the canonical form before the host validates args.
 // Bash timeout is measured in seconds; timeoutMs is converted from milliseconds.
 // After executor.shellHangMs the await still resolves ok: true with a still-running
-// notice, pid, and live output path in details; the process keeps writing that file.
+// notice, pid, and live output path in details; background: true (alias
+// run_in_background) detaches immediately. The process keeps writing that file.
 // Extended near-miss repairs: find's name/filename/glob → pattern, write's
 // data → content, ls's folder → path, bash's script → command; numeric option
 // fields (limit/offset/context/timeout) also accept numeric strings, coerced
@@ -474,6 +475,7 @@ type PiReadOptions = { offset?: number; limit?: number; start?: number; max?: nu
 // repairable call is rejected before it ever reaches the sandbox.
 type PiShellOptions = {
   timeout?: number; timeoutMs?: number; settle?: boolean;
+  background?: boolean; run_in_background?: boolean;
   cwd?: string; workdir?: string; directory?: string; workingDirectory?: string;
 };
 type PiBashOptions = PiShellOptions;

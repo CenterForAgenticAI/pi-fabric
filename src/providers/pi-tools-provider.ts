@@ -61,6 +61,13 @@ import { readChildToolAllowlist } from "../core/child-tool-allowlist.js";
 const closedPiInputSchema = (name: PiCoreToolName, source: unknown): Record<string, unknown> => {
   const schema = source as Record<string, unknown>;
   const properties = { ...(schema.properties as Record<string, unknown>) };
+  if (name === "bash" || name === "powershell") {
+    properties.background = {
+      type: "boolean",
+      description:
+        "Detach immediately: the await returns ok:true with a still-running notice, pid, and live output path. Do not poll; pi.read the path when you need output.",
+    };
+  }
   if (name === "edit") {
     properties.all = { type: "boolean", description: "Apply every replacement to all matching occurrences." };
     const edits = properties.edits as Record<string, unknown> | undefined;
@@ -464,18 +471,23 @@ export class PiToolsProvider implements FabricProvider {
     onUpdate: (partialResult: PiToolResult) => void,
   ): Promise<PiToolResult> {
     const command = typeof args.command === "string" ? args.command : "";
+    const background = args.background === true;
+    const executeArgs = background || "background" in args
+      ? (({ background: _ignored, ...rest }) => rest)(args)
+      : args;
     const job = this.#shellJobs.begin(name, command);
     void job.readPid();
-    const tool = this.#trackedShellDefinition(name, args, job);
+    const tool = this.#trackedShellDefinition(name, executeArgs, job);
     let spilled = false;
     const outcome = await raceShellHang({
-      hangMs: this.#shellHangMs(),
+      hangMs: background ? 0 : this.#shellHangMs(),
+      immediate: background,
       parentSignal: context.signal,
       job,
       execute: (signal) =>
         tool.execute(
           context.nestedToolCallId,
-          args,
+          executeArgs,
           signal,
           (partialResult) => {
             if (spilled) return;

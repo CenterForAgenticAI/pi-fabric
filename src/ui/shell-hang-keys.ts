@@ -3,6 +3,7 @@ import type { FabricShellJobStore } from "../core/shell-jobs.js";
 
 const CTRL_B = "\x02";
 const CTRL_K = "\x0b";
+const CTRL_B_CHORD_MS = 1_000;
 
 interface ShellHangKeyOptions {
   enabled: () => boolean;
@@ -16,22 +17,36 @@ export function installFabricShellHangKeys(
   options: ShellHangKeyOptions,
 ): () => void {
   if (context.mode !== "tui" || typeof context.ui.onTerminalInput !== "function") return () => {};
+  let chordArmedAt = 0;
   const unsubscribe = context.ui.onTerminalInput((data) => {
-    if (options.ownsInput() || !options.enabled()) return undefined;
+    if (options.ownsInput() || !options.enabled()) {
+      chordArmedAt = 0;
+      return undefined;
+    }
     const jobs = options.jobs();
-    if (!jobs || jobs.waiting().length === 0) return undefined;
+    if (!jobs || jobs.waiting().length === 0) {
+      chordArmedAt = 0;
+      return undefined;
+    }
     if (data === CTRL_B) {
-      const count = jobs.spillWaiting();
-      if (count > 0) {
-        context.ui.notify(
-          count === 1
-            ? "Fabric: shell still running · output spilled to a live log"
-            : `Fabric: ${count} shells still running · output spilled to live logs`,
-          "info",
-        );
+      const now = Date.now();
+      if (chordArmedAt > 0 && now - chordArmedAt <= CTRL_B_CHORD_MS) {
+        chordArmedAt = 0;
+        const count = jobs.spillWaiting();
+        if (count > 0) {
+          context.ui.notify(
+            count === 1
+              ? "Fabric: shell still running · output spilled to a live log"
+              : `Fabric: ${count} shells still running · output spilled to live logs`,
+            "info",
+          );
+        }
+        return { consume: true };
       }
+      chordArmedAt = now;
       return { consume: true };
     }
+    chordArmedAt = 0;
     if (data === CTRL_K) {
       const count = jobs.killWaiting();
       if (count > 0) {

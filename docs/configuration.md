@@ -53,7 +53,7 @@ Monty is always sandboxed, including under schema enforce, and does not require 
 
 Every raised deadline is capped by `executor.maxTimeoutMs` (default `900000`, i.e. 15 minutes: the former undocumented clamp, now explicit), which itself can be raised up to the hard implementation maximum of 24 hours. Values above a cap are visibly normalized down to the cap during config load and the effective values are shown in `/fabric` settings, never silently surprising. A per-invocation request or ref floor takes effect even when the ref is unknown to Fabric, so captured tools, MCP calls, and future host calls all run within an intentionally longer deadline without Fabric knowing their argument semantics. Existing `pi.bash` behavior (extending the deadline from an explicit `timeout` argument) is unchanged, and deadline expiry still cancels the active host call and any child process it owns.
 
-`executor.shellHangMs` (default `60000`, `0` disables) is a nested-shell wait budget, not a program deadline. When a `pi.bash` / `pi.powershell` await exceeds it, Fabric **settles the await successfully** (`ok: true`) with a still-running notice, pid, and live output path while the process keeps writing that file. Inspect with `pi.read(logPath)` and stop by running `kill <pid>` through `pi.bash`. An explicit shell `timeout` remains a hard cap. **ctrl+b** spills early; **ctrl+k** kills the waiting command. Session shutdown aborts leftover processes.
+`executor.shellHangMs` (default `120000` / 2 minutes, max `600000` / 10 minutes, `0` disables) is a nested-shell wait budget, not a program deadline. When a `pi.bash` / `pi.powershell` await exceeds it, Fabric **settles the await successfully** (`ok: true`) with a still-running notice, pid, and live output path while the process keeps writing that file. `background: true` (alias `run_in_background`) detaches immediately with the same envelope. Inspect with `pi.read(logPath)` and stop by running `kill <pid>` through `pi.bash`. Do not poll. An explicit shell `timeout` remains a hard cap. **ctrl+b twice** spills early (tmux-safe); **ctrl+k** kills the waiting command. Session shutdown aborts leftover processes.
 
 The precedence across all sources is:
 
@@ -79,7 +79,7 @@ where absent values do not participate. Orchestration programs (`agents.run` / `
     "timeoutMs": 120000,
     "maxTimeoutMs": 900000,
     "hostCallTimeouts": {},
-    "shellHangMs": 60000,
+    "shellHangMs": 120000,
     "memoryLimitBytes": 67108864,
     "maxOutputChars": 100000,
     "maxNestedResultChars": 2000000,

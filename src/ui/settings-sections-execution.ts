@@ -91,13 +91,13 @@ export const buildExecutorSection = (
           ),
         }),
         setting("executor.shellHangMs", "Shell hang", config.executor.shellHangMs === 0 ? "off" : formatMs(config.executor.shellHangMs), {
-          description: "Wait budget for nested pi.bash / pi.powershell. When it elapses the await succeeds with a live output path and pid while the process keeps running. 0 disables auto-spill. Explicit shell timeout stays a hard cap. ctrl+b spills early; ctrl+k kills the waiting command.",
+          description: "Wait budget for nested pi.bash / pi.powershell (default 2m, max 10m). When it elapses the await succeeds with a live output path and pid while the process keeps running. 0 disables auto-spill. background: true detaches immediately. Explicit shell timeout stays a hard cap. ctrl+b twice spills early; ctrl+k kills the waiting command.",
           submenu: numericSubmenu(
             theme,
-            [0, 15_000, 30_000, 60_000, 120_000, 300_000],
+            [0, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000],
             (ms) => ms === 0 ? "off" : formatMs(ms),
             "Shell hang",
-            "Wait budget before a nested shell spills to a live log. 0 disables auto-spill.",
+            "Wait budget before a nested shell spills to a live log. 0 disables auto-spill. Max 10m.",
           ),
         }),
         setting(

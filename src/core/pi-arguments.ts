@@ -7,11 +7,13 @@ function createPiArgumentNormalizer() {
       cmd: "command", shell: "command", cmdline: "command", script: "command",
       commandLine: "command",
       workdir: "cwd", directory: "cwd", workingDirectory: "cwd",
+      run_in_background: "background",
     },
     powershell: {
       cmd: "command", shell: "command", cmdline: "command", script: "command",
       commandLine: "command",
       workdir: "cwd", directory: "cwd", workingDirectory: "cwd",
+      run_in_background: "background",
     },
     find: {
       query: "pattern", regex: "pattern", search: "pattern", name: "pattern",
@@ -72,8 +74,8 @@ function createPiArgumentNormalizer() {
     grep: ["path", "glob", "ignoreCase", "literal", "context", "limit"],
     find: ["path", "limit"],
     ls: ["path", "limit"],
-    bash: ["timeout"],
-    powershell: ["timeout"],
+    bash: ["timeout", "background"],
+    powershell: ["timeout", "background"],
   };
   const __normalizePiArgs = (name: string, args: any, canonicalFields: readonly string[] = []): unknown => {
     const field = __piStringFields[name];
@@ -106,6 +108,11 @@ function createPiArgumentNormalizer() {
           if (!Object.hasOwn(out, canonical)) out[canonical] = out[alias];
           delete out[alias];
         }
+      }
+    }
+    if ((name === "bash" || name === "powershell") && "background" in out) {
+      if (out.background !== undefined && typeof out.background !== "boolean") {
+        throw new TypeError("pi shell background must be a boolean");
       }
     }
     const numerics = __piNumericFields[name];

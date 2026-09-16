@@ -6,7 +6,8 @@ import { randomUUID } from "node:crypto";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import type { PiShellToolName } from "./pi-tools.js";
 
-export const DEFAULT_SHELL_HANG_MS = 60_000;
+export const DEFAULT_SHELL_HANG_MS = 120_000;
+export const SHELL_HANG_MAX_MS = 600_000;
 const SHELL_HANG_SNAPSHOT_BYTES = 8_000;
 
 const posixQuote = (value: string): string =>
@@ -269,6 +270,7 @@ export const raceShellHang = async <T>(options: {
   execute: (signal: AbortSignal) => Promise<T>;
   parentSignal: AbortSignal | undefined;
   hangMs: number;
+  immediate?: boolean;
   job: FabricShellJobHandle;
 }): Promise<{ status: "done"; value: T } | { status: "error"; error: unknown } | { status: "spilled" }> => {
   const { job, parentSignal, hangMs } = options;
@@ -293,6 +295,11 @@ export const raceShellHang = async <T>(options: {
         finish();
       }, hangMs);
       hangTimer.unref?.();
+    }
+    if (options.immediate) {
+      void job.readPid().then(() => {
+        if (!job.finished) job.spill();
+      });
     }
     void job.whenSpill().then(finish);
   });

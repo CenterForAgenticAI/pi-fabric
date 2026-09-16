@@ -33,6 +33,8 @@ const PROPERTY_NOTES: Readonly<Record<string, string>> = {
   settle:
     "`settle:true` settles nonzero shell exits into an `ok:false` envelope instead of rejecting; other `pi.*` calls reject failures normally.",
   timeout: "`timeout` is measured in seconds; `timeoutMs` is converted from milliseconds.",
+  background:
+    "`background: true` detaches immediately: the await returns ok:true with a still-running notice, pid, and live output path. Do not poll; `pi.read` the path when you need output.",
 };
 
 // Shell options that stay unsupported (cwd is honored per call since #71).

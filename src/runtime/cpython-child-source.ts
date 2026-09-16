@@ -138,6 +138,8 @@ class _Proxy:
             ref = "fabric.$" + name
         if ref in ("pi.bash", "pi.powershell") and "settle" in args and type(args["settle"]) is not bool:
             raise TypeError("pi shell settle must be a boolean; use settle=True or settle=False")
+        if ref in ("pi.bash", "pi.powershell") and "background" in args and type(args["background"]) is not bool:
+            raise TypeError("pi shell background must be a boolean; use background=True or background=False")
         settle = ref in ("pi.bash", "pi.powershell") and args.pop("settle", False) is True
         try:
             return await _call(ref, args)

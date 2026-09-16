@@ -133,6 +133,9 @@ export class MontyRuntime implements FabricKernelRuntime {
         if (isPiShellRef(ref) && Object.hasOwn(args, "settle") && typeof args.settle !== "boolean") {
           throw new TypeError("pi shell settle must be a boolean; use settle=True or settle=False");
         }
+        if (isPiShellRef(ref) && Object.hasOwn(args, "background") && typeof args.background !== "boolean") {
+          throw new TypeError("pi shell background must be a boolean; use background=True or background=False");
+        }
         const settle = isPiShellRef(ref) && args.settle === true;
         if (isPiShellRef(ref)) delete args.settle;
         const floor = options.minimumTimeoutMsForHostCall?.(ref, args);

@@ -118,9 +118,9 @@ describe("kernel settings", () => {
       kernel: "python", pythonRuntime: "cpython", runtime: "bun-process", cpython: { binary: "python3.12" },
       hostCallTimeouts: { "extensions.subagent": 300_000 },
     } });
-    expect(executor.currentValue).toBe("python · python3.12 · 2m · max 15m · hang 1m · 1 ref floor");
+    expect(executor.currentValue).toBe("python · python3.12 · 2m · max 15m · hang 2m · 1 ref floor");
     expect(executor.currentValue).not.toContain("bun-process");
     config.executor.kernel = "typescript";
-    expect(summaryFor("executor", config)).toBe("typescript · bun-process · 2m · max 15m · hang 1m · 1 ref floor");
+    expect(summaryFor("executor", config)).toBe("typescript · bun-process · 2m · max 15m · hang 2m · 1 ref floor");
   });
 });

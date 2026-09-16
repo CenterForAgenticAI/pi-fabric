@@ -110,6 +110,25 @@ describe("raceShellHang", () => {
     expect(job.spilled).toBe(false);
   });
 
+  it("spills immediately when requested, without waiting for hangMs", async () => {
+    const jobs = store();
+    const job = jobs.begin("bash", "sleep");
+    const pending = raceShellHang({
+      hangMs: 5_000,
+      immediate: true,
+      parentSignal: undefined,
+      job,
+      execute: async (signal) => {
+        await new Promise<void>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+        return "nope";
+      },
+    });
+    await expect(pending).resolves.toEqual({ status: "spilled" });
+    job.abort.abort();
+  });
+
   it("spills on demand so ctrl+b does not need background:true", async () => {
     const jobs = store();
     const job = jobs.begin("bash", "sleep");
