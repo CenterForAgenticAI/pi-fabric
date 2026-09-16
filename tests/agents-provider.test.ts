@@ -11,7 +11,11 @@ import type {
   FabricLifecycleEvent,
   FabricLifecycleSubscription,
 } from "../src/lifecycle/types.js";
-import { DEFAULT_FABRIC_CONFIG, type FabricModelsConfig } from "../src/config.js";
+import {
+  DEFAULT_FABRIC_CONFIG,
+  type FabricAgentConfig,
+  type FabricModelsConfig,
+} from "../src/config.js";
 import type {
   FabricMainAgentDeliveryRequest,
   FabricMainAgentTarget,
@@ -78,17 +82,22 @@ const setup = (
   options?: {
     switchModel?: FabricMainAgentTarget["switchModel"];
     modelsConfig?: FabricModelsConfig;
+    agentsConfig?: Partial<FabricAgentConfig>;
   },
 ) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-agents-provider-"));
   roots.push(root);
   const mesh = new MeshStore(path.join(root, "mesh"), 64 * 1024, 100);
-  const agents = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
-    workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
-    claudeBinary: path.resolve("tests/fixtures/fake-claude.mjs"),
-    vedaBinary: path.resolve("tests/fixtures/fake-veda.mjs"),
-    runRoot: path.join(root, "runs"),
-  });
+  const agents = new AgentManager(
+    process.cwd(),
+    { ...DEFAULT_FABRIC_CONFIG.agents, ...options?.agentsConfig },
+    {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      claudeBinary: path.resolve("tests/fixtures/fake-claude.mjs"),
+      vedaBinary: path.resolve("tests/fixtures/fake-veda.mjs"),
+      runRoot: path.join(root, "runs"),
+    },
+  );
   agentManagers.push(agents);
   const identity: MeshIdentity = {
     id: "session:test",
@@ -1330,7 +1339,11 @@ describe("AgentsProvider runner support", () => {
   });
 
   it("ignores actor timeout overrides below the configured default", async () => {
-    const { provider, actors } = setup();
+    // Pin the configured default below the 24-hour ceiling: that is the only
+    // configuration where a per-actor or per-call timeout can raise a run.
+    const { provider, actors } = setup([], [], undefined, {
+      agentsConfig: { timeoutMs: 3_600_000 },
+    });
     const inherited = (await provider.invoke(
       "create",
       { ...createRequest, name: "inherited-timeout", timeoutMs: 240_000 },

@@ -150,7 +150,7 @@ where absent values do not participate. Orchestration programs (`agents.run` / `
     "maxConcurrent": 4,
     "maxPerExecution": 100,
     "maxDepth": 2,
-    "timeoutMs": 3600000,
+    "timeoutMs": 86400000,
     "extensions": true,
     "defaultTools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
     "retainRuns": false,
@@ -403,7 +403,7 @@ Other agent settings:
 - `maxConcurrent`: global child concurrency semaphore.
 - `maxPerExecution`: hard cap on children per `fabric_exec` invocation.
 - `maxDepth`: nesting bound for child agent calls, including `rlm.query()`. It accepts any non-negative safe integer. A value of `0` disables child spawning. `/fabric settings` provides free-form numeric entry.
-- `timeoutMs`: default wall-clock budget per child and the floor for per-call overrides (60 minutes by default). Fabric ignores lower per-call values. Set `timeoutMs` only to request a longer run.
+- `timeoutMs`: default wall-clock budget per child and the floor for per-call overrides (24 hours by default, which is also the policy ceiling). Fabric ignores lower per-call values. The default matches the ceiling on purpose: an orchestration program inherits this value as its own whole-program deadline floor, so a lower default would cut a long participant short well inside the allowed maximum. Lower it to bound a class of runs, and raise a single run with a per-call value.
 - `extensions`: whether Claude children keep their normal Claude Code customizations.
 - `defaultTools`: the default tool allowlist for children.
 - `budgetUsd`: shared append-only cost ledger across a recursion tree (0 disables).

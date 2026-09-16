@@ -318,8 +318,13 @@ export interface FabricConfig {
 export const MAX_EXECUTOR_TIMEOUT_MS = 24 * 3_600_000;
 
 export const MIN_AGENT_TIMEOUT_MS = 1_000;
-const DEFAULT_AGENT_TIMEOUT_MS = 3_600_000;
 export const MAX_AGENT_TIMEOUT_MS = 24 * 3_600_000;
+/** Default per-run wall-clock budget. It equals the policy ceiling on purpose:
+ *  an orchestration program inherits agents.timeoutMs as its own whole-program
+ *  deadline floor, so any lower default truncates long participants at a
+ *  fraction of the maximum the policy already allows. Narrow one run by setting
+ *  agents.timeoutMs explicitly; per-call values can only raise it. */
+const DEFAULT_AGENT_TIMEOUT_MS = MAX_AGENT_TIMEOUT_MS;
 export const QUICKJS_MAX_MEMORY_LIMIT_BYTES = 0xffff_ffff;
 export const MAX_EXECUTOR_MEMORY_LIMIT_BYTES = Math.max(
   8 * 1024 * 1024,

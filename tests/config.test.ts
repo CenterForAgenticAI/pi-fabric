@@ -813,9 +813,11 @@ describe("Fabric configuration", () => {
     expect(config.agents.transport).toBe("tmux");
   });
 
-  it("defaults the agent timeout to 60 minutes and clamps to the 24-hour bound", () => {
-    expect(DEFAULT_FABRIC_CONFIG.agents.timeoutMs).toBe(3_600_000);
-    expect(normalizeFabricConfig({}).agents.timeoutMs).toBe(3_600_000);
+  it("defaults the agent timeout to the 24-hour bound and clamps narrower values up", () => {
+    // The default equals the ceiling on purpose: an orchestration program
+    // inherits agents.timeoutMs as its own whole-program deadline floor.
+    expect(DEFAULT_FABRIC_CONFIG.agents.timeoutMs).toBe(86_400_000);
+    expect(normalizeFabricConfig({}).agents.timeoutMs).toBe(86_400_000);
     expect(
       normalizeFabricConfig({ agents: { timeoutMs: 99_999_999 } }).agents.timeoutMs,
     ).toBe(86_400_000);
