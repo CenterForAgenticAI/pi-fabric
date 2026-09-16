@@ -32,7 +32,10 @@ describe.skipIf(!fs.existsSync(workerPath))("real worker model admission", () =>
     });
     managers.push(manager);
     const result = await manager.run({ task: "must run on requested model", model, thinking: "high", transport: "process" });
-    const events = fs.readFileSync(result.logFile!, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    // The manager may win the overall deadline and return a synthetic result
+    // without logFile. Inspect the durable log at its known run location either way.
+    const logFile = path.join(directory, "runs", result.id, "events.jsonl");
+    const events = fs.readFileSync(logFile, "utf8").trim().split("\n").map(line => JSON.parse(line));
     const frames = events.filter(event => event.type === "fake_received").map(event => event.frame);
     return { manager, result, frames };
   };
