@@ -12,6 +12,7 @@ import { FabricActivityStore } from "./activity/store.js";
 import { ActorDirectory } from "./actors/directory.js";
 import { resolvePiBinary } from "./agents/pi-binary.js";
 import { isPiShellRef } from "./core/pi-tools.js";
+import { DEFAULT_SHELL_HANG_MS, FabricShellJobStore } from "./core/shell-jobs.js";
 import { GlobalActorRegistry } from "./actors/global-registry.js";
 import { buildActorContext } from "./actors/context.js";
 import { actorDeliveryNotice } from "./actors/delivery-policy.js";
@@ -173,6 +174,7 @@ export class FabricRuntimeState {
   readonly #builtinComponentNames = new Set<string>();
   readonly componentCatalog = new FabricComponentCatalog();
   readonly activity: FabricActivityStore;
+  readonly shellJobs = new FabricShellJobStore();
   readonly prewalk: PrewalkController;
   readonly prewalkDrift: PrewalkDriftTracker;
   readonly sessionApprovals: FabricSessionApprovals;
@@ -387,7 +389,10 @@ export class FabricRuntimeState {
       this.#managedHost,
     );
     const enforceSchema = this.#config.schema.mode === "enforce";
-    await builtins.tools(context.cwd, this.#config, this.capturedTools);
+    await builtins.tools(context.cwd, this.#config, this.capturedTools, {
+      jobs: this.shellJobs,
+      getHangMs: () => this.#config?.executor.shellHangMs ?? DEFAULT_SHELL_HANG_MS,
+    });
     if (this.#managedHost) {
       // Closed-world hosts must never construct unused native managers, stores or model history.
       for (const name of ["agents", "schema", "compact", "memory", "mesh", "state"]) {
@@ -1159,6 +1164,7 @@ export class FabricRuntimeState {
     await this.#residency?.close();
     await this.#actors?.close();
     await this.#agents?.close();
+    await this.shellJobs.close();
     try {
       await this.#registry?.close();
     } finally {
@@ -1249,6 +1255,7 @@ export class FabricRuntimeState {
     await this.#residency?.close();
     await this.#actors?.close();
     await this.#agents?.close();
+    await this.shellJobs.close();
     const externalNames = new Set(this.#externalProviders.keys());
     try {
       await this.#registry.close(externalNames);

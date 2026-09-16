@@ -1,10 +1,12 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
 import {
   createBashToolDefinition,
   createEditToolDefinition,
   createFindToolDefinition,
   createGrepToolDefinition,
+  createLocalBashOperations,
   createLsToolDefinition,
   createReadToolDefinition,
   type AgentToolResult,
@@ -21,6 +23,14 @@ import {
   type PiCoreToolName,
 } from "../core/pi-tools.js";
 import { classifyPiBashError, piBashResultError } from "../core/pi-bash-error.js";
+import {
+  appendShellHangNotice,
+  DEFAULT_SHELL_HANG_MS,
+  FabricShellJobStore,
+  formatShellHangNotice,
+  raceShellHang,
+  trackShellOperations,
+} from "../core/shell-jobs.js";
 import { expandSkillDirMarkersForRead } from "../core/skill-dir.js";
 import type {
   FabricActionDescriptor,
@@ -70,6 +80,8 @@ const MAX_REPLACE_ALL_FILE_CHARS = 2_000_000;
 interface PiToolsProviderHostCapabilities {
   requireCapturedOverrides?: boolean;
   powerShellToolDefinitionFactory: ShellDefinitionFactory | undefined;
+  getShellHangMs?: () => number;
+  shellJobs?: FabricShellJobStore;
 }
 
 const DEFAULT_HOST_CAPABILITIES: PiToolsProviderHostCapabilities = {
@@ -221,6 +233,9 @@ export class PiToolsProvider implements FabricProvider {
   readonly #requireCapturedOverrides: boolean;
   readonly #bashDefinitions = new BashCwdDefinitions();
   readonly #powershellDefinitions: PowerShellCwdDefinitions | undefined;
+  readonly #shellJobs: FabricShellJobStore;
+  readonly #ownsShellJobs: boolean;
+  readonly #getShellHangMs: (() => number) | undefined;
 
   constructor(
     cwd: string,
@@ -246,6 +261,17 @@ export class PiToolsProvider implements FabricProvider {
     };
     this.#catalog = catalog;
     this.#capturedTools = capturedTools;
+    this.#ownsShellJobs = hostCapabilities.shellJobs === undefined;
+    this.#shellJobs = hostCapabilities.shellJobs ?? new FabricShellJobStore();
+    this.#getShellHangMs = hostCapabilities.getShellHangMs;
+  }
+
+  get shellJobs(): FabricShellJobStore {
+    return this.#shellJobs;
+  }
+
+  async close(): Promise<void> {
+    if (this.#ownsShellJobs) await this.#shellJobs.close();
   }
 
   async list(
@@ -384,6 +410,111 @@ export class PiToolsProvider implements FabricProvider {
       : context;
   }
 
+  #shellHangMs(): number {
+    const value = this.#getShellHangMs?.() ?? DEFAULT_SHELL_HANG_MS;
+    return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : DEFAULT_SHELL_HANG_MS;
+  }
+
+  #trackedShellDefinition(
+    name: "bash" | "powershell",
+    args: Record<string, unknown>,
+    job: ReturnType<FabricShellJobStore["begin"]>,
+  ): ToolDefinition<any, any, any> {
+    const cwd = typeof args[PI_BASH_CWD_KEY] === "string" ? args[PI_BASH_CWD_KEY] : this.#cwd;
+    if (name === "bash") {
+      return createBashToolDefinition(cwd, {
+        operations: trackShellOperations(createLocalBashOperations(), job, "bash"),
+      });
+    }
+    const create = Reflect.get(PiCodingAgent, "createPowerShellToolDefinition");
+    const operationsFactory = Reflect.get(PiCodingAgent, "createLocalPowerShellOperations");
+    if (typeof create !== "function" || typeof operationsFactory !== "function") {
+      return this.#definitionFor(name, args);
+    }
+    return create(cwd, {
+      operations: trackShellOperations(operationsFactory(), job, "powershell"),
+    });
+  }
+
+  async #runExecute(
+    name: PiCoreToolName,
+    tool: ToolDefinition<any, any, any>,
+    args: Record<string, unknown>,
+    context: FabricInvocationContext,
+    onUpdate: (partialResult: PiToolResult) => void,
+  ): Promise<PiToolResult> {
+    if (!isPiShellToolName(name) || this.#requireCapturedOverrides) {
+      return await runAbortable(context.signal, () =>
+        tool.execute(
+          context.nestedToolCallId,
+          args,
+          context.signal,
+          onUpdate,
+          this.#executionContextFor(name, args, context.extensionContext),
+        ),
+      ) as PiToolResult;
+    }
+    return this.#executeHungShell(name, args, context, onUpdate);
+  }
+
+  async #executeHungShell(
+    name: "bash" | "powershell",
+    args: Record<string, unknown>,
+    context: FabricInvocationContext,
+    onUpdate: (partialResult: PiToolResult) => void,
+  ): Promise<PiToolResult> {
+    const command = typeof args.command === "string" ? args.command : "";
+    const job = this.#shellJobs.begin(name, command);
+    void job.readPid();
+    const tool = this.#trackedShellDefinition(name, args, job);
+    let spilled = false;
+    const outcome = await raceShellHang({
+      hangMs: this.#shellHangMs(),
+      parentSignal: context.signal,
+      job,
+      execute: (signal) =>
+        tool.execute(
+          context.nestedToolCallId,
+          args,
+          signal,
+          (partialResult) => {
+            if (spilled) return;
+            onUpdate(partialResult as PiToolResult);
+          },
+          this.#executionContextFor(name, args, context.extensionContext),
+        ),
+    });
+    if (outcome.status === "done") {
+      await job.finish(0);
+      return outcome.value as PiToolResult;
+    }
+    if (outcome.status === "error") {
+      await job.finish(null);
+      throw outcome.error;
+    }
+    spilled = true;
+    const logPath = await job.persistLog();
+    const pid = await job.readPid();
+    const elapsedMs = Date.now() - job.startedAt;
+    const notice = formatShellHangNotice({
+      elapsedMs,
+      logPath,
+      ...(pid !== undefined ? { pid } : {}),
+    });
+    const output = appendShellHangNotice(job.snapshotText(), notice);
+    context.update(`${name}: still running after ${Math.max(1, Math.round(elapsedMs / 1000))}s`);
+    return {
+      content: [{ type: "text", text: output }],
+      details: {
+        running: true,
+        elapsedMs,
+        logPath,
+        fullOutputPath: logPath,
+        ...(pid !== undefined ? { pid } : {}),
+      },
+    };
+  }
+
   async invoke(
     actionName: string,
     args: Record<string, unknown>,
@@ -415,14 +546,12 @@ export class PiToolsProvider implements FabricProvider {
     // catalog) fall back to a direct execute — no extension hooks fire, but
     // the call still works. Once tools are refreshed the runner is available.
     if (!runner) {
-      const result = await runAbortable(context.signal, () =>
-        tool.execute(
-          context.nestedToolCallId,
-          args,
-          context.signal,
-          (partialResult) => this.#attachPartialPreview(name, partialResult, args, context),
-          this.#executionContextFor(name, args, context.extensionContext),
-        ),
+      const result = await this.#runExecute(
+        name,
+        tool,
+        args,
+        context,
+        (partialResult) => this.#attachPartialPreview(name, partialResult, args, context),
       ).catch((error) => {
         throwIfAborted(context.signal);
         throw isPiShellToolName(name) ? classifyPiBashError(error) : error;
@@ -474,10 +603,11 @@ export class PiToolsProvider implements FabricProvider {
         throw new Error(preflight.reason || `Pi tool ${name} was blocked`);
       }
       executionStarted = true;
-      result = (await runAbortable(context.signal, () => tool.execute(
-        toolCallId,
+      result = await this.#runExecute(
+        name,
+        tool,
         args,
-        context.signal,
+        context,
         (partialResult) => {
           this.#attachPartialPreview(name, partialResult, args, context);
           updateTail = updateTail
@@ -492,8 +622,7 @@ export class PiToolsProvider implements FabricProvider {
             )
             .catch(() => undefined);
         },
-        this.#executionContextFor(name, args, context.extensionContext),
-      ))) as PiToolResult;
+      );
     } catch (error) {
       thrown = isPiShellToolName(name) && executionStarted ? classifyPiBashError(error) : error;
       isError = true;

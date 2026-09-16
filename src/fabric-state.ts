@@ -137,6 +137,7 @@ export class FabricState {
   resetSpeculation(): void { this.#runtime?.resetSpeculation(); }
   get agents(): FabricRuntimeState["agents"] { return this.#required().agents; }
   get actors(): FabricRuntimeState["actors"] { return this.#required().actors; }
+  get shellJobs(): FabricRuntimeState["shellJobs"] | undefined { return this.#runtime?.shellJobs; }
   get globalActors(): FabricRuntimeState["globalActors"] { return this.#required().globalActors; }
   get mesh(): FabricRuntimeState["mesh"] { return this.#required().mesh; }
   get compact(): FabricRuntimeState["compact"] { return this.#required().compact; }

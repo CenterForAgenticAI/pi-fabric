@@ -13,6 +13,8 @@ import { McpProvider } from "./providers/mcp-provider.js";
 import { MemoryProvider, type MemoryProviderContext } from "./providers/memory-provider.js";
 import { MeshProvider } from "./providers/mesh-provider.js";
 import { PiToolsProvider } from "./providers/pi-tools-provider.js";
+import { powerShellToolDefinitionFactory } from "./providers/pi-bash-cwd.js";
+import type { FabricShellJobStore } from "./core/shell-jobs.js";
 import { StateProvider } from "./providers/state-provider.js";
 
 import type { FabricManagedHost } from "./managed-host.js";
@@ -31,7 +33,12 @@ export class RuntimeStateBuiltins {
     this.onInstalled(component.definition.name);
   }
 
-  async tools(cwd: string, config: FabricConfig, capturedTools: CapturedToolCatalog): Promise<void> {
+  async tools(
+    cwd: string,
+    config: FabricConfig,
+    capturedTools: CapturedToolCatalog,
+    shell?: { jobs: FabricShellJobStore; getHangMs: () => number },
+  ): Promise<void> {
     let mcpProvider: McpProvider | undefined;
     const enforceSchema = config.schema.mode === "enforce";
     const effectiveFullCodeMode = config.fullCodeMode || enforceSchema;
@@ -51,7 +58,14 @@ export class RuntimeStateBuiltins {
           cwd,
           capturedTools,
           capturedToolsProvider,
-          this.managedHost ? {requireCapturedOverrides: true, powerShellToolDefinitionFactory: undefined} : undefined,
+          this.managedHost
+            ? {requireCapturedOverrides: true, powerShellToolDefinitionFactory: undefined}
+            : {
+                powerShellToolDefinitionFactory,
+                ...(shell
+                  ? { shellJobs: shell.jobs, getShellHangMs: shell.getHangMs }
+                  : {}),
+              },
         ),
       }));
     }

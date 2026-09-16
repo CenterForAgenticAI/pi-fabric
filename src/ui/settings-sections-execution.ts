@@ -90,6 +90,16 @@ export const buildExecutorSection = (
             `Default wall-clock time for a single fabric_exec program (policy max ${formatMs(config.executor.maxTimeoutMs)}).`,
           ),
         }),
+        setting("executor.shellHangMs", "Shell hang", config.executor.shellHangMs === 0 ? "off" : formatMs(config.executor.shellHangMs), {
+          description: "Wait budget for nested pi.bash / pi.powershell. When it elapses the await succeeds with a live output path and pid while the process keeps running. 0 disables auto-spill. Explicit shell timeout stays a hard cap. ctrl+b spills early; ctrl+k kills the waiting command.",
+          submenu: numericSubmenu(
+            theme,
+            [0, 15_000, 30_000, 60_000, 120_000, 300_000],
+            (ms) => ms === 0 ? "off" : formatMs(ms),
+            "Shell hang",
+            "Wait budget before a nested shell spills to a live log. 0 disables auto-spill.",
+          ),
+        }),
         setting(
           "executor.maxTimeoutMs",
           "Policy max",

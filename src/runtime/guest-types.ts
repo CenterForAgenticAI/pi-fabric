@@ -388,6 +388,8 @@ type FabricExtensionsApi = Record<string, FabricCapturedTool>;
 // flat edit shape ({ path, oldText, newText }) are also accepted; the runtime
 // proxy normalizes them to the canonical form before the host validates args.
 // Bash timeout is measured in seconds; timeoutMs is converted from milliseconds.
+// After executor.shellHangMs the await still resolves ok: true with a still-running
+// notice, pid, and live output path in details; the process keeps writing that file.
 // Extended near-miss repairs: find's name/filename/glob → pattern, write's
 // data → content, ls's folder → path, bash's script → command; numeric option
 // fields (limit/offset/context/timeout) also accept numeric strings, coerced

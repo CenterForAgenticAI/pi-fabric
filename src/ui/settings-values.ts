@@ -257,7 +257,8 @@ export const summaryFor = (id: string, config: FabricConfig): string => {
       const kernel = config.executor.kernel === "python"
         ? `python · ${config.executor.pythonRuntime === "monty" ? "monty" : config.executor.cpython.binary}`
         : `typescript · ${config.executor.runtime}`;
-      return `${kernel} · ${formatMs(config.executor.timeoutMs)} · max ${formatMs(config.executor.maxTimeoutMs)}${refFloors > 0 ? ` · ${refFloors} ref floor${refFloors === 1 ? "" : "s"}` : ""}`;
+      const hang = config.executor.shellHangMs === 0 ? "hang off" : `hang ${formatMs(config.executor.shellHangMs)}`;
+      return `${kernel} · ${formatMs(config.executor.timeoutMs)} · max ${formatMs(config.executor.maxTimeoutMs)} · ${hang}${refFloors > 0 ? ` · ${refFloors} ref floor${refFloors === 1 ? "" : "s"}` : ""}`;
     }
     case "schema":
       return config.schema.mode;

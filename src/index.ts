@@ -92,6 +92,7 @@ import {
 import type { AgentToolResultMessage } from "./agents/types.js";
 import { FabricUiController } from "./ui/controller.js";
 import { installFabricEscapeHalt } from "./ui/escape-halt.js";
+import { installFabricShellHangKeys } from "./ui/shell-hang-keys.js";
 import { FabricToolDisplayController } from "./ui/tool-display.js";
 import { configureHighlighting } from "./ui/highlight.js";
 import { registerHandoffCompletionRenderer } from "./ui/handoff-completion.js";
@@ -312,9 +313,14 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
   // actors at once. Disabled when mesh/actors are off or ui.haltOnEscape is
   // false.
   let haltOnEscapeUnsubscribe: (() => void) | undefined;
+  let shellHangKeysUnsubscribe: (() => void) | undefined;
   const uninstallHaltOnEscape = (): void => {
     haltOnEscapeUnsubscribe?.();
     haltOnEscapeUnsubscribe = undefined;
+  };
+  const uninstallShellHangKeys = (): void => {
+    shellHangKeysUnsubscribe?.();
+    shellHangKeysUnsubscribe = undefined;
   };
   const installHaltOnEscape = (context: ExtensionContext): void => {
     uninstallHaltOnEscape();
@@ -324,6 +330,14 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
       ownsInput: () => fabricUi.ownsInput,
       halted: () => state.actors.halted,
       halt: () => state.actors.haltAll().halted,
+    });
+  };
+  const installShellHangKeys = (context: ExtensionContext): void => {
+    uninstallShellHangKeys();
+    shellHangKeysUnsubscribe = installFabricShellHangKeys(context, {
+      enabled: () => state.initialized,
+      ownsInput: () => fabricUi.ownsInput,
+      jobs: () => state.shellJobs,
     });
   };
 
@@ -344,6 +358,7 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
 
   const cleanupActivationSideEffects = (): void => {
     uninstallHaltOnEscape();
+    uninstallShellHangKeys();
     fabricUi.stop();
   };
   state.setActivationHook(async (context) => {
@@ -352,6 +367,7 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
     applyFabricMode();
     fabricUi.start(context);
     installHaltOnEscape(context);
+    installShellHangKeys(context);
   }, cleanupActivationSideEffects);
 
   // Continual entropy reduction runs off the interaction path. Session-tree
@@ -473,6 +489,7 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
     directToolApproval.clear();
     toolDisplay.clear();
     uninstallHaltOnEscape();
+    uninstallShellHangKeys();
     fabricUi.stop();
     suspendToolCapture();
     proxyContract.reset();
@@ -870,6 +887,7 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
       await state.shutdown();
     } finally {
       uninstallHaltOnEscape();
+      uninstallShellHangKeys();
       fabricUi.stop();
       suspendToolCapture();
       toolOwnership.release();
