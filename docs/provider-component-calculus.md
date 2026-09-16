@@ -375,4 +375,4 @@ After startup, ordinary action calls use the direct `ActionRegistry` branch. Com
 | `components.reload` reaches pinned fibers | loader `#loaded` map | `components-provider.test.ts` |
 | `components.reload` reports rollback and preserves the namespace | loader reload diagnostics | `components-provider.test.ts` |
 | Default descriptors and hashes stay fixed | `actionDescriptorHash()` | `default-path-compatibility.test.ts` |
-| Full runtime behavior stays green | package quality gate | `pnpm run check` |
+| Runtime behavior in touched paths stays green | incremental gate | `bun run check:fast` |

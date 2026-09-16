@@ -7,7 +7,7 @@ The repository provides three evaluation commands:
 
 - `bun run benchmark:real-resume` is an opt-in, billable Pi RPC benchmark with a safe skip as its default behavior.
 
-`bun run test` excludes these commands, which keeps the normal test suite offline and fast.
+The incremental test commands stay offline and fast because they never invoke these certification or benchmark entry points.
 
 ## Entropy certification
 

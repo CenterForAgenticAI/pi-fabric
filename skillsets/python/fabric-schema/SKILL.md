@@ -47,7 +47,7 @@ Operations are local regular files: edit/delete require `expectedSha256`; writes
 ## Off-mode state discipline
 
 ```python
-transition = await state.transition(label="claim", to="claim-stated", summary="A falsifiable delta", evidence=["bun run test -- tests/focused.test.ts"])
+transition = await state.transition(label="claim", to="claim-stated", summary="A falsifiable delta", evidence=["bunx vitest run tests/focused.test.ts"])
 verification = await state.verify()
 return {"status": "success" if verification["certified"] else "failed", "transition": transition, "verification": verification}
 ```
