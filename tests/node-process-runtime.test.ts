@@ -48,6 +48,17 @@ return { models, process: typeof process, require: typeof require };
   });
 
 
+  it("leaves __bun undefined on the node runtime", async () => {
+    const result = await new NodeProcessRuntime().execute(
+      "return typeof __bun;",
+      async () => undefined,
+      options,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.value).toBe("undefined");
+  });
+
   it("normalizes the string shorthand for tools.search", async () => {
     const result = await new NodeProcessRuntime().execute(
       'return tools.search("fovea");',
@@ -266,6 +277,17 @@ return { models, process: typeof process };
       models: [{ id: "large-model" }],
       process: "undefined",
     });
+  });
+
+  it("exposes the Bun module namespace as __bun", async () => {
+    const result = await new BunProcessRuntime().execute(
+      'return { file: typeof __bun.file, glob: typeof __bun.Glob };',
+      async () => undefined,
+      options,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.value).toEqual({ file: "function", glob: "function" });
   });
 
   it("preserves named string payloads", async () => {

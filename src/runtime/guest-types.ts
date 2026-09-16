@@ -1392,6 +1392,9 @@ declare function setTimeout(handler: (...args: any[]) => void, timeout?: number)
 declare function clearTimeout(handle: number): void;
 declare function setInterval(handler: (...args: any[]) => void, timeout?: number): number;
 declare function clearInterval(handle: number): void;
+// Process runtimes only: the bun-process child binds the host's real Bun
+// module namespace as __bun; undefined under node-process and quickjs.
+declare const __bun: any;
 `;
 
 const FULL_CODE_GLOBAL_DECLARATIONS = [

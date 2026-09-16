@@ -56,6 +56,12 @@ const run = async (message) => {
     logs.push(line);
     logChars += line.length;
   };
+
+  // Bun module namespace for the guest. The child resolves the specifier in
+  // its own module context; under the node runtime it fails and the binding
+  // stays undefined. Namespace objects come from this realm, so instanceof
+  // against guest-realm classes fails (same caveat as other sandbox bridges).
+  const __bun = await import("bun").catch(() => undefined);
   const sandbox = {
     __fabricHostCall: hostCall,
     __fabricTokenBudget: message.tokenBudget ?? Number.POSITIVE_INFINITY,
@@ -65,6 +71,8 @@ const run = async (message) => {
     // explicit escape hatch. Cross-realm caveat: namespaces come from this
     // realm, so instanceof against guest-realm classes fails.
     __fabricImport: (specifier) => import(specifier),
+    // Resolved above; undefined under the node runtime.
+    __bun,
     print,
     π: jsonCompatible(message.strings),
   };
