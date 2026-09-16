@@ -28,6 +28,12 @@ export default function (pi: ExtensionAPI) {
     },
   });
   pi.on("session_start", async (_event, ctx) => {
+    const startupDelay = Number(process.env.MODEL_PROBE_STARTUP_DELAY_MS ?? 0);
+    if (startupDelay > 0) {
+      // Like async provider/pool reconciliation, this finishes before RPC input opens.
+      ctx.ui.notify("startup-waiting", "info");
+      await new Promise(resolve => setTimeout(resolve, startupDelay));
+    }
     const mru = ctx.modelRegistry.find("model-probe", "mru")!;
     await pi.setModel(mru);
     pi.setThinkingLevel("low");

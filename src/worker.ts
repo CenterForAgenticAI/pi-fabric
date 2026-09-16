@@ -384,6 +384,13 @@ const main = async (): Promise<void> => {
       if (terminalStatus) return;
       child.stdin?.write(`${JSON.stringify(frame)}\n`);
     },
+    rpcReady() {
+      if (terminalStatus) return;
+      // Do not charge extension/provider startup against model admission.
+      // The overall run timeout still bounds startup and the full handshake.
+      modelTimer = setTimeout(() => modelControl.fail("RPC admission timed out; task was not sent"), 15_000);
+      modelTimer.unref();
+    },
     observed(model) {
       if (record.model === model) return;
       record.model = model;
@@ -958,10 +965,6 @@ const main = async (): Promise<void> => {
     child.stdin?.write(sections.join("\n\n"));
     child.stdin?.end();
   } else {
-    if (options.model) {
-      modelTimer = setTimeout(() => modelControl.fail("RPC admission timed out; task was not sent"), Math.min(15_000, options.timeoutMs));
-      modelTimer.unref();
-    }
     modelControl.start();
   }
 

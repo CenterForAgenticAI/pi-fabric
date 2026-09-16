@@ -40,17 +40,25 @@ describe.skipIf(!fs.existsSync(workerPath))("real worker model admission", () =>
   it("overrides startup MRU and remembered reasoning before sending any task", async () => {
     const { result, frames, manager } = await run("success");
     expect(result).toMatchObject({ status: "completed", model: requested, requestedModel: requested, thinking: "high" });
-    expect(frames.map(frame => frame.type)).toEqual(["set_model", "set_thinking_level", "get_state", "prompt"]);
-    expect(frames[0]).toMatchObject({ provider: "openai-codex", modelId: "gpt-5.6-sol" });
+    expect(frames.map(frame => frame.type)).toEqual(["get_state", "set_model", "set_thinking_level", "get_state", "prompt"]);
+    expect(frames[1]).toMatchObject({ provider: "openai-codex", modelId: "gpt-5.6-sol" });
     expect(manager.listForUi()[0]).toMatchObject({ model: requested, thinking: "high" });
   });
 
-  it.each(["reject", "reswitch", "malformed", "exit", "timeout"])("never sends work when admission fails: %s", async scenario => {
+  it.each(["reject", "reswitch", "malformed", "exit", "timeout", "startup-timeout"])("never sends work when admission fails: %s", async scenario => {
     const { result, frames } = await run(scenario);
     expect(["failed", "timed_out"]).toContain(result.status);
     expect(result.error).toMatch(/model|timed out/);
     expect(frames.some(frame => frame.type === "prompt")).toBe(false);
     expect(result.toolCalls).toBe(0);
+    if (scenario === "startup-timeout") {
+      expect(result.status).toBe("timed_out");
+      expect(result.error).toContain("Agent timed out after 5000ms");
+      expect(frames.map(frame => frame.type)).toEqual(["get_state"]);
+    } else if (scenario === "timeout") {
+      expect(result.error).toContain("RPC admission timed out");
+      expect(frames.map(frame => frame.type)).toEqual(["get_state", "set_model"]);
+    }
   }, 40_000);
 
   it("reports actual model drift through the result and UI, without erasing the failure", async () => {
@@ -63,10 +71,10 @@ describe.skipIf(!fs.existsSync(workerPath))("real worker model admission", () =>
   it("supports an exact bare model ID without using the startup default", async () => {
     const { result, frames } = await run("success", "gpt-5.6-sol");
     expect(result).toMatchObject({ status: "completed", model: requested });
-    expect(frames[0].type).toBe("get_available_models");
+    expect(frames.slice(0, 2).map(frame => frame.type)).toEqual(["get_state", "get_available_models"]);
   });
 
-  it("reasserts selection after a real Pi session_start extension hijacks it (offline)", async () => {
+  it.each([0, 16_000])("reasserts selection after a real Pi session_start hijack with %sms startup (offline)", async startupDelay => {
     const directory = root();
     const agentDir = path.join(directory, "agent");
     fs.mkdirSync(agentDir);
@@ -76,7 +84,8 @@ describe.skipIf(!fs.existsSync(workerPath))("real worker model admission", () =>
     }));
     vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
     vi.stubEnv("PI_OFFLINE", "1");
-    const manager = new AgentManager(directory, { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 20_000 }, {
+    vi.stubEnv("MODEL_PROBE_STARTUP_DELAY_MS", String(startupDelay));
+    const manager = new AgentManager(directory, { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 30_000 }, {
       workerPath,
       piBinary: path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js"),
       fullCodeMode: false,
@@ -91,5 +100,5 @@ ${fs.readFileSync(result.logFile!, "utf8")}`).toMatchObject({ status: "completed
     expect(result.text).toBe("model-probe/requested:high");
     const log = fs.readFileSync(result.logFile!, "utf8");
     expect(log).toContain("startup-hijacked:model-probe/mru");
-  }, 30_000);
+  }, 40_000);
 });

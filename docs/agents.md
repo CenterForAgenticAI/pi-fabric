@@ -28,6 +28,8 @@ You can give `fabric_exec` optional `agentBudget` and `tokenBudget` limits. Conf
 
 For Pi workers, Fabric reapplies the resolved `provider/model` over RPC **after startup extensions finish**, reapplies the requested thinking level, and independently reads `get_state` before sending the task. A successful `set_model` response alone is insufficient: it can echo the requested model even when an extension switches away during `model_select`. Thinking is reported at Pi's effective, capability-clamped level.
 
+Startup waits for a correlated RPC readiness response and is bounded by the run's `timeoutMs`. The 15-second model-admission deadline starts only after Pi accepts RPC commands, so slow extension/provider initialization (including multiprovider pool reconciliation) does not consume it. The overall run deadline still applies throughout.
+
 Unavailable models, rejected/malformed RPC responses, admission timeouts, or a remaining model mismatch fail the run without sending its task. Queued controls wait for admission too. Fabric does not substitute an MRU model or silently fall back. Standalone `AgentManager` callers can also supply a unique exact bare model ID; ambiguous IDs must be provider-qualified.
 
 `requestedModel` preserves launch intent in run records; `model` follows verified child state and actual assistant attribution. The manager and participant UI preserve that observed value; the launch label cannot overwrite it. If assistant attribution drifts after admission, Fabric terminates the child and reports both requested and observed models in the failure. This verifies Pi's local provider/model identity, not a remote provider's internal routing.

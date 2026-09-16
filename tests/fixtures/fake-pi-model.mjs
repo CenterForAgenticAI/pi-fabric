@@ -20,6 +20,7 @@ process.stdin.on("data", chunk => {
     const frame = JSON.parse(buffer.slice(0, index));
     buffer = buffer.slice(index + 1);
     emit({ type: "fake_received", frame });
+    if (behavior === "startup-timeout") continue;
     const reply = (data, success = true) => emit({ type: "response", id: frame.id, command: frame.type, success, data, ...(success ? {} : { error: "model unavailable" }) });
     if (frame.type === "get_available_models") {
       reply({ models: [requested, wrong] });
