@@ -31,6 +31,7 @@ import {
 import { setActiveCompiledSurface } from "./entropy/active.js";
 import {
   filterPrewalkContinuationMessages,
+  restoreBorrowedInPlaceMain,
   settleInPlacePrewalk,
   withTrajectoryRearmDirective,
 } from "./prewalk/handoff.js";
@@ -503,6 +504,9 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
       }
     }
     await state.bootstrap(context);
+    // bootstrap() cancels any live arm; the borrowed Main model survives so a
+    // new session that inherited the in-place executor can snap back.
+    await restoreBorrowedInPlaceMain(state.prewalk, pi, context);
     refreshCodePreviewSettings();
     applyFabricMode();
     if (state.shouldEagerlyActivate(context)) await state.ensure(context);

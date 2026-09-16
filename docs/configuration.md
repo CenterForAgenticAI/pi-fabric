@@ -215,7 +215,7 @@ Unknown definitions stay visible as waiting. They do not fail the Fabric runtime
 
 `prewalk.model` is the optional Pi `provider/model` that `/fabric prewalk` selects. `prewalk.mode` chooses how execution continues:
 
-- `"in-place"` (default) switches Main to the executor model, queues a hidden follow-up in the same session, and restores Main's boundary model when the continuation settles.
+- `"in-place"` (default) switches Main to the executor model, queues a hidden follow-up in the same session, and restores Main's boundary model when the continuation settles, when a new session inherited the executor, or when prewalk is cancelled.
 - `"trajectory"` forks the finalized outer Fabric call and result to a visible Pi child, then waits for it. After the child finishes, a hidden continuation asks Main to verify the work and report its findings.
 
 ```json
@@ -239,7 +239,7 @@ Unknown definitions stay visible as waiting. They do not fail the Fabric runtime
 
 `prewalk.compactOnReturn` defaults to `true`. When an in-place continuation settles, Fabric requests a compaction with the configured `compaction.engine` and commits it while the executor is still the active model. Main's restored model receives the compacted transcript. Set this option to `false` when Main must receive the complete transcript.
 
-Each in-place handoff captures Main's active model at the boundary and restores it when the continuation settles. Pi's public `setModel` extension API also updates Pi's default model setting, so the restore returns the configured default to Main's model as well. A session that ends mid-continuation keeps the executor selection persisted until the next settle.
+Each in-place handoff captures Main's active model at the boundary and restores it when the continuation settles, when a new session is still on the executor, and when prewalk is cancelled (`/fabric prewalk --off` / `--disable`) or reloaded. Pi's public `setModel` extension API may also update the session model that a later session inherits, so restoring the captured Main model repairs that too.
 
 ## Models
 

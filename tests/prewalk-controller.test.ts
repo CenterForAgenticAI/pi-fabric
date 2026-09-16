@@ -191,4 +191,24 @@ describe("PrewalkController", () => {
     controller.claimFsDrift("session-1", ["a.ts"]);
     expect(controller.failHandoff()).toMatchObject({ state: "armed" });
   });
+
+  it("keeps the borrowed Main model across cancel so new sessions can restore it", () => {
+    const controller = new PrewalkController();
+    controller.arm({ model: "anthropic/executor", sessionId: "session-1" });
+    controller.claim([audit("pi.edit", true)], "session-1");
+    controller.beginContinuation("cont-1", "anthropic/frontier");
+
+    expect(controller.borrowedReturn()).toEqual({
+      returnModel: "anthropic/frontier",
+      executorModel: "anthropic/executor",
+    });
+    controller.cancel();
+    expect(controller.status()).toEqual({ state: "idle" });
+    expect(controller.borrowedReturn()).toEqual({
+      returnModel: "anthropic/frontier",
+      executorModel: "anthropic/executor",
+    });
+    controller.clearBorrowed();
+    expect(controller.borrowedReturn()).toBeUndefined();
+  });
 });

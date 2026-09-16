@@ -6,6 +6,7 @@ import type { FabricState } from "../fabric-state.js";
 import { resolveAgentDir } from "../core/agent-dir.js";
 import { saveFabricConfig } from "../config.js";
 import { armFabricPrewalkSession } from "../prewalk/arm.js";
+import { restoreBorrowedInPlaceMain } from "../prewalk/handoff.js";
 import { truncateMiddle } from "../util.js";
 import type { FabricUiController } from "../ui/controller.js";
 import { FABRIC_CONVERSATION_SHORTCUT } from "../ui/conversation-shortcut.js";
@@ -442,6 +443,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           await context.reload();
           return;
         }
+        await restoreBorrowedInPlaceMain(state.prewalk, pi, context);
         context.ui.notify("Pi Fabric reloaded", "info");
         // initialize() reloads configuration, so an externally edited
         // ui.toolDisplay must re-render existing transcript cards too.
@@ -522,6 +524,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
               state.prewalk.cancel();
               state.prewalkDrift.drop(context.sessionManager.getSessionId());
               context.ui.setStatus("fabric-prewalk", undefined);
+              await restoreBorrowedInPlaceMain(state.prewalk, pi, context);
             }
             context.ui.notify(
               `Fabric prewalk ${enabled ? "enabled" : "disabled"} (${saved.scope}: ${saved.path})`,
@@ -539,6 +542,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           state.prewalk.cancel();
           state.prewalkDrift.drop(context.sessionManager.getSessionId());
           context.ui.setStatus("fabric-prewalk", undefined);
+          await restoreBorrowedInPlaceMain(state.prewalk, pi, context);
           context.ui.notify("Fabric prewalk cancelled", "info");
           return;
         }

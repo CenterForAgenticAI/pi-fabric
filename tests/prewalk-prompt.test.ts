@@ -92,4 +92,14 @@ describe("prewalk prompt isolation", () => {
     expect(end).toBeGreaterThan(start);
     expect(source.slice(start, end)).toContain("state.prewalk.settleTask");
   });
+
+  it("restores the borrowed Main model when a session starts", () => {
+    const source = fs.readFileSync(path.join(process.cwd(), "src", "index.ts"), "utf8");
+    const start = source.indexOf('pi.on("session_start"');
+    const end = source.indexOf('pi.on("session_tree"', start);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(source.slice(start, end)).toContain("restoreBorrowedInPlaceMain");
+  });
 });

@@ -14,6 +14,7 @@ import {
   filterPrewalkContinuationMessages,
   hasPrewalkArmedPrompt,
   prewalkArmedPrompt,
+  restoreBorrowedInPlaceMain,
   runFabricHandoffAtBoundary,
   settleInPlacePrewalk,
   withTrajectoryRearmDirective,
@@ -465,6 +466,90 @@ describe("outer-boundary Prewalk", () => {
     expect(ext.setModel.mock.calls).toEqual([[ctx.target], [ctx.sourceModel]]);
     expect(controller.status()).toEqual({ state: "idle" });
     expect(ctx.setStatus).toHaveBeenLastCalledWith("fabric-prewalk", undefined);
+  });
+
+  it("restores Main after cancel when the session is still on the executor", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "json");
+    const ctx = context();
+    const ext = extension();
+
+    await runFabricHandoffAtBoundary(
+      controller,
+      unusedRunner(),
+      ext.value,
+      pending!,
+      outerResult(),
+      ctx.value,
+    );
+    controller.cancel();
+    ctx.value.model = ctx.target as typeof ctx.value.model;
+
+    expect(await restoreBorrowedInPlaceMain(controller, ext.value, ctx.value)).toBe(true);
+    expect(ext.setModel.mock.calls).toEqual([[ctx.target], [ctx.sourceModel]]);
+    expect(ctx.value.ui.notify).toHaveBeenLastCalledWith(
+      "Restored Main to anthropic/frontier after in-place prewalk.",
+      "info",
+    );
+  });
+
+  it("does not steal a new session that already loaded Main or a later pick", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "json");
+    const ctx = context();
+    const ext = extension();
+
+    await runFabricHandoffAtBoundary(
+      controller,
+      unusedRunner(),
+      ext.value,
+      pending!,
+      outerResult(),
+      ctx.value,
+    );
+    controller.cancel();
+
+    expect(await restoreBorrowedInPlaceMain(controller, ext.value, ctx.value)).toBe(false);
+    ctx.value.model = ctx.nextMainModel as typeof ctx.value.model;
+    expect(await restoreBorrowedInPlaceMain(controller, ext.value, ctx.value)).toBe(false);
+    expect(ext.setModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores Main on a new session that inherited the executor", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "json");
+    const ctx = context();
+    const ext = extension();
+
+    await runFabricHandoffAtBoundary(
+      controller,
+      unusedRunner(),
+      ext.value,
+      pending!,
+      outerResult(),
+      ctx.value,
+    );
+    expect(await settleInPlacePrewalk(controller, ext.value, ctx.value)).toBe(false);
+    controller.cancel();
+    ctx.value.model = ctx.target as typeof ctx.value.model;
+
+    expect(await restoreBorrowedInPlaceMain(controller, ext.value, ctx.value)).toBe(true);
+    expect(ext.setModel.mock.calls).toEqual([[ctx.target], [ctx.sourceModel]]);
   });
   it("automatically repeats Main → executor → Main with a freshly captured Main model", async () => {
     const controller = new PrewalkController();

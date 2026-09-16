@@ -49,6 +49,13 @@ export interface FabricPrewalkSettlement {
   executorModel: string;
 }
 
+// Survives cancel(), session_start, and settle so a new session that inherited
+// the executor — or a mid-continuation cancel — can still return Main.
+export interface FabricPrewalkBorrowedMain {
+  returnModel: string;
+  executorModel: string;
+}
+
 const normalizedTask = (value: string | undefined): string | undefined => {
   const task = value?.trim();
   return task ? task.slice(0, 20_000) : undefined;
@@ -58,6 +65,7 @@ export class PrewalkController {
   #status: FabricPrewalkStatus = { state: "idle" };
   #settling = new Set<string>();
   #claimSeq = new Map<string, number>();
+  #borrowed: FabricPrewalkBorrowedMain | undefined;
 
   status(): FabricPrewalkStatus {
     return structuredClone(this.#status);
@@ -115,6 +123,10 @@ export class PrewalkController {
     if (this.#status.state !== "handing_off" || this.#status.mode !== "in-place") {
       return this.status();
     }
+    this.#borrowed = {
+      returnModel,
+      executorModel: this.#status.model,
+    };
     this.#status = {
       ...this.#status,
       state: "continuation_pending",
@@ -123,6 +135,14 @@ export class PrewalkController {
       accepted: false,
     };
     return this.status();
+  }
+
+  borrowedReturn(): FabricPrewalkBorrowedMain | undefined {
+    return this.#borrowed ? { ...this.#borrowed } : undefined;
+  }
+
+  clearBorrowed(): void {
+    this.#borrowed = undefined;
   }
 
   acceptContinuation(sessionId: string, continuationId: string): boolean {

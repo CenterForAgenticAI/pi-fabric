@@ -454,6 +454,50 @@ export interface InPlacePrewalkSettleOptions {
   };
 }
 
+export const restoreBorrowedInPlaceMain = async (
+  controller: PrewalkController,
+  extension: ExtensionAPI,
+  context: ExtensionContext,
+): Promise<boolean> => {
+  const borrowed = controller?.borrowedReturn?.();
+  if (!borrowed) return false;
+  const currentKey = context.model
+    ? `${context.model.provider}/${context.model.id}`
+    : undefined;
+  // Only snap back when this session is still on the executor we switched to.
+  // A new session that already loaded Main, or a later manual pick, stays put.
+  if (currentKey !== undefined && currentKey !== borrowed.executorModel) return false;
+  if (currentKey === borrowed.returnModel) return false;
+
+  const model = modelForReturnKey(borrowed.returnModel, context);
+  if (!model) {
+    context.ui.setStatus("fabric-prewalk", `return failed → ${borrowed.returnModel}`);
+    context.ui.notify(
+      `Prewalk left Main on the executor; could not restore unavailable model ${borrowed.returnModel}.`,
+      "error",
+    );
+    return false;
+  }
+
+  let restored = false;
+  try {
+    restored = await extension.setModel(model);
+  } catch {
+    restored = false;
+  }
+  if (!restored) {
+    context.ui.setStatus("fabric-prewalk", `return failed → ${borrowed.returnModel}`);
+    context.ui.notify(
+      `Prewalk left Main on the executor; could not return to ${borrowed.returnModel}. Check model authentication.`,
+      "error",
+    );
+    return false;
+  }
+
+  context.ui.notify(`Restored Main to ${borrowed.returnModel} after in-place prewalk.`, "info");
+  return true;
+};
+
 export const settleInPlacePrewalk = async (
   controller: PrewalkController,
   extension: ExtensionAPI,
