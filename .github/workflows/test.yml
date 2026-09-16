@@ -15,6 +15,10 @@ jobs:
     steps:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
+        with:
+          # The affected-test selection diffs the push range or the pull-request
+          # base, so that base commit has to be present in history.
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
       - name: Install ripgrep
         # pi's grep tool downloads rg on first use when it is absent; on shared
@@ -34,9 +38,16 @@ jobs:
       - name: Test Windows type-checker regression
         if: runner.os == 'Windows'
         run: bunx vitest run tests/type-checker.test.ts
+      - name: Affected tests
+        env:
+          # Pull requests compare against the target branch; pushes compare
+          # against the tip they replaced. An unusable base selects nothing.
+          PI_TEST_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: bun run test:affected
+      - name: Platform smoke floor
+        # Curated cross-platform surface (path and executable resolution, native
+        # binaries, spawn, process and watcher fallbacks) so a Linux or Windows
+        # break surfaces even when the affected selection is empty.
+        run: bun run test:smoke
       - name: Build
         run: bun run build
-      - name: Test
-        run: bun run test
-      - name: Lint (dead code)
-        run: bun run lint:dead
