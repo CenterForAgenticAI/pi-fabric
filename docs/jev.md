@@ -28,6 +28,12 @@ The command uses argv, not a shell. It runs only when inference needs a key, wit
 
 `await jev.status()` reports configuration presence without running the command or making an authentication request. `verified: false` means this status operation did not verify a credential; presence does not prove validity. Missing auth does not prevent deterministic programs from running.
 
+## Auto-mode tool safety
+
+Jev can also serve as the host's auto-approval classifier, independently of programs and observers. Choose **Approvals → Auto model → Jev (TypeSafe safety classifier)** in `/fabric settings`, or set `approvals.model` to `"jev/jev-latest"` and the relevant risk policies to `"auto"`. Authenticate with `/login jev`, `TYPESAFE_API_KEY`, or the trusted credential command above.
+
+The host uses a typed Noul safety judgment, not generated text or a chat-model adapter. Only probabilities >= 0.99 auto-allow; uncertainty and errors require explicit approval. This is a probabilistic advisor, not a hard security boundary or a 99% correctness guarantee. Read [auto approval configuration](configuration.md#jev-as-the-auto-mode-classifier) for the bounded current-turn evidence, outbound data disclosure, credential behavior, timeout and usage rules. Jev remains absent from ordinary chat-model pickers.
+
 ## Direct judgments
 
 ```ts

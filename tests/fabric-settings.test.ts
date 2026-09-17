@@ -572,6 +572,28 @@ describe("FabricSettingsComponent", () => {
     });
   });
 
+  it.each([fakeModelSource, { models: [], lastUsed: {} }])("offers Jev only in auto approvals, with or without chat models", source => {
+    const applied: Array<{ id: string; value: unknown }> = [];
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.jev.model = "jev-1.13";
+    const items = buildFabricSettingsItems(theme, config, (id, value) => applied.push({ id, value }), {
+      keepVisibleCandidates: ["fabric_exec"], modelSource: source,
+    });
+    const section = items.find(item => item.id === "approvals")!.submenu!("", () => {}) as any;
+    const list = section.settingsList as any;
+    list.selectedIndex = list.items.findIndex((item: { id: string }) => item.id === "approvals.model");
+    list.activateItem();
+    const picker = list.submenuComponent;
+    expect(picker.rpcChoices()).toContainEqual(expect.objectContaining({ value: "jev/jev-1.13" }));
+    expect(picker.selectRpc("jev/jev-1.13")).toBe(true);
+    expect(applied.at(-1)).toEqual({ id: "approvals.model", value: "jev/jev-1.13" });
+    list.activateItem();
+    list.submenuComponent.handleInput("jev");
+    list.submenuComponent.handleInput("\r");
+    expect(applied.at(-1)).toEqual({ id: "approvals.model", value: "jev/jev-1.13" });
+    expect(source.models.some(model => model.provider === "jev")).toBe(false);
+  });
+
   it("persists a Prewalk model selection and reopens with its checkmark", () => {
     const applied: Array<{ id: string; value: unknown }> = [];
     const items = buildFabricSettingsItems(

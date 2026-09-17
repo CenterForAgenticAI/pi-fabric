@@ -3,6 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { runAbortable } from "../async-settlement.js";
 import type { ActionRegistry, FabricCapabilityViewLease, FabricCallAudit } from "../core/action-registry.js";
 import { ApprovalController, FabricSessionApprovals } from "../core/approval-controller.js";
+import { FabricAutoApprovalClassifier } from "../core/auto-approval-classifier.js";
 import type { FabricConfig } from "../config.js";
 import type { FabricInvocationContext } from "../protocol.js";
 import type { JevLaunch, JevRunInfo, JevJson, JevResponse } from "./types.js";
@@ -115,7 +116,7 @@ export class JevProgramManager {
       const sources = await registry.guestTypeSources({ ...context, capabilityView: lease.view });
       const { code, checked } = runtime.prepare(prelude + definition.code, true, [], sources, [], true);
       if (checked.errors.length) throw new Error(`Jev program typecheck failed: ${checked.errors.map(e => e.message).join("; ").slice(0, 2000)}`);
-      const approval = new ApprovalController(config.approvals, context.extensionContext, this.#approvals);
+      const approval = new ApprovalController(config.approvals, context.extensionContext, this.#approvals, new FabricAutoApprovalClassifier(() => config.jev));
       if (observe) await approval.approve({
         ref: "jev.spawn", provider: "jev", name: "spawn",
         description: "Observe future Main lifecycle events and explicitly selected content for a bounded Jev program",

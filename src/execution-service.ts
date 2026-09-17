@@ -137,7 +137,7 @@ export class FabricExecutionService {
     readonly config: FabricConfig,
     readonly activity?: FabricActivityStore,
     readonly authorizer?: FabricExecutionAuthorizer,
-    readonly autoApprovalClassifier = new FabricAutoApprovalClassifier(),
+    readonly autoApprovalClassifier = new FabricAutoApprovalClassifier(() => config.jev),
     readonly sessionApprovals = new FabricSessionApprovals(),
     readonly capturedTools?: CapturedToolCatalog,
     readonly brokeredNetwork?: (provider: string) => boolean,

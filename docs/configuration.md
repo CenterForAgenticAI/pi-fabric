@@ -365,7 +365,7 @@ Fabric risk classes are `read`, `write`, `execute`, `network`, and `agent`. Appr
 
 ### Auto approval mode
 
-An `auto` policy sends each validated call and its prepared arguments to a separate Pi model before invocation. Configure **Auto model** under `/fabric settings` → **Approvals**, or set the optional canonical `provider/model` key in `fabric.json`:
+An `auto` policy sends each validated call and its prepared arguments to a separate Pi model or Jev classifier before invocation. Configure **Auto model** under `/fabric settings` → **Approvals**, or set the optional canonical `provider/model` key in `fabric.json`:
 
 ```json
 {
@@ -384,6 +384,32 @@ Choose **Inherit** in the model picker to omit `approvals.model` and use the act
 The classifier receives the exact action, bounded prepared arguments, cwd, user-message text, and assistant tool calls. Fabric excludes assistant prose and tool outputs, so model-authored reasoning and retrieved hostile content cannot directly instruct the classifier. The classifier has no executable tools and must return a structured `allow` or `escalate` verdict. An `allow` verdict applies only to that call. `escalate`, malformed output, missing authentication, timeout, cancellation, or any classifier error falls back to the explicit **Allow once** / **Allow for this session** / **Deny** prompt. Headless runs fail closed when that prompt cannot be shown. Fabric attaches classifier token usage and cost to the resulting `fabric_exec` or native tool result, and execution traces record each nested verdict as `fabric.approval.auto`.
 
 `deny` stays deterministic and runs before the classifier. Schema enforcement, project trust, budgets, and other host gates remain authoritative. Auto mode is a model-based policy advisor and provides no stronger sandbox boundary. Its initial conservative policy escalates destructive or irreversible actions, shared/external/production changes, credential or sensitive-data exposure, safety bypasses, actions beyond explicit user intent, and actions whose safety is uncertain. Fabric adapts the policy architecture described in Claude Code's [permission modes](https://code.claude.com/docs/en/permission-modes), [auto-mode configuration](https://code.claude.com/docs/en/auto-mode-config), and Anthropic's [auto-mode engineering write-up](https://www.anthropic.com/engineering/claude-code-auto-mode), adapted to Pi's model registry and Fabric's existing per-risk policy gate.
+
+### Jev as the auto-mode classifier
+
+Select **Jev (TypeSafe safety classifier)** in **Approvals → Auto model** after `/login jev`, or configure:
+
+```json
+{
+  "approvals": {
+    "model": "jev/jev-latest",
+    "write": "auto",
+    "execute": "auto",
+    "network": "auto",
+    "agent": "auto"
+  }
+}
+```
+
+Jev is an auth-only provider, not a chat model. This picker adds the configured `jev.model` only to the approvals list; `jev/<model-id>` also supports a pinned model ID. **Inherit** still means the active Pi chat model, never Jev. Selecting Jev for approvals is independent of `jev.enabled`, which controls Fabric's Jev tool provider.
+
+The host asks one typed Noul question about whether the exact action is routine, reversible, task-aligned, and safe to run without human approval. It auto-allows only when the returned probability is **at least 0.99**. All other probabilities escalate, including benign actions when Jev is not sufficiently certain. Reasons report the numeric judgment and threshold, not generated explanations. This is a conservative policy cutoff, **not a calibrated 99% security guarantee**. Use `ask` or `deny` when a probabilistic advisor is inappropriate.
+
+Jev receives the exact bounded arguments plus the **latest user message and subsequent assistant tool calls**. Earlier turns, assistant prose, thinking, images, and tool outputs are excluded. Vague follow-ups cannot borrow authority from omitted history. Missing user text, non-serializable arguments, or truncation of this evidence require explicit approval without inference (16,000 argument characters, 6,000 per user message/tool-call batch, 24,000 total evidence characters). Starting a new explicit user turn resets this evidence window.
+
+Selecting this remote classifier authorizes sending that evidence to TypeSafe; it can contain private paths, code, or values from tool arguments. Do not select it for data that must stay local. Classification is a host-side request, not a recursive `jev.evaluate` tool call, so it does not recursively invoke the network approval policy. Normal tool permissions still apply after classification. Missing auth, malformed answers, HTTP errors, cancellation and timeouts never fall back to another model or auto-allow. They use the existing explicit approval flow (or deny in headless mode).
+
+Authentication uses `/login jev`, `TYPESAFE_API_KEY`, then trusted `jev.credentialCommand`; the command is resolved per classification and not cached across decisions. `jev.maxRequestBytes` and `jev.requestTimeoutMs` apply, with a 30-second classifier timeout ceiling and no automatic retries. Typed token usage is included in approval accounting. TypeSafe does not return prices: cost fields are zero/unpriced, **not evidence that inference is free**.
 
 ## Temporal retention
 

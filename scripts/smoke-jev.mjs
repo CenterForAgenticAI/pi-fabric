@@ -14,7 +14,7 @@ const config = {
 };
 const context = {
   cwd: process.cwd(), signal: undefined, parentToolCallId: "jev-dist-smoke", nestedToolCallId: "jev-dist-smoke",
-  extensionContext: { hasUI: false, sessionManager: { getSessionId: () => "compiled-observer" } }, update() {},
+  extensionContext: { cwd: process.cwd(), hasUI: false, sessionManager: { getSessionId: () => "compiled-observer" } }, update() {},
 };
 let connected = false;
 const browser = new BrowserHarnessProvider({
@@ -75,7 +75,38 @@ try {
   assert.equal(auth.id, "jev");
   assert.equal(auth.getModels().length, 0);
   assert.equal(typeof auth.auth.apiKey.login, "function");
-  console.log("Compiled Jev smoke passed: auth-only provider, typed foreground CDP program, background stop/wait, agent/Jev join aliases, and event-driven Main advice; no external calls.");
+  const originalFetch = globalThis.fetch;
+  let probability = 1;
+  let classifications = 0;
+  try {
+    globalThis.fetch = async (url, options) => {
+      assert.equal(url, "https://api.typesafe.ai/v1/systemone");
+      const body = JSON.parse(options.body);
+      assert.equal(body.model, "jev-latest");
+      assert.equal(body.questions.safe_to_auto_approve.type, "noul");
+      assert.equal(body.state.action.ref, "jev.spawn");
+      classifications++;
+      return Response.json({ model: "jev-latest", answers: { safe_to_auto_approve: { type: "noul", noul: probability } }, usage: { input_tokens: 20, output_tokens: 3 } });
+    };
+    config.approvals.read = "auto";
+    config.approvals.model = "jev/jev-latest";
+    context.extensionContext.modelRegistry = { getApiKeyForProvider: async () => "compiled-fixture-key" };
+    context.extensionContext.sessionManager.getBranch = () => [{ type: "message", message: { role: "user", content: "Observe completed Main turns for local test verification" } }];
+    const request = { input: null, observe: { events: ["turn_end"] }, program: {
+      name: "compiled-auto-approval", inputSchema: {}, outputSchema: {}, requires: [], code: "return null;",
+    } };
+    context.extensionContext.hasUI = true;
+    context.extensionContext.mode = "rpc";
+    context.extensionContext.ui = { notify() {}, async select(title) { throw new Error(`Unexpected approval prompt: ${title}`); } };
+    const approved = await provider.invoke("spawn", request, context);
+    assert.equal((await provider.invoke("wait", { id: approved.id }, context)).state, "completed");
+    probability = 0.5;
+    context.extensionContext.hasUI = false;
+    await assert.rejects(provider.invoke("spawn", request, context), /no interactive UI/);
+    assert.equal(classifications, 2);
+    assert.equal(observationHost.size, 0);
+  } finally { globalThis.fetch = originalFetch; }
+  console.log("Compiled Jev smoke passed: auth-only provider, typed foreground CDP program, background stop/wait, agent/Jev join aliases, event-driven Main advice, and Jev auto-mode approval; no external calls.");
 } finally {
   observationHost.close();
   await provider.close();

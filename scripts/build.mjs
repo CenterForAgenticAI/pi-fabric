@@ -34,6 +34,7 @@ const lazyEntryPoints = [
   "src/fabric-runtime-state.ts",
   "src/providers/jev-provider.ts",
   "src/jev/browser.ts",
+  "src/jev/client.ts",
   "src/jev/observation.ts",
   "src/runtime/core-override-guest-types.ts",
   "src/runtime/dynamic-guest-types.ts",

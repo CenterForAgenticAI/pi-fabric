@@ -52,7 +52,7 @@ export class FabricDirectToolApproval {
     readonly pi: Pick<ExtensionAPI, "getAllTools">,
     readonly getConfig: () => FabricConfig,
     readonly sessionApprovals: FabricSessionApprovals,
-    readonly classifier = new FabricAutoApprovalClassifier(),
+    readonly classifier = new FabricAutoApprovalClassifier(() => getConfig().jev),
     readonly onAutoDecision?: (
       audit: FabricAutoApprovalAudit,
       decision?: FabricAutoApprovalDecision,

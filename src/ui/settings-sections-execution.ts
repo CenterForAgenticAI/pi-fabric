@@ -244,13 +244,19 @@ export const buildApprovalsSection = (
       [
         setting("approvals.model", "Auto model", config.approvals.model || INHERIT_VALUE, {
           description:
-            "Pi model used as the auto-mode safety classifier. Inherit uses the active session model. The classifier has no executable tools and returns a structured allow-or-escalate verdict.",
+            "Pi or Jev model used as the auto-mode safety classifier. Inherit uses the active session model. Jev requires /login jev or TYPESAFE_API_KEY and a safety probability >= 0.99; uncertainty requires explicit approval. No executable classifier tools.",
           submenu: modelPickerSubmenu(
             theme,
-            options.modelSource,
+            {
+              ...options.modelSource,
+              models: [
+                ...options.modelSource.models.filter(model => model.provider !== "jev"),
+                { provider: "jev", id: config.jev.model, name: "Jev (TypeSafe safety classifier)" },
+              ],
+            },
             {
               headerText:
-                "Safety classifier for auto approval policies. Pick Inherit to use the active Pi session model.",
+                "Safety classifier for auto approval policies. Inherit uses the active Pi model. Jev uses typed judgments, not chat; authenticate with /login jev.",
               inheritName: "Use the active Pi session model",
             },
           ),
