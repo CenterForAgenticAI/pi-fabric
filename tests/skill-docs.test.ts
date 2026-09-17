@@ -11,7 +11,7 @@ const stableProviderActions = {
   state: ["transition", "get", "history", "complexity", "verify", "goal", "checkGoal"],
   schema: ["status", "hypothesize", "verify", "commit", "abort"],
   compact: ["request", "status", "cancel"],
-  jev: ["evaluate", "run", "spawn", "status", "wait", "join", "stop"],
+  jev: ["evaluate", "run", "spawn", "status", "wait", "join", "advise", "stop"],
 } as const;
 
 describe("fabric-exec skill provider contracts", () => {

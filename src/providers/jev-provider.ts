@@ -4,6 +4,7 @@ import type { FabricActionDescriptor, FabricInvocationContext, FabricProvider, F
 import { JevClient, JevCredentials, type JevCredentialSource } from "../jev/client.js";
 import { JevProgramManager, type JevManagerOptions } from "../jev/manager.js";
 import type { JevLaunch, JevRequest } from "../jev/types.js";
+import { jevObserveSchema } from "../jev/observation.js";
 
 const description = Type.Union([Type.String(), Type.Array(Type.Unknown()), Type.Record(Type.String(), Type.Unknown())]);
 const question = Type.Union([
@@ -31,19 +32,26 @@ export const jevLaunchSchema = Type.Object({
     }, { additionalProperties: false })),
   }, { additionalProperties: false }),
   input: Type.Unknown(),
+  observe: Type.Optional(jevObserveSchema),
 }, { additionalProperties: false });
 const idSchema = Type.Object({ id: Type.String({ minLength: 1, maxLength: 128 }) }, { additionalProperties: false });
 const statusSchema = Type.Object({
   id: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
   after: Type.Optional(Type.Integer({ minimum: 0 })),
 }, { additionalProperties: false });
+export const jevAdviceSchema = Type.Object({
+  id: Type.String({ minLength: 1, maxLength: 128 }),
+  eventId: Type.String({ minLength: 1, maxLength: 256 }),
+  message: Type.String({ minLength: 1, maxLength: 2000 }),
+}, { additionalProperties: false });
 export const JEV_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
   { name: "evaluate", description: "Ask Jev typed Choice, Noul (probability of yes), and Score questions over shared state. No generated text. Batch independent questions. Sends state to TypeSafe and consumes API credits; no automatic retries.", inputSchema: jevRequestSchema as unknown as Record<string, unknown>, risk: "network", effect: { kind: "emission", resources: ["typesafe:inference"], ordering: "unknown" } },
   { name: "run", description: "Run an isolated TypeScript System One program in the foreground. Returns a terminal run envelope with schema-validated result or error. Globals: input, jev.evaluate, program.sleep(ms), program.emit(value), and Fabric tools restricted to exact requires. Loops are supported; no host imports or secrets.", inputSchema: jevLaunchSchema as unknown as Record<string, unknown>, risk: "execute" },
-  { name: "spawn", description: "Launch the same Jev program in the background and return its run ID. Session-owned, not restart-durable. Poll status for bounded events or join for completion; stop cancels future actions, not past effects.", inputSchema: jevLaunchSchema as unknown as Record<string, unknown>, risk: "execute" },
+  { name: "spawn", description: "Launch a session-owned background Jev program. Optional observe requires read approval and subscribes to Main lifecycle events; program.nextEvent waits without polling and shares only explicitly selected bounded context. program.advise needs observe.delivery and requires jev.advise. Use status, wait/join, and stop; not restart-durable.", inputSchema: jevLaunchSchema as unknown as Record<string, unknown>, risk: "execute" },
   { name: "status", description: "Without id: credential configuration status (never retrieves secrets) and run summaries. With id: state, usage, bounded events after sequence, logs, result/error. Retains at most 64 events; nextSequence allows detecting gaps.", inputSchema: statusSchema as unknown as Record<string, unknown>, risk: "read" },
   { name: "wait", description: "Wait for a background Jev program's terminal run envelope. Cancelling the wait does not cancel the program.", inputSchema: idSchema as unknown as Record<string, unknown>, risk: "read" },
   { name: "join", description: "Alias for jev.wait: wait for a background Jev program's terminal run envelope without cancelling the program when the wait is cancelled.", inputSchema: idSchema as unknown as Record<string, unknown>, risk: "read" },
+  { name: "advise", description: "Deliver bounded advice from an observing Jev run to Main. Requires its current consumed eventId, explicit observe.delivery, freshness, message budget, and the per-input feedback gate. The program helper program.advise supplies its own id. Subject to agent approvals; returns delivered and an optional suppression reason.", inputSchema: jevAdviceSchema as unknown as Record<string, unknown>, risk: "agent", effect: { kind: "emission", resources: ["main:messages"], ordering: "ordered" } },
   { name: "stop", description: "Cancel a Jev program and await sandbox cleanup. Idempotent for retained terminal runs; already-issued external effects cannot be undone.", inputSchema: idSchema as unknown as Record<string, unknown>, risk: "execute" },
 ];
 
@@ -75,6 +83,7 @@ export class JevProvider implements FabricProvider {
       };
       case "join":
       case "wait": return this.manager.wait(args.id as string, context.signal);
+      case "advise": return this.manager.advise(args.id as string, args.eventId as string, args.message as string);
       case "stop": return this.manager.stop(args.id as string);
     }
   }

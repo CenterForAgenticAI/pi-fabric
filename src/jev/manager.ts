@@ -7,21 +7,26 @@ import type { FabricConfig } from "../config.js";
 import type { FabricInvocationContext } from "../protocol.js";
 import type { JevLaunch, JevRunInfo, JevJson, JevResponse } from "./types.js";
 import { checkSchema, checkValue, jsonText, object } from "./validation.js";
+import { checkObserve, type JevObservationHost, type JevSubscription } from "./observation.js";
 
 interface Run {
   info: JevRunInfo;
   controller: AbortController;
   done: Promise<JevRunInfo>;
+  observation: JevSubscription | undefined;
 }
 export interface JevManagerOptions {
   registry: ActionRegistry;
   config: FabricConfig;
+  observationHost?: JevObservationHost | undefined;
   authorize?(ref: string, parentToolCallId: string): Promise<void>;
 }
 const prelude = `const input = JSON.parse(π.__jevInput);
 const program = Object.freeze({
   sleep: (ms: number): Promise<unknown> => tools.call({ ref: "jev.$sleep", args: { ms } }),
   emit: (value: unknown): Promise<unknown> => tools.call({ ref: "jev.$emit", args: { value } }),
+  nextEvent: (): Promise<FabricJevHostEvent> => tools.call({ ref: "jev.$nextEvent" }) as Promise<FabricJevHostEvent>,
+  advise: (args: {eventId: string; message: string}): Promise<FabricJevAdviceResult> => tools.call({ ref: "jev.advise", args: {...args, id: π.__jevRunId} }) as Promise<FabricJevAdviceResult>,
 });\n`;
 
 export class JevProgramManager {
@@ -34,6 +39,7 @@ export class JevProgramManager {
     return [...this.#runs.values()].map(({ info }) => ({
       id: info.id, name: info.name, state: info.state, background: info.background,
       startedAt: info.startedAt, evaluations: info.evaluations, toolCalls: info.toolCalls,
+      ...(info.observation ? { observation: structuredClone(info.observation) } : {}),
     }));
   }
   #get(id: string): Run {
@@ -57,6 +63,13 @@ export class JevProgramManager {
     if (run.info.state === "running") run.controller.abort(new Error("Jev run stopped"));
     return structuredClone(await run.done);
   }
+  advise(id: string, eventId: string, message: string) {
+    if (typeof message !== "string" || !message.trim() || message.length > 2000 || typeof eventId !== "string" || eventId.length > 256)
+      throw new Error("Advice requires a current eventId and 1–2000 message characters");
+    const run = this.#get(id);
+    if (!run.observation) throw new Error("Jev run has no observation subscription");
+    return run.observation.advise(eventId, message);
+  }
   async launch(request: JevLaunch, context: FabricInvocationContext, background: boolean): Promise<JevRunInfo> {
     const { config, registry } = this.options;
     if (this.#closed) throw new Error("Jev program manager is closed");
@@ -67,13 +80,22 @@ export class JevProgramManager {
     let lease: FabricCapabilityViewLease | undefined;
     let starting = true;
     try {
-      const { program: definition, input } = structuredClone(request);
+      const { program: definition, input, observe } = structuredClone(request);
+      const observationHost = this.options.observationHost;
+      const observationRevision = observationHost?.revision;
+      if (observe !== undefined) {
+        checkObserve(observe);
+        if (!background) throw new Error("Observation requires jev.spawn; foreground runs cannot wait for their own turn to end");
+        if (!observationHost) throw new Error("Main lifecycle observation is unavailable in this host");
+        if (context.extensionContext.sessionManager?.getSessionId() !== observationHost.sessionId)
+          throw new Error("Jev observation is scoped to its owning Main session");
+      }
       checkSchema(definition.inputSchema);
       checkSchema(definition.outputSchema);
       checkValue(definition.inputSchema, input, "Program input");
       const requires = [...new Set(definition.requires)];
       for (const ref of requires) {
-        if (!/^[a-z][a-z0-9_-]*\.[a-zA-Z0-9_.$-]+$/.test(ref) || (ref.startsWith("jev.") && ref !== "jev.evaluate"))
+        if (!/^[a-z][a-z0-9_-]*\.[a-zA-Z0-9_.$-]+$/.test(ref) || (ref.startsWith("jev.") && ref !== "jev.evaluate" && ref !== "jev.advise"))
           throw new Error("Programs require exact action refs; recursive Jev lifecycle calls are not allowed");
         if (context.capabilityView && !Object.hasOwn(context.capabilityView.bindings, ref))
           throw new Error(`Jev program cannot widen its caller's capabilities: ${ref}`);
@@ -93,8 +115,16 @@ export class JevProgramManager {
       const sources = await registry.guestTypeSources({ ...context, capabilityView: lease.view });
       const { code, checked } = runtime.prepare(prelude + definition.code, true, [], sources, [], true);
       if (checked.errors.length) throw new Error(`Jev program typecheck failed: ${checked.errors.map(e => e.message).join("; ").slice(0, 2000)}`);
+      const approval = new ApprovalController(config.approvals, context.extensionContext, this.#approvals);
+      if (observe) await approval.approve({
+        ref: "jev.spawn", provider: "jev", name: "spawn",
+        description: "Observe future Main lifecycle events and explicitly selected content for a bounded Jev program",
+        inputSchema: {}, risk: "read",
+      }, { observe });
       if (this.#closed) throw new Error("Jev program manager is closed");
       context.signal?.throwIfAborted();
+      if (observe && observationHost!.revision !== observationRevision)
+        throw new Error("Main lifecycle changed while preparing the observer; relaunch explicitly with current context");
       const limits = definition.limits ?? {};
       const bounded = (value: number | undefined, fallback: number, ceiling: number) => Math.min(value ?? fallback, ceiling);
       const timeoutMs = bounded(limits.timeoutMs, 60_000, config.jev.maxDurationMs);
@@ -114,7 +144,8 @@ export class JevProgramManager {
         queueMicrotask(() => controller.abort(new Error(message)));
         throw new Error(message);
       };
-      const approval = new ApprovalController(config.approvals, context.extensionContext, this.#approvals);
+      const observation = observe ? observationHost!.subscribe(observe, { id, name: definition.name }, controller) : undefined;
+      if (observation) info.observation = observation.stats;
       const runLease = lease;
       lease = undefined;
       const abort = () => controller.abort(new Error("Foreground caller cancelled"));
@@ -128,7 +159,7 @@ export class JevProgramManager {
         info.events.push({ sequence: info.nextSequence++, at: Date.now(), value: value as JevJson });
         if (info.events.length > 64) info.events.shift();
       };
-      const run: Run = { info, controller, done: undefined! };
+      const run: Run = { info, controller, observation, done: undefined! };
       this.#runs.set(id, run);
       this.#starting--;
       starting = false;
@@ -151,6 +182,11 @@ export class JevProgramManager {
               return null;
             }
             if (ref === "jev.$emit") { emit(args.value); return null; }
+            if (ref === "jev.$nextEvent") {
+              if (!observation) throw new Error("program.nextEvent requires observe on jev.spawn");
+              return observation.next();
+            }
+            if (ref === "jev.advise" && args.id !== id) throw new Error("A Jev program can only advise through its own run");
             if (!Object.hasOwn(runLease.view!.bindings, ref)) throw new Error(`Capability not granted to Jev program: ${ref}`);
             if (ref === "jev.evaluate") {
               if (evaluating) throw new Error("One Jev evaluation may be in flight per program; batch independent questions in one request");
@@ -189,7 +225,7 @@ export class JevProgramManager {
             }
           }, {
             timeoutMs, memoryLimitBytes: Math.min(config.executor.memoryLimitBytes, 64 * 1024 * 1024),
-            maxCpuSliceMs: 100, maxPendingTimers: 128, maxLogChars: 4096, strings: { __jevInput: JSON.stringify(input) }, signal: controller.signal,
+            maxCpuSliceMs: 100, maxPendingTimers: 128, maxLogChars: 4096, strings: { __jevInput: JSON.stringify(input), __jevRunId: id }, signal: controller.signal,
           });
           info.logs = result.logs;
           if (budgetFailure) { info.state = "failed"; info.error = budgetFailure; }
@@ -206,6 +242,7 @@ export class JevProgramManager {
           info.error = (budgetFailure ?? (error instanceof Error ? error.message : "Jev program failed")).slice(0, 2000);
         } finally {
           clearTimeout(timer);
+          observation?.close();
           context.signal?.removeEventListener("abort", abort);
           await runLease.release();
           info.endedAt = Date.now();

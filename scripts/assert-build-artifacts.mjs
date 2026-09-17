@@ -32,6 +32,7 @@ const lazy = [
   "fabric-runtime-state.js",
   "providers/jev-provider.js",
   "jev/browser.js",
+  "jev/observation.js",
   "runtime/core-override-guest-types.js",
   "runtime/dynamic-guest-types.js",
   "runtime/guest-types.js",

@@ -313,8 +313,8 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
   // user resumes by sending a new message (the "input" host event). Escape is
   // observed but not consumed, so Pi's native cancel-streaming still fires;
   // single ESC therefore stops the current turn and the advisor/supervisor
-  // actors at once. Disabled when mesh/actors are off or ui.haltOnEscape is
-  // false.
+  // actors and event-driven Jev observers at once. Jev observers are cancelled,
+  // not automatically restarted. Also works without mesh. ui.haltOnEscape opts out.
   let haltOnEscapeUnsubscribe: (() => void) | undefined;
   let shellHangKeysUnsubscribe: (() => void) | undefined;
   const uninstallHaltOnEscape = (): void => {
@@ -327,12 +327,12 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
   };
   const installHaltOnEscape = (context: ExtensionContext): void => {
     uninstallHaltOnEscape();
-    if (!state.config.ui.haltOnEscape || !state.config.mesh.enabled) return;
+    if (!state.config.ui.haltOnEscape || (!state.config.mesh.enabled && !state.config.jev.enabled)) return;
     haltOnEscapeUnsubscribe = installFabricEscapeHalt(context, {
-      enabled: () => state.initialized && state.config.mesh.enabled && state.config.ui.haltOnEscape,
+      enabled: () => state.initialized && (state.config.mesh.enabled || state.config.jev.enabled) && state.config.ui.haltOnEscape,
       ownsInput: () => fabricUi.ownsInput,
-      halted: () => state.actors.halted,
-      halt: () => state.actors.haltAll().halted,
+      halted: () => state.advisorsHalted,
+      halt: () => state.haltAdvisors(),
     });
   };
   const installShellHangKeys = (context: ExtensionContext): void => {

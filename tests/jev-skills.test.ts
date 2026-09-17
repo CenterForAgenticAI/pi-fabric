@@ -26,7 +26,7 @@ const execute = async (kernel: Kernel, host: (ref: string, args: Record<string, 
 
 it.each(["typescript", "python"] as const)("keeps %s Jev auth, policy, loop, and browser guidance discoverable", (kernel) => {
   const skill = markdown(kernel);
-  for (const required of ["disable-model-invocation: true", "<skill-dir>/../../../docs/jev.md", "/login jev", "auth.json", "verified: false", "requires", "Schema enforce", "managed hosts", "session-owned, not restart-durable", "allowedMethods", "sessionId", "10 Hz", "64 events", "429/529", "## Completion criterion"]) {
+  for (const required of ["disable-model-invocation: true", "<skill-dir>/../../../docs/jev.md", "/login jev", "auth.json", "verified: false", "requires", "Schema enforce", "managed hosts", "session-owned, not restart-durable", "allowedMethods", "sessionId", "10 Hz", "64 events", "429/529", "## Completion criterion", "program.nextEvent()", "program.advise", "status.observation", "Do not wait/join an active observer"]) {
     expect(skill, `${kernel}: ${required}`).toContain(required);
   }
   for (const name of ["fabric-guide", "fabric-exec"]) {

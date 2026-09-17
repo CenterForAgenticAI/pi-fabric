@@ -17,6 +17,7 @@ import { GlobalActorRegistry } from "./actors/global-registry.js";
 import { buildActorContext } from "./actors/context.js";
 import { actorDeliveryNotice } from "./actors/delivery-policy.js";
 import { prepareFabricActorHostPayload } from "./actors/host-event-payload.js";
+import type { JevObservationHost } from "./jev/observation.js";
 import type { FabricActorHostEvent } from "./actors/types.js";
 import { CapturedToolCatalog, type CapturedToolEntry } from "./capture/catalog.js";
 import { FabricComponentCatalog } from "./components/catalog.js";
@@ -152,6 +153,7 @@ export class FabricRuntimeState {
   #speculation: RuntimeStateSpeculation | undefined;
   #agents: AgentManager | undefined;
   #actors: ActorDirectory | undefined;
+  #jevObservationHost: JevObservationHost | undefined;
   #globalActors: GlobalActorRegistry | undefined;
   #mesh: MeshStore | undefined;
   #identity: MeshIdentity | undefined;
@@ -781,16 +783,26 @@ export class FabricRuntimeState {
     }));
     if (this.#config.jev.enabled && !enforceSchema) {
       const { JevProvider } = await import("./providers/jev-provider.js");
+      const { JevObservationHost } = await import("./jev/observation.js");
       await builtins.install(createProviderComponent({
         provider: "jev",
         description: "TypeSafe System One judgments and reactive programs",
         create: (component) => {
           component.guide({
             label: "jev-programs", models: ["*/*"], targets: ["main", "participant"],
-            content: "Jev supplies typed Choice, Noul, and Score judgments, not generated text. Use jev.evaluate for batched questions; jev.run/spawn for isolated TypeScript programs that may loop using input, program.sleep, program.emit, and exact requires capabilities. run/wait return terminal envelopes (join aliases wait for both agents and Jev); inspect state and result/error. Background programs are session-owned; jev.status and jev.stop inspect/cancel them. Use /login jev, TYPESAFE_API_KEY, or a trusted credentialCommand. Credentials stay host-side; status never retrieves a key. See docs/jev.md for schemas, budgets, and browser integration.",
+            content: "Jev supplies typed Choice, Noul, and Score judgments, not generated text. Use jev.evaluate for batched questions; jev.run/spawn for isolated TypeScript programs that may loop using input, program.sleep, program.emit, and exact requires capabilities. run/wait return terminal envelopes (join aliases wait for both agents and Jev); inspect state and result/error. Background programs are session-owned; jev.status and jev.stop inspect/cancel them. For Main-turn advisors, spawn with observe, await program.nextEvent without polling, and opt into bounded context fields. program.advise requires jev.advise and explicit delivery; default is record-only. Return the observer ID without waiting in Main; Escape/Main abort cancels observers. Use /login jev, TYPESAFE_API_KEY, or a trusted credentialCommand. Credentials stay host-side; status never retrieves a key. See docs/jev.md for schemas, budgets, and browser integration.",
           });
+          const observationHost = identity.kind === "main" ? new JevObservationHost(context.sessionManager.getSessionId(), advice => {
+            this.pi.sendMessage({
+              customType: "pi-fabric-jev",
+              content: [`<fabric-jev name=${JSON.stringify(escapeXmlText(advice.name))} id=${JSON.stringify(advice.runId)}>\n${escapeXmlText(advice.message)}\n</fabric-jev>`, actorDeliveryNotice(advice.delivery, advice.triggerTurn)].filter(Boolean).join("\n"),
+              display: true,
+              details: { runId: advice.runId, eventId: advice.eventId, delivery: { mode: advice.delivery, triggerTurn: advice.triggerTurn } },
+            }, { deliverAs: advice.delivery, triggerTurn: advice.triggerTurn });
+          }) : undefined;
+          this.#jevObservationHost = observationHost;
           const provider = new JevProvider({
-            registry: this.#registry!, config: this.#config!,
+            registry: this.#registry!, config: this.#config!, observationHost,
             credentialSource: {
               configured: () => context.modelRegistry.getProviderAuthStatus?.("jev")?.configured ?? false,
               resolve: async (signal) => {
@@ -802,10 +814,12 @@ export class FabricRuntimeState {
           });
           // A program may pin jev.evaluate itself. Cancel at owner retirement,
           // not only at provider.close(), which waits for those pins to drain.
-          const stop = () => provider.manager.stopAll();
+          const stop = () => { observationHost?.close(); provider.manager.stopAll(); };
           component.signal.addEventListener("abort", stop, { once: true });
           component.defer(async () => {
             component.signal.removeEventListener("abort", stop);
+            observationHost?.close();
+            if (this.#jevObservationHost === observationHost) this.#jevObservationHost = undefined;
             await provider.manager.close();
           }, { label: "jev-program-owner", kind: "transactional", resources: ["jev:programs"], ordering: "ordered" });
           return provider;
@@ -1035,6 +1049,15 @@ export class FabricRuntimeState {
     return result;
   }
 
+  get advisorsHalted(): boolean {
+    return (!this.#config?.mesh.enabled || Boolean(this.#actors?.halted)) && (!this.#jevObservationHost || this.#jevObservationHost.halted);
+  }
+
+  haltAdvisors(): number {
+    const actors = this.#config?.mesh.enabled ? this.#actors?.haltAll().halted ?? 0 : 0;
+    return actors + (this.#jevObservationHost?.halt() ?? 0);
+  }
+
   noteMainActivity(context: ExtensionContext): void {
     this.#actors?.noteMainActivity(context.isIdle());
     this.#participants?.scheduleRefresh();
@@ -1045,13 +1068,16 @@ export class FabricRuntimeState {
     payload: unknown,
     context: ExtensionContext,
   ): number {
+    const observed = this.#jevObservationHost?.observe(event, payload, {
+      sessionId: context.sessionManager.getSessionId(), signal: context.signal,
+    }) ?? 0;
     if (
       !this.#actors ||
       !this.#config?.mesh.enabled ||
       this.#config.schema.mode === "enforce"
-    ) return 0;
+    ) return observed;
     const idle = context.isIdle();
-    if (!this.#actors.observeHostEvent(event, idle)) return 0;
+    if (!this.#actors.observeHostEvent(event, idle)) return observed;
     const branch = context.sessionManager.getBranch();
     const { digest, transcript } = buildActorContext(
       branch as unknown[],
@@ -1069,7 +1095,7 @@ export class FabricRuntimeState {
     const safeContext = isPlainObject(preparedContext)
       ? preparedContext
       : { digest: {}, transcript: [String(preparedContext)] };
-    return this.#actors.dispatchObservedHostEvent(
+    return observed + this.#actors.dispatchObservedHostEvent(
       event,
       {
         event,

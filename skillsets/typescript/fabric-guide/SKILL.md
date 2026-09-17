@@ -22,7 +22,7 @@ Recommend the smallest sufficient path; do not invoke it. Core coding needs no a
 | One command that infers advisor versus supervisor | `/skill:fabric-ambient` |
 | Durable actor team with mailboxes and CAS tasks | `/skill:fabric-swarm` |
 
-Prefer the smallest sufficient mechanism. Distinguish workflow/council/fusion by execution shape, RLM by context size, Jev by code-owned loops with typed judgments instead of per-tick reasoning turns, ambient roles by persistent reasoning, and swarm by durable multi-actor coordination. Jev runs are session-owned, not restart-durable.
+Prefer the smallest sufficient mechanism. Distinguish workflow/council/fusion by execution shape, RLM by context size, Jev by code-owned loops and event-driven Main-turn advisors with typed judgments instead of per-tick reasoning turns, ambient roles by persistent reasoning, and swarm by durable multi-actor coordination. Jev runs are session-owned, not restart-durable.
 
 ## Completion criterion
 

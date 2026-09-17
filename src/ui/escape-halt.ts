@@ -35,7 +35,7 @@ export function installFabricEscapeHalt(
       }
       if (count > 0) {
         context.ui.notify(
-          `Fabric: halted ${count} actor${count === 1 ? "" : "s"} (Esc) · resumes on next message`,
+          `Fabric: halted ${count} background worker${count === 1 ? "" : "s"} (Esc)`,
           "warning",
         );
       }

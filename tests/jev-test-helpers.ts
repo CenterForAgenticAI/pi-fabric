@@ -4,19 +4,20 @@ import { ActionRegistry } from "../src/core/action-registry.js";
 import { JevClient, JevCredentials } from "../src/jev/client.js";
 import { JevProvider } from "../src/providers/jev-provider.js";
 import type { FabricInvocationContext } from "../src/protocol.js";
+import type { JevObservationHost } from "../src/jev/observation.js";
 import type { JevLaunch, JevRunInfo } from "../src/jev/types.js";
 export const jevContext = (signal?: AbortSignal): FabricInvocationContext => ({
   cwd: process.cwd(), signal, parentToolCallId: "jev-test", nestedToolCallId: "jev-nested",
-  extensionContext: { hasUI: false } as ExtensionContext, update() {},
+  extensionContext: { hasUI: false, sessionManager: { getSessionId: () => "jev-test-session" } } as ExtensionContext, update() {},
 });
-export function setupJev(overrides: Record<string, unknown> = {}, fetcher?: typeof fetch, credentials?: JevCredentials) {
+export function setupJev(overrides: Record<string, unknown> = {}, fetcher?: typeof fetch, credentials?: JevCredentials, observationHost?: JevObservationHost) {
   const config = normalizeFabricConfig({
     approvals: { network: "allow", execute: "allow", read: "allow", write: "allow" },
     ...overrides,
   });
   const registry = new ActionRegistry();
   const client = new JevClient(config.jev, fetcher, credentials ?? new JevCredentials([], { TYPESAFE_API_KEY: "test-only-never-a-real-key" }));
-  const provider = new JevProvider({ registry, config }, client);
+  const provider = new JevProvider({ registry, config, observationHost }, client);
   registry.register(provider);
   return { registry, provider, config, client };
 }

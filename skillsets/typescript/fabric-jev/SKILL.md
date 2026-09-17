@@ -1,6 +1,6 @@
 ---
 name: fabric-jev
-description: Compose TypeSafe Jev Choice, Noul, and Score judgments into bounded TypeScript programs. Use for semantic routing, ranking, verification, or persistent foreground/background observe-judge-act loops without a reasoning-model turn per tick.
+description: Compose TypeSafe Jev Choice, Noul, and Score judgments into bounded TypeScript programs. Use for per-turn advisors, semantic routing, ranking, verification, or persistent foreground/background observe-judge-act loops without a reasoning-model turn per tick.
 disable-model-invocation: true
 ---
 
@@ -93,6 +93,54 @@ return { id: run.id, state: run.state, result: run.result ?? null, error: run.er
 - Launch validation failures reject; runtime/output failures return `failed`, `cancelled`, or `timed_out` envelopes. `completed` means code finished, not that the application goal was achieved. Inspect `result` and the goal's verifier.
 - Defaults: 60 seconds, 100 evaluations, 1,000 host calls, 100,000 reported tokens. Requested limits clamp to host ceilings. Tokens are counted after inference: the last request can overshoot and still costs money; this is not a hard spend cap. Sleep/emit also consume host calls. CPU slices, memory, pending timers, input/output, logs, and retained history are bounded; old run IDs expire. Progress retains 64 events: track `sequence`/`nextSequence` and detect gaps.
 - No fixed 10 Hz guarantee: measure end-to-end observation, inference, and action latency, not just model latency.
+
+## Event-driven Main-turn advisor
+
+Use `jev.spawn` with `observe` for requested per-turn classification; await `program.nextEvent()` instead of polling. `include` is explicit consent to select those text fields, not permission to send unrelated history or secrets. No thinking, images, tool arguments, or transcripts are included. Record-only is the default; the example below deliberately enables steering and grants `jev.advise`. Calibrate its illustrative threshold and inspect suppression results.
+
+Return the observer ID immediately. **Do not wait/join an active observer inside Main's turn**, which would prevent the events it needs. `status.observation` reports queue/drop/delivery counts. Events and inference stay bounded by the declared lifetime and budgets; this is not a lossless stream. Advice checks completed-turn freshness and permits one delivery attempt across observers per external input, preventing automatic feedback loops. Main abort, Escape, tree navigation, and reload/shutdown cancel the observer; never recreate it automatically. For a passive observer, omit delivery, the advice capability, and the advice call. It works without mesh but is not a durable mesh participant.
+
+```ts
+const observer = await jev.spawn({
+  input: null,
+  observe: {
+    events: ["turn_end"], include: ["assistantText", "toolResults"],
+    maxChars: 4096, queueSize: 8,
+    delivery: "steer", triggerTurn: false, maxAdvice: 2,
+  },
+  program: {
+    name: "verification-advisor",
+    inputSchema: {type:"null"}, outputSchema: {type:"null"},
+    requires: ["jev.evaluate", "jev.advise"],
+    limits: {timeoutMs:600000, maxEvaluations:40, maxToolCalls:200, maxTokens:20000},
+    code: `
+  for (let i = 0; i < 40; i++) {
+    const event = await program.nextEvent();
+    if (event.truncated) {
+      await program.emit({eventId:event.id, review:"truncated context"});
+      continue;
+    }
+    const result = await jev.evaluate({
+      state: {turn:event.payload},
+      questions: {
+        contradiction: {
+          type: "noul",
+          instructions: "Does assistantText claim completion while toolResults explicitly show an unresolved relevant failed check? Missing context alone is not evidence of failure.",
+        },
+      },
+    });
+    const probability = result.answers.contradiction.noul;
+    const advice = probability >= 0.9
+      ? await program.advise({eventId:event.id, message:"Check the reported failing verification before claiming completion."})
+      : null;
+    await program.emit({eventId:event.id, probability, advice});
+  }
+  return null;
+`,
+  },
+});
+return {id:observer.id, state:observer.state};
+```
 
 ## Browser composition
 

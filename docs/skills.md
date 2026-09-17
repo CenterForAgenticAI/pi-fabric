@@ -42,7 +42,7 @@ A mandatory pointer serves legibility and single-source maintenance. Per-run tok
 - `/skill:fabric-fusion`: run multi-model deliberation (compare) or acting (read-only references + one actor).
 - `/skill:fabric-rlm`: decompose context recursively.
 - `/skill:fabric-schema`: gate mutation behind evidence.
-- `/skill:fabric-jev`: compose typed System One judgments and bounded foreground/background loops; see [Jev](jev.md).
+- `/skill:fabric-jev`: compose typed System One judgments, bounded foreground/background loops, and event-driven Main-turn advisors; see [Jev](jev.md).
 - `/skill:fabric-advisor`: get persistent peer advice.
 - `/skill:fabric-supervisor`: supervise a persistent goal.
 - `/skill:fabric-spec`: supervise spec compliance persistently.

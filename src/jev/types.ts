@@ -26,7 +26,52 @@ export interface JevProgram {
   requires: string[];
   limits?: { timeoutMs?: number; maxEvaluations?: number; maxToolCalls?: number; maxTokens?: number };
 }
-export interface JevLaunch { program: JevProgram; input: JevJson }
+export type JevHostEventName = "input" | "turn_end" | "tool_error" | "agent_end" | "agent_settled";
+export interface JevObserve {
+  events: JevHostEventName[];
+  /** No content is shared unless explicitly selected. Never includes thinking, images, tool arguments, or history. */
+  include?: Array<"inputText" | "assistantText" | "toolResults">;
+  maxChars?: number;
+  queueSize?: number;
+  maxEventAgeMs?: number;
+  /** Omit to record judgments without sending messages to Main. */
+  delivery?: "steer" | "followUp";
+  triggerTurn?: boolean;
+  maxAdvice?: number;
+}
+export interface JevHostEvent {
+  id: string;
+  sequence: number;
+  event: JevHostEventName;
+  source: "main";
+  sessionId: string;
+  revision: number;
+  at: number;
+  payload: JevJson;
+  truncated: boolean;
+}
+export interface JevObservationStats {
+  events: JevHostEventName[];
+  received: number;
+  consumed: number;
+  dropped: number;
+  queued: number;
+  adviceDelivered: number;
+  adviceSuppressed: number;
+}
+export interface JevAdviceResult {
+  delivered: boolean;
+  reason?: "disabled" | "stale" | "duplicate" | "budget" | "feedback" | "delivery_failed";
+}
+export interface JevAdvice {
+  runId: string;
+  name: string;
+  eventId: string;
+  message: string;
+  delivery: "steer" | "followUp";
+  triggerTurn: boolean;
+}
+export interface JevLaunch { program: JevProgram; input: JevJson; observe?: JevObserve }
 export type JevRunState = "running" | "completed" | "failed" | "cancelled" | "timed_out";
 export interface JevEvent { sequence: number; at: number; value: JevJson }
 export interface JevRunInfo {
@@ -44,4 +89,5 @@ export interface JevRunInfo {
   events: JevEvent[];
   nextSequence: number;
   logs: string[];
+  observation?: JevObservationStats;
 }

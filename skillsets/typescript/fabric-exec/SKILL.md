@@ -89,10 +89,11 @@ All calls return promises. Fields ending in `?` are optional; `unknown` marks pr
 | `compact.cancel()` | `{cancelled:true}` |
 | `jev.evaluate(args)` | `{model,answers,usage:{input_tokens,output_tokens}}`; typed Choice/Noul/Score answers, not generated text |
 | `jev.run({program,input})` | terminal `FabricJevRun`: `{id,state,result?,error?,evaluations,toolCalls,usage,events,nextSequence,logs,...}` |
-| `jev.spawn({program,input})` | `FabricJevRun` initially `running`; session-owned, not restart-durable |
+| `jev.spawn({program,input,observe?})` | `FabricJevRun` initially `running`; session-owned, not restart-durable |
 | `jev.status(args?)` | without id: `{credentials:{configured,source,verified},model,runs}`; `{id,after?}`: run envelope with bounded events after sequence |
 | `jev.wait({id})` | terminal run envelope; cancelling the wait does not stop the run |
 | `jev.join({id})` | alias for `jev.wait`, with the same arguments, result, and cancellation behavior |
+| `jev.advise({id,eventId,message})` | `{delivered,reason?}`; current observed event only; explicit delivery, agent approvals, freshness and feedback gates apply |
 | `jev.stop({id})` | terminal run envelope after cancellation/cleanup; no rollback of already-issued effects |
 
 `memory.recall` multi-term literal queries default to ranked `queryMatch: "any"` so wording differences do not hide evidence; use `"all"` to require every canonical term in one indexed entry, and `queryMode: "phrase"` when adjacency matters. Results are hard-bounded either way. Structural filters (`ref`, `provider`, `action`, `outcome`) use exact persisted trace fields. Use `tools.catalog()`/`tools.search()` only to choose a current action head—catalog descriptions are navigation metadata and never become session evidence.

@@ -66,7 +66,7 @@ Fabric accepts up to 128 questions and 255 Choice options per question, subject 
 
 `wait` is canonical for both providers. `jev.join({id})` aliases `jev.wait({id})`, just as `agents.join({id})` aliases `agents.wait({id})`. Each alias preserves its provider's result, cancellation, and notification behavior.
 
-Both entry points accept the same `{ program, input }` value. The program is an ordinary serializable artifact that you can save and reuse.
+Both entry points accept `{ program, input }`; only `spawn` additionally accepts `observe`. The program is an ordinary serializable artifact that you can save and reuse.
 
 ```ts
 const specification = {
@@ -108,6 +108,8 @@ Use named Fabric payloads when large code strings are awkward to quote. In a Jev
 - `jev.evaluate(...)` makes typed judgments; it must be included in `requires`.
 - `program.sleep(ms)` yields and is cancellable. Use it to pace polling or backoff.
 - `program.emit(value)` records a bounded progress event.
+- With `observe` on spawn, `program.nextEvent()` waits for Main lifecycle events without polling.
+- `program.advise({eventId,message})` supplies the run ID to the policy-checked `jev.advise` action; declare that exact capability and opt into delivery.
 - `tools.call({ ref, args })` and ordinary Fabric provider proxies call only exact `requires` refs. Discovery is not a way to acquire additional authority.
 - The same QuickJS context persists for the whole run: local variables and data structures survive every iteration. No host imports, `process`, or direct `fetch` are available.
 
@@ -126,6 +128,75 @@ const terminal = await jev.wait({ id: task.id });
 Foreground cancellation cancels the run. Cancelling a `wait` only cancels that wait. A spawned run is independent of the spawning tool's cancellation once launch succeeds, but belongs to this session's Jev provider. Reload/unload/shutdown cancels it. It is **not durable across Pi restarts**, and stop is not rollback of already-issued effects.
 
 Status retains the latest 64 events (4 KiB each); use `sequence` and `nextSequence` to detect gaps. Logs are capped at 4 KiB; program input and final JSON output are each capped at 32 KiB. Terminal runs are retained in a bounded in-memory history; old IDs eventually expire. There is no unlimited hidden transcript or per-tick reasoning agent.
+
+## Main-turn advisors and supervisors
+
+`jev.spawn({program,input,observe})` can subscribe to the owning Main session. This is an **event-driven sidecar**, not another reasoning agent or a polling loop. It works with mesh disabled. It is not a mesh participant, a cross-session subscription, or restart-durable storage; do not pass its run ID to `agents.subscribe`.
+
+The program retains local state, awaits `program.nextEvent()`, asks typed questions, then records a judgment with `program.emit`. To intervene, explicitly configure `observe.delivery` and declare `jev.advise` in `requires`. `program.advise({eventId,message})` supplies the current run ID; the public equivalent is `jev.advise({id,eventId,message})`. Observer launch also requires read approval for future Main event access. Advice is an `agent`-risk emission and passes normal approvals, authorization, and pinned capability checks. Jev selects judgments; program code writes the message and policy.
+
+The example deliberately opts into selected text and steering. The 0.9 threshold is illustrative and needs evaluation on representative tasks. For a record-only advisor, omit `delivery`, remove `jev.advise` from `requires`, and omit the `program.advise` call. Neither enabling Jev nor omitting `include` grants transcript access.
+
+```ts
+const observer = await jev.spawn({
+  input: null,
+  observe: {
+    events: ["turn_end"], include: ["assistantText", "toolResults"],
+    maxChars: 4096, queueSize: 8,
+    delivery: "steer", triggerTurn: false, maxAdvice: 2,
+  },
+  program: {
+    name: "verification-advisor",
+    inputSchema: {type:"null"}, outputSchema: {type:"null"},
+    requires: ["jev.evaluate", "jev.advise"],
+    limits: {timeoutMs:600000, maxEvaluations:40, maxToolCalls:200, maxTokens:20000},
+    code: `
+  for (let i = 0; i < 40; i++) {
+    const event = await program.nextEvent();
+    if (event.truncated) {
+      await program.emit({eventId:event.id, review:"truncated context"});
+      continue;
+    }
+    const result = await jev.evaluate({
+      state: {turn:event.payload},
+      questions: {
+        contradiction: {
+          type: "noul",
+          instructions: "Does assistantText claim completion while toolResults explicitly show an unresolved relevant failed check? Missing context alone is not evidence of failure.",
+        },
+      },
+    });
+    const probability = result.answers.contradiction.noul;
+    const advice = probability >= 0.9
+      ? await program.advise({eventId:event.id, message:"Check the reported failing verification before claiming completion."})
+      : null;
+    await program.emit({eventId:event.id, probability, advice});
+  }
+  return null;
+`,
+  },
+});
+return {id:observer.id, state:observer.state};
+```
+
+**Return the ID immediately. Do not wait/join an active observer inside Main's turn:** Main must finish turns to supply events. Foreground `jev.run` with `observe` is rejected. Inspect `jev.status({id})` occasionally or use `jev.stop({id})` to terminate it. Existing duration, inference, token, CPU, and host-call budgets still apply, including while waiting for an event. No automatic inference is performed by the event bridge.
+
+### Observation and data-sharing contract
+
+- `events`: a nonempty subset of `input`, `turn_end`, `tool_error`, `agent_end`, `agent_settled`. These are local host-event names, not mesh `pi.*` names. No replay of events before launch.
+- `include`: defaults to `[]` (operational metadata only). `inputText` selects raw input-event text; `assistantText` selects the completed turn's visible text; `toolResults` selects bounded tool-result text and error metadata from `turn_end`/`tool_error`. Each applies only where that event carries it. Settlement events do not implicitly carry a transcript. Keep goals/history in bounded explicit input or the program's own prior observations.
+- Never automatically includes thinking, system prompts, request headers, images, tool arguments, tool-result `details`, or session history. Common credential patterns are redacted as defense in depth, **not a guarantee that opted-in free text contains no secrets**. Obtain consent before sending selected text to TypeSafe and treat it as untrusted evidence.
+- `maxChars`: 256–8,192, default 4,096, bounds the projected payload; `truncated` flags incomplete evidence. A truncated payload may be a string instead of an object. Extraction also caps content blocks and tool-result count. Do not infer success or safety from missing/truncated evidence.
+- `queueSize`: 1–32, default 8; oldest queued events are dropped on overflow. `maxEventAgeMs`: 100–300,000, default 30,000; expired queued events are discarded. This is bounded best-effort observation, not a lossless audit stream. `nextEvent` allows only one pending consumer; consume/classify sequentially.
+- Each event has `{id,sequence,event,source:"main",sessionId,revision,at,payload,truncated}`. `status.observation` reports subscribed events, received/consumed/dropped/queued counts, and delivered/suppressed advice; progress `status.events` remains the separate 64-entry `program.emit` ring.
+
+### Delivery, freshness, and interruption
+
+Delivery defaults to off. Opt into `"steer"` or `"followUp"`; `triggerTurn` defaults to false. `maxAdvice` bounds delivery attempts for the run (feedback/stale suppression does not consume a delivery attempt) (1–16, default 4). Advice must be sent before requesting the next event; it needs the last consumed event ID and must still match the latest completed-turn/task/context revision and age limit. A next turn may be in flight; a newer completed turn, real input, compaction, or cancellation invalidates old advice. The check is at enqueue time, not a guarantee that context cannot change before Main consumes a queued message.
+
+There is at most **one delivery attempt across all Jev observers per external user input**. Automatic continuations and extension-injected input do not reset this feedback latch. Duplicate, stale, disabled, over-budget, feedback-gated, or failed deliveries return `{delivered:false,reason}`; failures are not replayed. This prevents an advisor from repeatedly waking/steering Main based on its own intervention. Additional turns may still be classified and recorded within budget. Broader separately granted tools retain their own authority; these safeguards specifically govern `jev.advise`.
+
+Main abort (including RPC/SDK abort), Escape when `ui.haltOnEscape` is enabled, tree navigation, and provider reload/unload/shutdown cancel observing runs and discard their inboxes. Cancellation does not resurrect them on the next input; create a replacement only when requested. Ordinary non-observing spawned programs keep their existing detachment semantics. Cancelling only a wait is still not a stop, but a separate Main abort also cancels its observers. These are asynchronous post-turn advisors, **not pre-execution safety gates** and not rollback of effects already issued.
 
 ## Schemas and limits
 
@@ -205,7 +276,7 @@ PI_FABRIC_JEV_LIVE=1 bunx vitest run tests/jev-live.test.ts
 PI_FABRIC_JEV_LIVE=1 PI_FABRIC_JEV_LOCALTERM=1 bunx vitest run tests/jev-live.test.ts
 ```
 
-After `bun run build`, `bun run test:jev:dist` checks the compiled public entry point, auth-only registration, foreground CDP composition with a simulated session, and background stop/wait plus agent/Jev join aliases.
+After `bun run build`, `bun run test:jev:dist` checks the compiled public entry point, auth-only registration, foreground CDP composition with a simulated session, and background stop/wait, agent/Jev join aliases, and event-driven Main advice.
 
 No real browser state or secrets are printed by these probes. Live tests exercise all three primitives, foreground/background inference loops, and a feedback controller using changing synthetic screen observations and source control IDs. Unit tests exercise the Browser Harness adapter with an injected session; they do not attach to a personal browser.
 

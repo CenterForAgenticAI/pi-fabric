@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { ActionRegistry } from "../dist/core/action-registry.js";
 import { AgentService, createAgentServiceClient, createAgentServiceHandler, createAgentsProvider } from "../dist/agents.js";
-import { BrowserHarnessProvider, DEFAULT_JEV_CONFIG, JevProvider, createJevAuthProvider } from "../dist/jev.js";
+import { BrowserHarnessProvider, DEFAULT_JEV_CONFIG, JevProvider, JevObservationHost, createJevAuthProvider } from "../dist/jev.js";
 
 const registry = new ActionRegistry();
 // Minimal runtime fixture: no environment-key resolution or external network.
@@ -10,11 +10,11 @@ const config = {
   fullCodeMode: true,
   jev: { ...DEFAULT_JEV_CONFIG, credentialCommand: [] },
   executor: { memoryLimitBytes: 64 * 1024 * 1024, maxNestedResultChars: 32768 },
-  approvals: { read: "allow", execute: "allow", network: "deny", write: "deny", agent: "deny" },
+  approvals: { read: "allow", execute: "allow", network: "deny", write: "deny", agent: "allow" },
 };
 const context = {
   cwd: process.cwd(), signal: undefined, parentToolCallId: "jev-dist-smoke", nestedToolCallId: "jev-dist-smoke",
-  extensionContext: { hasUI: false }, update() {},
+  extensionContext: { hasUI: false, sessionManager: { getSessionId: () => "compiled-observer" } }, update() {},
 };
 let connected = false;
 const browser = new BrowserHarnessProvider({
@@ -26,7 +26,9 @@ const browser = new BrowserHarnessProvider({
   async _call() { return { targetInfos: [{ targetId: "fixture" }] }; },
   close() { connected = false; },
 }));
-const provider = new JevProvider({ registry, config });
+const advice = [];
+const observationHost = new JevObservationHost("compiled-observer", message => advice.push(message));
+const provider = new JevProvider({ registry, config, observationHost });
 const agentService = new AgentService({rootId: "compiled-smoke", port: {execute: async () => ({status: "completed", text: "fixture"})}});
 registry.register(provider);
 registry.register(browser);
@@ -56,12 +58,26 @@ try {
   assert.deepEqual(await agents.join(child.id), waited);
   assert.deepEqual(await agentService.join("compiled-smoke", child.id), waited);
   assert.deepEqual(await createAgentsProvider(agents).invoke("join", {id: child.id}, context), waited);
+  const observing = await provider.invoke("spawn", {
+    input: null, observe: {events: ["turn_end"], delivery: "steer"},
+    program: {name: "compiled-turn-advisor", inputSchema: {}, outputSchema: {}, requires: ["jev.advise"],
+      code: "const event = await program.nextEvent(); return await program.advise({eventId:event.id,message:'Check the fixture'});"},
+  }, context);
+  observationHost.observe("turn_end", {turnIndex: 1}, {sessionId: "compiled-observer"});
+  const observed = await provider.invoke("wait", {id: observing.id}, context);
+  assert.equal(observed.state, "completed", observed.error);
+  assert.deepEqual(observed.result, {delivered: true});
+  assert.equal(advice.length, 1);
+  assert.equal(advice[0].runId, observing.id);
+  assert.equal(advice[0].triggerTurn, false);
+  assert.equal(observationHost.size, 0);
   const auth = createJevAuthProvider();
   assert.equal(auth.id, "jev");
   assert.equal(auth.getModels().length, 0);
   assert.equal(typeof auth.auth.apiKey.login, "function");
-  console.log("Compiled Jev smoke passed: auth-only provider, typed foreground CDP program, background stop/wait, and agent/Jev join aliases; no external calls.");
+  console.log("Compiled Jev smoke passed: auth-only provider, typed foreground CDP program, background stop/wait, agent/Jev join aliases, and event-driven Main advice; no external calls.");
 } finally {
+  observationHost.close();
   await provider.close();
   await browser.close();
   await agentService.close();

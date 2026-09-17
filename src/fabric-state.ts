@@ -258,6 +258,8 @@ export class FabricState {
   runHandoffAtBoundary(pending: PendingFabricHandoff, result: AgentToolResultMessage, context: ExtensionContext): Promise<Record<string, unknown>> {
     return this.#required().runHandoffAtBoundary(pending, result, context);
   }
+  get advisorsHalted(): boolean { return this.#current()?.advisorsHalted ?? false; }
+  haltAdvisors(): number { return this.#current()?.haltAdvisors() ?? 0; }
   noteMainActivity(context: ExtensionContext): void { this.#current()?.noteMainActivity(context); }
   dispatchHostEvent(event: FabricActorHostEvent, payload: unknown, context: ExtensionContext): number {
     return this.#current()?.dispatchHostEvent(event, payload, context) ?? 0;

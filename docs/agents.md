@@ -346,6 +346,8 @@ Pi events use these names: `pi.input`, `pi.agent_start`, `pi.agent_end`, `pi.tur
 
 A detached local `agents.spawn()` has a smaller convenience route. When `agents.notifyOnComplete` is enabled, terminal completion automatically sends Main a triggered follow-up. A call to `agents.wait()` makes the run foreground work and disables that detached notification.
 
+For a code-owned typed classifier instead of a reasoning actor, use [Jev Main-turn observers](jev.md#main-turn-advisors-and-supervisors). They consume bounded selected event context with `program.nextEvent()`, work without mesh, and can explicitly opt into freshness-checked advice. They are session-owned Jev runs, not participant subscription targets.
+
 ## Persistent actors
 
 `agents.create()` makes a named actor. The actor has a fixed runner, persistent runner session, serial mailbox, and optional subscriptions to parent-session events or durable mesh topics:

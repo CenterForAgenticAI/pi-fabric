@@ -33,7 +33,7 @@ describe("Fabric Escape ownership", () => {
     expect(h.options.halt).not.toHaveBeenCalled();
     vi.advanceTimersByTime(60);
     expect(h.options.halt).toHaveBeenCalledOnce();
-    expect(h.notify).toHaveBeenCalledWith(expect.stringContaining("halted 2 actors"), "warning");
+    expect(h.notify).toHaveBeenCalledWith(expect.stringContaining("halted 2 background workers"), "warning");
     h.dispose();
   });
 
