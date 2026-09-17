@@ -20,6 +20,7 @@ export const FABRIC_COMPONENT_PROVIDER_NAMES = [
   "compact",
   "agents",
   "memory",
+  "jev",
 ] as const;
 
 export interface FabricProviderComponentSpec<TProvider extends FabricProvider> {

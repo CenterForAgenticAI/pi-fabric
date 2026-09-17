@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import { DEFAULT_JEV_CONFIG, normalizeJevConfig, type FabricJevConfig } from "./jev/config.js";
+export type { FabricJevConfig } from "./jev/config.js";
 import os from "node:os";
 import path from "node:path";
 import { renameAtomic } from "./core/atomic-write.js";
@@ -306,6 +308,7 @@ export interface FabricConfig {
   retention: FabricRetentionConfig;
   mesh: FabricMeshConfig;
   memory: FabricMemoryConfig;
+  jev: FabricJevConfig;
   entropy: FabricEntropyConfig;
   repairs: FabricRepairsConfig;
   schema: FabricSchemaConfig;
@@ -399,6 +402,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     sessionExport: true,
     sessionExportDir: "",
   },
+  jev: { ...DEFAULT_JEV_CONFIG, credentialCommand: [] },
   components: [],
   capture: {
     enabled: true,
@@ -969,6 +973,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
           ? agents.sessionExportDir
           : DEFAULT_FABRIC_CONFIG.agents.sessionExportDir,
     },
+    jev: normalizeJevConfig(input.jev),
     components: configuredComponents.map((entry) => structuredClone(entry)),
     capture: {
       enabled: booleanValue(capture.enabled, DEFAULT_FABRIC_CONFIG.capture.enabled),

@@ -61,6 +61,32 @@ describe("hosted Fabric agent service", () => {
     expect(events.at(-1)!.record.checkpoint).toEqual({secret: "opaque"});
   });
 
+  it.each(["wait", "join"] as const)("keeps hosted %s cancellation, admission, and result semantics identical", async (method) => {
+    const host = hanging();
+    const instance = service(host.port);
+    const dispatch = createAgentServiceHandler(instance, "root");
+    const client = createAgentServiceClient(dispatch);
+    const provider = createAgentsProvider(client);
+    const handle = await client.spawn({task: "single child"});
+    await vi.waitFor(() => expect(host.requests.has(handle.id)).toBe(true));
+    const controller = new AbortController();
+    const waiting = provider.invoke(method, {id: handle.id}, {...context, signal: controller.signal});
+    const cancelled = expect(waiting).rejects.toThrow();
+    controller.abort();
+    await cancelled;
+    expect(await client.status(handle.id)).toMatchObject({status: "running"});
+    const foreign = createAgentServiceHandler(instance, "foreign");
+    await expect(foreign(method, {id: handle.id})).rejects.toThrow("Unknown agent caller");
+    await expect(dispatch(method, {})).rejects.toThrow("Invalid hosted");
+    host.results.get(handle.id)!.resolve({status: "completed", text: "done", checkpoint: {private: true}});
+    const expected = await client.wait(handle.id);
+    expect(await provider.invoke(method, {id: handle.id}, context)).toEqual(expected);
+    expect(await client.join(handle.id)).toEqual(expected);
+    expect(await instance.join("root", handle.id)).toEqual(expected);
+    expect(expected).not.toHaveProperty("checkpoint");
+    expect(host.port.execute).toHaveBeenCalledOnce();
+  });
+
   it("consumes admitted failed starts, not denied asynchronous preparation", async () => {
     const cleanup = vi.fn(async () => {});
     const prepare = vi.fn().mockRejectedValueOnce(new Error("placement denied")).mockResolvedValue(undefined);
@@ -245,7 +271,7 @@ describe("hosted Fabric agent service", () => {
     for (const action of ["resume", "steer", "compact", "create", "models", "handoff", "members"]) {
       await expect(Promise.resolve().then(() => provider.invoke(action, {id: "x"}, context))).rejects.toThrow("Unsupported");
     }
-    expect((await provider.list({}, context)).map((descriptor) => descriptor.name).sort()).toEqual(["list", "run", "spawn", "status", "stop", "wait"]);
+    expect((await provider.list({}, context)).map((descriptor) => descriptor.name).sort()).toEqual(["join", "list", "run", "spawn", "status", "stop", "wait"]);
     expect(prepare).not.toHaveBeenCalled();
     const pending = instance.spawn("root", {task: "pending"});
     const rejected = expect(pending).rejects.toThrow("aborted");
@@ -413,7 +439,7 @@ describe("hosted Fabric agent service", () => {
     const client = createAgentServiceClient(createAgentServiceHandler(instance, "root"), instance.capabilities);
     const provider = createAgentsProvider(client);
     expect((await provider.list({}, context)).map((descriptor) => descriptor.name).sort()).toEqual([
-      "create", "followUp", "list", "members", "peers", "remove", "run", "self", "sessions", "spawn", "status", "steer", "stop", "wait",
+      "create", "followUp", "join", "list", "members", "peers", "remove", "run", "self", "sessions", "spawn", "status", "steer", "stop", "wait",
     ]);
     expect(await instance.followUp("root", "peer", "please take this")).toMatchObject({id: "peer", name: "peer-bot"});
     expect(deliver).toHaveBeenCalledWith(expect.objectContaining({callerId: "root", id: "peer", operation: "followUp", message: "please take this"}));

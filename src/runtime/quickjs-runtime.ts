@@ -435,6 +435,7 @@ globalThis.state = __providerProxy("state");
 globalThis.schema = __providerProxy("schema");
 globalThis.components = __providerProxy("components");
 globalThis.compact = __providerProxy("compact");
+globalThis.jev = __providerProxy("jev");
 const __createActor = async (args = {}) => {
   if (!args || typeof args !== "object" || Array.isArray(args)) {
     throw new TypeError("agents.create expects an options object");
@@ -479,6 +480,7 @@ globalThis.agents = Object.freeze({
   handoff: __handoff,
   spawn: (args) => __call("agents.spawn", args),
   wait: (args) => __call("agents.wait", args),
+  join: (args) => __call("agents.join", args),
   status: (args) => __call("agents.status", args),
   list: (args = {}) => __call("agents.list", args),
   members: (args = {}) => __call("agents.members", args),
@@ -845,10 +847,20 @@ export class QuickJsRuntime {
     let effectiveTimeoutMs = options.timeoutMs;
     let executionDeadlineAt = executionStartedAt + effectiveTimeoutMs;
     let interruptedByDeadline = false;
+    let interruptedByCpu = false;
+    let cpuDeadlineAt = Infinity;
+    const pumpJobs = () => {
+      cpuDeadlineAt = Date.now() + (options.maxCpuSliceMs ?? Infinity);
+      return runtime.executePendingJobs();
+    };
     runtime.setMemoryLimit(options.memoryLimitBytes);
     runtime.setMaxStackSize(QUICKJS_MAX_STACK_SIZE_BYTES);
     runtime.setInterruptHandler(() => {
       if (options.signal?.aborted === true) return true;
+      if (interruptedByCpu || Date.now() > cpuDeadlineAt) {
+        interruptedByCpu = true;
+        return true;
+      }
       if (Date.now() <= executionDeadlineAt) return false;
       interruptedByDeadline = true;
       return true;
@@ -881,11 +893,13 @@ export class QuickJsRuntime {
       const errorHandle = context.newError(message);
       executionGate.reject(errorHandle);
       errorHandle.dispose();
-      runtime.executePendingJobs();
+      pumpJobs();
     };
 
     const timeoutMessage = (): string =>
-      `Execution timed out after ${effectiveTimeoutMs}ms`;
+      interruptedByCpu
+        ? `Guest exceeded ${options.maxCpuSliceMs}ms uninterrupted CPU; await host work or program.sleep() in loops`
+        : `Execution timed out after ${effectiveTimeoutMs}ms`;
     const expireDeadline = (): void => {
       if (closing || cancelled || timedOut) return;
       timedOut = true;
@@ -934,11 +948,17 @@ export class QuickJsRuntime {
           pendingHostPromises.add(promise);
           void promise.settled.then(() => pendingHostPromises.delete(promise));
           if (reference === "fabric.$timer") {
+            if (pendingTimers.size >= (options.maxPendingTimers ?? Infinity)) {
+              const errorHandle = context.newError("Guest pending timer limit exceeded");
+              promise.reject(errorHandle);
+              errorHandle.dispose();
+              return promise.handle;
+            }
             const ms = Math.max(0, Number(args.ms ?? 0));
             const timer = setTimeout(() => {
               if (closing || promise.alive === false) return;
               promise.resolve(context.undefined);
-              runtime.executePendingJobs();
+              pumpJobs();
             }, ms);
             timer.unref?.();
             pendingTimers.add(timer);
@@ -950,6 +970,7 @@ export class QuickJsRuntime {
           )
             .then((value) => {
               if (closing || promise.alive === false) return;
+              cpuDeadlineAt = Date.now() + (options.maxCpuSliceMs ?? Infinity);
               const handle = jsonHandle(context, jsonObject, jsonParse, value);
               promise.resolve(handle);
               handle.dispose();
@@ -971,7 +992,7 @@ export class QuickJsRuntime {
               errorHandle.dispose();
             })
             .finally(() => {
-              if (!closing) runtime.executePendingJobs();
+              if (!closing) pumpJobs();
             });
           hostTasks.add(task);
           void task.finally(() => hostTasks.delete(task));
@@ -1004,9 +1025,10 @@ export class QuickJsRuntime {
       context.setProp(context.global, "__fabricTokenBudget", tokenBudget);
       tokenBudget.dispose();
 
+      cpuDeadlineAt = Date.now() + (options.maxCpuSliceMs ?? Infinity);
       const setupResult = context.evalCode(guestSetupSource(options.piToolCanonicalFields), "pi-fabric-setup.js");
       if (setupResult.error) {
-        const deadlineExceeded = interruptedByDeadline || Date.now() > executionDeadlineAt;
+        const deadlineExceeded = interruptedByDeadline || interruptedByCpu || Date.now() > executionDeadlineAt;
         if (deadlineExceeded) timedOut = true;
         const error = options.signal?.aborted
           ? "Execution cancelled"
@@ -1036,10 +1058,11 @@ export class QuickJsRuntime {
       const guestStackMap = createGuestStackMap(guestBundle.sourceMap);
       const guestLineCount = guestBundle.code.split("\n").length;
       const wrappedCode = `${guestBundle.code}\nPromise.race([__piFabricMain(), globalThis.__fabricExecutionGate])`;
+      cpuDeadlineAt = Date.now() + (options.maxCpuSliceMs ?? Infinity);
       const evaluation = context.evalCode(wrappedCode, "pi-fabric-guest.js");
-      runtime.executePendingJobs();
+      pumpJobs();
       if (evaluation.error) {
-        const deadlineExceeded = interruptedByDeadline || Date.now() > executionDeadlineAt;
+        const deadlineExceeded = interruptedByDeadline || interruptedByCpu || Date.now() > executionDeadlineAt;
         if (deadlineExceeded) timedOut = true;
         const error = options.signal?.aborted
           ? "Execution cancelled"
@@ -1077,13 +1100,13 @@ export class QuickJsRuntime {
         scheduleDeadline();
       });
       pendingResolution = context.resolvePromise(activePromiseHandle);
-      runtime.executePendingJobs();
+      pumpJobs();
       const resolution = await Promise.race([pendingResolution, deadline, cancellation]);
       pendingResolution = undefined;
       activePromiseHandle.dispose();
       activePromiseHandle = undefined;
       if (resolution.error) {
-        const deadlineExceeded = timedOut || interruptedByDeadline || Date.now() > executionDeadlineAt;
+        const deadlineExceeded = timedOut || interruptedByDeadline || interruptedByCpu || Date.now() > executionDeadlineAt;
         if (deadlineExceeded) timedOut = true;
         const error = options.signal?.aborted
           ? "Execution cancelled"
@@ -1107,7 +1130,7 @@ export class QuickJsRuntime {
       resolution.value.dispose();
       return { value, logs, terminationReason: "completed" };
     } catch (error) {
-      const deadlineExceeded = timedOut || interruptedByDeadline || Date.now() > executionDeadlineAt;
+      const deadlineExceeded = timedOut || interruptedByDeadline || interruptedByCpu || Date.now() > executionDeadlineAt;
       if (deadlineExceeded) timedOut = true;
       abortHostCalls(error instanceof Error ? error.message : String(error));
       return {
@@ -1132,7 +1155,7 @@ export class QuickJsRuntime {
           abortHostCalls("Fabric guest execution ended before its host calls settled");
           await settleWithin(hostTasks, HOST_TASK_SETTLE_GRACE_MS);
         }
-        runtime.executePendingJobs();
+        pumpJobs();
       }
       closing = true;
       if (timedOut || cancelled || pendingHostPromises.size > 0) {
@@ -1146,7 +1169,7 @@ export class QuickJsRuntime {
         const errorHandle = context.newError(cleanupMessage);
         for (const promise of pendingHostPromises) promise.reject(errorHandle);
         errorHandle.dispose();
-        runtime.executePendingJobs();
+        pumpJobs();
         await new Promise((resolve) => setImmediate(resolve));
         const settled = await Promise.race<any>([
           pendingResolution ? pendingResolution.catch(() => undefined) : Promise.resolve(undefined),
@@ -1163,7 +1186,7 @@ export class QuickJsRuntime {
       }
       if (activePromiseHandle?.alive !== false) activePromiseHandle?.dispose();
       if (executionGate?.alive !== false) executionGate?.dispose();
-      runtime.executePendingJobs();
+      pumpJobs();
       jsonParse.dispose();
       jsonObject.dispose();
       disposeQuickJsContext(context);

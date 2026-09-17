@@ -1285,8 +1285,9 @@ describe("AgentsProvider runner support", () => {
     expect(previews.length).toBeLessThanOrEqual(4);
   }, 10_000);
 
-  it("attaches previews and reports friendly names while waiting for spawned agents", async () => {
-    const { provider } = setup();
+  it.each(["wait", "join"])("attaches previews and reports friendly names through %s for spawned agents", async (method) => {
+    const { provider, agents } = setup();
+    const wait = vi.spyOn(agents, "wait");
     const updates: string[] = [];
     const previews: Array<Record<string, unknown>> = [];
     const previewContext: FabricInvocationContext = {
@@ -1304,7 +1305,8 @@ describe("AgentsProvider runner support", () => {
       previewContext,
     ) as { id: string; name: string };
 
-    await provider.invoke("wait", { id: handle.id }, previewContext);
+    await provider.invoke(method, { id: handle.id }, previewContext);
+    expect(wait).toHaveBeenCalledExactlyOnceWith(handle.id);
 
     expect(updates.some((message) => message.startsWith("Agent wait-preview-agent:"))).toBe(true);
     expect(updates.join("\n")).not.toContain(handle.id.slice(0, 8));

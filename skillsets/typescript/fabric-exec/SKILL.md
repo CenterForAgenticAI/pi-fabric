@@ -87,6 +87,13 @@ All calls return promises. Fields ending in `?` are optional; `unknown` marks pr
 | `compact.request(args?)` | `{requested:true,intent:{reason?,instructions?,preserve?,requestedBy,requestedAt}}` |
 | `compact.status()` | `{pending?:CompactIntent,last?:{at,requestedBy,status,summary?,tokensBefore?,estimatedTokensAfter?,error?}}` |
 | `compact.cancel()` | `{cancelled:true}` |
+| `jev.evaluate(args)` | `{model,answers,usage:{input_tokens,output_tokens}}`; typed Choice/Noul/Score answers, not generated text |
+| `jev.run({program,input})` | terminal `FabricJevRun`: `{id,state,result?,error?,evaluations,toolCalls,usage,events,nextSequence,logs,...}` |
+| `jev.spawn({program,input})` | `FabricJevRun` initially `running`; session-owned, not restart-durable |
+| `jev.status(args?)` | without id: `{credentials:{configured,source,verified},model,runs}`; `{id,after?}`: run envelope with bounded events after sequence |
+| `jev.wait({id})` | terminal run envelope; cancelling the wait does not stop the run |
+| `jev.join({id})` | alias for `jev.wait`, with the same arguments, result, and cancellation behavior |
+| `jev.stop({id})` | terminal run envelope after cancellation/cleanup; no rollback of already-issued effects |
 
 `memory.recall` multi-term literal queries default to ranked `queryMatch: "any"` so wording differences do not hide evidence; use `"all"` to require every canonical term in one indexed entry, and `queryMode: "phrase"` when adjacency matters. Results are hard-bounded either way. Structural filters (`ref`, `provider`, `action`, `outcome`) use exact persisted trace fields. Use `tools.catalog()`/`tools.search()` only to choose a current action head—catalog descriptions are navigation metadata and never become session evidence.
 
@@ -112,7 +119,15 @@ Refs are namespaced (`pi.grep`, `extensions.<tool>`, `mcp.<server>.<tool>`, `sch
 ## Error recovery: read, describe, retry
 Read the line-numbered error → `await tools.describe({ref})` for the schema → match `inputSchema`, rerun (don't guess). Common mistakes: bare ref (`grep`→`pi.grep`); a non-object second arg on `read`/`bash`/`powershell`/`ls` (`(primary, optionsObject)` already merges on the string-primary tools; positional tuples exist only for `grep`/`find`/`write`/`edit`).
 
+## Jev judgments and persistent programs
+
+`jev.evaluate` supplies typed semantic judgments. `jev.run`/`jev.spawn` execute one TypeScript artifact with schemas, limits, and exact `requires`; local state persists across loop iterations without a reasoning-model turn per tick. Credentials stay host-side: `/login jev`, `TYPESAFE_API_KEY`, or a trusted credential command; `jev.status()` never retrieves a key. Jev is unavailable in Schema enforce and managed hosts.
+
+For guided authoring, recommend `/skill:fabric-jev`. This advanced skill is user-invoked; never load it autonomously. Only after direct invocation, `<skill-dir>/../fabric-jev/SKILL.md` is its workflow pointer. `<skill-dir>/../../../docs/jev.md` is a branch pointer for exact API, budget, auth, and Browser Harness details when those surfaces are needed. Confidence is not permission to act; state is sent to TypeSafe and consumes credits.
+
 ## Orchestration surfaces (opt-in)
+
+`wait` is canonical for agents and Jev. `agents.join({id})` aliases `agents.wait({id})`; `jev.join({id})` aliases `jev.wait({id})`. Both agent spellings use the same progress and detached-completion notification behavior.
 Advanced workflow skills are user-invoked; never load them autonomously. When the user has explicitly invoked an agent or mesh workflow, `<skill-dir>/references/agents.md` and `<skill-dir>/references/mesh.md` are branch pointers for low-level API detail.
 
 `agents.self()` and `agents.members({scope?,kinds?})` expose one leased directory of intrinsic roots, agents, and actors. `agents.main()` and `agents.peers()` are compatibility views of root participants. **Peer is a reserved Fabric term for another root Pi session, not a child agent.** When the user says “peer,” query `agents.peers()` first; do not infer peer state from `agents.list()` or from `agents.members({ kinds: ["agent"] })`. `agents.list()` defaults to local child agents; use `scope: "lineage" | "project"` for federated agent discovery. Cross-process `steer`, `followUp`, and `stop` resolve `ownerHostId` and return only after the owner acknowledges. `agents.subscribe()` creates a durable source-qualified Pi/run lifecycle route; use it instead of model-authored status polling when another participant boundary should notify Main or an agent. Detached `agents.spawn()` already sends Main a terminal follow-up by default unless the caller later waits. Set `residency: "durable"` on `agents.spawn()` or `agents.create()` only when the participant must outlive the current Pi host; Fabric lazily transfers it to the hidden resident host in a trusted mesh-enabled project.

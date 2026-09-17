@@ -28,6 +28,7 @@ export class TypeScriptKernelRuntime implements FabricKernelRuntime {
     unavailable: string[],
     sources: FabricGuestTypeSources,
     overrides: FabricCoreOverrideTypeSource[],
+    includeTypeCorrectness = false,
   ) {
     const code = repairFabricGuestCode(source);
     const coreOverrides = fullCodeMode
@@ -37,7 +38,7 @@ export class TypeScriptKernelRuntime implements FabricKernelRuntime {
       excludeGlobals: unavailable,
       dynamic: buildDynamicGuestDeclarations(sources),
       ...(coreOverrides ? { coreOverrides } : {}),
-    }));
+    }), includeTypeCorrectness);
     return { code, checked };
   }
 

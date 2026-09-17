@@ -130,6 +130,7 @@ const projected = (
 
 const idOnlyAgentActions = new Set([
   "agents.wait",
+  "agents.join",
   "agents.status",
   "agents.stop",
   "agents.cleanup",

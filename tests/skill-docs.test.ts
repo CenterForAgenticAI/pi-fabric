@@ -11,6 +11,7 @@ const stableProviderActions = {
   state: ["transition", "get", "history", "complexity", "verify", "goal", "checkGoal"],
   schema: ["status", "hypothesize", "verify", "commit", "abort"],
   compact: ["request", "status", "cancel"],
+  jev: ["evaluate", "run", "spawn", "status", "wait", "join", "stop"],
 } as const;
 
 describe("fabric-exec skill provider contracts", () => {
@@ -183,14 +184,12 @@ describe("fabric-exec skill provider contracts", () => {
   });
 
   it("packs every skill and required progressive reference", () => {
-    const packed = JSON.parse(execFileSync(
-      process.platform === "win32" ? process.env.ComSpec ?? "cmd.exe" : "npm",
-      process.platform === "win32"
-        ? ["/d", "/s", "/c", "npm", "pack", "--ignore-scripts", "--dry-run", "--json"]
-        : ["pack", "--ignore-scripts", "--dry-run", "--json"],
-      { cwd: process.cwd(), encoding: "utf8" },
-    )) as Array<{ files: Array<{ path: string }> }>;
-    const files = new Set(packed[0]!.files.map((entry) => entry.path));
+    const packed = execFileSync(
+      process.platform === "win32" ? "bun.exe" : "bun",
+      ["pm", "pack", "--ignore-scripts", "--dry-run"],
+      { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, NO_COLOR: "1" } },
+    );
+    const files = new Set([...packed.matchAll(/^packed\s+\S+\s+(.+)$/gm)].map((match) => match[1]!.trim()));
     expect(files).toContain("docs/skills.md");
     expect(files).toContain("skillsets/typescript/fabric-ambient/references/setup.md");
     for (const entry of fs.readdirSync("skillsets", { recursive: true }).map(String).filter((file) => file.endsWith(".md"))) {

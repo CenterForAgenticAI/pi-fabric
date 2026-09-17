@@ -1,6 +1,6 @@
 ---
 name: fabric-guide
-description: Recommends the right user-invoked Pi Fabric workflow without running it. Use when you want help choosing among workflow, council, fusion, RLM, Schema, ambient actors, or swarm.
+description: Recommends the right user-invoked Pi Fabric workflow without running it. Use when you want help choosing among workflow, council, fusion, RLM, Schema, Jev judgments and loops, ambient actors, or swarm.
 disable-model-invocation: true
 ---
 
@@ -15,13 +15,14 @@ Recommend the smallest sufficient path; do not invoke it. Core coding needs no a
 | Different models compared by a judge, or read-only references executed by one actor | `/skill:fabric-fusion` |
 | Work too large for one context window | `/skill:fabric-rlm` |
 | Evidence-gated or transactional local-file mutation | `/skill:fabric-schema` |
+| Typed semantic judgments or a code-owned observe → judge → act loop | `/skill:fabric-jev` |
 | Persistent material peer advice | `/skill:fabric-advisor` |
 | Persistent progress toward one measurable goal | `/skill:fabric-supervisor` |
 | Strict feature-spec compliance, audited until verified | `/skill:fabric-spec` |
 | One command that infers advisor versus supervisor | `/skill:fabric-ambient` |
 | Durable actor team with mailboxes and CAS tasks | `/skill:fabric-swarm` |
 
-Prefer the smallest sufficient mechanism. Distinguish workflow/council/fusion by execution shape, RLM by context size, ambient roles by persistence, and swarm by durable multi-actor coordination.
+Prefer the smallest sufficient mechanism. Distinguish workflow/council/fusion by execution shape, RLM by context size, Jev by code-owned loops with typed judgments instead of per-tick reasoning turns, ambient roles by persistent reasoning, and swarm by durable multi-actor coordination. Jev runs are session-owned, not restart-durable.
 
 ## Completion criterion
 

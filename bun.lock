@@ -31,7 +31,7 @@
         "vitest": "^4.1.10",
       },
       "peerDependencies": {
-        "@earendil-works/pi-coding-agent": ">=0.80.6",
+        "@earendil-works/pi-coding-agent": ">=0.85.1",
         "@earendil-works/pi-tui": ">=0.80.6",
       },
     },

@@ -111,7 +111,7 @@ class FabricTypeChecker {
     };
   }
 
-  check(code: string): FabricTypeCheckResult {
+  check(code: string, includeTypeCorrectness = false): FabricTypeCheckResult {
     this.#sourceText = wrapFabricGuestCode(code);
     this.#sourceFile = ts.createSourceFile(
       this.#guestFile,
@@ -130,7 +130,7 @@ class FabricTypeChecker {
       ...program.getSyntacticDiagnostics(this.#sourceFile),
       ...program
         .getSemanticDiagnostics(this.#sourceFile)
-        .filter((diagnostic) => !TYPE_CORRECTNESS_CODES.has(diagnostic.code)),
+        .filter((diagnostic) => includeTypeCorrectness || !TYPE_CORRECTNESS_CODES.has(diagnostic.code)),
     ];
     const errors = diagnostics.map((diagnostic) => {
       const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
@@ -202,4 +202,5 @@ export const transpileFabricCodeWithSourceMap = (code: string): FabricTranspileR
 export const typeCheckFabricCode = (
   code: string,
   declarations: string,
-): FabricTypeCheckResult => checkerFor(declarations).check(code);
+  includeTypeCorrectness = false,
+): FabricTypeCheckResult => checkerFor(declarations).check(code, includeTypeCorrectness);

@@ -117,6 +117,7 @@ Pi loads advanced patterns after direct user invocation. Run `/skill:fabric-guid
 | One command that chooses advisor or supervisor | `/skill:fabric-ambient advisor Focus on migration correctness.` |
 | A durable team coordinating through versioned tasks | `/skill:fabric-swarm Coordinate this migration across owned task partitions.` |
 | Evidence-gated edits with postconditions | `/skill:fabric-schema Make this parser change only if focused tests stay green.` |
+| Typed semantic judgments or bounded reactive loops | `/skill:fabric-jev Build a ticket triage loop with an explicit review path and evaluation budget.` |
 
 Execution references stay progressive: the model loads the selected kernel's skill after argument-shape errors or when exact advanced contracts are needed. Kernel changes reload Pi so execution and the selected physical skill tree switch together; see [kernel-specific skills](docs/kernels.md#kernel-specific-skills-and-guidance).
 
@@ -143,6 +144,7 @@ See the [interface & commands reference](docs/interface.md) for every view, keyb
 - [Interface & commands](docs/interface.md): dashboard, settings, keybindings, slash commands, and headless runs.
 - [Agents, actors & mesh](docs/agents.md): model handoff, `/fabric prewalk`, runners, transports, actors, councils, recursive queries, and durable coordination.
 - [Durable residency through Pi](docs/residency-runtime.md): background host lifecycle and the Pi-runtime launcher boundary.
+- [Jev System One programs](docs/jev.md): typed judgments, `/login jev`, foreground/background loops, budgets, and optional Browser Harness CDP integration.
 - [Components & committed capabilities](docs/components.md): supervised effects, exact requirements, external per-model guidance and execution-profile replacement, rolling provider generations, actor commitments, and both formal calculi.
 - [External providers](docs/providers.md): the versioned provider protocol for extensions.
 - [Architecture & security](docs/architecture.md): the host bridge, sandboxing, tool-call robustness, and limits.

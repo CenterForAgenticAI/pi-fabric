@@ -1,4 +1,5 @@
 import type { FabricDynamicGuestDeclarations } from "../protocol.js";
+import { JEV_GUEST_DECLARATIONS } from "../jev/guest-types.js";
 
 // These names and compatibility fields are the single source of truth for
 // generated core-override overloads. Keep them beside PiToolsApi below so an
@@ -681,6 +682,8 @@ interface FabricAgentsApi {
   handoff(args: FabricHandoffRequest): Promise<FabricHandoffResult>;
   spawn(args: FabricAgentRequest): Promise<FabricAgentHandle>;
   wait(args: FabricAgentTargetArgs): Promise<FabricAgentResult>;
+  /** Alias for wait. */
+  join(args: FabricAgentTargetArgs): Promise<FabricAgentResult>;
   status(args: FabricAgentTargetArgs): Promise<FabricAgentResult | FabricAgentHandle | FabricMainAgentInfo | FabricActorInfo | FabricParticipantInfo>;
   list(args?: { scope?: FabricParticipantScope }): Promise<Array<FabricAgentResult | FabricAgentHandle | FabricParticipantInfo>>;
   members(args?: { scope?: FabricParticipantScope; kinds?: FabricParticipantKind[]; includeStale?: boolean }): Promise<FabricParticipantInfo[]>;
@@ -1291,6 +1294,7 @@ declare const state: FabricStateApi;
 declare const schema: FabricSchemaApi;
 declare const components: FabricComponentsApi;
 declare const compact: FabricCompactApi;
+${JEV_GUEST_DECLARATIONS}
 declare const council: FabricCouncilApi;
 declare const workflow: FabricWorkflowApi;
 declare function agent<T = string>(prompt: string, options?: FabricWorkflowAgentOptions): Promise<T>;

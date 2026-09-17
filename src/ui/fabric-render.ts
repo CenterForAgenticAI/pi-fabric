@@ -510,6 +510,7 @@ const providerCallDetail = (
       case "stop":
       case "cleanup":
       case "wait":
+      case "join":
       case "status":
       case "actorStatus":
       case "messages":

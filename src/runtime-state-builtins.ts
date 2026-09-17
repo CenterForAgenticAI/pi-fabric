@@ -170,6 +170,7 @@ export class RuntimeStateBuiltins {
       "schema",
       "compact",
       "agents",
+      ...(!this.managedHost && config.jev.enabled && config.schema.mode !== "enforce" ? ["jev"] : []),
       ...(config.memory.enabled || this.managedHost?.has("memory") ? ["memory"] : []),
     ]);
     this.manifest.assertActive(expectedBuiltinProviders, this.registry);

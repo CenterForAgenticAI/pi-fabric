@@ -179,6 +179,12 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
     risk: "read",
   },
   {
+    name: "join",
+    description: "Alias for agents.wait: wait for a previously spawned child agent with the same progress and completion-notification behavior",
+    inputSchema: idSchema,
+    risk: "read",
+  },
+  {
     name: "status",
     description: "Get the latest status of any known project participant",
     inputSchema: idSchema,

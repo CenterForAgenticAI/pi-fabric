@@ -1,4 +1,5 @@
 import type { Usage } from "@earendil-works/pi-ai";
+import { registerJevAuth } from "./jev/auth.js";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -162,6 +163,7 @@ export type { FabricManagedHostOptions } from "./managed-host.js";
 import type { FabricManagedHostOptions } from "./managed-host.js";
 
 export default async function piFabric(pi: ExtensionAPI, options: { managedHost?: FabricManagedHostOptions } = {}): Promise<void> {
+  if (!options.managedHost) registerJevAuth(pi);
   const codePreviewSettings = defaultCodePreviewSettings();
   const decorateShell: FabricToolShellDecorator = withCodePreviewShell;
   let compatibilityWarningShown = false;

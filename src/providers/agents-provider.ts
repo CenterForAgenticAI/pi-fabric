@@ -603,6 +603,7 @@ export class AgentsProvider implements FabricProvider {
         context.update(agentStartedMessage(handle));
         return handle;
       }
+      case "join":
       case "wait": {
         const id = String(args.id);
         if (this.residency?.hasAgent(id)) {

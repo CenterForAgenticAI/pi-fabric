@@ -5,6 +5,12 @@ import {
 } from "../src/runtime/orchestration.js";
 
 describe("isBlockingOrchestrationRef", () => {
+  it.each(["agents.wait", "agents.join", "jev.wait", "jev.join"])("classifies %s as blocking without treating it as a spawn", (ref) => {
+    expect(isBlockingOrchestrationRef(ref)).toBe(true);
+    expect(codeUsesOrchestration(`await ${ref}({id: 'x'});`)).toBe(true);
+    expect(codeUsesOrchestration(`await ${ref}<number>({id: 'x'});`)).toBe(true);
+    expect(codeUsesOrchestration(`return ${ref};`)).toBe(false);
+  });
   it("classifies only host calls that wait for child agent turns", () => {
     expect(isBlockingOrchestrationRef("agents.run")).toBe(true);
     expect(isBlockingOrchestrationRef("agents.handoff")).toBe(false);

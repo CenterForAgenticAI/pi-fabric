@@ -4,6 +4,8 @@ Use native dictionaries and await host methods. Every call accepts one dictionar
 
 ## One-shot children
 
+`agents.wait(id=...)` is canonical; `agents.join(id=...)` is its alias with the same arguments, result, progress, and detached-completion notification behavior. Jev likewise uses canonical `jev.wait` and alias `jev.join` through `tools.call`.
+
 `agents.run` returns a dictionary with id, runner, optional kernel, status, text, optional value/error, usage, turns, toolCalls and runnerSessionId. Check `status == "completed"` before relying on text/value; a returned failure status does not raise automatically. Structured schema output is in `value`.
 
 ```python

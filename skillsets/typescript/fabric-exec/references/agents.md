@@ -6,6 +6,8 @@ Every method takes a single options object.
 
 ## One-shot child agents
 
+`agents.wait({id})` is canonical; `agents.join({id})` is its alias with the same arguments, result, progress, and detached-completion notification behavior. Jev uses the same naming: `jev.wait` with `jev.join` as an alias.
+
 - `agents.run(args)` runs to completion and returns `FabricAgentResult` with `{ id, runner, kernel?, status, text, value?, error?, usage, turns, toolCalls, runnerSessionId? }`.
 - `agents.spawn(args)` returns a background `FabricAgentHandle` with an `id`. Then use `agents.wait({ id })`, `agents.status({ id })`, `agents.stop({ id })`.
 - `agents.list({ scope? })` returns agent participants. `scope` defaults to `"local"`; use `"lineage"` for every agent under the same root across recursive runtimes, or `"project"` for all live project agents. Local entries retain full run detail; remote entries are bounded participant summaries.

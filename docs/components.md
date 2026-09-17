@@ -47,6 +47,7 @@ fabric.provider.schema
 fabric.provider.compact
 fabric.provider.agents
 fabric.provider.memory
+fabric.provider.jev
 ```
 
 Each component preserves its existing provider namespace, including calls such as `memory.recall` and `schema.commit`. Calls through `agents.run` or `mcp.$servers` retain the same descriptors and policy path. The kernel keeps `components.*` as the service that controls the graph.

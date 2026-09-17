@@ -85,7 +85,7 @@ export interface AgentTopologyPort {
   remove?(request: AgentTopologyRemoveRequest): Promise<AgentSessionRecord>;
   dispatch?(request: AgentTopologyDispatchRequest): Promise<AgentSessionRecord>;
 }
-export type AgentServiceAction = "run" | "spawn" | "wait" | "status" | "list" | "stop" | "steer" | "compact" | "resume" | "followUp" | "sessions" | "peers" | "self" | "members" | "create" | "remove";
+export type AgentServiceAction = "run" | "spawn" | "wait" | "join" | "status" | "list" | "stop" | "steer" | "compact" | "resume" | "followUp" | "sessions" | "peers" | "self" | "members" | "create" | "remove";
 export interface AgentServiceCapabilities { steer?: boolean; compact?: boolean; resume?: boolean; followUp?: boolean; topology?: boolean }
 export interface AgentServiceEvent {
   version: 1; sequence: number;
@@ -115,6 +115,8 @@ export interface AgentServiceClient {
   run(request: AgentServiceRequest, signal?: AbortSignal): Promise<AgentPublicRecord>;
   spawn(request: AgentServiceRequest, signal?: AbortSignal): Promise<AgentPublicRecord>;
   wait(id: string, signal?: AbortSignal): Promise<AgentPublicRecord>;
+  /** Alias for wait. */
+  join(id: string, signal?: AbortSignal): Promise<AgentPublicRecord>;
   status(id: string): Promise<AgentPublicRecord>;
   list(): Promise<AgentPublicRecord[]>;
   stop(id: string): Promise<AgentPublicRecord>;

@@ -22,6 +22,10 @@
       "types": "./dist/mcp.d.ts",
       "import": "./dist/mcp.js"
     },
+    "./jev": {
+      "types": "./dist/jev.d.ts",
+      "import": "./dist/jev.js"
+    },
     "./memory": {
       "types": "./dist/memory.d.ts",
       "import": "./dist/memory.js"
@@ -38,6 +42,8 @@
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json --emitDeclarationOnly && node scripts/build.mjs && bun run assert:build-artifacts",
     "typecheck": "tsc --noEmit",
+    "test:jev:live": "PI_FABRIC_JEV_LIVE=1 vitest run tests/jev-live.test.ts",
+    "test:jev:dist": "node scripts/smoke-jev.mjs",
     "test:changed": "node scripts/test-affected.mjs",
     "test:affected": "node scripts/test-affected.mjs --base $PI_TEST_BASE",
     "test:smoke": "vitest run tests/script-runtime.test.ts tests/pi-binary.test.ts tests/host-compatibility.test.ts tests/output-budget.test.ts tests/actor-mesh-monitor.test.ts tests/handoff.test.ts tests/config-migrations.test.ts tests/monty-payload-preflight.test.ts tests/bundled-binary-spawn.test.ts tests/conversation-native-reader-suspension.test.ts",
@@ -106,7 +112,7 @@
     "yaml": "^2.9.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.80.6",
+    "@earendil-works/pi-coding-agent": ">=0.85.1",
     "@earendil-works/pi-tui": ">=0.80.6"
   },
   "devDependencies": {

@@ -389,11 +389,16 @@ export class FabricRuntimeState {
       this.#managedHost,
     );
     const enforceSchema = this.#config.schema.mode === "enforce";
+    if (!this.#managedHost && !enforceSchema) {
+      const { browserHarnessComponent } = await import("./jev/browser.js");
+      this.componentCatalog.register(browserHarnessComponent, { overwrite: true });
+    }
     await builtins.tools(context.cwd, this.#config, this.capturedTools, {
       jobs: this.shellJobs,
       getHangMs: () => this.#config?.executor.shellHangMs ?? DEFAULT_SHELL_HANG_MS,
     });
     if (this.#managedHost) {
+      this.#registry.markUnavailable("jev", "Jev programs are unavailable in managed hosts");
       // Closed-world hosts must never construct unused native managers, stores or model history.
       for (const name of ["agents", "schema", "compact", "memory", "mesh", "state"]) {
         if (["agents", "schema", "compact"].includes(name) || this.#managedHost.has(name)) {
@@ -774,6 +779,41 @@ export class FabricRuntimeState {
       description: "Agents, actors, lifecycle delivery, and residency control",
       create: () => agentsProvider,
     }));
+    if (this.#config.jev.enabled && !enforceSchema) {
+      const { JevProvider } = await import("./providers/jev-provider.js");
+      await builtins.install(createProviderComponent({
+        provider: "jev",
+        description: "TypeSafe System One judgments and reactive programs",
+        create: (component) => {
+          component.guide({
+            label: "jev-programs", models: ["*/*"], targets: ["main", "participant"],
+            content: "Jev supplies typed Choice, Noul, and Score judgments, not generated text. Use jev.evaluate for batched questions; jev.run/spawn for isolated TypeScript programs that may loop using input, program.sleep, program.emit, and exact requires capabilities. run/wait return terminal envelopes (join aliases wait for both agents and Jev); inspect state and result/error. Background programs are session-owned; jev.status and jev.stop inspect/cancel them. Use /login jev, TYPESAFE_API_KEY, or a trusted credentialCommand. Credentials stay host-side; status never retrieves a key. See docs/jev.md for schemas, budgets, and browser integration.",
+          });
+          const provider = new JevProvider({
+            registry: this.#registry!, config: this.#config!,
+            credentialSource: {
+              configured: () => context.modelRegistry.getProviderAuthStatus?.("jev")?.configured ?? false,
+              resolve: async (signal) => {
+                signal.throwIfAborted();
+                return context.modelRegistry.getApiKeyForProvider?.("jev");
+              },
+            },
+            authorize: (ref, parentToolCallId) => this.#schema!.authorize(ref, parentToolCallId),
+          });
+          // A program may pin jev.evaluate itself. Cancel at owner retirement,
+          // not only at provider.close(), which waits for those pins to drain.
+          const stop = () => provider.manager.stopAll();
+          component.signal.addEventListener("abort", stop, { once: true });
+          component.defer(async () => {
+            component.signal.removeEventListener("abort", stop);
+            await provider.manager.close();
+          }, { label: "jev-program-owner", kind: "transactional", resources: ["jev:programs"], ordering: "ordered" });
+          return provider;
+        },
+      }));
+    } else {
+      this.#registry.markUnavailable("jev", enforceSchema ? "Jev network programs are unavailable in Schema enforce mode" : "disabled by configuration (jev.enabled=false)");
+    }
     await builtins.memory(context, this.#config, sessionId);
     builtins.assertActive(this.#config);
     await this.#mountExecution(context, enforceSchema);

@@ -89,6 +89,11 @@ export class AgentService {
     return publicRecord(record);
   }
 
+  /** Alias for wait; authorization and cancellation semantics are identical. */
+  join(callerId: string, id: string, signal?: AbortSignal): Promise<AgentPublicRecord> {
+    return this.wait(callerId, id, signal);
+  }
+
   async status(callerId: string, id: string): Promise<AgentPublicRecord> {
     await this.#authorize(callerId);
     return publicRecord(this.#child(callerId, id).record);

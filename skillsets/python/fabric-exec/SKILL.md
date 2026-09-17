@@ -59,6 +59,16 @@ Inspect `inputSchema` and `outputSchema` before calling a dynamic action. `await
 
 Advanced agent/mesh workflows require explicit user intent. Branch pointers: read `<skill-dir>/references/agents.md` for child agents and persistent actors, `<skill-dir>/references/mesh.md` for coordination, and `<skill-dir>/references/mcp.md` for MCP naming/management only when the task needs those surfaces. Peer means another root Pi session: query `await agents.peers()` first, not child-agent lists. Agent calls inherit this kernel unless a child's language is explicitly selected; that does not change this program's language. Omit agent `timeoutMs` unless requesting longer than the configured default. Use discovered host actions with ordinary loops and `asyncio.gather`; use the selected Python skill tree, never launch another interpreter to run workflow programs.
 
+## Jev judgments and programs
+
+`wait` is canonical for both providers. `agents.join(id=...)` aliases `agents.wait(id=...)`; `tools.call(ref="jev.join", args={"id": ...})` aliases `jev.wait`. Each alias preserves its provider's lifecycle and notification behavior.
+
+Use `await tools.call(ref="jev.evaluate", args={...})` for typed Choice/Noul/Score judgments. `jev.run`/`jev.spawn` take `{"program": ..., "input": ...}`; `jev.status` takes optional `{"id": ..., "after": ...}`, and `jev.wait`/`jev.stop` take `{"id": ...}`. Results are dictionaries: evaluate returns `model`, `answers`, and token `usage`; run/wait/stop return a run envelope with `id`, `state`, `result`/`error`, counts, usage, and bounded progress. Spawn initially returns `running`. Status without id reports credential presence and run summaries without retrieving a key.
+
+The outer Fabric program remains Python. Jev's `program.code` is a TypeScript artifact executed by its dedicated QuickJS manager, not a Python runtime or shell escape hatch. Runs are session-owned, not restart-durable; cancelling wait cancels only the wait, and stop cannot roll back effects. Credentials stay host-side via `/login jev`, `TYPESAFE_API_KEY`, or a trusted command. Jev is unavailable in Schema enforce and managed hosts. State sent to TypeSafe consumes credits; confidence is not authorization.
+
+Recommend `/skill:fabric-jev` for guided authoring; never load it autonomously. Only after direct invocation, `<skill-dir>/../fabric-jev/SKILL.md` is its workflow pointer. `<skill-dir>/../../../docs/jev.md` is a branch pointer for exact host contracts, limits, and browser composition.
+
 ## Recovery
 
 Read the reported user line and recovery hint, describe the failing action, then repair only the failed syntax or call. Do not replay successful effects blindly. Convert sets, bytes, paths, and datetimes to JSON-compatible data before returning. Unsupported Monty syntax/imports are not permission to enable native execution or switch languages.

@@ -121,6 +121,7 @@ describe("Fabric runtime provider components", () => {
           "fabric.provider.agents",
           "fabric.provider.compact",
           "fabric.provider.extensions",
+          "fabric.provider.jev",
           "fabric.provider.mcp",
           "fabric.provider.memory",
           "fabric.provider.mesh",
@@ -152,6 +153,7 @@ describe("Fabric runtime provider components", () => {
             "compact",
             "agents",
             "memory",
+            "jev",
           ].map((name) => expect.objectContaining({
             id: `fabric.provider.${name}`,
             state: "active",
@@ -179,6 +181,18 @@ describe("Fabric runtime provider components", () => {
           label: "deepseek-profile",
         }),
       );
+      const invocation = {
+        cwd, signal: undefined, parentToolCallId: "jev-reload-test", nestedToolCallId: "jev-reload-test",
+        extensionContext: context, update() {}, approve: async () => {}, audits: [], maxResultChars: 32_768,
+      };
+      const spawned = await runtime.registry.invoke("jev.spawn", {
+        program: { name: "self-pinned-loop", code: "while (true) await program.sleep(10);", requires: ["jev.evaluate"], inputSchema: {}, outputSchema: {} }, input: null,
+      }, invocation) as { id: string };
+      const joined = runtime.registry.invoke("jev.join", { id: spawned.id }, invocation);
+      await new Promise(resolve => setTimeout(resolve, 20));
+      await runtime.registry.invoke("components.reload", { id: "fabric.provider.jev" }, invocation);
+      expect(await joined).toMatchObject({ state: "cancelled" });
+      expect(runtime.componentGraph().components.find(c => c.id === "fabric.provider.jev")?.state).toBe("active");
     } finally {
       await runtime.shutdown();
       expect(getActiveRepairCompiler()).toBeUndefined();

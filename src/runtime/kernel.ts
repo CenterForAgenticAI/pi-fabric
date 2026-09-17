@@ -17,6 +17,9 @@ export interface FabricSandboxResult {
 export interface FabricSandboxOptions {
   timeoutMs: number;
   memoryLimitBytes: number;
+  /** Optional uninterrupted guest CPU limit. Await host work/timers to yield. */
+  maxCpuSliceMs?: number;
+  maxPendingTimers?: number;
   maxLogChars?: number;
   strings?: Record<string, string>;
   tokenBudget?: number;
