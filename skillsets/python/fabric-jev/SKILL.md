@@ -21,7 +21,7 @@ Keep outer `fabric_exec.code` in Python. Call Jev using `await tools.call(ref="j
 
 ## Host auto-approval classifier
 
-For user-selected tool safety classification (not a program loop), `/fabric settings` → **Approvals → Auto model** offers Jev. Set the relevant risk policies to `auto`; the stored model key is `jev/jev-latest` (or `jev/<model-id>`). Authentication is shared, but no chat model is registered. The host sends bounded current-user-turn evidence and exact arguments to TypeSafe, auto-allows only a typed safety probability >= 0.99, and otherwise requires explicit approval. This is a probabilistic advisor, not a hard security boundary; retain `ask`/`deny` where needed. Never enable it or change approval policies without the user's permission. See the auto-mode section in `docs/jev.md` via the hard pointer above.
+For user-selected tool safety classification (not a program loop), `/fabric settings` → **Approvals → Auto model** offers Jev. Set the relevant risk policies to `auto`; the stored model key is `jev/jev-latest` (or `jev/<model-id>`). Authentication is shared, but no chat model is registered. The host sends bounded current-user-turn evidence and exact arguments to TypeSafe, auto-allows a typed safety probability at or above `jev.autoApprovalThreshold` (default 0.50, editable through **Approvals → Jev minimum probability** when Jev is selected), and otherwise requires explicit approval. This is a probabilistic advisor, not a hard security boundary; retain `ask`/`deny` where needed. Never enable it or change approval policies or the threshold without the user's permission. See the auto-mode section in `docs/jev.md` via the hard pointer above.
 
 ## Judgment and loop design
 

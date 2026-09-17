@@ -1,6 +1,8 @@
 export interface FabricJevConfig {
   enabled: boolean;
   model: string;
+  /** Minimum Noul safety probability for Jev auto approvals (0–1). */
+  autoApprovalThreshold: number;
   /** Trusted host configuration only; argv, never a shell expression. */
   credentialCommand: string[];
   requestTimeoutMs: number;
@@ -15,6 +17,7 @@ export interface FabricJevConfig {
 export const DEFAULT_JEV_CONFIG: FabricJevConfig = {
   enabled: true,
   model: "jev-latest",
+  autoApprovalThreshold: 0.5,
   credentialCommand: [],
   requestTimeoutMs: 15_000,
   maxRequestBytes: 131_072,
@@ -38,6 +41,9 @@ export function normalizeJevConfig(value: unknown): FabricJevConfig {
     enabled: typeof input.enabled === "boolean" ? input.enabled : true,
     model: typeof input.model === "string" && /^[a-zA-Z0-9._-]{1,128}$/.test(input.model)
       ? input.model : DEFAULT_JEV_CONFIG.model,
+    autoApprovalThreshold: typeof input.autoApprovalThreshold === "number" &&
+      Number.isFinite(input.autoApprovalThreshold) && input.autoApprovalThreshold >= 0 && input.autoApprovalThreshold <= 1
+      ? input.autoApprovalThreshold : DEFAULT_JEV_CONFIG.autoApprovalThreshold,
     credentialCommand: Array.isArray(command) && command.length <= 16 &&
       command.every(v => typeof v === "string" && v.length > 0 && v.length <= 4096 && !v.includes("\0"))
       ? [...command] as string[] : [],

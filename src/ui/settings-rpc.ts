@@ -13,6 +13,7 @@ import {
   SectionSubmenu,
   SelectSubmenu,
   IntegerInputSubmenu,
+  ProbabilityInputSubmenu,
   StringInputSubmenu,
   CompactionThresholdSubmenu,
 } from "./settings-submenus.js";
@@ -151,12 +152,13 @@ const editRpcSetting = async (
       })),
     );
     if (selected === undefined || !component.selectRpc(selected)) return;
-  } else if (component instanceof IntegerInputSubmenu) {
+  } else if (component instanceof IntegerInputSubmenu || component instanceof ProbabilityInputSubmenu) {
     while (!completed) {
       const value = await context.ui.input(rpcTitle(path, item.description), component.input.getValue());
       if (value === undefined) return;
-      if (!/^\d+$/.test(value.trim()) || !Number.isSafeInteger(Number(value.trim()))) {
-        context.ui.notify("Enter a non-negative safe integer.", "warning");
+      const error = component.validate(value);
+      if (error) {
+        context.ui.notify(error, "warning");
         continue;
       }
       component.submitRpc(value);

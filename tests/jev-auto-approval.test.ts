@@ -40,12 +40,12 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe("Jev auto-approval classifier", () => {
-  it.each([[1, "allow"], [0.99, "allow"], [0.989999, "escalate"], [0.5, "escalate"], [0, "escalate"]] as const)("gates probability %s in host code", async (probability, decision) => {
+  it.each([[1, "allow"], [0.99, "allow"], [0.5, "allow"], [0.499999, "escalate"], [0, "escalate"]] as const)("gates probability %s in host code", async (probability, decision) => {
     fetcher.mockImplementation(async () => Response.json(response(probability)));
     const ctx = context();
     const result = await new FabricAutoApprovalClassifier().classify(action, { command: "bun run typecheck" }, ctx, "jev/jev-latest");
     expect(result).toMatchObject({ decision, model: "jev/jev-1.13", usage: { input: 100, output: 8, totalTokens: 108, cost: { total: 0 } } });
-    expect(result.reason).toContain("requires >= 0.99");
+    expect(result.reason).toContain("requires >= 0.5");
     expect(ctx.modelRegistry.find).not.toHaveBeenCalled();
     expect(ctx.modelRegistry.getApiKeyAndHeaders).not.toHaveBeenCalled();
     expect(ctx.modelRegistry.getApiKeyForProvider).toHaveBeenCalledWith("jev");
@@ -59,6 +59,29 @@ describe("Jev auto-approval classifier", () => {
     expect(body.questions.safe_to_auto_approve.instructions).toContain("untrusted quoted evidence");
     expect(options!.body).not.toMatch(/PRIVATE|HOSTILE|fixture-only-key/);
     expect(body.state.conversation).toContain("Run the local tests");
+  });
+
+  it.each([
+    [0.975, 0.975, "allow"], [0.975, 0.974999, "escalate"],
+    [0, 0, "allow"], [1, 0.999999, "escalate"], [1, 1, "allow"],
+  ] as const)("uses configured threshold %s for probability %s", async (threshold, probability, decision) => {
+    fetcher.mockImplementation(async () => Response.json(response(probability)));
+    const classifier = new FabricAutoApprovalClassifier(() => ({ ...DEFAULT_JEV_CONFIG, autoApprovalThreshold: threshold }));
+    const result = await classifier.classify(action, {}, context(), "jev/jev-latest");
+    expect(result.decision).toBe(decision);
+    expect(result.reason).toContain(`requires >= ${threshold}`);
+  });
+
+  it.each([-0.1, 1.01, NaN, Infinity])("rejects invalid runtime threshold %s before inference", async threshold => {
+    const classifier = new FabricAutoApprovalClassifier(() => ({ ...DEFAULT_JEV_CONFIG, autoApprovalThreshold: threshold }));
+    await expect(classifier.classify(action, {}, context(), "jev/jev-latest")).rejects.toThrow("threshold must be");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("still rejects invalid answers at a zero threshold", async () => {
+    fetcher.mockImplementation(async () => Response.json(response(-0.1)));
+    const classifier = new FabricAutoApprovalClassifier(() => ({ ...DEFAULT_JEV_CONFIG, autoApprovalThreshold: 0 }));
+    await expect(classifier.classify(action, {}, context(), "jev/jev-latest")).rejects.toThrow("invalid");
   });
 
   it("starts at the latest user turn and does not infer authority from older requests", async () => {
@@ -152,7 +175,7 @@ describe("Jev approval enforcement", () => {
   });
 
   it("escalates uncertainty to a real explicit approval dialog without widening permission", async () => {
-    fetcher.mockImplementation(async () => Response.json(response(0.5)));
+    fetcher.mockImplementation(async () => Response.json(response(0.49)));
     const select = vi.fn(async () => "Allow once");
     const ctx = Object.assign(context(), { hasUI: true, mode: "rpc", ui: { select, notify: vi.fn() } }) as unknown as ExtensionContext;
     const session = new FabricSessionApprovals();
@@ -170,9 +193,13 @@ describe("Jev approval enforcement", () => {
     const event = { type: "tool_call", toolCallId: "native", toolName: "fixture", input: {} } as ToolCallEvent;
     await approval.approve(event, context());
     expect(approval.takeUsage("native")).toMatchObject({ totalTokens: 108 });
+    fetcher.mockImplementation(async () => Response.json(response(0.6)));
+    await approval.approve(event, context());
+    cfg.jev.autoApprovalThreshold = 0.75;
+    await expect(approval.approve(event, context())).rejects.toThrow("no interactive UI");
     cfg.jev.maxRequestBytes = 1024;
     await expect(approval.approve(event, context())).rejects.toThrow("no interactive UI");
-    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledTimes(3);
   });
 
   it("uses configured Jev limits for observation read approval before subscribing", async () => {
@@ -205,7 +232,8 @@ describe("Jev approval enforcement", () => {
     expect(allowed.value).toBe("executed");
     expect(allowed.usage).toMatchObject({ input: 100, output: 8, totalTokens: 108 });
     expect(invoke).toHaveBeenCalledOnce();
-    fetcher.mockImplementation(async () => Response.json(response(0.5)));
+    fetcher.mockImplementation(async () => Response.json(response(0.6)));
+    cfg.jev.autoApprovalThreshold = 0.75;
     expect((await run()).success).toBe(false);
     expect(invoke).toHaveBeenCalledOnce();
     cfg.jev.maxRequestBytes = 1024;

@@ -124,6 +124,13 @@ export const nonNegativeIntegerSubmenu = (
 ): SettingsSubmenu => (currentValue, done) =>
   new IntegerInputSubmenu(theme, title, description, currentValue, done, () => done());
 
+export const probabilitySubmenu = (
+  theme: Theme,
+  title: string,
+  description: string,
+): SettingsSubmenu => (currentValue, done) =>
+  new ProbabilityInputSubmenu(theme, title, description, currentValue, done, () => done());
+
 export const stringInputSubmenu = (
   theme: Theme,
   title: string,
@@ -199,13 +206,17 @@ export const sectionSubmenu = (
   theme: Theme,
   title: string,
   description: string,
-  items: SettingItem[],
+  items: SettingItem[] | (() => SettingItem[]),
   persist: (id: string, value: string) => void,
-): SettingsSubmenu => (_currentValue, done) =>
+): SettingsSubmenu => (_currentValue, done) => {
+  const getItems = () => markDrillIn(typeof items === "function" ? items() : items);
   // Match the root page: sections get type-to-search filtering too.
-  new SectionSubmenu(theme, title, description, markDrillIn(items), persist, () => done(), true);
+  return new SectionSubmenu(theme, title, description, getItems(), persist, () => done(), true,
+    typeof items === "function" ? getItems : undefined);
+};
 
-export class IntegerInputSubmenu extends Container {
+abstract class NumericInputSubmenu extends Container {
+  abstract validate(value: string): string | undefined;
   readonly input: Input;
   private readonly validationText: Text;
 
@@ -228,15 +239,12 @@ export class IntegerInputSubmenu extends Container {
     this.input.focused = true;
     this.validationText = new Text("", 0, 0);
     this.input.onSubmit = (value) => {
-      const normalized = value.trim();
-      const parsed = /^\d+$/.test(normalized) ? Number(normalized) : Number.NaN;
-      if (!Number.isSafeInteger(parsed) || parsed < 0) {
-        this.validationText.setText(
-          theme.fg("error", "Enter a non-negative safe integer."),
-        );
+      const error = this.validate(value);
+      if (error) {
+        this.validationText.setText(theme.fg("error", error));
         return;
       }
-      onSelect(String(parsed));
+      onSelect(String(Number(value.trim())));
     };
     this.input.onEscape = onCancel;
     this.addChild(this.input);
@@ -258,6 +266,23 @@ export class IntegerInputSubmenu extends Container {
   submitRpc(value: string): void {
     this.input.setValue(value);
     this.input.handleInput("\r");
+  }
+}
+
+export class IntegerInputSubmenu extends NumericInputSubmenu {
+  validate(value: string): string | undefined {
+    const normalized = value.trim();
+    return /^\d+$/.test(normalized) && Number.isSafeInteger(Number(normalized))
+      ? undefined : "Enter a non-negative safe integer.";
+  }
+}
+
+export class ProbabilityInputSubmenu extends NumericInputSubmenu {
+  validate(value: string): string | undefined {
+    const normalized = value.trim();
+    const parsed = Number(normalized);
+    return normalized && Number.isFinite(parsed) && parsed >= 0 && parsed <= 1
+      ? undefined : "Enter a probability between 0 and 1.";
   }
 }
 
@@ -504,7 +529,7 @@ export const modelPickerSubmenu = (
 };
 
 export class SectionSubmenu extends Container {
-  readonly settingsList: SettingsList;
+  settingsList: SettingsList;
   readonly items: SettingItem[];
   readonly applyChange: (id: string, newValue: string) => void;
 
@@ -516,24 +541,29 @@ export class SectionSubmenu extends Container {
     onChange: (id: string, newValue: string) => void,
     onCancel: () => void,
     enableSearch = false,
+    refreshItems?: () => SettingItem[],
   ) {
     super();
     this.items = items;
-    this.applyChange = onChange;
+    const createList = () => new SettingsList(this.items, Math.min(this.items.length, 16),
+      settingsListTheme(theme), this.applyChange, onCancel, { enableSearch });
+    this.applyChange = (id, value) => {
+      onChange(id, value);
+      if (!refreshItems) return;
+      // Preserve the array identity used by the RPC browser as well as the TUI.
+      this.items.splice(0, this.items.length, ...refreshItems());
+      this.removeChild(this.settingsList);
+      this.settingsList = createList();
+      this.settingsList.selectItem?.(id);
+      this.addChild(this.settingsList);
+    };
     this.addChild(new Text(theme.bold(theme.fg("accent", title)), 0, 0));
     if (description) {
       this.addChild(new Spacer(1));
       this.addChild(new Text(theme.fg("muted", description), 0, 0));
     }
     this.addChild(new Spacer(1));
-    this.settingsList = new SettingsList(
-      items,
-      Math.min(items.length, 16),
-      settingsListTheme(theme),
-      onChange,
-      onCancel,
-      { enableSearch },
-    );
+    this.settingsList = createList();
     this.addChild(this.settingsList);
   }
 

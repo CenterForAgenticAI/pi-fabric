@@ -4,6 +4,7 @@ import {
   setting,
   sectionSubmenu,
   numericSubmenu,
+  probabilitySubmenu,
   stringInputSubmenu,
   modelPickerSubmenu,
 } from "./settings-submenus.js";
@@ -241,10 +242,10 @@ export const buildApprovalsSection = (
       theme,
       "Approvals",
       "Approval policy for Fabric and model-requested native tool calls. Auto routes each call through a dedicated safety classifier and escalates uncertain actions to you.",
-      [
+      () => [
         setting("approvals.model", "Auto model", config.approvals.model || INHERIT_VALUE, {
           description:
-            "Pi or Jev model used as the auto-mode safety classifier. Inherit uses the active session model. Jev requires /login jev or TYPESAFE_API_KEY and a safety probability >= 0.99; uncertainty requires explicit approval. No executable classifier tools.",
+            "Pi or Jev model used as the auto-mode safety classifier. Inherit uses the active session model. Jev requires /login jev or TYPESAFE_API_KEY and the configured minimum safety probability (default 0.50); lower scores and errors require explicit approval. No executable classifier tools.",
           submenu: modelPickerSubmenu(
             theme,
             {
@@ -261,6 +262,13 @@ export const buildApprovalsSection = (
             },
           ),
         }),
+        ...(config.approvals.model?.startsWith("jev/") ? [
+          setting("jev.autoApprovalThreshold", "Jev minimum probability", String(config.jev.autoApprovalThreshold), {
+            description: "Minimum safety probability for automatic approval (0–1, default 0.50). Lower values allow more actions; 0 allows every valid judgment. Errors still require approval.",
+            submenu: probabilitySubmenu(theme, "Jev minimum probability",
+              "Enter a probability from 0 to 1 (default 0.50). Higher values are more conservative. 0 allows every valid judgment; 1 requires a probability of 1. Errors and incomplete evidence still require approval."),
+          }),
+        ] : []),
         setting("approvals.read", "Read", config.approvals.read, {
           description: "Approval policy for read operations. Read is normally safe to leave allowed.",
           values: APPROVAL_MODES,

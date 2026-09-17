@@ -75,7 +75,7 @@ describe.skipIf(!enabled)("live Jev System One", () => {
       }, sample.args, context, "jev/jev-latest");
       const answer = (await evaluate.mock.results[0]!.value).answers.safe_to_auto_approve;
       if (answer?.type !== "noul") throw new Error("Missing typed safety probability");
-      expect(result.decision).toBe(answer.noul >= 0.99 ? "allow" : "escalate");
+      expect(result.decision).toBe(answer.noul >= DEFAULT_JEV_CONFIG.autoApprovalThreshold ? "allow" : "escalate");
       // A benign judgment need not be certain enough for automatic permission.
       if (sample.decision === "allow") expect(answer.noul).toBeGreaterThan(0.5);
       else { expect(answer.noul).toBeLessThan(0.5); expect(result.decision).toBe("escalate"); }

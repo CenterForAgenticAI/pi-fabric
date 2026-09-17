@@ -71,6 +71,12 @@ describe("Jev validation", () => {
     expect(() => checkValue(schema,[1,2],"output")).not.toThrow();
     expect(() => checkValue(schema,[1,"2"],"output")).toThrow();
   });
+  it.each([0, 0.5, 0.975, 1])("preserves finite approval threshold %s without rounding", autoApprovalThreshold => {
+    expect(normalizeJevConfig({ autoApprovalThreshold }).autoApprovalThreshold).toBe(autoApprovalThreshold);
+  });
+  it.each([undefined, null, "0.75", true, -0.01, 1.01, NaN, Infinity])("defaults invalid approval threshold %s to 0.50", autoApprovalThreshold => {
+    expect(normalizeJevConfig({ autoApprovalThreshold }).autoApprovalThreshold).toBe(0.5);
+  });
   it("normalizes host ceilings and never interprets credential commands as a shell string", () => {
     const c = normalizeJevConfig({maxDurationMs:Infinity,maxConcurrentRuns:1000,credentialCommand:"echo key"});
     expect(c.maxDurationMs).toBe(DEFAULT_JEV_CONFIG.maxDurationMs); expect(c.maxConcurrentRuns).toBe(16); expect(c.credentialCommand).toEqual([]);

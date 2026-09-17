@@ -32,7 +32,7 @@ The command uses argv, not a shell. It runs only when inference needs a key, wit
 
 Jev can also serve as the host's auto-approval classifier, independently of programs and observers. Choose **Approvals → Auto model → Jev (TypeSafe safety classifier)** in `/fabric settings`, or set `approvals.model` to `"jev/jev-latest"` and the relevant risk policies to `"auto"`. Authenticate with `/login jev`, `TYPESAFE_API_KEY`, or the trusted credential command above.
 
-The host uses a typed Noul safety judgment, not generated text or a chat-model adapter. Only probabilities >= 0.99 auto-allow; uncertainty and errors require explicit approval. This is a probabilistic advisor, not a hard security boundary or a 99% correctness guarantee. Read [auto approval configuration](configuration.md#jev-as-the-auto-mode-classifier) for the bounded current-turn evidence, outbound data disclosure, credential behavior, timeout and usage rules. Jev remains absent from ordinary chat-model pickers.
+The host uses a typed Noul safety judgment, not generated text or a chat-model adapter. Probabilities at or above `jev.autoApprovalThreshold` auto-allow (default **0.50**); lower scores and errors require explicit approval. When a Jev model is selected, **Approvals → Jev minimum probability** lets you enter any finite value from 0 to 1. Higher values are more conservative; 0 allows every valid judgment. This is a probabilistic advisor, not a hard security boundary or a correctness guarantee. Read [auto approval configuration](configuration.md#jev-as-the-auto-mode-classifier) for the bounded current-turn evidence, outbound data disclosure, credential behavior, timeout and usage rules. Jev remains absent from ordinary chat-model pickers.
 
 ## Direct judgments
 

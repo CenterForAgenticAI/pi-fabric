@@ -76,7 +76,7 @@ try {
   assert.equal(auth.getModels().length, 0);
   assert.equal(typeof auth.auth.apiKey.login, "function");
   const originalFetch = globalThis.fetch;
-  let probability = 1;
+  const probability = 0.5;
   let classifications = 0;
   try {
     globalThis.fetch = async (url, options) => {
@@ -100,7 +100,8 @@ try {
     context.extensionContext.ui = { notify() {}, async select(title) { throw new Error(`Unexpected approval prompt: ${title}`); } };
     const approved = await provider.invoke("spawn", request, context);
     assert.equal((await provider.invoke("wait", { id: approved.id }, context)).state, "completed");
-    probability = 0.5;
+    assert.equal(config.jev.autoApprovalThreshold, 0.5);
+    config.jev.autoApprovalThreshold = 0.75;
     context.extensionContext.hasUI = false;
     await assert.rejects(provider.invoke("spawn", request, context), /no interactive UI/);
     assert.equal(classifications, 2);
