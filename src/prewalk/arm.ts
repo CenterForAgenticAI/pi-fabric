@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { FabricState } from "../fabric-state.js";
+import { resolveFabricIdentity } from "../main-agent.js";
 import {
   PREWALK_ARMED_MESSAGE_TYPE,
   hasPrewalkArmedPrompt,
@@ -49,7 +50,7 @@ export const armFabricPrewalkSession = async (
   context.ui.setStatus("fabric-prewalk", `armed (${prewalk.mode}) → ${input.model}`);
 };
 
-// alwaysRearm covers unarmed starts too: every session (and `/fabric reload`)
+// alwaysRearm covers unarmed starts too: every Main session (and `/fabric reload`)
 // opens armed, not only sessions following a completed handoff. Prerequisites
 // mirror the `/fabric prewalk` command gates, minus interactive model
 // selection — auto-arm is non-interactive and reads `prewalk.model`.
@@ -64,6 +65,11 @@ export const autoArmFabricPrewalk = async (
 ): Promise<string | undefined> => {
   const { prewalk } = state.config;
   if (prewalk.enabled === false || !prewalk.alwaysRearm) return undefined;
+  // Participants inherit Main's settings and full-code mode, but must execute
+  // their assigned work instead of handing it off again on their first write.
+  if (resolveFabricIdentity(context.sessionManager.getSessionId()).identity.kind !== "main") {
+    return undefined;
+  }
   // initialize() cancels any prior arm at session start; a non-idle status
   // means another path armed first — never clobber it.
   if (state.prewalk.status().state !== "idle") return undefined;
