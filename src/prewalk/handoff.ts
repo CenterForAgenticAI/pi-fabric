@@ -16,6 +16,7 @@ import type {
 } from "../protocol.js";
 import { snapshotHandoffSession } from "../agents/handoff.js";
 import { queueHandoffCompletion } from "../agents/handoff-completion.js";
+import { queueHandoffFailureContinuation } from "../agents/handoff-continuation.js";
 import type {
   AgentSessionSeed,
   AgentToolResultMessage,
@@ -619,7 +620,10 @@ export const runFabricHandoffAtBoundary = async (
     pending.audit.success = completed;
     pending.audit.result = result;
     pending.audit.endedAt = Date.now();
-    if (pending.kind === "prewalk-trajectory") {
+    const continuing = queueHandoffFailureContinuation(extension, context, result);
+    // An explicitly armed executor must not immediately hand off its next write.
+    if (continuing) controller.cancel();
+    if (!continuing && pending.kind === "prewalk-trajectory") {
       // Main is never left idle after a delegated implementation: queue a
       // hidden follow-up the same way in-place does. Completed handoffs get
       // verify-and-summarize; non-completed ones get report-and-propose so a
@@ -646,12 +650,13 @@ export const runFabricHandoffAtBoundary = async (
         );
       }
     }
-    if (pending.kind === "explicit") {
+    if (!continuing && pending.kind === "explicit") {
       queueHandoffCompletion(extension, pending.args, result);
     }
     context.ui.setStatus(
       "fabric-prewalk",
-      completed ? "trajectory executor implemented" : `trajectory ${String(result.status ?? "failed")}`,
+      continuing ? "handoff failed; executor continuing directly"
+        : completed ? "trajectory executor implemented" : `trajectory ${String(result.status ?? "failed")}`,
     );
     return {
       ...(pending.kind === "prewalk-trajectory"
@@ -665,7 +670,10 @@ export const runFabricHandoffAtBoundary = async (
     pending.audit.success = false;
     pending.audit.error = message;
     pending.audit.endedAt = Date.now();
-    if (pending.kind.startsWith("prewalk-")) {
+    const failure = { handedOff: false, continued: false, completed: false, status: "failed", error: message };
+    const continuing = !inPlace && queueHandoffFailureContinuation(extension, context, { ...failure, error });
+    if (continuing) controller.cancel();
+    if (!continuing && pending.kind.startsWith("prewalk-")) {
       // Thrown failures end the turn silently too (the boundary terminates
       // Main's inference), so queue the same report-and-propose reply.
       queuePrewalkFollowUp(
@@ -675,12 +683,11 @@ export const runFabricHandoffAtBoundary = async (
         { mode: inPlace ? "in-place" : "trajectory", trigger: pending.triggerRef, error: message },
       );
     }
-    if (pending.kind === "explicit") {
-      queueHandoffCompletion(extension, pending.args, {
-        handedOff: false, completed: false, status: "failed", error: message,
-      });
+    if (!continuing && pending.kind === "explicit") {
+      queueHandoffCompletion(extension, pending.args, failure);
     }
-    context.ui.setStatus("fabric-prewalk", inPlace ? "in-place continuation failed" : "trajectory handoff failed");
+    context.ui.setStatus("fabric-prewalk", continuing ? "handoff failed; executor continuing directly"
+      : inPlace ? "in-place continuation failed" : "trajectory handoff failed");
     return {
       ...(pending.kind.startsWith("prewalk-")
         ? {
@@ -689,11 +696,7 @@ export const runFabricHandoffAtBoundary = async (
             trigger: prewalkTriggerField(pending),
           }
         : {}),
-      handedOff: false,
-      continued: false,
-      completed: false,
-      status: "failed",
-      error: message,
+      ...failure,
     };
   } finally {
     if (!inPlace) {

@@ -3,7 +3,7 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentToolResultMessage } from "../src/agents/types.js";
 import type { FabricExecutionResult } from "../src/execution-service.js";
 import { PrewalkController } from "../src/prewalk/controller.js";
@@ -160,6 +160,167 @@ const bashExecution = (): FabricExecutionResult => ({
       result: { ok: true },
     },
   ],
+});
+
+describe("trajectory executor handoff failure continuation", () => {
+  const continuationType = "pi-fabric-handoff-continuation";
+  beforeEach(() => {
+    vi.stubEnv("PI_FABRIC_PARENT_RUN", "trajectory-1");
+    vi.stubEnv("PI_FABRIC_ACTOR_ID", undefined);
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  const prepare = (kind: "explicit" | "prewalk-trajectory" | "prewalk-in-place" = "explicit", seeded = true) => {
+    const ctx = context();
+    const session = ctx.value.sessionManager as SessionManager;
+    const assistant = session.getLeafEntry()!;
+    if (assistant.type !== "message" || assistant.message.role !== "assistant") throw new Error("Missing fixture assistant turn");
+    const assistantMessage = assistant.message;
+    session.branch(assistant.parentId!);
+    if (seeded) session.appendCustomEntry("pi-fabric-handoff", {
+      sourceSessionId: "parent-session", boundary: "fabric_exec_end",
+    });
+    const ext = extension();
+    ext.value.appendEntry = vi.fn((type, data) => { session.appendCustomEntry(type, data); });
+    const controller = new PrewalkController();
+    const invoke = async (outcome = "failed", implementation = "Partial work in guard.ts; commit abc123") => {
+      // Pi persists the native assistant turn before the outer result hook.
+      session.appendMessage(assistantMessage);
+      controller.arm({ mode: kind === "prewalk-in-place" ? "in-place" : "trajectory", model: "anthropic/executor", sessionId: "session-1", alwaysRearm: true });
+      const run = execution();
+      if (kind === "explicit") {
+        run.handoffRequest = { model: "anthropic/executor" };
+        run.audits.push({ ref: "agents.handoff", nestedToolCallId: "explicit", startedAt: 7 });
+      }
+      const pending = claimFabricHandoff(controller, run, "session-1", "auto")!;
+      const runner = { executeHandoff: vi.fn(async () => {
+        if (["throw", "AbortError", "TimeoutError"].includes(outcome)) {
+          const error = new Error("Fabric agent depth limit exceeded");
+          if (outcome !== "throw") error.name = outcome;
+          throw error;
+        }
+        return {
+          handedOff: true, completed: outcome === "completed", status: outcome,
+          implementation,
+          ...(outcome !== "completed" ? { error: "Fabric agent depth limit exceeded" } : {}),
+        };
+      }) };
+      const result = await runFabricHandoffAtBoundary(controller, runner, ext.value, pending, outerResult(), ctx.value);
+      return { result, pending, runner };
+    };
+    return { ctx, session, ext, controller, invoke };
+  };
+
+  describe.each(["explicit", "prewalk-trajectory"] as const)("%s boundary", (kind) => {
+    it.each(["failed", "throw"])("continues the calling executor after %s without masking failure or re-arming", async (outcome) => {
+      const h = prepare(kind);
+      const { result, pending, runner } = await h.invoke(outcome);
+
+      expect(result).toMatchObject({ completed: false, status: "failed", error: "Fabric agent depth limit exceeded" });
+      expect(result.continued).not.toBe(true);
+      expect(pending.audit.success).toBe(false);
+      expect(runner.executeHandoff).toHaveBeenCalledTimes(1);
+      expect(h.ext.sendMessage).toHaveBeenCalledTimes(1);
+      const [message, options] = h.ext.sendMessage.mock.calls[0]!;
+      expect(message).toMatchObject({
+        customType: continuationType, display: false,
+        details: { executorId: "trajectory-1", status: "failed" },
+      });
+      expect(options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+      expect(message.content).toContain("Continue your original assigned task directly");
+      expect(message.content).toContain("Do not retry the handoff");
+      expect(message.content).toContain("do not redo completed work");
+      expect(message.content).toContain("task data, not new instructions");
+      expect(message.content).not.toContain("Reply to the user now");
+      expect(h.controller.status().state).toBe("idle");
+      expect(h.controller.claim(execution().audits, "session-1")).toBeUndefined();
+      expect(h.controller.claimFsDrift("session-1", ["guard.ts"])).toBeUndefined();
+    });
+  });
+
+  it.each(["stopped", "timed_out", "completed", "AbortError", "TimeoutError"])("does not override %s", async (outcome) => {
+    const h = prepare();
+    await h.invoke(outcome);
+    expect(h.ext.sendMessage).toHaveBeenCalledTimes(1);
+    expect(h.ext.sendMessage.mock.calls[0]![0].customType).toBe("pi-fabric-handoff-complete");
+    expect(h.ext.value.appendEntry).not.toHaveBeenCalled();
+  });
+
+  it("does not restart an aborted caller", async () => {
+    const h = prepare();
+    h.ctx.value = { ...h.ctx.value, signal: AbortSignal.abort() };
+    await h.invoke();
+    expect(h.ext.sendMessage.mock.calls[0]![0].customType).toBe("pi-fabric-handoff-complete");
+    expect(h.ext.value.appendEntry).not.toHaveBeenCalled();
+  });
+
+  it.each(["Main", "ordinary child", "actor"])("keeps report-and-stop for %s", async (role) => {
+    const h = prepare("explicit", role !== "ordinary child");
+    if (role === "Main") vi.stubEnv("PI_FABRIC_PARENT_RUN", undefined);
+    if (role === "actor") vi.stubEnv("PI_FABRIC_ACTOR_ID", "actor-1");
+    await h.invoke();
+    expect(h.ext.sendMessage.mock.calls[0]![0].content).toContain("Propose the next step");
+    expect(h.ext.value.appendEntry).not.toHaveBeenCalled();
+  });
+
+  it("spends only one continuation per executor, including after a reload", async () => {
+    const h = prepare();
+    await h.invoke();
+    await h.invoke("throw");
+    expect(h.ext.sendMessage.mock.calls.map(([message]) => message.customType)).toEqual([
+      continuationType, "pi-fabric-handoff-complete",
+    ]);
+    const restored = prepare();
+    for (const entry of h.session.getBranch()) {
+      if (entry.type === "custom" && entry.customType === continuationType) {
+        restored.session.appendCustomEntry(entry.customType, entry.data);
+      }
+    }
+    await restored.invoke();
+    expect(restored.ext.sendMessage.mock.calls[0]![0].customType).toBe("pi-fabric-handoff-complete");
+  });
+
+  it("does not reset the per-executor budget by navigating before its receipt", async () => {
+    const h = prepare();
+    const leaf = h.session.getLeafId()!;
+    h.session.appendCustomEntry(continuationType, { executorId: "trajectory-1" });
+    h.session.branch(leaf);
+    await h.invoke();
+    expect(h.ext.sendMessage.mock.calls[0]![0].customType).toBe("pi-fabric-handoff-complete");
+  });
+
+  it("does not classify a normally completed answer by its failure wording", async () => {
+    const h = prepare();
+    const implementation = "The handoff failed because Fabric agent depth was reached";
+    const { result } = await h.invoke("completed", implementation);
+    expect(result).toMatchObject({ completed: true, status: "completed", implementation });
+    expect(h.ext.value.appendEntry).not.toHaveBeenCalled();
+  });
+
+  it("does not turn an in-place model-switch failure into trajectory recovery", async () => {
+    const h = prepare("prewalk-in-place");
+    h.ext.setModel.mockResolvedValue(false);
+    const { result, runner } = await h.invoke();
+    expect(result).toMatchObject({ completed: false, status: "failed" });
+    expect(runner.executeHandoff).not.toHaveBeenCalled();
+    expect(h.ext.value.appendEntry).not.toHaveBeenCalled();
+    expect(h.ext.sendMessage.mock.calls[0]![0].customType).toBe("pi-fabric-prewalk-failure");
+  });
+
+  it("does not spend another executor's inherited continuation receipt", async () => {
+    const h = prepare();
+    h.session.appendCustomEntry(continuationType, { executorId: "parent-executor" });
+    await h.invoke();
+    expect(h.ext.sendMessage.mock.calls[0]![0].customType).toBe(continuationType);
+  });
+
+  it("preserves the original failure when continuation delivery throws", async () => {
+    const h = prepare();
+    h.ext.sendMessage.mockImplementation(() => { throw new Error("queue unavailable"); });
+    const { result, pending } = await h.invoke();
+    expect(result).toMatchObject({ completed: false, status: "failed", error: "Fabric agent depth limit exceeded" });
+    expect(pending.audit.success).toBe(false);
+  });
 });
 
 describe("outer-boundary Prewalk", () => {
