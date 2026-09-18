@@ -1,6 +1,9 @@
-import { stringify } from "yaml";
+import { createRequire } from "node:module";
 import type { FabricResultFormat } from "../config.js";
 import { countNewlines } from "../util.js";
+
+const require = createRequire(import.meta.url);
+let yaml: typeof import("yaml") | undefined;
 
 const normalizeJsonValue = (value: unknown): unknown | undefined => {
   try {
@@ -14,7 +17,7 @@ const normalizeJsonValue = (value: unknown): unknown | undefined => {
 export const formatJsonAsYaml = (value: unknown): string | undefined => {
   const normalized = normalizeJsonValue(value);
   if (normalized === undefined) return undefined;
-  return stringify(normalized, { indent: 2, lineWidth: 0 }).trimEnd();
+  return (yaml ??= require("yaml") as typeof import("yaml")).stringify(normalized, { indent: 2, lineWidth: 0 }).trimEnd();
 };
 
 export interface FormattedFabricValue {

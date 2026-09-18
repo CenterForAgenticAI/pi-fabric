@@ -13,6 +13,41 @@ against `src/`, so green tests alone are not enough: without a build the
 change is invisible in the TUI and unpublished. Rebuild so the user can
 verify immediately.
 
+## Startup: budget the transitive graph, not just the entrypoint
+
+A warm jiti filesystem cache avoids transpilation, **not V8 compilation** in a
+new Pi process. A small entrypoint can still import megabytes through barrels,
+shared chunks, schema builders, or supposedly cheap catalog metadata. Native
+ESM may bypass jiti's virtual host modules and compile another dependency copy.
+Do not assume that marking a package external makes startup free.
+
+Keep registration and idle lifecycle hooks cheap. Load optional engines,
+parsers, serializers, and UI catalogs at actual first use, not in
+`session_start`, `resources_discover`, an immediately invoked async function,
+or a zero-delay "background" import. Use `import type` for type-only edges.
+For genuinely synchronous render APIs, memoized first-use `createRequire`
+loads of optional **third-party** dependencies preserve behavior. Do not use
+this escape hatch for Pi host APIs: lazy UI must use the supplied host interfaces.
+Keep package-local dynamic entry paths stable across installed generations.
+
+When touching startup, run `bun run build` (the artifact check guards the whole
+static closure and optional dependencies), `bun run assert:lazy-graph`, and
+cold-import/idle plus first-use tests. Review shared chunks too: code splitting
+can pull a lazy module back into the eager graph. Do not raise a graph budget
+just to make a regression pass.
+
+Measure in fresh processes, with the host preloaded and warm transpile caches:
+
+```sh
+bun run benchmark:startup . ../pi-fovea ../pi-contour
+```
+
+This reports import and registration separately; it is not a full-session boot
+measurement. Same-process repeated imports measure the module cache, not boot.
+Compare before/after on the same machine. The probe interleaves extension order
+and reports CPU time as well as wall time; inspect sample spread on a busy host.
+Keep CI assertions structural rather than enforcing flaky millisecond thresholds.
+
 ## Checks are incremental, never a full sweep
 
 Never run the whole test suite. Verify the files a change touches:

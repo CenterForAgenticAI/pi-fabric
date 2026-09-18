@@ -1,10 +1,6 @@
 import { readFileSync, statSync } from "node:fs";
 import { basename, extname } from "node:path";
-// The light shiki subpath entries carry only catalog metadata (~5ms combined).
-// The full shiki entry (createHighlighter, ~50ms in-host) is dynamic-imported
-// lazily inside initHighlighting so extension startup stays off the shiki graph.
-import { bundledLanguages } from "shiki/langs";
-import { bundledThemesInfo } from "shiki/themes";
+import { shikiLanguages, shikiThemeType } from "./shiki-catalog.js";
 import type { GrammarState, Highlighter } from "shiki";
 import { resolveShikiTheme, type ShikiThemeVariant } from "./code-preview.js";
 import { resolveShikiThemeObject } from "./shiki-theme.js";
@@ -138,7 +134,6 @@ const EXTENSION_ALIASES = new Map<string, string>([
   [".dockerfile", "dockerfile"],
 ]);
 
-const THEME_TYPE = new Map(bundledThemesInfo.map((theme) => [theme.id, theme.type]));
 const LOW_CONTRAST_FALLBACK = "\x1b[38;2;139;148;158m";
 
 let highlighter: Highlighter | undefined;
@@ -295,7 +290,7 @@ export const effectiveShikiTheme = (): string => currentTheme;
 
 /** Whether the effective shiki theme is a light theme. */
 export const effectiveShikiThemeIsLight = (): boolean =>
-  THEME_TYPE.get(currentTheme) === "light";
+  shikiThemeType(currentTheme) === "light";
 
 /** Pi's most recently observed theme variant. */
 export const observedThemeVariant = (): ShikiThemeVariant => observedVariant;
@@ -306,15 +301,15 @@ export function languageFromPath(filePath: string | undefined): string | undefin
   const name = basename(filePath).toLowerCase();
   if (name.startsWith(".env")) {
     const candidate = "dotenv";
-    return candidate in bundledLanguages ? candidate : undefined;
+    return candidate in shikiLanguages() ? candidate : undefined;
   }
   if (name === "dockerfile" || name.startsWith("dockerfile.")) {
-    return "dockerfile" in bundledLanguages ? "dockerfile" : undefined;
+    return "dockerfile" in shikiLanguages() ? "dockerfile" : undefined;
   }
   const exact = EXACT_BASENAMES.get(name);
-  if (exact && exact in bundledLanguages) return exact;
+  if (exact && exact in shikiLanguages()) return exact;
   const byExt = EXTENSION_ALIASES.get(extname(name));
-  return byExt && byExt in bundledLanguages ? byExt : undefined;
+  return byExt && byExt in shikiLanguages() ? byExt : undefined;
 }
 
 /** Configure highlighting without loading Shiki until the first code preview needs it. */
@@ -442,7 +437,7 @@ const isLowContrastFg = (params: string): boolean => {
 };
 
 const normalizeContrast = (ansi: string): string => {
-  if (THEME_TYPE.get(currentTheme) === "light") return ansi;
+  if (shikiThemeType(currentTheme) === "light") return ansi;
   return ansi.replace(/\x1b\[([0-9;]*)m/g, (seq, params: string) =>
     isLowContrastFg(params) ? LOW_CONTRAST_FALLBACK : seq,
   );
@@ -534,7 +529,7 @@ export function highlightCode(
     return null;
   }
   const shikiLang = normalizeLanguage(lang);
-  if (!(shikiLang in bundledLanguages)) return null;
+  if (!(shikiLang in shikiLanguages())) return null;
   const cacheKey = `${currentTheme}\0${shikiLang}\0${text.length}\0${hashString(text)}`;
   const cached = renderCache.get(cacheKey);
   if (cached) {
@@ -736,7 +731,7 @@ export function highlightFileLines(
     return null;
   }
   const shikiLang = normalizeLanguage(lang);
-  if (!(shikiLang in bundledLanguages)) return null;
+  if (!(shikiLang in shikiLanguages())) return null;
   if (!loadedLanguages.has(shikiLang)) {
     requestLanguageLoad(shikiLang, invalidate);
     return null;
@@ -815,7 +810,7 @@ export function highlightSourceLines(
     return null;
   }
   const shikiLang = normalizeLanguage(lang);
-  if (!(shikiLang in bundledLanguages)) return null;
+  if (!(shikiLang in shikiLanguages())) return null;
   if (!loadedLanguages.has(shikiLang)) {
     requestLanguageLoad(shikiLang, invalidate);
     return null;

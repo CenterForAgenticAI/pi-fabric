@@ -99,6 +99,18 @@ const staticClosure = (roots) => {
 };
 
 const startupFiles = staticClosure([join(dist, "index.js")]);
+const startupBytes = [...startupFiles].reduce((sum, file) => sum + Buffer.byteLength(readFileSync(file)), 0);
+if (startupBytes > 1150 * 1024 || startupFiles.size > 44) {
+  throw new Error(`Startup static graph grew beyond its budget: ${startupBytes} bytes in ${startupFiles.size} files`);
+}
+const optionalPackages = ["yaml", "@lezer/python", "shiki", "@shikijs/langs", "@shikijs/themes", "typescript", "mcporter"];
+for (const file of startupFiles) {
+  for (const match of readFileSync(file, "utf8").matchAll(staticImport)) {
+    if (optionalPackages.some(name => match[1] === name || match[1]?.startsWith(`${name}/`))) {
+      throw new Error(`Startup eagerly imports optional dependency ${match[1]} from ${file}`);
+    }
+  }
+}
 const initialSource = [...startupFiles]
   .map((file) => readFileSync(file, "utf8"))
   .join("\n");
@@ -132,5 +144,5 @@ await Promise.all(
   ),
 );
 console.log(
-  `build artifacts and lazy startup graph verified (${startupFiles.size} startup files, ${lazy.length} stable lazy entries, ${chunkFiles.length} chunks)`,
+  `build artifacts and lazy startup graph verified (${startupFiles.size} startup files, ${startupBytes} startup bytes, ${lazy.length} stable lazy entries, ${chunkFiles.length} chunks)`,
 );
