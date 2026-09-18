@@ -27,6 +27,15 @@ export default function (pi: ExtensionAPI) {
       return stream;
     },
   });
+  pi.on("model_select", async (event, ctx) => {
+    const selectionDelay = Number(process.env.MODEL_PROBE_SELECTION_DELAY_MS ?? 0);
+    if (event.model.provider === "model-probe" && event.model.id === "requested" && selectionDelay > 0) {
+      // RPC is already ready, but set_model awaits model-specific initialization.
+      ctx.ui.notify("model-selection-waiting", "info");
+      await new Promise(resolve => setTimeout(resolve, selectionDelay));
+      ctx.ui.notify("model-selection-completed", "info");
+    }
+  });
   pi.on("session_start", async (_event, ctx) => {
     const startupDelay = Number(process.env.MODEL_PROBE_STARTUP_DELAY_MS ?? 0);
     if (startupDelay > 0) {

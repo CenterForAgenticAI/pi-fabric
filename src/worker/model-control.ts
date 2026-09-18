@@ -31,7 +31,6 @@ export class PiModelControl {
   private readonly thinking: string | undefined;
   private readonly io: {
     send(frame: Record<string, unknown>): void;
-    rpcReady(): void;
     admitted(model?: string, thinking?: string): void;
     observed(model: string): void;
     fail(error: string): void;
@@ -59,7 +58,7 @@ export class PiModelControl {
     }
     // Pi opens its RPC input only after extension factories and session_start
     // handlers finish. A correlated response, not spawn or startup UI output,
-    // marks readiness; the worker's overall timeout bounds this startup wait.
+    // marks readiness; the worker's overall timeout bounds the entire handshake.
     this.#send("get_state");
   }
 
@@ -106,7 +105,6 @@ export class PiModelControl {
     }
     if (this.#awaitingStartup) {
       this.#awaitingStartup = false;
-      this.io.rpcReady();
       this.#resolveModel();
     } else if (command === "get_available_models") {
       const models = object(event.data)?.models;

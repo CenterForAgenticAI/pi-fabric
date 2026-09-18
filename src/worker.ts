@@ -378,18 +378,12 @@ const main = async (): Promise<void> => {
 
   const update = (): void => updateRunRecord(options.statusFile, record);
 
-  let modelTimer: NodeJS.Timeout | undefined;
+  // Auth checks and model_select hooks can be slow under concurrent launches.
+  // Startup and admission share the overall run timeout below, not a shorter cap.
   const modelControl = new PiModelControl(options.id, options.model, thinking, {
     send(frame) {
       if (terminalStatus) return;
       child.stdin?.write(`${JSON.stringify(frame)}\n`);
-    },
-    rpcReady() {
-      if (terminalStatus) return;
-      // Do not charge extension/provider startup against model admission.
-      // The overall run timeout still bounds startup and the full handshake.
-      modelTimer = setTimeout(() => modelControl.fail("RPC admission timed out; task was not sent"), 15_000);
-      modelTimer.unref();
     },
     observed(model) {
       if (record.model === model) return;
@@ -397,7 +391,6 @@ const main = async (): Promise<void> => {
       update();
     },
     admitted(model, effectiveThinking) {
-      if (modelTimer) clearTimeout(modelTimer);
       if (terminalStatus) return;
       if (model) record.model = model;
       if (["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(effectiveThinking ?? "")) {
@@ -408,7 +401,6 @@ const main = async (): Promise<void> => {
     },
     fail(error) {
       if (terminalStatus) return;
-      if (modelTimer) clearTimeout(modelTimer);
       terminalStatus = "failed";
       terminalError = error;
       record.error = error;
@@ -1141,6 +1133,9 @@ const main = async (): Promise<void> => {
     if (terminalStatus) return;
     terminalStatus = "timed_out";
     terminalError = `Agent timed out after ${options.timeoutMs}ms`;
+    if (options.runner === "pi" && !modelControl.ready) {
+      terminalError += "; Pi model admission did not complete; task was not sent";
+    }
     terminateChild(child, "SIGTERM");
     setTimeout(() => terminateChild(child, "SIGKILL"), KILL_GRACE_MS).unref();
   }, options.timeoutMs);
@@ -1169,7 +1164,6 @@ const main = async (): Promise<void> => {
   if (steerTimer) clearInterval(steerTimer);
   if (claudeCloseTimer) clearTimeout(claudeCloseTimer);
   clearTimeout(timeout);
-  if (modelTimer) clearTimeout(modelTimer);
   if (options.runner === "pi" && !modelControl.ready && !terminalStatus) {
     terminalStatus = "failed";
     terminalError = `Child Pi exited before requested model admission completed; task was not sent${stderr.trim() ? `: ${stderr.trim()}` : ""}`;

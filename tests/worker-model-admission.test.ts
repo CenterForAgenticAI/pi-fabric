@@ -27,7 +27,7 @@ describe.skipIf(!fs.existsSync(workerPath))("real worker model admission", () =>
     const scenarioFile = path.join(directory, "scenario");
     fs.writeFileSync(scenarioFile, scenario);
     vi.stubEnv("FAKE_MODEL_SCENARIO", scenarioFile);
-    const manager = new AgentManager(directory, { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: scenario === "timeout" ? 30_000 : 5_000 }, {
+    const manager = new AgentManager(directory, { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 5_000 }, {
       workerPath, piBinary: path.resolve("tests/fixtures/fake-pi-model.mjs"), runRoot: path.join(directory, "runs"),
     });
     managers.push(manager);
@@ -54,13 +54,10 @@ describe.skipIf(!fs.existsSync(workerPath))("real worker model admission", () =>
     expect(result.error).toMatch(/model|timed out/);
     expect(frames.some(frame => frame.type === "prompt")).toBe(false);
     expect(result.toolCalls).toBe(0);
-    if (scenario === "startup-timeout") {
+    if (scenario === "startup-timeout" || scenario === "timeout") {
       expect(result.status).toBe("timed_out");
       expect(result.error).toContain("Agent timed out after 5000ms");
-      expect(frames.map(frame => frame.type)).toEqual(["get_state"]);
-    } else if (scenario === "timeout") {
-      expect(result.error).toContain("RPC admission timed out");
-      expect(frames.map(frame => frame.type)).toEqual(["get_state", "set_model"]);
+      expect(frames.map(frame => frame.type)).toEqual(scenario === "startup-timeout" ? ["get_state"] : ["get_state", "set_model"]);
     }
   }, 40_000);
 
@@ -77,7 +74,11 @@ describe.skipIf(!fs.existsSync(workerPath))("real worker model admission", () =>
     expect(frames.slice(0, 2).map(frame => frame.type)).toEqual(["get_state", "get_available_models"]);
   });
 
-  it.each([0, 16_000])("reasserts selection after a real Pi session_start hijack with %sms startup (offline)", async startupDelay => {
+  it.each([
+    { phase: "immediate startup", startupDelay: 0, selectionDelay: 0, concurrency: 1 },
+    { phase: "slow startup", startupDelay: 16_000, selectionDelay: 0, concurrency: 1 },
+    { phase: "concurrent slow model selection", startupDelay: 0, selectionDelay: 16_000, concurrency: 3 },
+  ])("reasserts selection after a real Pi session_start hijack: $phase (offline)", async ({ startupDelay, selectionDelay, concurrency }) => {
     const directory = root();
     const agentDir = path.join(directory, "agent");
     fs.mkdirSync(agentDir);
@@ -88,7 +89,8 @@ describe.skipIf(!fs.existsSync(workerPath))("real worker model admission", () =>
     vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
     vi.stubEnv("PI_OFFLINE", "1");
     vi.stubEnv("MODEL_PROBE_STARTUP_DELAY_MS", String(startupDelay));
-    const manager = new AgentManager(directory, { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 30_000 }, {
+    vi.stubEnv("MODEL_PROBE_SELECTION_DELAY_MS", String(selectionDelay));
+    const manager = new AgentManager(directory, { ...DEFAULT_FABRIC_CONFIG.agents, maxConcurrent: concurrency, timeoutMs: 45_000 }, {
       workerPath,
       piBinary: path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js"),
       fullCodeMode: false,
@@ -96,12 +98,19 @@ describe.skipIf(!fs.existsSync(workerPath))("real worker model admission", () =>
       runRoot: path.join(directory, "runs"),
     });
     managers.push(manager);
-    const result = await manager.run({ task: "probe model", model: "model-probe/requested", thinking: "high", extensions: true, transport: "process" });
-    expect(result, `${result.error}
-${result.stderr}
-${fs.readFileSync(result.logFile!, "utf8")}`).toMatchObject({ status: "completed", model: "model-probe/requested", thinking: "high" });
-    expect(result.text).toBe("model-probe/requested:high");
-    const log = fs.readFileSync(result.logFile!, "utf8");
-    expect(log).toContain("startup-hijacked:model-probe/mru");
-  }, 40_000);
+    const results = await Promise.all(Array.from({ length: concurrency }, () => manager.run({
+      task: "probe model", model: "model-probe/requested", thinking: "high", extensions: true, transport: "process",
+    })));
+    for (const result of results) {
+      const log = fs.readFileSync(path.join(directory, "runs", result.id, "events.jsonl"), "utf8");
+      expect(result, `${result.error}\n${result.stderr}\n${log}`).toMatchObject({ status: "completed", model: "model-probe/requested", thinking: "high" });
+      expect(result.text).toBe("model-probe/requested:high");
+      expect(log).toContain("startup-hijacked:model-probe/mru");
+      if (selectionDelay > 0) {
+        expect(log).toContain("model-selection-waiting");
+        expect(log).toContain("model-selection-completed");
+        expect(log.indexOf("model-selection-completed")).toBeLessThan(log.indexOf('"type":"agent_start"'));
+      }
+    }
+  }, 60_000);
 });
