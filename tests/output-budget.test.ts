@@ -1,4 +1,6 @@
-import { rm, stat } from "node:fs/promises";
+import fs from "node:fs";
+import os from "node:os";
+import fsp, { rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -48,6 +50,21 @@ describe("boundModelOutput", () => {
       expect(info.mode & 0o777).toBe(0o600);
     }
     await rm(path.dirname(result.artifactPath!), { recursive: true, force: true });
+  });
+
+  it("removes the allocated directory when the real artifact write fails", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "output-failure-test-"));
+    const tmp = vi.spyOn(os, "tmpdir").mockReturnValue(tempRoot);
+    const write = vi.spyOn(fsp, "writeFile").mockRejectedValue(new Error("disk full"));
+    try {
+      const result = await boundModelOutput("x".repeat(4_000), 1_000);
+      expect(result.artifactPath).toBeUndefined();
+      expect(fs.readdirSync(tempRoot)).toEqual([]);
+    } finally {
+      write.mockRestore();
+      tmp.mockRestore();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("stays bounded if artifact persistence fails", async () => {

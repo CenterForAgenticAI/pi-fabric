@@ -33,11 +33,19 @@ const activate = <T>(section: SectionSubmenu, id: string): T => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("Jev approval probability settings", () => {
-  it.each([undefined, "anthropic/chat", "jev/jev-latest", "jev/pinned"])("shows the setting only for a Jev override: %s", model => {
+  it("offers both namespaced models without duplicate or legacy picker entries", () => {
+    const { open } = fixture("jev/jev-latest");
+    const picker = activate<FabricModelSelector>(open(), "approvals.model");
+    expect(picker.rpcChoices().map(choice => choice.value)).toEqual([
+      "Inherit", "pi-fabric/typesafe/jev-latest", "pi-fabric/typesafe/jev-1.13",
+    ]);
+    expect(picker.rpcChoices().find(choice => choice.current)?.value).toBe("pi-fabric/typesafe/jev-latest");
+  });
+  it.each([undefined, "anthropic/chat", "pi-fabric/typesafe/jev-latest", "pi-fabric/typesafe/pinned"])("shows the setting only for a Jev override: %s", model => {
     const { config, open } = fixture(model);
     expect(config.jev.autoApprovalThreshold).toBe(0.5);
     const row = open().items.find(item => item.id === thresholdId);
-    expect(Boolean(row)).toBe(Boolean(model?.startsWith("jev/")));
+    expect(Boolean(row)).toBe(Boolean(model?.startsWith("pi-fabric/typesafe/")));
     if (row) expect(row.currentValue).toBe("0.5");
   });
 
@@ -45,7 +53,7 @@ describe("Jev approval probability settings", () => {
     const { config, apply, open } = fixture();
     const section = open();
     const rows = section.items;
-    activate<FabricModelSelector>(section, "approvals.model").selectRpc("jev/jev-latest");
+    activate<FabricModelSelector>(section, "approvals.model").selectRpc("pi-fabric/typesafe/jev-latest");
     expect(section.items).toBe(rows);
     expect(rows.some(item => item.id === thresholdId)).toBe(true);
     activate<ProbabilityInputSubmenu>(section, thresholdId).submitRpc("0.975");
@@ -55,7 +63,7 @@ describe("Jev approval probability settings", () => {
     activate<FabricModelSelector>(section, "approvals.model").selectRpc("Inherit");
     expect(rows.some(item => item.id === thresholdId)).toBe(false);
     expect(config.jev.autoApprovalThreshold).toBe(0.975);
-    activate<FabricModelSelector>(section, "approvals.model").selectRpc("jev/jev-latest");
+    activate<FabricModelSelector>(section, "approvals.model").selectRpc("pi-fabric/typesafe/jev-latest");
     expect(open().items.find(item => item.id === thresholdId)?.currentValue).toBe("0.975");
   });
 
@@ -65,14 +73,14 @@ describe("Jev approval probability settings", () => {
     const original = vi.spyOn(SettingsList.prototype, "selectItem");
     Object.defineProperty(SettingsList.prototype, "selectItem", { value: undefined });
     try {
-      section.applyChange("approvals.model", "jev/jev-latest");
+      section.applyChange("approvals.model", "pi-fabric/typesafe/jev-latest");
       expect(section.items.some(item => item.id === thresholdId)).toBe(true);
       expect(section.render(100).join("\n")).toContain("Jev minimum probability");
     } finally { original.mockRestore(); }
   });
 
   it.each(["", " ", "NaN", "Infinity", "-0.01", "1.001", "text", "50%"])("rejects invalid input %j and cancels without saving", value => {
-    const { config, apply, open } = fixture("jev/jev-latest");
+    const { config, apply, open } = fixture("pi-fabric/typesafe/jev-latest");
     const input = activate<ProbabilityInputSubmenu>(open(), thresholdId);
     input.input.setValue(value);
     input.handleInput("\r");
@@ -83,7 +91,7 @@ describe("Jev approval probability settings", () => {
   });
 
   it.each(["0", "0.50", ".955", "1"])("accepts probability %s through the terminal input", value => {
-    const { config, open } = fixture("jev/jev-latest");
+    const { config, open } = fixture("pi-fabric/typesafe/jev-latest");
     const input = activate<ProbabilityInputSubmenu>(open(), thresholdId);
     input.input.setValue(value);
     input.handleInput("\r");
@@ -136,7 +144,7 @@ describe("Jev approval probability settings", () => {
       } as unknown as ExtensionContext;
       await openFabricSettings(context, { state, applyFabricMode() {}, capturedTools: { list: () => [] } as unknown as CapturedToolCatalog });
       const file = scope === "project" ? path.join(cwd, ".pi", "fabric.json") : path.join(agentDir, "fabric.json");
-      expect(JSON.parse(fs.readFileSync(file, "utf8"))).toMatchObject({ approvals: { model: "jev/jev-latest" }, jev: { autoApprovalThreshold: 0.975 } });
+      expect(JSON.parse(fs.readFileSync(file, "utf8"))).toMatchObject({ approvals: { model: "pi-fabric/typesafe/jev-latest" }, jev: { autoApprovalThreshold: 0.975 } });
       expect(loadFabricConfig({ cwd, agentDir, projectTrusted: true }).jev.autoApprovalThreshold).toBe(0.975);
       expect(config.jev.autoApprovalThreshold).toBe(0.975);
       expect(input).toHaveBeenCalledTimes(2);

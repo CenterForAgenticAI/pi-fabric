@@ -2,6 +2,7 @@ import type { Usage } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_JEV_CONFIG, type FabricJevConfig } from "../jev/config.js";
+import { JEV_APPROVAL_MODEL_PREFIX, isJevApprovalModel, normalizeJevApprovalModel } from "../jev/model-key.js";
 import type { ResolvedFabricAction } from "./action-registry.js";
 
 const MAX_TRANSCRIPT_CHARS = 24_000;
@@ -168,8 +169,8 @@ export class FabricAutoApprovalClassifier {
     context: ExtensionContext,
     modelKey: string,
   ): Promise<FabricAutoApprovalDecision> {
-    const model = modelKey.slice(4);
-    if (!/^[a-zA-Z0-9._-]{1,128}$/.test(model)) throw new Error("Invalid Jev auto-approval model; use jev/<model-id>");
+    const model = normalizeJevApprovalModel(modelKey)!.slice(JEV_APPROVAL_MODEL_PREFIX.length);
+    if (!/^[a-zA-Z0-9._-]{1,128}$/.test(model)) throw new Error(`Invalid Jev auto-approval model; use ${JEV_APPROVAL_MODEL_PREFIX}<model-id>`);
     let truncated = false;
     const argumentsJson = boundedJson(args, MAX_ARGUMENT_CHARS, () => { truncated = true; });
     const evidence = transcriptEvidence(context, true);
@@ -214,7 +215,7 @@ export class FabricAutoApprovalClassifier {
       return {
         decision: answer.noul >= threshold ? "allow" : "escalate",
         reason: `Jev safety probability ${answer.noul}; auto-allow requires >= ${threshold}`,
-        model: `jev/${response.model}`,
+        model: `${JEV_APPROVAL_MODEL_PREFIX}${response.model}`,
         // TypeSafe reports tokens but not billing amounts. Zero means unpriced.
         usage: { input, output, cacheRead: 0, cacheWrite: 0, totalTokens: input + output,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
@@ -229,7 +230,7 @@ export class FabricAutoApprovalClassifier {
     modelKey?: string,
   ): Promise<FabricAutoApprovalDecision> {
     context.signal?.throwIfAborted();
-    if (modelKey?.startsWith("jev/")) return this.#classifyJev(action, args, context, modelKey);
+    if (modelKey && isJevApprovalModel(modelKey)) return this.#classifyJev(action, args, context, modelKey);
     const model = configuredModel(context, modelKey);
     if (!model) {
       throw new Error(

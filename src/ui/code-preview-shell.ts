@@ -127,7 +127,9 @@ const updateTiming = (
   if (options.formatLabel === false) return undefined;
   const running = context.isPartial;
   const endedAt = running ? Date.now() : (state.codePreviewTimingEndedAt ?? Date.now());
-  return `${running ? "Elapsed" : "Took"} ${formatDuration(endedAt - startedAt)}`;
+  const durationMs = endedAt - startedAt;
+  if (!Number.isFinite(durationMs) || Math.round(durationMs) <= 0) return undefined;
+  return `${running ? "Elapsed" : "Took"} ${formatDuration(durationMs)}`;
 };
 
 class TimingPreservedComponent implements Component {

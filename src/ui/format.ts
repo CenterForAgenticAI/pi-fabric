@@ -39,7 +39,9 @@ export const formatActorDataPreview = (data: unknown, maxChars = 200): string | 
   return clip(serialized);
 };
 
+/** Empty durations are omitted by UI metric/field renderers. */
 export const formatDuration = (milliseconds: number): string => {
+  if (!Number.isFinite(milliseconds) || milliseconds < 1_000) return "";
   const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);

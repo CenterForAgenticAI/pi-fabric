@@ -25,6 +25,11 @@ export const colorStatus = (theme: Theme, status: string, value: string): string
   return theme.fg("dim", value);
 };
 
+const formatAge = (milliseconds: number): string | undefined => {
+  const duration = formatDuration(milliseconds);
+  return duration ? `${duration} ago` : undefined;
+};
+
 export const entityTail = (entity: Entity, now: number): string => {
   if (entity.kind === "main") {
     const main = entity.value;
@@ -109,7 +114,7 @@ export const entityTail = (entity: Entity, now: number): string => {
   }
   if (entity.kind === "peer") {
     const peer = entity.value;
-    return [peer.sessionId, peer.model, `${formatDuration(Math.max(0, now - peer.updatedAt))} ago`]
+    return [peer.sessionId, peer.model, formatAge(now - peer.updatedAt)]
       .filter((value): value is string => Boolean(value))
       .join(" · ");
   }
@@ -118,15 +123,15 @@ export const entityTail = (entity: Entity, now: number): string => {
     return [
       participant.participant ? `project ${participant.participant.kind}` : "observed mesh agent",
       `${participant.routes} route${participant.routes === 1 ? "" : "s"}`,
-      `${formatDuration(Math.max(0, now - participant.lastSeenAt))} ago`,
-    ].join(" · ");
+      formatAge(now - participant.lastSeenAt),
+    ].filter(Boolean).join(" · ");
   }
   if (entity.kind === "meshTopic") {
     const topic = entity.value;
     return [
       `${topic.subscribers.length} subscriber${topic.subscribers.length === 1 ? "" : "s"}`,
       topic.recentEvents > 0 ? `${topic.recentEvents} recent event${topic.recentEvents === 1 ? "" : "s"}` : undefined,
-      topic.lastEventAt ? `${formatDuration(Math.max(0, now - topic.lastEventAt))} ago` : undefined,
+      topic.lastEventAt ? formatAge(now - topic.lastEventAt) : undefined,
     ]
       .filter((value): value is string => Boolean(value))
       .join(" · ");
@@ -137,7 +142,7 @@ export const entityTail = (entity: Entity, now: number): string => {
       route.kind,
       route.topic,
       route.count > 1 ? `×${route.count}` : undefined,
-      `${formatDuration(Math.max(0, now - route.lastAt))} ago`,
+      formatAge(now - route.lastAt),
     ]
       .filter((value): value is string => Boolean(value))
       .join(" · ");

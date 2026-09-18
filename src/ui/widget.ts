@@ -225,7 +225,8 @@ export class FabricWidget implements Component {
     if (tokens > 0) parts.push(`${formatTokens(tokens)} tok`);
     const cost = totalCost(snapshot, run);
     if (cost > 0) parts.push(formatCost(cost));
-    if (run) parts.push(formatDuration((run.finishedAt ?? snapshot.now) - run.startedAt));
+    const elapsed = run && formatDuration((run.finishedAt ?? snapshot.now) - run.startedAt);
+    if (elapsed) parts.push(elapsed);
 
     const glyph = colorStatus(this.theme, headerStatus, statusGlyph(headerStatus));
     const header = `${glyph} ${this.theme.fg("accent", "Fabric")} ${this.theme.fg(

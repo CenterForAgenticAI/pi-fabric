@@ -89,7 +89,7 @@ try {
       return Response.json({ model: "jev-latest", answers: { safe_to_auto_approve: { type: "noul", noul: probability } }, usage: { input_tokens: 20, output_tokens: 3 } });
     };
     config.approvals.read = "auto";
-    config.approvals.model = "jev/jev-latest";
+    config.approvals.model = "pi-fabric/typesafe/jev-latest";
     context.extensionContext.modelRegistry = { getApiKeyForProvider: async () => "compiled-fixture-key" };
     context.extensionContext.sessionManager.getBranch = () => [{ type: "message", message: { role: "user", content: "Observe completed Main turns for local test verification" } }];
     const request = { input: null, observe: { events: ["turn_end"] }, program: {

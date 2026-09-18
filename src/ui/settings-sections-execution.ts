@@ -1,4 +1,5 @@
 import type { SettingItem } from "@earendil-works/pi-tui";
+import { isJevApprovalModel } from "../jev/model-key.js";
 import type { SettingsSectionContext } from "./settings-section-context.js";
 import {
   setting,
@@ -251,8 +252,11 @@ export const buildApprovalsSection = (
             {
               ...options.modelSource,
               models: [
-                ...options.modelSource.models.filter(model => model.provider !== "jev"),
-                { provider: "jev", id: config.jev.model, name: "Jev (TypeSafe safety classifier)" },
+                ...options.modelSource.models.filter(model => !isJevApprovalModel(`${model.provider}/${model.id}`)),
+                ...[...new Set([config.jev.model, "jev-latest", "jev-1.13"])].map(model => ({
+                  provider: "pi-fabric", id: `typesafe/${model}`,
+                  name: `Jev (TypeSafe safety classifier · ${model})`,
+                })),
               ],
             },
             {
@@ -262,7 +266,7 @@ export const buildApprovalsSection = (
             },
           ),
         }),
-        ...(config.approvals.model?.startsWith("jev/") ? [
+        ...(isJevApprovalModel(config.approvals.model) ? [
           setting("jev.autoApprovalThreshold", "Jev minimum probability", String(config.jev.autoApprovalThreshold), {
             description: "Minimum safety probability for automatic approval (0–1, default 0.50). Lower values allow more actions; 0 allows every valid judgment. Errors still require approval.",
             submenu: probabilitySubmenu(theme, "Jev minimum probability",

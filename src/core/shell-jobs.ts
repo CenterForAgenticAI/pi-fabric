@@ -1,5 +1,6 @@
-import { createWriteStream, type WriteStream } from "node:fs";
-import { readFile, unlink, writeFile } from "node:fs/promises";
+import fs from "node:fs";
+import { readFile, unlink } from "node:fs/promises";
+import { closeScratch, createScratch } from "../storage/scratch.js";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -9,6 +10,12 @@ import type { PiShellToolName } from "./pi-tools.js";
 export const DEFAULT_SHELL_HANG_MS = 120_000;
 export const SHELL_HANG_MAX_MS = 600_000;
 const SHELL_HANG_SNAPSHOT_BYTES = 8_000;
+export const SHELL_TAIL_BYTES = 1024 * 1024;
+export const SHELL_LOG_BYTES = 8 * 1024 * 1024;
+export const SHELL_COMPLETED_HANDLES = 256;
+const SHELL_COMPLETED_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
+const LOG_HEADER = "[Bounded shell log: starts with retained pre-spill tail; 8 MiB total cap, then further output is omitted. Not a full-output archive.]\n";
+const LOG_TRUNCATED = "\n[Shell log truncated: disk limit reached; subsequent output omitted.]\n";
 
 const posixQuote = (value: string): string =>
   "'" + value.replaceAll("'", "'\\''") + "'";
@@ -32,7 +39,7 @@ export const formatShellHangNotice = (input: {
 }): string => {
   const seconds = Math.max(1, Math.round(input.elapsedMs / 1_000));
   const pid = input.pid !== undefined ? ` (pid ${input.pid})` : "";
-  return `[Still running after ${seconds}s${pid}. Live output: ${input.logPath}]`;
+  return `[Still running after ${seconds}s${pid}. Bounded live output (may be truncated): ${input.logPath}]`;
 };
 
 export const appendShellHangNotice = (output: string, notice: string): string =>
@@ -93,37 +100,86 @@ class FabricShellJob implements FabricShellJobHandle {
   finishedAt?: number;
   exitCode?: number | null;
   status: FabricShellJobStatus = "running";
-  #chunks: Buffer[] = [];
-  #stream: WriteStream | undefined;
+  #tail = Buffer.alloc(0);
+  #omitted = false;
+  readonly #directory: string;
+  #descriptor: number | undefined;
+  #logBytes = 0;
+  #logTruncated = false;
   #spill = new AbortController();
   #pidRead: Promise<number | undefined> | undefined;
 
-  constructor(tool: PiShellToolName, command: string) {
+  constructor(tool: PiShellToolName, command: string, readonly onFinish: () => void, tempRoot: string) {
     this.id = randomUUID();
     this.tool = tool;
     this.command = command;
-    this.pidPath = path.join(tmpdir(), `pi-fabric-shell-${this.id}.pid`);
+    this.#directory = createScratch("shell", tempRoot);
+    this.pidPath = path.join(this.#directory, "child.pid");
   }
 
   append(data: Buffer): void {
     if (this.finished) return;
-    this.#chunks.push(data);
-    this.#stream?.write(data);
+    const keep = Math.max(0, SHELL_TAIL_BYTES - data.length);
+    if (this.#tail.length + data.length > SHELL_TAIL_BYTES) this.#omitted = true;
+    // Copy slices: a tiny view must not pin an arbitrarily large input buffer.
+    this.#tail = Buffer.concat([
+      this.#tail.subarray(Math.max(0, this.#tail.length - keep)),
+      data.subarray(Math.max(0, data.length - SHELL_TAIL_BYTES)),
+    ]);
+    this.#writeLog(data);
+  }
+
+  #writeLog(data: Buffer): void {
+    if (this.#descriptor === undefined || this.#logTruncated) return;
+    const available = Math.max(0, SHELL_LOG_BYTES - Buffer.byteLength(LOG_TRUNCATED) - this.#logBytes);
+    try {
+      const chunk = data.subarray(0, available);
+      // Bounded synchronous writes avoid an unbounded WriteStream backpressure queue.
+      let offset = 0;
+      while (offset < chunk.length) {
+        const written = fs.writeSync(this.#descriptor, chunk, offset);
+        if (written <= 0) throw new Error("Shell log write made no progress");
+        offset += written;
+      }
+      this.#logBytes += chunk.length;
+      if (chunk.length < data.length) {
+        fs.writeSync(this.#descriptor, LOG_TRUNCATED);
+        this.#logTruncated = true;
+      }
+    } catch {
+      // Never crash the subprocess data handler on ENOSPC. The header already
+      // disclaims completeness; close the descriptor and stop accepting output.
+      try { fs.closeSync(this.#descriptor); } catch {}
+      this.#descriptor = undefined;
+      this.#logTruncated = true;
+    }
   }
 
   snapshotText(maxBytes = SHELL_HANG_SNAPSHOT_BYTES): string {
-    const all = Buffer.concat(this.#chunks);
-    const slice = all.length <= maxBytes ? all : all.subarray(all.length - maxBytes);
-    return slice.toString("utf8");
+    const limit = Number.isFinite(maxBytes) ? Math.max(0, Math.floor(maxBytes)) : SHELL_TAIL_BYTES;
+    const slice = this.#tail.subarray(Math.max(0, this.#tail.length - limit));
+    const truncated = this.#omitted || slice.length < this.#tail.length;
+    return `${truncated ? "[Output truncated; retained tail follows]\n" : ""}${slice.toString("utf8")}`;
   }
 
   async persistLog(): Promise<string> {
     if (this.logPath) return this.logPath;
-    const logPath = path.join(tmpdir(), `pi-fabric-shell-${this.id}.log`);
-    this.logPath = logPath;
-    await writeFile(logPath, Buffer.concat(this.#chunks), { encoding: "utf8", mode: 0o600 });
-    this.#stream = createWriteStream(logPath, { flags: "a", encoding: "utf8", mode: 0o600 });
-    return logPath;
+    if (this.finished) throw new Error("Shell job finished before a log was requested");
+    const logPath = path.join(this.#directory, "output.log");
+    try {
+      this.#descriptor = fs.openSync(logPath, "wx", 0o600);
+      fs.writeSync(this.#descriptor, LOG_HEADER);
+      this.#logBytes = Buffer.byteLength(LOG_HEADER);
+      if (this.#omitted) this.#writeLog(Buffer.from("[Pre-spill output truncated: only the last 1 MiB was retained.]\n"));
+      this.#writeLog(this.#tail);
+      this.logPath = logPath;
+      return logPath;
+    } catch (error) {
+      if (this.#descriptor !== undefined) { try { fs.closeSync(this.#descriptor); } catch {} }
+      this.#descriptor = undefined;
+      try { fs.unlinkSync(logPath); } catch {}
+      throw error;
+    }
   }
 
   async readPid(): Promise<number | undefined> {
@@ -163,7 +219,10 @@ class FabricShellJob implements FabricShellJobHandle {
 
   async finish(exitCode?: number | null, footer?: string): Promise<void> {
     if (this.finished) return;
+    // A fast exit can beat the provider's persistLog continuation after spill.
+    const persistence = this.spilled && !this.logPath ? this.persistLog() : undefined;
     this.finished = true;
+    await persistence?.catch(() => undefined);
     this.finishedAt = Date.now();
     if (exitCode !== undefined) this.exitCode = exitCode;
     if (this.status === "running") {
@@ -171,19 +230,16 @@ class FabricShellJob implements FabricShellJobHandle {
     } else if (this.abort.signal.aborted && this.status === "spilled") {
       this.status = "killed";
     }
-    if (footer && this.#stream) this.#stream.write(footer.endsWith("\n") ? footer : `${footer}\n`);
-    await new Promise<void>((resolve) => {
-      if (!this.#stream) {
-        resolve();
-        return;
-      }
-      this.#stream.end(() => resolve());
-    });
-    this.#stream = undefined;
+    if (footer) this.#writeLog(Buffer.from(footer.endsWith("\n") ? footer : `${footer}\n`));
+    if (this.#descriptor !== undefined) { try { fs.closeSync(this.#descriptor); } catch {} }
+    this.#descriptor = undefined;
+    this.#tail = Buffer.alloc(0);
+    this.#omitted = false;
     if (!this.#spill.signal.aborted) this.#spill.abort();
-    if (!this.spilled) {
-      await unlink(this.pidPath).catch(() => undefined);
-    }
+    await unlink(this.pidPath).catch(() => undefined);
+    if (this.logPath) closeScratch(this.#directory);
+    else { try { fs.rmSync(this.#directory, { recursive: true, force: true }); } catch {} }
+    this.onFinish();
   }
 
   info(): FabricShellJobInfo {
@@ -220,17 +276,30 @@ export const trackShellOperations = (
 export class FabricShellJobStore {
   readonly #jobs = new Map<string, FabricShellJob>();
 
+  constructor(readonly tempRoot = tmpdir()) {}
+
+  #prune(): void {
+    const completed = [...this.#jobs.values()].filter((job) => job.finished);
+    completed.sort((a, b) => (a.finishedAt ?? 0) - (b.finishedAt ?? 0));
+    for (const [index, job] of completed.entries()) {
+      if (index < completed.length - SHELL_COMPLETED_HANDLES || Date.now() - (job.finishedAt ?? 0) >= SHELL_COMPLETED_MAX_AGE_MS) this.#jobs.delete(job.id);
+    }
+  }
+
   begin(tool: PiShellToolName, command: string): FabricShellJob {
-    const job = new FabricShellJob(tool, command);
+    this.#prune();
+    const job = new FabricShellJob(tool, command, () => this.#prune(), this.tempRoot);
     this.#jobs.set(job.id, job);
     return job;
   }
 
   get(id: string): FabricShellJob | undefined {
+    this.#prune();
     return this.#jobs.get(id);
   }
 
   list(): FabricShellJobInfo[] {
+    this.#prune();
     return [...this.#jobs.values()].map((job) => job.info());
   }
 

@@ -61,7 +61,7 @@ describe("native reader disk suspension", () => {
     expect(older.hasMore).toBe(false);
   });
 
-  it("offloads to one private file and restores loaded/pinned history without original files", () => {
+  it("offloads to one private payload plus ownership marker and restores loaded/pinned history without original files", () => {
     const file = path.join(workspace(), "session.jsonl");
     const records = [header, ...Array.from({ length: 150 }, (_, i) => entry(i))];
     fs.writeFileSync(file, jsonl(records));
@@ -79,7 +79,7 @@ describe("native reader disk suspension", () => {
     expect(reader.suspend()).toBe(true);
     expect(restore).not.toHaveBeenCalled();
     const directory = temporary.mock.results[0]!.value as string;
-    expect(fs.readdirSync(directory)).toEqual(["checkpoint"]);
+    expect(fs.readdirSync(directory).sort()).toEqual([".fabric-scratch.json", "checkpoint"]);
     const checkpoint = path.join(directory, "checkpoint");
     // Windows accepts chmod/mode options but does not expose POSIX permission bits.
     if (process.platform !== "win32") {

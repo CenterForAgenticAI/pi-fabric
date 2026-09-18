@@ -584,13 +584,15 @@ describe("FabricSettingsComponent", () => {
     list.selectedIndex = list.items.findIndex((item: { id: string }) => item.id === "approvals.model");
     list.activateItem();
     const picker = list.submenuComponent;
-    expect(picker.rpcChoices()).toContainEqual(expect.objectContaining({ value: "jev/jev-1.13" }));
-    expect(picker.selectRpc("jev/jev-1.13")).toBe(true);
-    expect(applied.at(-1)).toEqual({ id: "approvals.model", value: "jev/jev-1.13" });
+    expect(picker.rpcChoices()).toContainEqual(expect.objectContaining({ value: "pi-fabric/typesafe/jev-1.13" }));
+    expect(picker.rpcChoices()).toContainEqual(expect.objectContaining({ value: "pi-fabric/typesafe/jev-latest" }));
+    expect(picker.rpcChoices().some((choice: { value: string }) => choice.value.startsWith("jev/"))).toBe(false);
+    expect(picker.selectRpc("pi-fabric/typesafe/jev-1.13")).toBe(true);
+    expect(applied.at(-1)).toEqual({ id: "approvals.model", value: "pi-fabric/typesafe/jev-1.13" });
     list.activateItem();
     list.submenuComponent.handleInput("jev");
     list.submenuComponent.handleInput("\r");
-    expect(applied.at(-1)).toEqual({ id: "approvals.model", value: "jev/jev-1.13" });
+    expect(applied.at(-1)).toEqual({ id: "approvals.model", value: "pi-fabric/typesafe/jev-1.13" });
     expect(source.models.some(model => model.provider === "jev")).toBe(false);
   });
 

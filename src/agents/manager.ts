@@ -68,9 +68,11 @@ import type { BudgetLedgerDetail } from "./budget-ledger.js";
 import type { BudgetLedgerState } from "./budget-ledger.js";
 import { readJsonlPage } from "../log-tail.js";
 import {
+  canRemoveManagedRunRoot,
   heartbeatRunRoot,
   markRunRootActive,
   markRunRootClosed,
+  removeEmptyRunRoot,
   sweepTempRunRoots,
 } from "../storage/retention.js";
 import { resolveSessionExportDir, sessionExportFileFor } from "./session-export.js";
@@ -456,6 +458,11 @@ export class AgentManager {
     | { revision: number; value: Array<AgentRunRecord | AgentHandleInfo> }
     | undefined;
   #closing = false;
+  #closePromise: Promise<void> | undefined;
+  readonly #closeAbort = new AbortController();
+  readonly #spawns = new Set<Promise<AgentHandleInfo>>();
+  readonly #unregisteredTransports = new Set<AgentTransportHandle>();
+  readonly #launches = new Set<Promise<AgentTransportHandle>>();
 
   constructor(
     readonly cwd: string,
@@ -533,14 +540,7 @@ export class AgentManager {
     this.#transports = new Map(adapters.map((adapter) => [adapter.kind, adapter]));
     if (this.#managedTempRoot) {
       markRunRootActive(this.#runRoot);
-      sweepTempRunRoots({
-        tempRoot: os.tmpdir(),
-        currentRoot: this.#runRoot,
-        orphanedTempRunRetentionMs: this.#retention.orphanedTempRunMs,
-        oneShotRunRetentionMs: this.#retention.oneShotRunMs,
-      });
-      this.#retentionTimer = setInterval(() => this.#scheduleRetentionSweep(), RETENTION_SWEEP_INTERVAL_MS);
-      this.#retentionTimer.unref();
+      // Allocate ownership now; scan only on actual agent use or close.
     }
   }
 
@@ -618,7 +618,29 @@ export class AgentManager {
     return runtime;
   }
 
-  async spawn(request: AgentRunRequest, signal?: AbortSignal): Promise<AgentHandleInfo> {
+  spawn(request: AgentRunRequest, signal?: AbortSignal): Promise<AgentHandleInfo> {
+    if (this.#closing) return Promise.reject(new Error("Fabric agent manager is closing"));
+    const pending = this.#spawn(request, signal);
+    this.#spawns.add(pending);
+    void pending.then(() => this.#spawns.delete(pending), () => this.#spawns.delete(pending));
+    return pending;
+  }
+
+  async #launchTransport(adapter: AgentTransportAdapter, request: AgentTransportLaunch): Promise<AgentTransportHandle> {
+    if (this.#closing) throw new Error("Fabric agent manager is closing");
+    const pending = adapter.launch(request);
+    this.#launches.add(pending);
+    try {
+      const transport = await pending;
+      // Includes launches that race close, before a ManagedAgent can own them.
+      this.#unregisteredTransports.add(transport);
+      return transport;
+    } finally {
+      this.#launches.delete(pending);
+    }
+  }
+
+  async #spawn(request: AgentRunRequest, signal?: AbortSignal): Promise<AgentHandleInfo> {
     if (!this.config.enabled) throw new Error("Agents are disabled in Fabric configuration");
     if (this.#currentDepth >= this.config.maxDepth) {
       throw new Error(`Fabric agent depth limit reached (${this.config.maxDepth})`);
@@ -680,9 +702,11 @@ export class AgentManager {
         );
       }
     }
-    const release = await this.#semaphore.acquire("native", signal);
+    const admissionSignal = signal ? AbortSignal.any([signal, this.#closeAbort.signal]) : this.#closeAbort.signal;
+    const release = await this.#semaphore.acquire("native", admissionSignal);
     try {
       if (runner === "pi") model = await this.#prepareModel(model);
+      if (this.#closing) throw new Error("Fabric agent manager is closing");
       this.#semaphore.admit(this.#currentDepth + 1);
     } catch (error) {
       release();
@@ -692,6 +716,11 @@ export class AgentManager {
     const name = safeName(request.name ?? request.task.split("\n", 1)[0] ?? "Fabric agent");
     const runDirectory = path.join(this.#runRoot, id);
     fs.mkdirSync(runDirectory, { recursive: true });
+    if (this.#managedTempRoot && !this.#retentionTimer) {
+      this.#retentionTimer = setInterval(() => this.#scheduleRetentionSweep(), RETENTION_SWEEP_INTERVAL_MS);
+      this.#retentionTimer.unref();
+      this.#scheduleRetentionSweep();
+    }
     const taskFile = path.join(runDirectory, "task.txt");
     const statusFile = path.join(runDirectory, "status.json");
     const lifecycleFile = path.join(runDirectory, "lifecycle.jsonl");
@@ -861,10 +890,12 @@ export class AgentManager {
         workerPath: this.#workerPath,
         workerArguments,
       };
-      const transport = await adapter.launch(launch);
+      if (this.#closing) throw new Error("Fabric agent manager is closing");
+      const transport = await this.#launchTransport(adapter, launch);
       const lifecycle = createAgentLifecycle<AgentRunResult>(release);
-      if (signal?.aborted) {
+      if (signal?.aborted || this.#closing) {
         await transport.stop();
+        if (!await transport.isAlive().catch(() => true)) this.#unregisteredTransports.delete(transport);
         throw new Error("Agent launch aborted");
       }
       const managed: ManagedAgent = {
@@ -916,6 +947,7 @@ export class AgentManager {
         signal.addEventListener("abort", managed.abortHandler, { once: true });
       }
       this.#runs.set(id, managed);
+      this.#unregisteredTransports.delete(transport);
       this.#invalidateUiList();
       void this.#monitor(managed, timeoutMs);
       return this.#handleInfo(managed, "running");
@@ -1192,29 +1224,59 @@ export class AgentManager {
     return { queued: true, messageId };
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
     this.#closing = true;
+    this.#closeAbort.abort(new Error("Fabric agent manager is closing"));
+    return this.#closePromise ??= this.#close();
+  }
+
+  async #close(): Promise<void> {
     this.#uiListeners.clear();
     if (this.#retentionTimer) clearInterval(this.#retentionTimer);
     this.#retentionTimer = undefined;
     await this.#retentionSweep?.catch(() => undefined);
     const running = [...this.#runs.values()].filter((managed) => !managed.settled);
     await Promise.allSettled(running.map((managed) => this.stop(managed.id)));
-    await Promise.allSettled(running.map((managed) => this.#waitForTransportExit(managed)));
-    if (this.#managedTempRoot) {
-      markRunRootClosed(this.#runRoot);
-    } else if (!this.config.retainRuns) {
-      await removeTree(this.#runRoot);
+    await Promise.allSettled([...this.#spawns]);
+    await Promise.allSettled([...this.#launches]);
+    const all = [...this.#runs.values()];
+    await Promise.allSettled(all.map((managed) => this.#waitForTransportExit(managed)));
+    const transports = [...all.map((managed) => managed.transport), ...this.#unregisteredTransports];
+    const alive = await Promise.all(transports.map((transport) => transport.isAlive().catch(() => true)));
+    // A failed stop is not authority to delete a child's working files.
+    if (!alive.some(Boolean)) {
+      this.#unregisteredTransports.clear();
+      const storageSafe = !this.#managedTempRoot || canRemoveManagedRunRoot(this.#runRoot);
+      if (!this.config.retainRuns) {
+        if (storageSafe) {
+          await removeTree(this.#runRoot).catch(() => undefined);
+        }
+      } else if (this.#managedTempRoot) {
+        try { markRunRootClosed(this.#runRoot, Date.now(), true); } catch {}
+        removeEmptyRunRoot(this.#runRoot);
+      }
+      if (storageSafe && this.#budgetOwned && this.#budget) {
+        await removeTree(path.dirname(this.#budget.file)).catch(() => undefined);
+      }
     }
-    if (this.#budgetOwned && this.#budget) {
-      await removeTree(path.dirname(this.#budget.file));
-      clearOwnedBudgetEnv();
+    if (this.#budgetOwned) clearOwnedBudgetEnv();
+    if (this.#managedTempRoot) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      try {
+        sweepTempRunRoots({
+          tempRoot: os.tmpdir(),
+          currentRoot: this.#runRoot,
+          orphanedTempRunRetentionMs: this.#retention.orphanedTempRunMs,
+          oneShotRunRetentionMs: this.#retention.oneShotRunMs,
+        });
+      } catch {}
     }
   }
 
   #scheduleRetentionSweep(): void {
     if (this.#closing || this.#retentionSweep) return;
-    this.#retentionSweep = this.#runRetentionSweep().finally(() => {
+    this.#retentionSweep = new Promise<void>((resolve) => setImmediate(resolve))
+      .then(() => this.#closing ? undefined : this.#runRetentionSweep()).catch(() => undefined).finally(() => {
       this.#retentionSweep = undefined;
     });
   }
@@ -1366,7 +1428,8 @@ export class AgentManager {
       this.#drainLifecycle(managed);
       fs.rmSync(managed.statusFile, { force: true });
       if (managed.settled || this.#closing || managed.stopRequested) return false;
-      managed.transport = await managed.adapter.launch(managed.launch);
+      managed.transport = await this.#launchTransport(managed.adapter, managed.launch);
+      this.#unregisteredTransports.delete(managed.transport);
       if (managed.settled || this.#closing || managed.stopRequested) {
         // A stop landed while the relaunch was in flight. Release the child we
         // just started so it cannot outlive the monitor and the stop path can

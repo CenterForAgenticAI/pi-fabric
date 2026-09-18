@@ -3,7 +3,8 @@ export const formatToolCallDuration = (
   endedAt: number | undefined,
 ): string | undefined => {
   if (startedAt === undefined || endedAt === undefined) return undefined;
-  const durationMs = Math.max(0, endedAt - startedAt);
+  const durationMs = endedAt - startedAt;
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return undefined;
   return durationMs < 1_000
     ? `${durationMs}ms`
     : `${(durationMs / 1_000).toFixed(1)}s`;

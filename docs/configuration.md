@@ -392,7 +392,7 @@ Select **Jev (TypeSafe safety classifier)** in **Approvals → Auto model** afte
 ```json
 {
   "approvals": {
-    "model": "jev/jev-latest",
+    "model": "pi-fabric/typesafe/jev-latest",
     "write": "auto",
     "execute": "auto",
     "network": "auto",
@@ -401,7 +401,7 @@ Select **Jev (TypeSafe safety classifier)** in **Approvals → Auto model** afte
 }
 ```
 
-Jev is an auth-only provider, not a chat model. This picker adds the configured `jev.model` only to the approvals list; `jev/<model-id>` also supports a pinned model ID. **Inherit** still means the active Pi chat model, never Jev. Selecting Jev for approvals is independent of `jev.enabled`, which controls Fabric's Jev tool provider.
+Jev is an auth-only provider, not a chat model. This picker offers `pi-fabric/typesafe/jev-latest` and `pi-fabric/typesafe/jev-1.13` only in the approvals list, plus the configured `jev.model` if different. Legacy `jev/<model-id>` overrides normalize to `pi-fabric/typesafe/<model-id>` when loaded. `/login jev` credentials and raw TypeSafe request IDs (`jev-latest`, `jev-1.13`) are unchanged. **Inherit** still means the active Pi chat model, never Jev. Selecting Jev for approvals is independent of `jev.enabled`, which controls Fabric's Jev tool provider.
 
 The host asks one typed Noul question about whether the exact action is routine, reversible, task-aligned, and safe to run without human approval. It auto-allows when the returned probability is **at least `jev.autoApprovalThreshold` (default 0.50)**. Selecting a Jev model reveals **Approvals → Jev minimum probability**, an editable number from 0 to 1 in both terminal and RPC settings. The setting persists in the selected global/project scope, remains saved when switching models, and applies only to Jev classification. For example, `"jev": { "autoApprovalThreshold": 0.95 }` requires a probability of at least 0.95. Missing, non-numeric, non-finite, or out-of-range configuration values use the 0.50 default; valid decimals and zero are preserved. Upgrading from the former fixed 0.99 cutoff uses 0.50 unless you explicitly configure another value.
 
@@ -417,11 +417,21 @@ Authentication uses `/login jev`, `TYPESAFE_API_KEY`, then trusted `jev.credenti
 
 Fabric clears inactive run artifacts by age. It never truncates active JSONL files. The defaults are:
 
-- `retention.orphanedTempRunMs`: remove a temporary run root six hours after its owner process dies. Active roots carry a heartbeat marker and are never removed.
-- `retention.oneShotRunMs`: retain terminal one-shot agent run artifacts for 24 hours. An explicit `agents.cleanup()` may remove them sooner. On every other path, graceful shutdown marks their temporary root closed for temporal cleanup.
+- `retention.orphanedTempRunMs`: reclaim a managed temporary run root six hours after a sweep **first notices** its owner is dead, provided its contents and descendant liveness can be verified. Live owners/descendants are preserved. Closed, shutdown-confirmed incomplete runs use the same grace from close.
+- `retention.oneShotRunMs`: retain terminal one-shot agent run artifacts for 24 hours. An explicit `agents.cleanup()` may remove them sooner. Graceful shutdown with `agents.retainRuns: true` marks managed roots closed; empty roots are removed immediately. `retainRuns: false` requests deletion after child transports stop, including for managed temporary roots.
 - `retention.actorRunArchiveMs`: retain terminal actor run archives for seven days. Fabric always preserves the latest run for each actor.
 
-Cleanup runs during active Fabric sessions and when a new top-level run manager starts. It never truncates active run logs or actor `session.jsonl` files. `/fabric settings` exposes all three values under **Retention**. Changing them requires `/fabric reload`.
+Run housekeeping begins on actual agent storage use (not manager startup), continues during use, and runs best-effort on close. It never applies cache pressure to agent runs or truncates their JSONL/actor `session.jsonl` files. Caller-owned run roots retain their existing explicit-cleanup semantics. Symlink roots/markers, wrong-uid files, malformed ownership, unknown contents, and unverifiable incomplete descendants are preserved. `/fabric settings` exposes all three values under **Retention**. Changing them requires `/fabric reload`.
+
+### Temporary output and reader scratch
+
+New model-output spills and shell logs use private directories with a versioned `.fabric-scratch.json` ownership marker. They expire 24 hours after completion; oldest eligible caches may be removed sooner above **128 MiB or 256 items**, pooled across these two classes. Completed output is protected for its first hour. These aggregate limits are **soft** while files are active/recent or cannot be safely attributed. Model-output artifacts remain complete (not truncated), but their links are temporary.
+
+Shell hang tracking keeps a **1 MiB RAM tail per running command**, then releases it on finish. Completed handles are capped at **256** and expire after 24 hours on subsequent store access. Each shell log is capped at **8 MiB including notices**; it starts with the retained pre-spill tail, not necessarily the command's beginning. The returned notice and log header explicitly say this is bounded, **not a full-output archive**; reaching the disk cap appends a truncation notice. Further output continues to the normal shell consumer but not the log. PID files are retired on finish; logs remain subject to the cache policy. A disk write error also stops logging without interrupting command execution; bounded logs never promise completeness.
+
+Reader checkpoints are lossless live state: they are **never pressure-evicted**. Dispose/finalization removes them normally. New marked scratch left by a killed host can be recovered only six hours after housekeeping first observes a dead owner; shell scratch additionally preserves a live recorded child PID. PID reuse and permission uncertainty preserve data. Sweeps are asynchronous, coalesced and throttled to once per minute on actual scratch allocation/close, with no idle startup scan. Nothing expires until a later storage use triggers housekeeping. Directory identity, file metadata and owner/child liveness are rechecked before removal; hardlinked files are excluded. `sweepScratch({ tempRoot, dryRun: true })` reports `eligible` and first-observed `orphaned` directories without deleting or updating markers.
+
+**Conservative recovery limits:** legacy unmarked output/shell/checkpoint artifacts are not automatically deleted. Shared recursion budget ledgers lack descendant ownership leases, and temporary actor roots may contain shared/adopted work; crash orphans of those two classes are deliberately left alone, not deleted merely because a parent PID is dead or old. Normal owned-budget/ephemeral-actor close cleanup remains in place (budget initialization failures now remove their partial allocation). Persistent/caller-owned actor roots are not cache sweep targets. Unverifiable legacy incomplete runs, unknown files, malformed markers, and symlinks likewise require an operator's ownership/liveness review; do not use a broad prefix deletion.
 
 ## Agents
 

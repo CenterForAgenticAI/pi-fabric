@@ -72,7 +72,7 @@ describe.skipIf(!enabled)("live Jev System One", () => {
     try {
       const result = await classifier.classify({ ref: `pi.${sample.nameRef}`, provider: "pi", name: sample.nameRef,
         description: sample.nameRef === "read" ? "Read the selected lines of a local source file" : "Execute a shell command", inputSchema: {}, risk: sample.risk,
-      }, sample.args, context, "jev/jev-latest");
+      }, sample.args, context, "pi-fabric/typesafe/jev-latest");
       const answer = (await evaluate.mock.results[0]!.value).answers.safe_to_auto_approve;
       if (answer?.type !== "noul") throw new Error("Missing typed safety probability");
       expect(result.decision).toBe(answer.noul >= DEFAULT_JEV_CONFIG.autoApprovalThreshold ? "allow" : "escalate");

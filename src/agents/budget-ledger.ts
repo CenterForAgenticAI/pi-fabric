@@ -83,7 +83,12 @@ export function activeBudgetState(): BudgetLedgerState | undefined {
 export function initBudgetLedger(budget: number): BudgetLedgerState {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-budget-"));
   const file = path.join(directory, "cost.jsonl");
-  fs.writeFileSync(file, "", { mode: 0o600 });
+  try {
+    fs.writeFileSync(file, "", { mode: 0o600 });
+  } catch (error) {
+    try { fs.rmSync(directory, { recursive: true, force: true }); } catch {}
+    throw error;
+  }
   const id = randomUUID().replaceAll("-", "").slice(0, 16);
   process.env[ENV_BUDGET] = String(budget);
   process.env[ENV_BUDGET_FILE] = file;

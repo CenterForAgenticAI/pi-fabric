@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   activeBudgetState,
   appendBudgetLedger,
@@ -21,6 +21,18 @@ afterEach(() => {
 });
 
 describe("budget ledger", () => {
+  it("removes a partially allocated ledger when initialization fails", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "budget-failure-test-"));
+    const tmp = vi.spyOn(os, "tmpdir").mockReturnValue(root);
+    const write = vi.spyOn(fs, "writeFileSync").mockImplementation(() => { throw new Error("disk full"); });
+    try {
+      expect(() => initBudgetLedger(1)).toThrow("disk full");
+      expect(fs.readdirSync(root)).toEqual([]);
+    } finally {
+      write.mockRestore(); tmp.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
   it("reports no active budget by default", () => {
     expect(activeBudgetState()).toBeUndefined();
   });

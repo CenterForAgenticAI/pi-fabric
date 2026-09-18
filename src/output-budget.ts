@@ -1,5 +1,5 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import fs from "node:fs/promises";
+import { closeScratch, createScratch } from "./storage/scratch.js";
 import path from "node:path";
 import { truncateMiddle } from "./util.js";
 
@@ -22,10 +22,16 @@ export interface BoundedModelOutput {
 type ArtifactWriter = (content: string) => Promise<string>;
 
 const writeOutputArtifact: ArtifactWriter = async (content) => {
-  const directory = await mkdtemp(path.join(tmpdir(), "pi-fabric-output-"));
-  const artifactPath = path.join(directory, "output.txt");
-  await writeFile(artifactPath, content, { encoding: "utf8", mode: 0o600 });
-  return artifactPath;
+  const directory = createScratch("output");
+  try {
+    const artifactPath = path.join(directory, "output.txt");
+    await fs.writeFile(artifactPath, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    closeScratch(directory);
+    return artifactPath;
+  } catch (error) {
+    await fs.rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
 };
 
 export const boundModelOutput = async (

@@ -15,7 +15,9 @@ import {
   topologyTreeRouteNodeIds,
 } from "../src/ui/dashboard-fabric-graph.js";
 import { configureHighlighting } from "../src/ui/highlight.js";
-import { formatActorDataPreview, wrapPlainText } from "../src/ui/format.js";
+import { formatActorDataPreview, formatDuration, wrapPlainText } from "../src/ui/format.js";
+import { entityTail } from "../src/ui/dashboard-presentation.js";
+import { formatToolCallDuration } from "../src/ui/tool-call-timing.js";
 import type { ModelSource } from "../src/ui/model-picker.js";
 import type { FabricThinking } from "../src/thinking.js";
 import type { FabricDashboardSnapshot } from "../src/ui/types.js";
@@ -279,6 +281,91 @@ describe("Fabric dynamic UI", () => {
       .toEqual(["component:consumer", "component:provider"]);
     expect(topology.filter((entity) => entity.kind === "component").map((entity) => entity.id))
       .toEqual(["component:consumer", "component:provider"]);
+  });
+
+  it.each([-1, 0, 1, 999, NaN, Infinity])("hides zero/subsecond elapsed text (%s ms)", milliseconds => {
+    expect(formatDuration(milliseconds)).toBe("");
+  });
+
+  it("keeps nonzero duration formatting and hides zero tool-call timings", () => {
+    expect(formatDuration(1_000)).toBe("1s");
+    expect(formatDuration(61_000)).toBe("1m01s");
+    expect(formatToolCallDuration(100, 100)).toBeUndefined();
+    expect(formatToolCallDuration(100, 99)).toBeUndefined();
+    expect(formatToolCallDuration(100, 142)).toBe("42ms");
+    expect(formatToolCallDuration(100, 1_100)).toBe("1.0s");
+  });
+
+  it.each([0, 999, 1_000])("omits zero/subsecond widget and entity timers without stray separators (%s ms)", elapsed => {
+    const current = snapshot();
+    const run = current.runs[0]!;
+    run.startedAt = current.now - elapsed;
+    run.finishedAt = current.now;
+    run.status = "completed";
+    run.phases = [];
+    delete run.currentPhaseId;
+    current.agents = current.agents.slice(0, 1).map(agent => ({ ...agent, startedAt: run.startedAt, finishedAt: current.now, status: "completed" }));
+    const worker = current.agents[0]!;
+    current.actors = current.actors.slice(0, 1).map(actor => ({ ...actor, worker, status: "idle" }));
+    for (const call of run.calls) { call.startedAt = run.startedAt; call.finishedAt = current.now; }
+    const lines = new FabricWidget(theme, () => current, 8).render(400);
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines) {
+      expect(line).not.toMatch(/(?:^| )0s(?: |$)/);
+      expect(line).not.toMatch(/ · $| ·  · /);
+    }
+    expect(lines[0]!.includes(" · 1s")).toBe(elapsed === 1_000);
+    const tails = [
+      entityTail({ kind: "agent", id: worker.id, label: worker.name, status: worker.status, value: worker }, current.now),
+      ...run.calls.map(call => entityTail({ kind: "call", id: call.id, label: call.ref, status: call.status, value: call }, current.now)),
+    ];
+    expect(tails.length).toBeGreaterThan(0);
+    for (const tail of tails) {
+      expect(tail).not.toMatch(/(?:^| )0s(?: |$)/);
+      expect(tail.includes("1s")).toBe(elapsed === 1_000);
+    }
+  });
+
+  it.each([0, 999, 1_000])("hides zero dashboard elapsed fields, but keeps positive elapsed fields (%s ms)", elapsed => {
+    const current = snapshot();
+    const run = current.runs[0]!;
+    run.startedAt = current.now - elapsed;
+    for (const agent of current.agents) agent.startedAt = run.startedAt;
+    for (const call of run.calls) { call.startedAt = run.startedAt; call.finishedAt = current.now; }
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI,
+      theme, () => current, vi.fn(),
+    );
+    try {
+      expect(dashboard.render(240).join("\n")).not.toMatch(/(?:^| )0s(?: |$)/);
+      dashboard.handleInput("l");
+      for (const name of ["agent · security-reviewer", "call · project status"]) {
+        dashboard.handleInput("\r");
+        const detail = dashboard.render(240).join("\n");
+        expect(detail).toContain(name);
+        expect(detail.includes("Elapsed:")).toBe(elapsed === 1_000);
+        if (elapsed === 1_000) expect(detail).toContain("Elapsed: 1s");
+        dashboard.handleInput("\x1b");
+        dashboard.handleInput("j");
+      }
+    } finally { dashboard.dispose(); }
+  });
+
+  it.each([0, 999, 1_000])("omits zero relative ages with their suffix (%s ms)", elapsed => {
+    const now = 10_000;
+    const common = { id: "fixture", label: "Fixture", status: "idle" };
+    const entities = [
+      { ...common, kind: "peer", value: { sessionId: "session", model: "model", updatedAt: now - elapsed } },
+      { ...common, kind: "meshParticipant", value: { routes: 1, lastSeenAt: now - elapsed } },
+      { ...common, kind: "meshTopic", value: { subscribers: [], recentEvents: 0, lastEventAt: now - elapsed } },
+      { ...common, kind: "meshRoute", value: { kind: "publish", topic: "topic", count: 1, lastAt: now - elapsed } },
+    ] as Parameters<typeof entityTail>[0][];
+    for (const entity of entities) {
+      const text = entityTail(entity, now);
+      expect(text.includes("ago")).toBe(elapsed === 1_000);
+      expect(text).not.toMatch(/0s| · $| ·  · /);
+      if (elapsed === 1_000) expect(text).toContain("1s ago");
+    }
   });
 
   it("renders a bounded compact activity widget", () => {

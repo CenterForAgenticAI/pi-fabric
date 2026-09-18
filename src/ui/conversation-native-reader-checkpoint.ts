@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import os from "node:os";
+import { createScratch } from "../storage/scratch.js";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { deserialize, serialize } from "node:v8";
@@ -22,7 +22,7 @@ export class NativeReaderCheckpoint<T> {
   constructor(value: T) {
     const data = serialize(value);
     this.#digest = digest(data);
-    this.#directory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-native-reader-"));
+    this.#directory = createScratch("checkpoint");
     try {
       fs.chmodSync(this.#directory, 0o700);
       const temporary = path.join(this.#directory, "pending");

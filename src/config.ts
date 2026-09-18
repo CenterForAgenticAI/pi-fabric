@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { DEFAULT_JEV_CONFIG, normalizeJevConfig, type FabricJevConfig } from "./jev/config.js";
+import { normalizeJevApprovalModel } from "./jev/model-key.js";
 export type { FabricJevConfig } from "./jev/config.js";
 import os from "node:os";
 import path from "node:path";
@@ -701,7 +702,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         (tool): tool is string => typeof tool === "string" && Boolean(tool),
       )
     : DEFAULT_FABRIC_CONFIG.agents.defaultTools;
-  const approvalModel = stringValue(approvals.model);
+  const approvalModel = normalizeJevApprovalModel(stringValue(approvals.model));
   const configPath = stringValue(mcp.configPath);
   const meshRoot = stringValue(mesh.root);
   const memoryIndexDir = stringValue(memory.indexDir);

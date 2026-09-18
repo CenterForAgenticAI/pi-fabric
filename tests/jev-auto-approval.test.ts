@@ -30,7 +30,7 @@ const context = () => ({
 } as unknown as ExtensionContext);
 const response = (probability = 1) => ({ model: "jev-1.13", answers: { safe_to_auto_approve: { type: "noul", noul: probability } }, usage: { input_tokens: 100, output_tokens: 8 } });
 const fetcher = vi.fn<typeof fetch>();
-const config = () => normalizeFabricConfig({ approvals: { execute: "auto", model: "jev/jev-latest" } });
+const config = () => normalizeFabricConfig({ approvals: { execute: "auto", model: "pi-fabric/typesafe/jev-latest" } });
 
 beforeEach(() => {
   vi.stubEnv("TYPESAFE_API_KEY", "");
@@ -40,11 +40,19 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe("Jev auto-approval classifier", () => {
+  it.each(["jev-latest", "jev-1.13"])("migrates and resolves legacy Jev keys for %s", async model => {
+    const legacy = `jev/${model}`;
+    const canonical = `pi-fabric/typesafe/${model}`;
+    expect(normalizeFabricConfig({ approvals: { model: legacy } }).approvals.model).toBe(canonical);
+    const result = await new FabricAutoApprovalClassifier().classify(action, {}, context(), legacy);
+    expect(result.model).toBe("pi-fabric/typesafe/jev-1.13");
+    expect(JSON.parse(fetcher.mock.calls[0]![1]!.body as string).model).toBe(model);
+  });
   it.each([[1, "allow"], [0.99, "allow"], [0.5, "allow"], [0.499999, "escalate"], [0, "escalate"]] as const)("gates probability %s in host code", async (probability, decision) => {
     fetcher.mockImplementation(async () => Response.json(response(probability)));
     const ctx = context();
-    const result = await new FabricAutoApprovalClassifier().classify(action, { command: "bun run typecheck" }, ctx, "jev/jev-latest");
-    expect(result).toMatchObject({ decision, model: "jev/jev-1.13", usage: { input: 100, output: 8, totalTokens: 108, cost: { total: 0 } } });
+    const result = await new FabricAutoApprovalClassifier().classify(action, { command: "bun run typecheck" }, ctx, "pi-fabric/typesafe/jev-latest");
+    expect(result).toMatchObject({ decision, model: "pi-fabric/typesafe/jev-1.13", usage: { input: 100, output: 8, totalTokens: 108, cost: { total: 0 } } });
     expect(result.reason).toContain("requires >= 0.5");
     expect(ctx.modelRegistry.find).not.toHaveBeenCalled();
     expect(ctx.modelRegistry.getApiKeyAndHeaders).not.toHaveBeenCalled();
@@ -67,27 +75,27 @@ describe("Jev auto-approval classifier", () => {
   ] as const)("uses configured threshold %s for probability %s", async (threshold, probability, decision) => {
     fetcher.mockImplementation(async () => Response.json(response(probability)));
     const classifier = new FabricAutoApprovalClassifier(() => ({ ...DEFAULT_JEV_CONFIG, autoApprovalThreshold: threshold }));
-    const result = await classifier.classify(action, {}, context(), "jev/jev-latest");
+    const result = await classifier.classify(action, {}, context(), "pi-fabric/typesafe/jev-latest");
     expect(result.decision).toBe(decision);
     expect(result.reason).toContain(`requires >= ${threshold}`);
   });
 
   it.each([-0.1, 1.01, NaN, Infinity])("rejects invalid runtime threshold %s before inference", async threshold => {
     const classifier = new FabricAutoApprovalClassifier(() => ({ ...DEFAULT_JEV_CONFIG, autoApprovalThreshold: threshold }));
-    await expect(classifier.classify(action, {}, context(), "jev/jev-latest")).rejects.toThrow("threshold must be");
+    await expect(classifier.classify(action, {}, context(), "pi-fabric/typesafe/jev-latest")).rejects.toThrow("threshold must be");
     expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("still rejects invalid answers at a zero threshold", async () => {
     fetcher.mockImplementation(async () => Response.json(response(-0.1)));
     const classifier = new FabricAutoApprovalClassifier(() => ({ ...DEFAULT_JEV_CONFIG, autoApprovalThreshold: 0 }));
-    await expect(classifier.classify(action, {}, context(), "jev/jev-latest")).rejects.toThrow("invalid");
+    await expect(classifier.classify(action, {}, context(), "pi-fabric/typesafe/jev-latest")).rejects.toThrow("invalid");
   });
 
   it("starts at the latest user turn and does not infer authority from older requests", async () => {
     const ctx = context();
     vi.spyOn(ctx.sessionManager, "getBranch").mockReturnValue([user("old".repeat(20_000)), user("Run local tests")] as never);
-    await new FabricAutoApprovalClassifier().classify(action, {}, ctx, "jev/jev-latest");
+    await new FabricAutoApprovalClassifier().classify(action, {}, ctx, "pi-fabric/typesafe/jev-latest");
     expect(fetcher.mock.calls[0]![1]!.body).not.toContain("oldold");
   });
 
@@ -102,27 +110,27 @@ describe("Jev auto-approval classifier", () => {
     ] as never);
     if (kind === "missing-user") vi.spyOn(ctx.sessionManager, "getBranch").mockReturnValue([]);
     if (kind === "non-json") args.cycle = args;
-    await expect(new FabricAutoApprovalClassifier().classify(action, args, ctx, "jev/jev-latest")).rejects.toThrow("complete bounded");
+    await expect(new FabricAutoApprovalClassifier().classify(action, args, ctx, "pi-fabric/typesafe/jev-latest")).rejects.toThrow("complete bounded");
     expect(fetcher).not.toHaveBeenCalled();
     expect(ctx.modelRegistry.getApiKeyForProvider).not.toHaveBeenCalled();
   });
 
   it.each([undefined, { type: "noul", noul: 1.1 }, { type: "noul", noul: -1 }, { type: "noul", noul: "1" }, { type: "choice", choice: "allow" }])("rejects malformed typed answers", async answer => {
     fetcher.mockImplementation(async () => Response.json({ ...response(), answers: { safe_to_auto_approve: answer } }));
-    await expect(new FabricAutoApprovalClassifier().classify(action, {}, context(), "jev/jev-latest")).rejects.toThrow("invalid");
+    await expect(new FabricAutoApprovalClassifier().classify(action, {}, context(), "pi-fabric/typesafe/jev-latest")).rejects.toThrow("invalid");
   });
 
   it.each([401, 429, 529])("fails closed without retries or leaking the HTTP %s body", async status => {
     fetcher.mockImplementation(async () => new Response("SECRET RESPONSE BODY", { status }));
-    await expect(new FabricAutoApprovalClassifier().classify(action, {}, context(), "jev/jev-latest")).rejects.toThrow(`TypeSafe HTTP ${status}`);
+    await expect(new FabricAutoApprovalClassifier().classify(action, {}, context(), "pi-fabric/typesafe/jev-latest")).rejects.toThrow(`TypeSafe HTTP ${status}`);
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
   it("honors a pinned model and request-byte limits from trusted Jev config", async () => {
     const classifier = new FabricAutoApprovalClassifier(() => ({ ...DEFAULT_JEV_CONFIG, maxRequestBytes: 1024 }));
-    await expect(classifier.classify(action, {}, context(), "jev/jev-1.13")).rejects.toThrow("exceeds 1024 bytes");
+    await expect(classifier.classify(action, {}, context(), "pi-fabric/typesafe/jev-1.13")).rejects.toThrow("exceeds 1024 bytes");
     expect(fetcher).not.toHaveBeenCalled();
-    await new FabricAutoApprovalClassifier().classify(action, {}, context(), "jev/jev-1.13");
+    await new FabricAutoApprovalClassifier().classify(action, {}, context(), "pi-fabric/typesafe/jev-1.13");
     expect(JSON.parse(fetcher.mock.calls[0]![1]!.body as string).model).toBe("jev-1.13");
   });
 
@@ -130,20 +138,20 @@ describe("Jev auto-approval classifier", () => {
     vi.stubEnv("TYPESAFE_API_KEY", "environment-fixture");
     const ctx = context();
     vi.mocked(ctx.modelRegistry.getApiKeyForProvider).mockResolvedValue(undefined);
-    await new FabricAutoApprovalClassifier().classify(action, {}, ctx, "jev/jev-latest");
+    await new FabricAutoApprovalClassifier().classify(action, {}, ctx, "pi-fabric/typesafe/jev-latest");
     expect(fetcher.mock.calls[0]![1]!.headers).toMatchObject({ Authorization: "Bearer environment-fixture" });
   });
 
   it("sanitizes auth failures and never silently falls back to the active model", async () => {
     const ctx = context();
     vi.mocked(ctx.modelRegistry.getApiKeyForProvider).mockRejectedValue(new Error("SECRET AUTH DETAIL"));
-    await expect(new FabricAutoApprovalClassifier().classify(action, {}, ctx, "jev/jev-latest")).rejects.toThrow("Jev Pi credential resolution failed");
+    await expect(new FabricAutoApprovalClassifier().classify(action, {}, ctx, "pi-fabric/typesafe/jev-latest")).rejects.toThrow("Jev Pi credential resolution failed");
     expect(fetcher).not.toHaveBeenCalled();
     expect(ctx.modelRegistry.find).not.toHaveBeenCalled();
   });
 
   it("rejects invalid model keys before credentials or network", async () => {
-    await expect(new FabricAutoApprovalClassifier().classify(action, {}, context(), "jev/../bad")).rejects.toThrow("Invalid Jev");
+    await expect(new FabricAutoApprovalClassifier().classify(action, {}, context(), "pi-fabric/typesafe/../bad")).rejects.toThrow("Invalid Jev");
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -151,7 +159,7 @@ describe("Jev auto-approval classifier", () => {
     fetcher.mockImplementation(() => new Promise(() => {}));
     const controller = new AbortController();
     const ctx = Object.assign(context(), { signal: controller.signal });
-    const rejected = expect(new FabricAutoApprovalClassifier().classify(action, {}, ctx, "jev/jev-latest")).rejects.toThrow(/cancel|abort/i);
+    const rejected = expect(new FabricAutoApprovalClassifier().classify(action, {}, ctx, "pi-fabric/typesafe/jev-latest")).rejects.toThrow(/cancel|abort/i);
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalled());
     controller.abort();
     await rejected;
@@ -160,7 +168,7 @@ describe("Jev auto-approval classifier", () => {
   it("bounds an unresponsive transport by the configured request timeout", async () => {
     fetcher.mockImplementation(() => new Promise(() => {}));
     const classifier = new FabricAutoApprovalClassifier(() => ({ ...DEFAULT_JEV_CONFIG, requestTimeoutMs: 100 }));
-    await expect(classifier.classify(action, {}, context(), "jev/jev-latest")).rejects.toThrow("timed out");
+    await expect(classifier.classify(action, {}, context(), "pi-fabric/typesafe/jev-latest")).rejects.toThrow("timed out");
   });
 });
 
@@ -205,7 +213,7 @@ describe("Jev approval enforcement", () => {
   it("uses configured Jev limits for observation read approval before subscribing", async () => {
     const ctx = context();
     const host = new JevObservationHost(ctx.sessionManager.getSessionId(), () => {});
-    const { provider } = setupJev({ approvals: { execute: "allow", read: "auto", model: "jev/jev-latest" }, jev: { maxRequestBytes: 1024 } }, undefined, undefined, host);
+    const { provider } = setupJev({ approvals: { execute: "allow", read: "auto", model: "pi-fabric/typesafe/jev-latest" }, jev: { maxRequestBytes: 1024 } }, undefined, undefined, host);
     const invocation = { ...jevContext(), extensionContext: ctx };
     const request = { ...launch("return null;"), observe: { events: ["turn_end" as const] } };
     try {

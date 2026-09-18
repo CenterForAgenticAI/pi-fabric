@@ -32,6 +32,73 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
+describe("safe run roots", () => {
+  const sweep = (tempRoot: string, now = 100 * DAY) => sweepTempRunRoots({ tempRoot, now, orphanedTempRunRetentionMs: 6 * HOUR, oneShotRunRetentionMs: DAY });
+
+  it("preserves malformed/unmarked ownership and unknown root contents", () => {
+    const tempRoot = temporaryDirectory();
+    for (const [suffix, owner] of [["bad", {}], ["pid", { pid: "gone", startedAt: 1, heartbeatAt: 1, orphanedAt: 1 }], ["time", { pid: 2147483647, startedAt: 1, heartbeatAt: "old", orphanedAt: 1 }]] as const) {
+      const root = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + suffix);
+      fs.mkdirSync(root);
+      fs.writeFileSync(path.join(root, ".fabric-owner.json"), JSON.stringify(owner));
+    }
+    const unknown = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "unknown");
+    markRunRootActive(unknown, 1);
+    fs.writeFileSync(path.join(unknown, ".fabric-owner.json"), JSON.stringify({ pid: 2147483647, startedAt: 1, heartbeatAt: 1, orphanedAt: 1 }));
+    fs.writeFileSync(path.join(unknown, "mine"), "do not delete");
+    const unmarked = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "unmarked");
+    fs.mkdirSync(unmarked);
+    expect(sweep(tempRoot).removedRoots).toEqual([]);
+    expect(fs.readdirSync(tempRoot)).toHaveLength(5);
+  });
+
+  it("rejects symlink roots and status markers without touching targets", () => {
+    const tempRoot = temporaryDirectory();
+    const target = temporaryDirectory();
+    markRunRootActive(target, 1);
+    const run = path.join(target, "run");
+    writeStatus(run, { status: "completed", finishedAt: 1 });
+    markRunRootClosed(target, 1);
+    fs.symlinkSync(target, path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "link"), "junction");
+    const root = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "status-link");
+    markRunRootActive(root, 1);
+    fs.mkdirSync(path.join(root, "run"));
+    fs.symlinkSync(path.join(run, "status.json"), path.join(root, "run", "status.json"));
+    markRunRootClosed(root, 1, true);
+    expect(sweep(tempRoot).removedRuns).toEqual([]);
+    expect(fs.existsSync(run)).toBe(true);
+  });
+
+  it("expires shutdown-confirmed incomplete runs, but never a live descendant", () => {
+    const tempRoot = temporaryDirectory();
+    const root = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "closed-incomplete");
+    markRunRootActive(root, 1);
+    const incomplete = path.join(root, "incomplete");
+    fs.mkdirSync(incomplete);
+    fs.writeFileSync(path.join(incomplete, "task.txt"), "incomplete launch");
+    const active = path.join(root, "active");
+    writeStatus(active, { status: "running", transport: "process", sessionId: String(process.pid) });
+    fs.writeFileSync(path.join(active, "task.txt"), "still live");
+    markRunRootClosed(root, 1, true);
+    expect(sweep(tempRoot, 5 * HOUR).removedRuns).toEqual([]);
+    expect(sweep(tempRoot, 6 * HOUR + 1).removedRuns).toEqual([incomplete]);
+    expect(fs.existsSync(active)).toBe(true);
+  });
+
+  it("keeps unknown incomplete runs and live nested work under dead owners", () => {
+    const tempRoot = temporaryDirectory();
+    const root = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "dead-nested");
+    markRunRootActive(root, 1);
+    fs.writeFileSync(path.join(root, ".fabric-owner.json"), JSON.stringify({ pid: 2147483647, startedAt: 1, heartbeatAt: 1, orphanedAt: 1 }));
+    const run = path.join(root, "outer");
+    writeStatus(run, { status: "completed", finishedAt: 1 });
+    const nested = path.join(run, "nested", "live");
+    writeStatus(nested, { status: "running", transport: "process", sessionId: String(process.pid) });
+    expect(sweep(tempRoot).removedRoots).toEqual([]);
+    expect(fs.existsSync(nested)).toBe(true);
+  });
+});
+
 describe("temporal retention", () => {
   it("removes dead temporary run roots after six hours", () => {
     const tempRoot = temporaryDirectory();

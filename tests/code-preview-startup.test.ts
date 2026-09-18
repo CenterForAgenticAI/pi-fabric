@@ -1,10 +1,40 @@
 import fs from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { defaultCodePreviewSettings } from "../src/ui/code-preview.js";
 import { withCodePreviewShell } from "../src/ui/code-preview-shell.js";
 
 describe("code preview startup", () => {
+  it.each(["on", "border", "off"] as const)("hides zero shell timers while retaining refresh and nonzero labels (%s)", mode => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    try {
+      const tool = {
+        name: "sample", label: "Sample",
+        renderCall: () => ({ render: () => ["call"], invalidate() {} }),
+        renderResult: () => ({ render: () => ["result"], invalidate() {} }),
+      } as any;
+      const decorated = withCodePreviewShell(tool, { mode, toolCallTiming: true });
+      const context = { state: {}, executionStarted: true, isPartial: true, isError: false, invalidate: vi.fn() } as any;
+      const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as any;
+      const render = (partial: boolean) => {
+        context.isPartial = partial;
+        const call = decorated.renderCall({}, theme, context);
+        const result = decorated.renderResult({ content: [] }, { expanded: false, isPartial: partial }, theme, context);
+        return [...call.render(80), ...result.render(80)].join("\n");
+      };
+      expect(render(true)).not.toMatch(/Elapsed|Took|0ms/);
+      expect(render(false)).not.toMatch(/Elapsed|Took|0ms/);
+      expect(vi.getTimerCount()).toBe(0);
+      context.state = {};
+      render(true);
+      vi.advanceTimersByTime(100);
+      expect(context.invalidate).toHaveBeenCalled();
+      expect(render(true)).toContain("Elapsed 100ms");
+      expect(render(false)).toContain("Took 100ms");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
   it("keeps pi-code-previews out of the package and runtime graph", () => {
     const packageJson = JSON.parse(
       fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"),

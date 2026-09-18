@@ -75,7 +75,7 @@ describe("pi.bash auto-spill", () => {
     const { result, jobs } = await invokeBash("printf start; sleep 8; printf done", 120);
     expect(result.ok).toBe(true);
     expect(result.output).toContain("[Still running after ");
-    expect(result.output).toContain("Live output:");
+    expect(result.output).toContain("Bounded live output (may be truncated):");
     expect(result.details?.running).toBe(true);
     expect(result.details?.logPath).toBeTruthy();
     const logPath = result.details!.logPath!;
