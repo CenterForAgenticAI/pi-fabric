@@ -34,6 +34,7 @@ const lazyEntryPoints = [
   "src/agents/result.ts",
   "src/agents/veda-cli.ts",
   "src/fabric-runtime-state.ts",
+  "src/components/configuration.ts",
   "src/providers/jev-provider.ts",
   "src/jev/browser.ts",
   "src/jev/client.ts",

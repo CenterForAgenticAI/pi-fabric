@@ -22,6 +22,8 @@ import type { FabricActorHostEvent } from "./actors/types.js";
 import { CapturedToolCatalog, type CapturedToolEntry } from "./capture/catalog.js";
 import { FabricComponentCatalog } from "./components/catalog.js";
 import { FabricComponentLoader } from "./components/loader.js";
+import { FabricComponentControl } from "./components/control.js";
+import { FabricComponentConfiguration, watchComponentConfiguration } from "./components/configuration.js";
 import {
   resolveFabricModelGuidance,
   type FabricOwnedModelGuidance,
@@ -167,6 +169,9 @@ export class FabricRuntimeState {
   #schema: SchemaController | undefined;
   #componentSupervisor: FabricComponentSupervisor | undefined;
   #componentLoader: FabricComponentLoader | undefined;
+  #componentControl: FabricComponentControl | undefined;
+  #componentConfiguration: FabricComponentConfiguration | undefined;
+  #stopComponentWatch: (() => void) | undefined;
   readonly #componentTransitionSignatures = new Map<string, string>();
   readonly #componentTransitionPublications = new Set<Promise<void>>();
   #sessionCapabilityLease: FabricCapabilityViewLease | undefined;
@@ -379,7 +384,21 @@ export class FabricRuntimeState {
       this.componentCatalog,
       this.#componentSupervisor,
     );
-    this.#registry.register(this.#managedHost?.provider("components") ?? new ComponentsProvider(this.#componentLoader));
+    if (!this.#managedHost && this.#config.schema.mode !== "enforce") {
+      this.#componentConfiguration = new FabricComponentConfiguration({
+        cwd: context.cwd, agentDir: resolveAgentDir(), projectTrusted: () => context.isProjectTrusted(),
+      });
+    }
+    this.#componentControl = new FabricComponentControl(this.#componentLoader, {
+      ...(this.#componentConfiguration ? { store: this.#componentConfiguration } : {}),
+      initialEntries: this.#config.schema.mode === "enforce" ? [] : this.#config.components,
+      assertMutable: () => {
+        if (this.#managedHost || this.#config?.schema.mode === "enforce") throw new Error("Live component configuration is unavailable in managed hosts and Schema enforce mode");
+      },
+      applied: entries => { if (this.#config) this.#config.components = entries; },
+    });
+    this.#registry.setUnavailableResolver(name => this.#componentLoader?.unavailableProviderMessage(name));
+    this.#registry.register(this.#managedHost?.provider("components") ?? new ComponentsProvider(this.#componentLoader, this.#componentControl));
     const builtinManifest = new FabricProviderComponentManifest(
       this.componentCatalog,
       this.#componentLoader,
@@ -901,6 +920,18 @@ export class FabricRuntimeState {
     };
     this.pi.events.emit(FABRIC_COMPONENT_DISCOVER_EVENT, componentDiscovery);
     await this.components.reconcile(enforceSchema ? [] : this.config.components);
+    const configuration = this.#componentConfiguration;
+    const control = this.#componentControl;
+    if (configuration && control) {
+      this.#stopComponentWatch = watchComponentConfiguration(configuration.paths, () => {
+        void control.reconcile().catch(error => {
+          if (context.hasUI) context.ui.notify(`Pi Fabric component configuration not applied: ${error instanceof Error ? error.message : String(error)}`, "error");
+        });
+      });
+      for (const warning of control.configuration().warnings) {
+        if (context.hasUI) context.ui.notify(warning, "warning");
+      }
+    }
   }
 
   async ensure(context: ExtensionContext): Promise<void> {
@@ -940,7 +971,7 @@ export class FabricRuntimeState {
       this.prewalkDrift.drop(context.sessionManager.getSessionId());
       if (context.hasUI) context.ui.setStatus("fabric-prewalk", undefined);
     }
-    void this.#componentLoader?.reconcile(next.components).catch((error) => {
+    void (this.#componentControl?.reconcile(next.components) ?? this.#componentLoader?.reconcile(next.components))?.catch((error) => {
       if (this.#config) this.#config.components = previousComponents;
       const detail = error instanceof Error ? error.message : String(error);
       if (context.hasUI) context.ui.notify(`Pi Fabric component reload failed: ${detail}`, "error");
@@ -1213,6 +1244,7 @@ export class FabricRuntimeState {
   }
 
   async settleComponents(): Promise<void> {
+    await this.#componentControl?.settle();
     await this.#componentLoader?.settle();
   }
 
@@ -1221,6 +1253,11 @@ export class FabricRuntimeState {
     await this.#deactivateRepairs();
     clearActiveCompiledSurface();
     await this.#participants?.quiesce().catch(() => undefined);
+    this.#stopComponentWatch?.();
+    this.#stopComponentWatch = undefined;
+    await this.#componentControl?.close();
+    this.#componentControl = undefined;
+    this.#componentConfiguration = undefined;
     await this.#componentLoader?.close();
     await Promise.allSettled([...this.#componentTransitionPublications]);
     await this.#sessionCapabilityLease?.release().catch(() => undefined);
@@ -1312,6 +1349,11 @@ export class FabricRuntimeState {
     await this.#deactivateRepairs();
     if (!this.#registry) return;
     await this.#participants?.quiesce().catch(() => undefined);
+    this.#stopComponentWatch?.();
+    this.#stopComponentWatch = undefined;
+    await this.#componentControl?.close();
+    this.#componentControl = undefined;
+    this.#componentConfiguration = undefined;
     await this.#componentLoader?.close();
     await Promise.allSettled([...this.#componentTransitionPublications]);
     await this.#sessionCapabilityLease?.release().catch(() => undefined);

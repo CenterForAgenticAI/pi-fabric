@@ -80,7 +80,11 @@ All calls return promises. Fields ending in `?` are optional; `unknown` marks pr
 | `schema.verify(args)` | `{verified,hypothesisId,certificate?,issuedAt?,expiresAt?,reason?,results}` |
 | `schema.commit(args)` | `{outcome,transactionId,generation?,paths?,postconditions?,complexityReductionCertified?,stateTransition?,error?,rollbackError?}` |
 | `schema.abort(args)` | `{aborted:true,hypothesisId}` |
-| `components.list()` | `{definitions:Array<{name,description?,revision,requirements,provisions}>,components:FabricComponentInfo[]}` |
+| `components.list()` | `{definitions,components,configuration:{sources,warnings,sessionOverrides,removalPolicy,error?}}`; ignored trust layers and live-reconcile failures are explicit |
+| `components.describe({component})` | Definition metadata, optional `configSchema`, and instances; works before activation |
+| `components.plan({scope?,entries?,remove?,reset?})` | `{revision,request,changes,warnings,sources}`; validates without activation or writes |
+| `components.apply({...plan.request,expectedRevision:plan.revision})` | Applies immediately; session scope by default, persistence only with explicit global/project scope; unrestricted host callers only |
+| `components.reconcile()` | Re-reads trusted component config without host reload; session overrides remain |
 | `components.status({id})` | `FabricComponentInfo` with state, requirements, provisions, targetDigest?, error?, cleanupErrors? |
 | `components.graph()` | `{components:FabricComponentInfo[],edges:Array<{from,to,ref}>,cycles:string[][]}` |
 | `components.reload({id?}?)` | `{components:FabricComponentInfo[]}`; rolls back activation failure when cleanup succeeds |

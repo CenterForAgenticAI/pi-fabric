@@ -1,3 +1,4 @@
+import { validateComponentConfig } from "./validation.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   ActionRegistry,
@@ -571,6 +572,7 @@ export class FabricComponentSupervisor {
   }
 
   #validateEntry(entry: FabricComponentEntry, definition: FabricComponentDefinition): void {
+    validateComponentConfig(entry, definition);
     if (!COMPONENT_ID_PATTERN.test(entry.id)) {
       throw new Error(`Invalid Fabric component id: ${entry.id}`);
     }

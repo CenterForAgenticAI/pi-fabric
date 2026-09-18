@@ -428,6 +428,20 @@ export class FabricState {
             candidate.registerExternalComponent(component, { overwrite: true });
           }
         }
+        // Bootstrap stays cheap and may precede first use by minutes. Refresh only
+        // the component plane here; executor/language policy remains bootstrapped.
+        if (!this.#managedHost && !reinitialize) {
+          const { FabricComponentConfiguration } = await import("./components/configuration.js");
+          try {
+            config.components = new FabricComponentConfiguration({
+              cwd: context.cwd, agentDir: resolveAgentDir(), projectTrusted: () => context.isProjectTrusted(),
+            }).read().entries;
+          } catch (error) {
+            // Keep the bootstrapped manifest usable for repair. The live control
+            // plane records this read failure and watches for a corrected file.
+            if (context.hasUI) context.ui.notify(`Pi Fabric component configuration not applied: ${error instanceof Error ? error.message : String(error)}`, "error");
+          }
+        }
         await candidate.initialize(context, config);
         assertCurrent();
         for (const provider of this.#externalProviders.values()) {

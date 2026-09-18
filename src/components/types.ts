@@ -53,6 +53,8 @@ export type FabricComponentEffectRegistration = string | FabricComponentEffectOp
 export interface FabricComponentDefinition<TConfig = unknown> {
   name: string;
   description?: string;
+  /** JSON Schema for instance config, validated before any activation or replacement. */
+  configSchema?: Record<string, unknown>;
   requires?: readonly (string | FabricCapabilityRequirement)[];
   provides?: readonly (string | FabricComponentProvision)[];
   guarantee?: FabricComponentGuarantee;

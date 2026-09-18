@@ -138,7 +138,36 @@ Declare instances at the root of `fabric.json`:
 }
 ```
 
-A definition may arrive after the configuration that references it. The unresolved instance stays `waiting` and lists `component:<name>` in `missing`. Component discovery activates the instance later. `/fabric reload` reconciles changed entries. When a later activation fails during a multi-entry reconciliation, Fabric rolls back the additions and replacements from that pass. Two live component records may never declare the same provider name. Fabric rejects the insertion or replacement before it disturbs either fiber.
+A definition may arrive after the configuration that references it. The unresolved instance stays `waiting` and lists `component:<name>` in `missing`. Component discovery activates the instance later. Once the runtime is active, trusted configuration edits reconcile automatically; `/fabric reload` is not required. When a later activation fails during a multi-entry reconciliation, Fabric rolls back the additions and replacements from that pass. Two live component records may never declare the same provider name. Fabric rejects the insertion or replacement before it disturbs either fiber.
+
+### Live configuration control
+
+Components are generic host primitives. Connector packages own browser, desktop, application, and transport behavior; neither component management nor Jev needs a built-in tool for each integration. Register the definition through the ordinary extension protocol, then configure instances through the same live control plane.
+
+A definition may declare `configSchema`, using the same JSON Schema validation engine as tool arguments. Fabric validates config before activation or replacement, including direct supervisor calls. Schema defaults are annotations, not injected values. Without a schema, legacy definitions keep their activation-time validation. `components.describe` returns the schema even when no instance exists; it is a configuration contract, not a connectivity or health check. Effective tool grants are still obtained from the mounted provider's action descriptors.
+
+```ts
+const definition = await components.describe({ component: "issue-observer" });
+const plan = await components.plan({
+  entries: [{ id: "issues", component: definition.name, config: { prefix: "repo:owner/project" } }],
+});
+// Inspect plan.changes, warnings, and sources before applying. Normal approvals still apply.
+await components.apply({ ...plan.request, expectedRevision: plan.revision });
+```
+
+- `entries` upserts complete entries by ID; it does not replace unrelated entries or merge nested config. `remove` removes IDs. An ID may occur only once in one request.
+- Scope defaults to `session`: no file is written. Session overlays survive file reconciliation and settings saves; they end on runtime/session reload or shutdown. `reset: ["issues"]` in session scope removes an overlay and restores the file-configured value. A session removal masks that ID until reset. The session layer is limited to 256 overrides, including removal masks; the effective manifest is also limited to 256 entries.
+- Explicit `scope: "global"` or `"project"` persists only the component array in that layer, preserving unrelated settings. Project arrays shadow global arrays, just like normal configuration. Plans report shadowing; persistent writes do not implicitly clear session overlays. Project writes require current project trust and never silently fall back to global.
+- Plans report a revision, declared requirements/provisions, sources, and warnings without running component activation. Apply revalidates and rejects stale revisions after concurrent changes. Missing definitions can be configured and remain waiting. A successful apply may therefore return waiting instances; inspect their status before use.
+- Apply runs the loader transaction before persistence. A failed activation leaves disk untouched. A failed compare-before-write triggers runtime compensation, without overwriting the external edit. Failed compensation is reported, never claimed successful. This is not an atomic transaction across multiple processes, files, or remote effects.
+- `components.reconcile()` re-reads trusted files without reinitializing Fabric. The active runtime also watches both file paths (250 ms stat interval, 50 ms debounce), including file creation, deletion, and atomic replacement. Content revisions suppress redundant reconciliation. The watcher reads only trusted layers and never repairs or quarantines malformed live files. Invalid edits retain the last applied state and appear in `components.list().configuration.error` and the UI. Its watchers and timers stop with the owning runtime.
+- Before first use, bootstrap stays idle: no watcher imports optional engines or starts connectors. First use rereads component configuration. Activation does not imply that a connector has connected or requested OS permissions; connector packages own explicit, lazy acquisition and health reporting.
+- `components.list().configuration` reports source paths, trust, selected layers, session override IDs, and warnings. An untrusted project file is reported as ignored without parsing it. Diagnostics report provenance rather than raw configuration documents; activation errors remain author-supplied.
+- Apply/reconcile are host-control operations, unavailable to committed guest views and in managed hosts or Schema enforce mode. Existing approval and schema policy gates still apply. Built-in `fabric.provider.*` components cannot be changed by this configuration API; their existing reload control remains separate.
+
+Replacement uses the existing retire-before-activate path, not zero-downtime migration. New calls resolve the new generation after commit; unrelated providers and Jev runs are not restarted. Existing committed views may continue using the retired generation until release. Removal uses the same **drain** policy, not immediate security revocation. Owners must retain supporting connections/processes until provider `close()`. Connector session IDs and observed handles must not be silently moved between generations. Cancellation after activation begins does not abandon commit/compensation and cannot undo already-issued external effects.
+
+The host protocol exports `FabricComponentChangeRequest` and `FabricComponentChangePlan` types. Guest provider declarations expose all four new methods; newly mounted namespaces can be called immediately through `tools.call({ref,args})` in the same program. This avoids assuming a new static proxy existed when that program was typechecked.
 
 ## Model-facing guidance components
 

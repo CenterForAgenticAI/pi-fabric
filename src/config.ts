@@ -1300,7 +1300,7 @@ const planConfigFile = (filePath: string): FabricConfigFilePlan | undefined => {
   };
 };
 
-const writeJsonAtomic = (
+export const writeJsonAtomic = (
   filePath: string,
   document: Record<string, unknown>,
   expectedSource: string | null,

@@ -211,6 +211,7 @@ export class ActionRegistry {
   readonly #providerBindings = new FabricProviderBindings();
   readonly #activeEffects = new Map<string, { ref: string; effect: FabricActionEffect }>();
   readonly #unavailable = new Map<string, string>();
+  #unavailableResolver: ((name: string) => string | undefined) | undefined;
   #speculation: FabricSpeculationRuntime | undefined;
   #speculationEligibility: ((action: ResolvedFabricAction) => boolean) | undefined;
 
@@ -263,6 +264,10 @@ export class ActionRegistry {
 
   has(name: string): boolean {
     return this.#providerBindings.has(name);
+  }
+
+  setUnavailableResolver(resolve: (name: string) => string | undefined): void {
+    this.#unavailableResolver = resolve;
   }
 
   markUnavailable(name: string, reason: string): void {
@@ -1383,7 +1388,7 @@ export class ActionRegistry {
   #requireProvider(name: string): FabricProvider {
     const provider = this.#providerBindings.current(name)?.provider;
     if (provider) return provider;
-    const unavailableReason = this.#unavailable.get(name);
+    const unavailableReason = this.#unavailable.get(name) ?? this.#unavailableResolver?.(name);
     if (unavailableReason) {
       throw new FabricResolutionError(
         `Fabric provider "${name}" is unavailable: ${unavailableReason}`,

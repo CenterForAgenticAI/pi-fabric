@@ -134,6 +134,10 @@ describe("ComponentsProvider", () => {
       "list",
       "status",
       "graph",
+      "describe",
+      "plan",
+      "apply",
+      "reconcile",
       "reload",
     ]);
     expect(await provider.invoke("status", { id: "service" }, context)).toMatchObject({

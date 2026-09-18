@@ -395,6 +395,11 @@ export interface FabricProviderDiscovery {
 }
 
 export type {
+  ComponentChangeRequest as FabricComponentChangeRequest,
+  ComponentChangePlan as FabricComponentChangePlan,
+} from "./components/control.js";
+
+export type {
   FabricCapabilityRequirement,
   FabricComponentChildOptions,
   FabricComponentContext,

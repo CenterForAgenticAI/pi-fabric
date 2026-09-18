@@ -1214,11 +1214,57 @@ interface FabricComponentInfo {
   createdAt: number;
   updatedAt: number;
 }
+interface FabricComponentEntry {
+  id: string;
+  component: string;
+  config?: unknown;
+  disabled?: boolean;
+}
+interface FabricComponentDefinitionInfo {
+  name: string;
+  description?: string;
+  revision: number;
+  configSchema?: Record<string, unknown>;
+  requirements: string[];
+  provisions: string[];
+}
+interface FabricComponentConfigSource {
+  scope: "global" | "project";
+  path: string;
+  trusted: boolean;
+  present: boolean;
+  selected: boolean;
+}
+interface FabricComponentConfigurationInfo {
+  sources: FabricComponentConfigSource[];
+  warnings: string[];
+  sessionOverrides: string[];
+  removalPolicy: "drain";
+  error?: string;
+}
+interface FabricComponentChangeRequest {
+  scope?: "session" | "global" | "project";
+  entries?: FabricComponentEntry[];
+  remove?: string[];
+  reset?: string[];
+}
+interface FabricComponentChangePlan {
+  revision: string;
+  request: Required<FabricComponentChangeRequest>;
+  changes: Array<{ id: string; operation: "add" | "replace" | "remove"; component: string; requirements: string[]; provisions: string[] }>;
+  warnings: string[];
+  sources: FabricComponentConfigSource[];
+}
 interface FabricComponentsApi {
   list(): Promise<{
-    definitions: Array<{ name: string; description?: string; revision: number; requirements: string[]; provisions: string[] }>;
+    definitions: FabricComponentDefinitionInfo[];
     components: FabricComponentInfo[];
+    configuration: FabricComponentConfigurationInfo;
   }>;
+  describe(args: { component: string }): Promise<FabricComponentDefinitionInfo & { instances: FabricComponentInfo[] }>;
+  plan(args: FabricComponentChangeRequest): Promise<FabricComponentChangePlan>;
+  apply(args: FabricComponentChangeRequest & { expectedRevision: string }): Promise<{ components: FabricComponentInfo[]; configuration: FabricComponentConfigurationInfo; scope: "session" | "global" | "project" }>;
+  reconcile(): Promise<{ components: FabricComponentInfo[]; configuration: FabricComponentConfigurationInfo }>;
   status(args: { id: string }): Promise<FabricComponentInfo>;
   graph(): Promise<{
     components: FabricComponentInfo[];
