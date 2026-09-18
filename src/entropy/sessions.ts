@@ -17,7 +17,7 @@ import {
   scanEntropySessionJsonlAsync,
   type EntropySessionEvidence,
 } from "./corpus.js";
-import { measureEntropy, measureEntropyAsync } from "./meter.js";
+import { measureEntropy, measureEntropyAsync, type EntropyTraceWindow } from "./meter.js";
 import { compareCodeUnits, trendFromScores } from "./fingerprint.js";
 import type {
   EntropyAuditCall,
@@ -345,12 +345,37 @@ export const measureSessionCorpus = (input: {
 // corpus, the verbatim audit calls, and the per-file observation windows
 // the machine-wide pool consumes with exact deltas, so the autonomous
 // compile and the command share a single window scan.
+/** Background-only discovery cadence; explicit inspection continues to scan immediately. */
+export class BackgroundSessionSelector {
+  #cached: { agentDir: string; cwd: string | undefined; files: string[]; until: number } | undefined;
+
+  constructor(readonly scan = machineSessionFilesAsync) {}
+
+  async select(agentDir: string, cwd: string | undefined, currentFile?: string): Promise<string[]> {
+    const cached = this.#cached;
+    let files: string[];
+    if (cached && cached.agentDir === agentDir && cached.cwd === cwd && Date.now() < cached.until) {
+      files = cached.files;
+    } else {
+      files = await this.scan(agentDir, cwd);
+      // Do not cache an absent session root: it may be created by this turn.
+      this.#cached = files.length > 0 ? { agentDir, cwd, files, until: Date.now() + 30_000 } : undefined;
+    }
+    // The active file is fresh on every compile, including forks and switches
+    // which occurred inside the machine-wide discovery window.
+    return currentFile
+      ? [currentFile, ...files.filter((file) => file !== currentFile)].slice(0, DEFAULT_SESSION_WINDOW)
+      : [...files];
+  }
+}
+
 export interface SessionObservationWindow {
   file: string;
   observations: EntropyValueObservation[];
 }
 
 export interface SessionWindowEvidence {
+  traceWindows: EntropyTraceWindow[];
   traces: EntropyTraceInput[];
   valueObservations: EntropyValueObservation[];
   auditCalls: EntropyAuditCall[];
@@ -416,6 +441,7 @@ const evidenceWindow = (
   file: string,
   evidence: EntropySessionEvidence,
 ): SessionWindowEvidence => ({
+  traceWindows: [{ file, traces: evidence.traces }],
   traces: evidence.traces,
   valueObservations: evidence.valueObservations,
   auditCalls: evidence.auditCalls,
@@ -496,20 +522,27 @@ const readSessionEvidenceAsync = async (
 
 export const sessionWindowEvidenceAsync = async (
   files: readonly string[],
+  options: { windowsOnly?: boolean } = {},
 ): Promise<SessionWindowEvidence> => {
   const windows = await mapConcurrent(files, SESSION_READ_CONCURRENCY, readSessionEvidenceAsync);
   const traces: EntropyTraceInput[] = [];
   const valueObservations: EntropyValueObservation[] = [];
   const auditCalls: EntropyAuditCall[] = [];
   const observationWindows: SessionObservationWindow[] = [];
+  const traceWindows: EntropyTraceWindow[] = [];
   for (const window of windows) {
     if (!window) continue;
-    traces.push(...window.traces);
-    valueObservations.push(...window.valueObservations);
-    auditCalls.push(...window.auditCalls);
+    // Background consumers only need immutable per-file snapshots. Avoid
+    // copying the full historical corpus into unused flattened arrays.
+    if (!options.windowsOnly) {
+      for (const trace of window.traces) traces.push(trace);
+      for (const observation of window.valueObservations) valueObservations.push(observation);
+      for (const call of window.auditCalls) auditCalls.push(call);
+    }
     observationWindows.push(...window.observationWindows);
+    traceWindows.push(...window.traceWindows);
   }
-  return { traces, valueObservations, auditCalls, observationWindows };
+  return { traces, valueObservations, auditCalls, observationWindows, traceWindows };
 };
 
 export const measureSessionCorpusAsync = async (input: {
@@ -545,6 +578,7 @@ export const sessionWindowEvidence = (
   const valueObservations: EntropyValueObservation[] = [];
   const auditCalls: EntropyAuditCall[] = [];
   const observationWindows: SessionObservationWindow[] = [];
+  const traceWindows: EntropyTraceWindow[] = [];
   for (const file of files) {
     let text: string;
     try {
@@ -557,6 +591,7 @@ export const sessionWindowEvidence = (
     valueObservations.push(...evidence.valueObservations);
     auditCalls.push(...evidence.auditCalls);
     observationWindows.push({ file, observations: evidence.valueObservations });
+    traceWindows.push({ file, traces: evidence.traces });
   }
-  return { traces, valueObservations, auditCalls, observationWindows };
+  return { traces, valueObservations, auditCalls, observationWindows, traceWindows };
 };

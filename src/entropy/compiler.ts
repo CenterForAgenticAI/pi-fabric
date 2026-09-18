@@ -2,7 +2,7 @@
 // authorize capability loss. Rule derivation preserves the declared surface
 // for every input, rather than only preserving a retained replay window.
 import { stableJsonHash } from "../core/stable-hash.js";
-import { measureEntropy, measureEntropyAsync } from "./meter.js";
+import { measureEntropy, measureEntropyAsync, SessionEntropyMeter, type EntropyTraceWindow } from "./meter.js";
 import { proposeEntropyReductions, type EntropyProposalInput } from "./passes.js";
 import {
   COMPILED_SURFACE_VERSION, MAX_COMPILED_SURFACE_PROPOSALS,
@@ -48,8 +48,8 @@ export interface CompileEntropyOutcome {
 }
 const sortedActions = (surface: EntropySurfaceSnapshot) =>
   [...surface.actions].sort((a, b) => a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0);
-const finishCompile = (input: CompileEntropyInput, report: EntropyReport, plans: NormalFormPlan[]): CompileEntropyOutcome => {
-  const review = entropyReviewSignals({ ...input, report });
+const finishCompile = (input: CompileEntropyInput, report: EntropyReport, plans: NormalFormPlan[], reviewSignals = true): CompileEntropyOutcome => {
+  const review = reviewSignals ? entropyReviewSignals({ ...input, report }) : [];
   const previous = input.artifact;
   const current = previous?.version === COMPILED_SURFACE_VERSION &&
     previous.actions.length === 0 && previous.quarantined.length === 0 &&
@@ -71,6 +71,36 @@ const finishCompile = (input: CompileEntropyInput, report: EntropyReport, plans:
   };
   return { status: "compiled", artifact, report, after: report, proposals: [...proposals, ...review], gate };
 };
+/** Per-session compiler: cache exact schema plans and incrementally meter immutable evidence. */
+export class BackgroundEntropyCompiler {
+  readonly #meter = new SessionEntropyMeter();
+  #plans: { digest: string; plans: NormalFormPlan[] } | undefined;
+
+  async compile(input: Omit<CompileEntropyInput, "traces" | "valueObservations" | "auditCalls"> & {
+    windows: readonly EntropyTraceWindow[];
+  }): Promise<CompileEntropyOutcome> {
+    const digest = entropySurfaceHash(input.surface);
+    if (this.#plans?.digest !== digest) {
+      const plans: NormalFormPlan[] = [];
+      let processed = 0;
+      for (const action of sortedActions(input.surface)) {
+        const plan = deriveNormalFormPlan(action.ref, action.inputSchema);
+        if (plan && plans.length < MAX_NORMAL_FORM_PLANS) plans.push(plan);
+        if (++processed % 32 === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      this.#plans = { digest, plans };
+    }
+    const plans = this.#plans.plans;
+    const report = await this.#meter.measure(input.windows, {
+      surface: input.surface, ...(input.repairs ? { repairs: input.repairs } : {}),
+      catalogDigest: input.catalogDigest ?? digest,
+    });
+    // Background callers never consume advisory proposals. Keep those scans
+    // on the explicit inspection path, not in an unyielding turn-end tail.
+    return finishCompile({ ...input, traces: [] }, report, structuredClone(plans), false);
+  }
+}
+
 export const compileEntropySurface = (input: CompileEntropyInput): CompileEntropyOutcome => {
   const report = measureEntropy({ ...input, catalogDigest: input.catalogDigest ?? entropySurfaceHash(input.surface) });
   const plans: NormalFormPlan[] = [];

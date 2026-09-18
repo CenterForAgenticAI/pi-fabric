@@ -52,6 +52,8 @@ vi.mock("../src/fabric-runtime-state.js", () => ({
 }));
 
 import piFabric from "../src/index.js";
+import { BackgroundEntropyCompiler } from "../src/entropy/compiler.js";
+import * as poolStore from "../src/entropy/pool-store.js";
 
 type ExtensionHandler = (event: unknown, context: ExtensionContext) => unknown;
 
@@ -60,6 +62,7 @@ afterEach(() => {
   scanControl.calls = 0;
   scanControl.resolvers.length = 0;
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   for (const root of tempRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -95,6 +98,38 @@ const emit = async (
 };
 
 describe("entropy background scheduler", () => {
+  it("reuses discovery but still compiles each turn and skips unchanged pool writes", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-entropy-background-"));
+    tempRoots.push(root);
+    vi.stubEnv("PI_CODING_AGENT_DIR", path.join(root, "agent"));
+    const file = path.join(root, "session.jsonl");
+    fs.writeFileSync(file, "");
+    const compile = vi.spyOn(BackgroundEntropyCompiler.prototype, "compile");
+    const save = vi.spyOn(poolStore, "saveObservationPoolAsync");
+    const harness = createHarness();
+    await piFabric(harness.pi);
+    const context = {
+      mode: "code", cwd: root, hasUI: false, isProjectTrusted: () => true,
+      ui: { setStatus: vi.fn(), notify: vi.fn() },
+      sessionManager: { getBranch: () => [], getSessionId: () => "cached", getSessionFile: () => file },
+    } as unknown as ExtensionContext;
+    await harness.command()("repairs", context);
+    const trigger = async () => {
+      await emit(harness.handlers, "tool_execution_end", { toolName: "fabric_exec", isError: false }, context);
+      await emit(harness.handlers, "turn_end", {}, context);
+    };
+    await trigger();
+    await vi.waitFor(() => expect(scanControl.calls).toBe(1));
+    scanControl.resolvers.shift()!([file]);
+    await vi.waitFor(() => expect(compile).toHaveBeenCalledTimes(1));
+    await trigger();
+    await vi.waitFor(() => expect(compile).toHaveBeenCalledTimes(2));
+    await emit(harness.handlers, "session_shutdown", {}, context);
+    expect(scanControl.calls).toBe(1);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(compile.mock.calls[1]![0].windows).toEqual([{ file, traces: [] }]);
+  });
+
   it("returns turn hooks immediately, coalesces pending turns, and flushes on shutdown", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-entropy-background-"));
     tempRoots.push(root);

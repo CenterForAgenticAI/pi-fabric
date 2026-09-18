@@ -33,6 +33,12 @@ export interface EntropyMeterInput {
   catalogDigest?: string;
 }
 
+export interface EntropyTraceWindow {
+  file: string;
+  /** Session-reader snapshots are immutable; appends retain existing trace identities. */
+  traces: readonly EntropyTraceInput[];
+}
+
 const DISCOVERY_PREFIX = "fabric.discovery.";
 const WORKFLOW_PREFIX = "fabric.workflow.";
 const DEFAULT_TASK_KEY = "(none)";
@@ -271,6 +277,93 @@ const finalizeMeasure = (
     refs: sortedRefs,
   };
 };
+
+interface CachedTraceWindow {
+  traces: readonly EntropyTraceInput[];
+  state: MeasureState;
+  models: Map<string, MeasureState>;
+}
+
+const mergeCounts = (target: Map<string, number>, source: Map<string, number>): void => {
+  for (const [key, count] of source) target.set(key, (target.get(key) ?? 0) + count);
+};
+
+const mergeMeasureState = (target: MeasureState, source: MeasureState): void => {
+  for (const key of Object.keys(source.totals) as (keyof EntropyTotals)[]) {
+    target.totals[key] += source.totals[key];
+  }
+  target.churnPairs += source.churnPairs;
+  target.churnSum += source.churnSum;
+  for (const [ref, acc] of source.refs) {
+    const into = accumulatorFor(target, ref);
+    for (const key of ["calls", "succeeded", "failed", "churnPairs", "churnSum"] as const) into[key] += acc[key];
+    mergeCounts(into.signatures, acc.signatures);
+    mergeCounts(into.stages, acc.stages);
+  }
+  for (const [task, sequences] of source.taskSequences) {
+    let into = target.taskSequences.get(task);
+    if (!into) target.taskSequences.set(task, into = new Map());
+    mergeCounts(into, sequences);
+  }
+};
+
+/** Bounded, session-owned cache. Never pass mutable caller-owned traces here. */
+export class SessionEntropyMeter {
+  readonly #windows = new Map<string, CachedTraceWindow>();
+
+  async measure(
+    windows: readonly EntropyTraceWindow[],
+    input: Omit<EntropyMeterInput, "traces">,
+  ): Promise<EntropyReport> {
+    const reportInput = { ...input, traces: [] };
+    const combined = createMeasureState(reportInput);
+    const models = new Map<string, MeasureState>();
+    for (const window of windows) {
+      let cached = this.#windows.get(window.file);
+      if (cached?.traces !== window.traces) {
+        const append = cached && cached.traces.length <= window.traces.length &&
+          cached.traces.every((trace, index) => trace === window.traces[index]);
+        if (!append) cached = { traces: [], state: createMeasureState({ traces: [] }), models: new Map() };
+        const entry = cached!;
+        // Publish only a complete update; a failed accumulation cannot leave a
+        // half-applied append available for the next turn.
+        this.#windows.delete(window.file);
+        for (let index = entry.traces.length; index < window.traces.length; index++) {
+          const trace = window.traces[index]!;
+          accumulateTrace(entry.state, trace);
+          entry.state.totals.traces++;
+          if (trace.model) {
+            let model = entry.models.get(trace.model);
+            if (!model) entry.models.set(trace.model, model = createMeasureState({ traces: [] }));
+            accumulateTrace(model, trace);
+            model.totals.traces++;
+          }
+          if ((index + 1) % COOPERATIVE_TRACE_CHUNK === 0) await yieldToLoop();
+        }
+        entry.traces = window.traces;
+      }
+      const entry = cached!;
+      this.#windows.delete(window.file);
+      this.#windows.set(window.file, entry);
+      while (this.#windows.size > 16) this.#windows.delete(this.#windows.keys().next().value!);
+      mergeMeasureState(combined, entry.state);
+      for (const [name, source] of entry.models) {
+        let model = models.get(name);
+        if (!model) models.set(name, model = createMeasureState(reportInput));
+        mergeMeasureState(model, source);
+      }
+      await yieldToLoop();
+    }
+    const report = finalizeMeasure(reportInput, combined);
+    const byModel = [...models.entries()].sort(([a], [b]) => compareCodeUnits(a, b)).map(([model, state]) => {
+      const scoped = finalizeMeasure(reportInput, state);
+      return { model, operations: scoped.totals.operations, actionOperations: scoped.totals.actionOperations,
+        succeeded: scoped.totals.succeeded, invocationRejections: scoped.totals.invocationRejections,
+        invocationRejectionsPer1k: scoped.totals.invocationRejectionsPer1k, behavioralScore: scoped.behavioralScore };
+    });
+    return { ...report, byModel };
+  }
+}
 
 const measureOnce = (input: EntropyMeterInput): EntropyReportCore => {
   const state = createMeasureState(input);

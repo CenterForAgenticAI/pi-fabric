@@ -16,15 +16,15 @@ import { registerFabricCommand } from "./commands/fabric.js";
 import { resolveAgentDir } from "./core/agent-dir.js";
 import {
   comparableCompiledSurfaceScore,
-  compileEntropySurfaceAsync,
+  BackgroundEntropyCompiler,
+  BackgroundSessionSelector,
+  SessionObservationCache,
   entropyRepairRows,
   formatEntropyCompileNotice,
   liveSurfaceSnapshot,
   loadCompiledSurfaceAsync,
   loadObservationPoolAsync,
   machineSessionFilesAsync,
-  mergeObservationWindowAsync,
-  poolToValueObservations,
   saveCompiledSurfaceAsync,
   saveObservationPoolAsync,
   sessionWindowEvidenceAsync,
@@ -381,6 +381,12 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
   let entropyCompileInFlight: Promise<void> | undefined;
   let entropyCompilePending: EntropyCompileRequest | undefined;
   let entropyLifecycleEpoch = 0;
+  const createEntropyCaches = () => ({
+    compiler: new BackgroundEntropyCompiler(),
+    observations: new SessionObservationCache(),
+    sessions: new BackgroundSessionSelector(machineSessionFilesAsync),
+  });
+  let entropyCaches = createEntropyCaches();
 
   interface EntropyCompileRequest {
     context: ExtensionContext;
@@ -398,27 +404,28 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
     const agentDir = resolveAgentDir();
     const cwd = state.cwd ?? context.cwd;
     const repairs = entropyRepairRows(state.repairs.repairs);
+    const caches = entropyCaches;
     const [files, loaded, poolLoaded, snapshot] = await Promise.all([
-      machineSessionFilesAsync(agentDir, cwd),
+      caches.sessions.select(agentDir, cwd, context.sessionManager.getSessionFile?.()),
       loadCompiledSurfaceAsync(agentDir),
       loadObservationPoolAsync(agentDir),
       liveSurfaceSnapshot({ registry: state.registry, extensionContext: context, cwd }),
     ]);
     if (!current() || loaded.error) return;
-    const evidence = await sessionWindowEvidenceAsync(files);
+    const evidence = await sessionWindowEvidenceAsync(files, { windowsOnly: true });
     if (!current()) return;
-    const mergedPool = await mergeObservationWindowAsync(
+    const mergedPool = await caches.observations.merge(
       poolLoaded.file,
       evidence.observationWindows,
     );
-    if (!poolLoaded.error) await saveObservationPoolAsync(agentDir, mergedPool.file);
+    if (!poolLoaded.error && (mergedPool.mergedSessions > 0 || !poolLoaded.file)) {
+      await saveObservationPoolAsync(agentDir, mergedPool.file);
+    }
     if (!current()) return;
-    const outcome = await compileEntropySurfaceAsync({
-      traces: evidence.traces,
+    const outcome = await caches.compiler.compile({
+      windows: evidence.traceWindows,
       surface: snapshot,
       repairs,
-      valueObservations: poolToValueObservations(mergedPool.file),
-      auditCalls: evidence.auditCalls,
       ...(loaded.file ? { artifact: loaded.file } : {}),
     });
     if (!current()) return;
@@ -486,6 +493,7 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
 
   pi.on("session_start", async (_event, context) => {
     entropyLifecycleEpoch += 1;
+    entropyCaches = createEntropyCaches();
     entropyEvidenceThisTurn = false;
     entropyCompilePending = undefined;
     pendingHandoffs.clear();
@@ -883,6 +891,7 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
     }
     await settleEntropyCompiles();
     entropyLifecycleEpoch += 1;
+    entropyCaches = createEntropyCaches();
     entropyCompilePending = undefined;
     unsubscribeComponentRegistration();
     unsubscribeProviderRegistration();

@@ -141,25 +141,25 @@ const digestFromIdentityCountsAsync = async (
   const hash = createHash("sha256");
   hash.update("[");
   let first = true;
-  let encodedBatch: string[] = [];
-  const flush = async (): Promise<void> => {
-    if (encodedBatch.length === 0) return;
-    hash.update(`${first ? "" : ","}${encodedBatch.join(",")}`);
-    first = false;
-    encodedBatch = [];
-    await yieldToLoop();
-  };
+  let processed = 0;
   for (const [identity, count] of Object.entries(counts).sort(([left], [right]) =>
     compareCodeUnits(left, right),
   )) {
     const encoded = JSON.stringify(identity);
-    for (let occurrence = 0; occurrence < count; occurrence += 1) {
-      encodedBatch.push(encoded);
-      if (encodedBatch.length >= COOPERATIVE_DIGEST_CHUNK) await flush();
+    // Hash repeated identities in native string batches, not one JS array
+    // element per historical observation. Preserve the v1 digest bytes.
+    const batchSize = Math.max(1, Math.floor(32_768 / (encoded.length + 1)));
+    for (let remaining = count; remaining > 0;) {
+      const size = Math.min(remaining, batchSize, COOPERATIVE_DIGEST_CHUNK - processed);
+      hash.update(`${first ? "" : ","}${encoded}${(`,${encoded}`).repeat(size - 1)}`);
+      first = false;
+      remaining -= size;
+      processed += size;
+      if (processed >= COOPERATIVE_DIGEST_CHUNK) {
+        processed = 0;
+        await yieldToLoop();
+      }
     }
-  }
-  if (encodedBatch.length > 0) {
-    hash.update(`${first ? "" : ","}${encodedBatch.join(",")}`);
   }
   hash.update("]");
   return hash.digest("hex");
@@ -326,7 +326,7 @@ const mergeObservationSummaries = (
       const entry = working.get(entryId);
       if (entry) enforceValueCap(entry);
     }
-    const trackedSession = { file: window.file, digest, counts: fresh };
+    const trackedSession = { file: window.file, digest, counts: { ...fresh } };
     if (existing) {
       tracked[existingIndex] = trackedSession;
     } else {
@@ -366,6 +366,52 @@ export const mergeObservationWindow = (
     summary: summarizeObservations(window.observations),
   })),
 );
+
+interface CachedObservationWindow {
+  observations: readonly EntropyValueObservation[];
+  counts: Record<string, number>;
+  digestCounts: Record<string, number>;
+  summary: ObservationSummary;
+}
+
+/** For immutable session-reader snapshots only; ordinary public merges stay pure. */
+export class SessionObservationCache {
+  readonly #windows = new Map<string, CachedObservationWindow>();
+
+  async merge(
+    pool: EntropyObservationPoolFile | undefined,
+    windows: readonly EntropyObservationWindow[],
+  ): Promise<MergedObservationPool> {
+    const summarized: SummarizedObservationWindow[] = [];
+    for (const window of windows) {
+      let cached = this.#windows.get(window.file);
+      if (cached?.observations !== window.observations) {
+        const append = cached && cached.observations.length <= window.observations.length &&
+          cached.observations.every((observation, index) => observation === window.observations[index]);
+        const counts = append ? { ...cached!.counts } : {};
+        const digestCounts = append ? { ...cached!.digestCounts } : {};
+        const start = append ? cached!.observations.length : 0;
+        for (let index = start; index < window.observations.length; index++) {
+          const observation = window.observations[index]!;
+          const identity = observationIdentity(observation);
+          counts[identity] = (counts[identity] ?? 0) + (observation.count ?? 1);
+          digestCounts[identity] = (digestCounts[identity] ?? 0) + 1;
+          if ((index + 1) % COOPERATIVE_OBSERVATION_CHUNK === 0) await yieldToLoop();
+        }
+        const digest = append && start === window.observations.length
+          ? cached!.summary.digest
+          : await digestFromIdentityCountsAsync(digestCounts);
+        cached = { observations: window.observations, counts, digestCounts, summary: { counts, digest } };
+      }
+      this.#windows.delete(window.file);
+      this.#windows.set(window.file, cached!);
+      while (this.#windows.size > 16) this.#windows.delete(this.#windows.keys().next().value!);
+      summarized.push({ file: window.file, summary: cached!.summary });
+      await yieldToLoop();
+    }
+    return mergeObservationSummaries(pool, summarized);
+  }
+}
 
 export const mergeObservationWindowAsync = async (
   pool: EntropyObservationPoolFile | undefined,

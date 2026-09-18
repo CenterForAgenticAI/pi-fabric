@@ -58,7 +58,23 @@ rate across a selected window, not a guaranteed downward ratchet.
 - Catalog repair rows are separate compatibility mappings and diagnostic input;
   they do not authorize schema restrictions.
 
-Session scans reuse bounded evidence caches and appended-file cursors. The
+Session scans reuse bounded evidence caches and appended-file cursors.
+Background compilation also caches per-session trace aggregates and observation
+summaries: unchanged snapshots do not reprocess old operations, appends only
+accumulate new evidence, and replacement/truncation rebuilds the affected cache.
+Schema-derived plans are cached by the declared surface digest; schema and repair
+changes still update the report. These caches are session-owned, retain at most
+16 windows, and are discarded on session start/shutdown. Cached snapshot inputs
+must not be mutated by callers.
+
+Background machine-wide discovery runs at most once per 30 seconds, with the
+active session file included on every compile. Selected files are still checked
+for changes each time. Explicit `/fabric entropy` inspection remains immediately
+fresh. Advisory enum/overload/sequence analysis runs only on the inspection path,
+not in background compilation. No normalizations or historical outcomes change.
+`bun run benchmark:turn-cpu` compares cached/uncached source paths using synthetic
+evidence and reports process CPU separately from wall time.
+ The
 machine-wide value observation pool retains per-session deltas and per-value
 multiplicity, avoiding inflation when unchanged sessions are reread. Pooling is
 **advisory only**: observations never authorize capability loss or new semantic

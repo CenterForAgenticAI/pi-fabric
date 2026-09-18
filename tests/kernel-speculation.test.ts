@@ -37,6 +37,46 @@ const streamFixture = () => {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("kernel speculation boundaries", () => {
+  it("bounds long-stream parse work geometrically but flushes every final candidate", () => {
+    const clock = vi.spyOn(Date, "now");
+    let now = 1000;
+    clock.mockImplementation(() => now);
+    const launch = vi.fn();
+    const scanner = new LiteralCallScanner();
+    const scan = vi.spyOn(scanner, "push");
+    const tap = new FabricSpeculationStreamTap({
+      enabled: () => true, maxBufferBytes: () => 100_000, isEligible: () => true, launch,
+    });
+    tap.setScannerFactory(() => scanner);
+    tap.handleMessageUpdate(event("toolcall_start"), context);
+    tap.handleMessageUpdate(event("toolcall_delta", '{"code":"'), context);
+    let code = "";
+    for (let i = 0; i < 400; i++) {
+      const line = `await pi.read({path: 'file-${i}'});\n`;
+      code += line;
+      now += 51;
+      tap.handleMessageUpdate(event("toolcall_delta", JSON.stringify(line).slice(1, -1)), context);
+    }
+    const end = { assistantMessageEvent: { type: "toolcall_end", contentIndex: 0,
+      toolCall: { type: "toolCall", name: "fabric_exec", id: "call", arguments: { code } },
+    } } as unknown as MessageUpdateEvent;
+    tap.handleMessageUpdate(end, context);
+    expect(launch).toHaveBeenCalledTimes(400);
+    expect(scan.mock.calls.length).toBeLessThan(60);
+    expect(scan.mock.calls.reduce((sum, [prefix]) => sum + prefix.length, 0)).toBeLessThan(code.length * 8);
+    expect(scan.mock.calls.at(-1)?.[0]).toBe(code);
+  });
+
+  it("does not let a long stream's growth gate suppress a separate short tool call", () => {
+    vi.spyOn(Date, "now").mockReturnValue(1000);
+    const { tap, launch, start } = streamFixture();
+    tap.setScannerFactory(() => new LiteralCallScanner());
+    start(`${" ".repeat(2000)}await compact.status();`);
+    tap.reset();
+    start('await memory.recall({query: "next"});');
+    expect(launch).toHaveBeenCalledTimes(2);
+  });
+
   it.each(["monty", "cpython"] as const)("Python/%s loads a Python scanner and speculative store", async (pythonRuntime) => {
     const config = normalizeFabricConfig({ executor: { kernel: "python", pythonRuntime } });
     const registry = new ActionRegistry();

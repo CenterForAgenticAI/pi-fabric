@@ -55,6 +55,7 @@
     "benchmark:memory-heads": "bun run build && node scripts/benchmark-memory-heads.mjs",
     "benchmark:conversation": "bun run build && node --expose-gc scripts/benchmark-conversation.mjs",
     "benchmark:activity": "node --expose-gc scripts/benchmark-activity.mjs",
+    "benchmark:turn-cpu": "node scripts/benchmark-turn-cpu.mjs",
     "lint:dead": "knip --no-gitignore",
     "assert:lazy-graph": "node scripts/assert-lazy-graph-host-free.mjs",
     "assert:build-artifacts": "node scripts/assert-build-artifacts.mjs",

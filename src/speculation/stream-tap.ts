@@ -12,6 +12,7 @@ interface StreamState {
   isFabricExec: boolean;
   extractor: PartialCodeFieldExtractor;
   scanner?: CallScanner;
+  scannedLength: number;
 }
 
 export interface FabricSpeculationTapOptions {
@@ -45,6 +46,9 @@ const toolCallBlock = (
 // Floor between full-AST reparses of one stream. The scanner's own ")" gate
 // means most deltas never schedule a parse at all.
 const PARSE_INTERVAL_MS = 50;
+// Above this prefix size, geometric growth bounds total reparsed bytes. The
+// final scan always runs, so only speculative lead time changes.
+const EAGER_PARSE_CHARS = 1_024;
 
 /**
  * Watches assistant message streaming for fabric_exec tool calls, incrementally
@@ -78,6 +82,7 @@ export class FabricSpeculationStreamTap {
       const code = stream.extractor.code;
       if (!stream.isFabricExec || code === undefined) continue;
       try {
+        stream.scannedLength = code.length;
         for (const candidate of stream.scanner.push(code)) {
           if (this.#options.isEligible(candidate.ref)) {
             this.#pendingCatchUp.push({ stream, candidate });
@@ -124,6 +129,7 @@ export class FabricSpeculationStreamTap {
           toolCallId: block.id ?? `index-${assistantEvent.contentIndex}`,
           isFabricExec: block.name !== undefined ? block.name === "fabric_exec" : true,
           extractor: new PartialCodeFieldExtractor(this.#options.maxBufferBytes()),
+          scannedLength: 0,
           ...(this.#createScanner ? { scanner: this.#createScanner() } : {}),
         });
         return;
@@ -134,6 +140,7 @@ export class FabricSpeculationStreamTap {
         const block = toolCallBlock(assistantEvent.partial, assistantEvent.contentIndex);
         if (block.id) stream.toolCallId = block.id;
         if (block.name !== undefined) stream.isFabricExec = block.name === "fabric_exec";
+        if (!stream.isFabricExec) return;
         stream.extractor.push(assistantEvent.delta);
         const code = stream.extractor.code;
         if (!stream.isFabricExec || code === undefined) return;
@@ -160,8 +167,11 @@ export class FabricSpeculationStreamTap {
   #scan(stream: StreamState, code: string, context: ExtensionContext, force: boolean): void {
     const now = Date.now();
     if (!force && now - this.#lastParseAt < PARSE_INTERVAL_MS) return;
-    this.#lastParseAt = now;
     if (!stream.scanner) return;
+    if (!force && stream.scannedLength >= EAGER_PARSE_CHARS &&
+        code.length >= stream.scannedLength && code.length < Math.ceil(stream.scannedLength * 1.25)) return;
+    this.#lastParseAt = now;
+    stream.scannedLength = code.length;
     const candidates = stream.scanner.push(code);
     for (const candidate of candidates) {
       if (this.#options.isEligible(candidate.ref)) {

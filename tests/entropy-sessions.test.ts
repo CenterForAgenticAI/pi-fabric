@@ -122,6 +122,31 @@ describe("machineSessionFiles", () => {
 });
 
 describe("async session pipeline", () => {
+  it("exposes stable snapshots without flattening and invalidates them on truncation and replacement", async () => {
+    const root = makeTempDir();
+    const file = writeSession(root, "/repo", "live.jsonl", new Date(2021, 0, 1));
+    const read = () => sessionWindowEvidenceAsync([file], { windowsOnly: true });
+    const first = await read();
+    expect(first.traces).toEqual([]);
+    expect(first.valueObservations).toEqual([]);
+    expect(first.auditCalls).toEqual([]);
+    expect(first.traceWindows[0]!.traces).toHaveLength(1);
+    expect((await read()).traceWindows[0]!.traces).toBe(first.traceWindows[0]!.traces);
+    fs.appendFileSync(file, `${sessionLine()}\n`);
+    const appended = await read();
+    expect(appended.traceWindows[0]!.traces).toHaveLength(2);
+    expect(appended.traceWindows[0]!.traces[0]).toBe(first.traceWindows[0]!.traces[0]);
+    fs.writeFileSync(file, `${sessionLine()}\n`);
+    const truncated = await read();
+    expect(truncated.traceWindows[0]!.traces).toHaveLength(1);
+    expect(truncated.traceWindows[0]!.traces[0]).not.toBe(first.traceWindows[0]!.traces[0]);
+    const stat = fs.statSync(file);
+    fs.writeFileSync(`${file}.replacement`, `${sessionLine()}\n`);
+    fs.utimesSync(`${file}.replacement`, stat.atime, stat.mtime);
+    fs.renameSync(`${file}.replacement`, file);
+    expect((await read()).traceWindows[0]!.traces).not.toBe(truncated.traceWindows[0]!.traces);
+  });
+
   it("matches synchronous selection, evidence, and measurement without blocking timers", async () => {
     const agentDir = makeTempDir();
     const older = writeSession(agentDir, "/repo", "old.jsonl", new Date(2020, 0, 1));
