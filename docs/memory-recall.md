@@ -287,6 +287,27 @@ regex result never counts as an authoritative no-match.
 
 ## Tiers, refresh, and work budgets
 
+Pi's built-in filesystem memory provider runs recall, expansion, and session
+listing in one lazy worker thread. Discovery, source hashing, JSON parsing,
+cache maintenance, and ranking do not run on Pi's input/render thread. A
+burst of calls shares a FIFO queue (at most 64 outstanding requests), rather
+than spawning a CPU-heavy worker for every recall. Aborting an active call
+terminates its worker; queued calls can be cancelled independently. Idle
+workers are unreferenced and released after 30 seconds, and provider teardown
+terminates outstanding work. A missing worker artifact is an error, not a
+silent fallback to blocking execution.
+
+Live-session branch snapshots carry entry IDs only, are taken when each
+queued request starts, and are checked again before returning its result.
+Navigation during retrieval rejects the request instead of returning evidence
+from a different live branch. Registered host-backed adapters remain in their
+authorized owning host and keep their existing cancellation contracts.
+
+`bun run benchmark:memory-recall` exercises a burst of 13 cold-session recalls
+and reports both retrieval time and host event-loop heartbeat gaps. Pass
+`--inline` directly to `node scripts/benchmark-memory-recall.mjs` to compare
+with the synchronous engine used internally by the worker.
+
 The `memory.hotSessions` most recently modified sessions stay hot. Every
 older session is cold. Once a session crosses the boundary, Fabric drops
 the old derived tier record after building the replacement. Explicit

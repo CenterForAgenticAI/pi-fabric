@@ -22,6 +22,8 @@ const stable = [
   "memory/search.js",
   "memory/discovery.js",
   "memory/normalize.js",
+  "memory/file-worker.js",
+  "memory/worker-provider.js",
   "providers/memory-provider.js",
 ];
 const lazy = [

@@ -10,7 +10,8 @@ import type { ParticipantDirectory } from "./topology/participant-directory.js";
 import { CapturedToolsProvider } from "./providers/captured-tools-provider.js";
 import { McpDescriptorCacheStore } from "./providers/mcp-descriptor-cache.js";
 import { McpProvider } from "./providers/mcp-provider.js";
-import { MemoryProvider, type MemoryProviderContext } from "./providers/memory-provider.js";
+import type { MemoryProviderContext } from "./providers/memory-provider.js";
+import { WorkerMemoryProvider } from "./memory/worker-provider.js";
 import { MeshProvider } from "./providers/mesh-provider.js";
 import { PiToolsProvider } from "./providers/pi-tools-provider.js";
 import { powerShellToolDefinitionFactory } from "./providers/pi-bash-cwd.js";
@@ -151,7 +152,7 @@ export class RuntimeStateBuiltins {
       await this.install(createProviderComponent({
         provider: "memory",
         description: "Session memory index and source hydration",
-        create: () => new MemoryProvider(memoryContext),
+        create: () => new WorkerMemoryProvider(memoryContext),
       }));
     } else {
       this.registry.markUnavailable(

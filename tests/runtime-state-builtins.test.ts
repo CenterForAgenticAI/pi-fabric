@@ -3,6 +3,10 @@ import { createProviderComponent, type FabricProviderComponentManifest } from ".
 import { normalizeFabricConfig } from "../src/config.js";
 import { ActionRegistry } from "../src/core/action-registry.js";
 import { RuntimeStateBuiltins } from "../src/runtime-state-builtins.js";
+import { WorkerMemoryProvider } from "../src/memory/worker-provider.js";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { FabricComponentContext } from "../src/components/types.js";
+import type { FabricProviderComponent } from "../src/components/provider-component.js";
 
 const fixture = () => {
   const manifest = { install: vi.fn(async () => {}), assertActive: vi.fn() };
@@ -15,6 +19,21 @@ const fixture = () => {
 };
 
 describe("runtime built-in installation policy", () => {
+  it("installs the worker-backed provider for Pi filesystem memory", async () => {
+    const { builtins, manifest } = fixture();
+    const context = {
+      cwd: process.cwd(),
+      sessionManager: { getSessionFile: () => undefined, getBranch: () => [], getLeafId: () => null },
+    } as unknown as ExtensionContext;
+    await builtins.memory(context, normalizeFabricConfig({ memory: { enabled: true } }), "session");
+    const [component] = manifest.install.mock.calls[0] as unknown as [FabricProviderComponent];
+    const provide = vi.fn();
+    await component.definition.activate({ provide } as unknown as FabricComponentContext, undefined);
+    const provider = provide.mock.calls[0]![0] as WorkerMemoryProvider;
+    expect(provider).toBeInstanceOf(WorkerMemoryProvider);
+    await provider.close();
+  });
+
   it.each([
     { fullCodeMode: false, schema: { mode: "off" }, capture: { enabled: true }, expected: [] },
     { fullCodeMode: true, schema: { mode: "off" }, capture: { enabled: false }, expected: ["pi"] },

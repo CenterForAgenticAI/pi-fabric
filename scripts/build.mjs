@@ -20,6 +20,8 @@ const primaryEntryPoints = [
   "src/memory/search.ts",
   "src/memory/discovery.ts",
   "src/memory/normalize.ts",
+  "src/memory/file-worker.ts",
+  "src/memory/worker-provider.ts",
   "src/providers/memory-provider.ts",
 ];
 

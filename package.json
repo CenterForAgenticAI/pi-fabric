@@ -53,6 +53,7 @@
     "certify:entropy": "bun run build && node scripts/certify-entropy.mjs",
     "benchmark:real-resume": "bun run build && node scripts/benchmark-real-resume.mjs",
     "benchmark:memory-heads": "bun run build && node scripts/benchmark-memory-heads.mjs",
+    "benchmark:memory-recall": "bun run build && node scripts/benchmark-memory-recall.mjs",
     "benchmark:conversation": "bun run build && node --expose-gc scripts/benchmark-conversation.mjs",
     "benchmark:activity": "node --expose-gc scripts/benchmark-activity.mjs",
     "benchmark:turn-cpu": "node scripts/benchmark-turn-cpu.mjs",
