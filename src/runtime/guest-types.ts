@@ -727,10 +727,18 @@ interface FabricAgentsApi {
   followUp(args: { id: string; message: string; data?: unknown }): Promise<{ queued: true; messageId: string; routed?: "local" | "main" | "mesh"; acknowledged?: boolean }>;
   setSteeringMode(args: { id: string; mode: "all" | "one-at-a-time" }): Promise<{ queued: true; messageId: string }>;
   setFollowUpMode(args: { id: string; mode: "all" | "one-at-a-time" }): Promise<{ queued: true; messageId: string }>;
+  /** Advisory compaction of a running Pi-runner child at its next safe turn boundary. */
+  compact(args: { id: string; instructions?: string }): Promise<{ queued: true; messageId: string }>;
   actorStatus(args: FabricAgentTargetArgs): Promise<FabricActorInfo>;
   actors(): Promise<FabricActorInfo[]>;
   messages(args: { id: string; limit?: number }): Promise<FabricActorMessage[]>;
   remove(args: { id: string }): Promise<{ removed: boolean }>;
+  /** Drop an actor's mailbox history without stopping the actor. */
+  clearMessages(args: { id: string }): Promise<FabricActorInfo>;
+  /** Stamp a global template into the current project as a fresh live actor with no inherited history. */
+  "import"(args: { id?: string; name?: string; as?: string }): Promise<FabricActorInfo>;
+  /** Export a live project actor's definition to the global registry as a project-independent template. */
+  "export"(args: { id: string; overwrite?: boolean }): Promise<FabricActorRequest & { id: string; createdAt: number; updatedAt: number }>;
   log(args: {
     id: string;
     type?: "session" | "run" | "all";
