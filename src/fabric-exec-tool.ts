@@ -965,6 +965,9 @@ export const createFabricExecTool = (
       // (its `context` hook swaps image→description on the LLM-bound
       // fabric_exec clone), so every read audit carries its image here.
       const mediaBlocks: FabricMediaBlock[] = [];
+      // Images the guest returned directly, hoisted out of the text channels by
+      // the media sanitizer; their descriptors remain in the text.
+      for (const block of result.media ?? []) mediaBlocks.push(block);
       for (const audit of result.audits) {
         if (audit.media) mediaBlocks.push(...audit.media);
       }

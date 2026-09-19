@@ -41,7 +41,11 @@ import {
   codeUsesOrchestration,
   isBlockingOrchestrationRef,
 } from "./runtime/orchestration.js";
-import type { FabricCommittedCapabilityView } from "./protocol.js";
+import type { FabricCommittedCapabilityView, FabricMediaBlock } from "./protocol.js";
+import {
+  sanitizeFabricMediaText,
+  sanitizeFabricMediaValue,
+} from "./core/media-sanitize.js";
 import { fabricExecTitleHintCached } from "./ui/fabric-title-hint.js";
 import type {
   FabricKernel,
@@ -93,6 +97,8 @@ export interface FabricExecutionResult {
   kernel?: FabricKernel;
   value: unknown;
   logs: string[];
+  /** Images hoisted out of `value` by the media sanitizer, indexed by descriptor. */
+  media?: FabricMediaBlock[];
   audits: FabricCallAudit[];
   phases: string[];
   trace: FabricExecutionTraceV1;
@@ -809,18 +815,23 @@ export class FabricExecutionService {
     const runOutcome = executionOutcomeFromTermination(sandboxResult.terminationReason);
     const succeeded = runOutcome === "succeeded";
     this.activity?.finish(options.parentToolCallId, succeeded, sandboxResult.error);
+    // Logs, results, and error text reach the model, the event stream, and
+    // persisted traces. Raw media must not: images are hoisted out of band and
+    // base64 payloads collapse to a descriptor (see core/media-sanitize.ts).
+    const sanitizedValue = sanitizeFabricMediaValue(sandboxResult.value);
     return {
       success: succeeded,
       kernel: python ? "python" : "typescript",
-      value: sandboxResult.value,
-      logs: sandboxResult.logs,
+      value: sanitizedValue.value,
+      logs: sandboxResult.logs.map(sanitizeFabricMediaText),
+      ...(sanitizedValue.images.length > 0 ? { media: sanitizedValue.images } : {}),
       audits,
       phases,
       // Guest and provider error text may embed tool output or source
       // literals, so the durable trace records only safe causes.
       trace: traceRecorder.seal(runOutcome, phases),
       elapsedMs: performance.now() - startedAt,
-      ...(sandboxResult.error ? { error: sandboxResult.error } : {}),
+      ...(sandboxResult.error ? { error: sanitizeFabricMediaText(sandboxResult.error) } : {}),
       ...(handoffRequest ? { handoffRequest } : {}),
       ...(classifierUsages.length > 0
         ? { usage: aggregateUsage(classifierUsages) }
