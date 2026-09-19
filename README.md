@@ -109,6 +109,7 @@ Pi loads advanced patterns after direct user invocation. Run `/skill:fabric-guid
 | Help choosing the smallest advanced mechanism | `/skill:fabric-guide Choose a mechanism to audit every auth file and verify the findings.` |
 | Parallel audits, migrations, or research with verification | `/skill:fabric-workflow Audit every auth file and synthesize verified findings.` |
 | Work too big for one context window | `/skill:fabric-rlm Produce a compact architecture map of this repo.` |
+| A Jev foreman above coding work, per turn or at settlement | `/skill:fabric-foreman Watch this migration, request verification, and flag blockers.` |
 | A persistent watcher for one measurable goal | `/skill:fabric-supervisor Watch this migration until it is complete and tested.` |
 | A strict auditor for one feature design spec | `/skill:fabric-spec Implement docs/specs/checkout.md to the tee; nothing missing, nothing extra.` |
 | A quiet decision-point reviewer | `/skill:fabric-advisor Focus on migration correctness.` |

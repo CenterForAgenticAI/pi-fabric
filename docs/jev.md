@@ -202,6 +202,8 @@ Stop a loop with `jev.stop({ id })`, provider reload/unload, or a code-owned ter
 
 ## Main-turn advisors and supervisors
 
+For a ready-to-use coding-supervision policy, invoke `/skill:fabric-foreman <goal>`. It uses these same primitives with per-turn or settlement cadence, ten batched judgments, and bounded deterministic interventions. See [the Foreman capability comparison](foreman.md).
+
 `jev.spawn({program,input,observe})` can subscribe to the owning Main session. This is an **event-driven sidecar**, not another reasoning agent or a polling loop. It works with mesh disabled. It is not a mesh participant, a cross-session subscription, or restart-durable storage; do not pass its run ID to `agents.subscribe`.
 
 The program retains local state, awaits `program.nextEvent()`, asks typed questions, then records a judgment with `program.emit`. To intervene, explicitly configure `observe.delivery` and declare `jev.advise` in `requires`. `program.advise({eventId,message})` supplies the current run ID; the public equivalent is `jev.advise({id,eventId,message})`. Observer launch also requires read approval for future Main event access. Advice is an `agent`-risk emission and passes normal approvals, authorization, and pinned capability checks. Jev selects judgments; program code writes the message and policy.
