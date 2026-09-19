@@ -135,6 +135,71 @@ Foreground cancellation cancels the run. Cancelling a `wait` only cancels that w
 
 Status retains the latest 64 events (4 KiB each); use `sequence` and `nextSequence` to detect gaps. Logs are capped at 4 KiB; program input and final JSON output are each capped at 32 KiB. Terminal runs are retained in a bounded in-memory history; old IDs eventually expire. There is no unlimited hidden transcript or per-tick reasoning agent.
 
+## Realtime loops
+
+A realtime controller is one program: observe, judge, act, pace, repeat. Two decision shapes cover the published realtime examples: [Jev Ultrafast](https://github.com/browser-use/jev-ultrafast) and [jev-doom-agent](https://github.com/lukaske/jev-doom-agent).
+
+- **Operation plus speculative targets.** One request asks which operation to run and, separately, which target each operation would use. Code applies only the target head matching the chosen operation. This is the browser-agent shape: a dynamic element table, one network round trip, one executed action.
+- **Factorized control axes.** One request asks several independent questions whose answers execute together, for example movement / view / trigger / interaction. This is the shape of the browser-native Doom example.
+
+Both are ordinary `jev.evaluate` batches: keep independent questions in one request, and keep the mapping from answers to effects in code. A counterfactual head that is not executed is still a judgment; never let unused heads write state.
+
+### Observation stays structured state
+
+Read the application's own state — a page bridge through `browser.cdp` and `Runtime.evaluate`, or a small application-specific provider — and project it into a compact object with a revision. Include the facts the judgment needs and nothing else: player/entity/environment fields, the previous action, and bounded history are usually enough. Screenshots are not part of the typed request contract; keep pixels out of `state`, and never send secrets.
+
+### Code owns the motor layer
+
+Jev selects a tactic; code decides how to execute it. A timed pulse with an epoch guard is what survives a realtime loop: apply an input mask, hold it for a bounded interval, release it only while it is still the newest pulse, then re-observe.
+
+```ts
+let epoch = 0;
+async function pulse(mask: string, durationMs: number) {
+  const mine = ++epoch;
+  await tools.call({ ref: "app.control", args: { mask, epoch: mine } });
+  await program.sleep(durationMs);
+  if (mine === epoch) await tools.call({ ref: "app.release", args: { epoch: mine } });
+}
+```
+
+Revalidate the revision you decided from before applying anything. A rejected or stale action means re-observe and re-decide, not retry blindly.
+
+### Degraded mode must be labeled
+
+A realtime loop needs a deterministic fallback for every degraded decision: a failed request, an invalid response, or confidence below your threshold. Compute the fallback in code, replace the judgment, and record it, so the UI and telemetry never present it as a model decision.
+
+```ts
+let degraded = false;
+try {
+  const decision = await jev.evaluate({ state, questions });
+  if (decision.answers.action.confidence < 0.5) degraded = true;
+  else frame = decision.answers.action.choice;
+} catch { degraded = true; }
+if (degraded) { frame = deterministicFallback(state); await program.emit({ fallback: true, frame }); }
+```
+
+Confidence is neither truth nor authorization; a low-confidence answer is a reason to fall back, not a reason to act. Fabric validates the response before it returns it — an invalid choice, probability set, or confidence rejects the evaluation instead of surfacing a partial answer, so `catch` is part of the loop.
+
+### Budget arithmetic for sustained loops
+
+Default per-run limits are 60 seconds, 100 evaluations, 1,000 host calls, and 100,000 reported tokens. `program.sleep` and `program.emit` are host calls and count against `maxToolCalls`, so a paced loop spends budget even when it is not touching the world. At 10 Hz with observe, evaluate, control, release, and sleep, that is five host calls per tick: the default 1,000 host calls last about 20 seconds, and the default 100 evaluations about 10 seconds. A sustained run needs explicit limits and a raised host ceiling:
+
+```json
+{
+  "jev": { "maxDurationMs": 3600000, "maxEvaluations": 100000, "maxToolCalls": 1000000, "maxTokens": 100000000 }
+}
+```
+
+Per-program `limits` are clamped to these ceilings (24 hours, 100,000 evaluations, 1,000,000 host calls). Duration and evaluation count are the real liveness bounds; the wall-clock deadline and terminal state are always reported in the run envelope.
+
+### Telemetry and shutdown
+
+Spawn the loop with `jev.spawn` so Main stays responsive and can inspect it. The event ring holds the latest 64 events (4 KiB each) — roughly six seconds at 10 Hz — so drain it with `jev.status({ id, after })` from the supervising turn or persist it host-side; terminal runs live only in a bounded history. At most one evaluation may be in flight per program, so batch independent questions instead of hedging decisions, and run two engines as two programs (`jev.maxConcurrentRuns`).
+
+Stop a loop with `jev.stop({ id })`, provider reload/unload, or a code-owned terminal rule such as death, goal reached, or a no-match judgment. Cancellation aborts in-flight inference and host calls, but it is not rollback of effects already issued.
+
+`tests/jev-realtime-loop.test.ts` is the deterministic reference for both shapes, the pulse/epoch pattern, labeled degraded mode, a death stop, and status/stop on a paced run.
+
 ## Main-turn advisors and supervisors
 
 `jev.spawn({program,input,observe})` can subscribe to the owning Main session. This is an **event-driven sidecar**, not another reasoning agent or a polling loop. It works with mesh disabled. It is not a mesh participant, a cross-session subscription, or restart-durable storage; do not pass its run ID to `agents.subscribe`.
@@ -284,6 +349,6 @@ PI_FABRIC_JEV_LIVE=1 PI_FABRIC_JEV_LOCALTERM=1 bunx vitest run tests/jev-live.te
 
 After `bun run build`, `bun run test:jev:dist` checks the compiled public entry point, auth-only registration, foreground CDP composition with a simulated session, and background stop/wait, agent/Jev join aliases, and event-driven Main advice.
 
-No real browser state or secrets are printed by these probes. Live tests exercise all three primitives, foreground/background inference loops, and a feedback controller using changing synthetic screen observations and source control IDs. Unit tests exercise the Browser Harness adapter with an injected session; they do not attach to a personal browser.
+No real browser state or secrets are printed by these probes. Live tests exercise all three primitives, foreground/background inference loops, and a feedback controller using changing synthetic screen observations and source control IDs. `tests/jev-realtime-loop.test.ts` replays both realtime shapes offline: batched target heads with one request per tick, factorized control axes with pulse/epoch motor control, labeled degraded decisions, a death stop, and status/stop on a paced loop. Unit tests exercise the Browser Harness adapter with an injected session; they do not attach to a personal browser.
 
 Public host APIs and types are exported from `pi-fabric/jev`. Fabric lifecycle and trust semantics are detailed in [components.md](components.md). Current TypeSafe contracts: [API](https://docs.typesafe.ai/api), [Choice](https://docs.typesafe.ai/primitives/choice), [Noul](https://docs.typesafe.ai/primitives/noul), [Score](https://docs.typesafe.ai/primitives/score), and [confidence](https://docs.typesafe.ai/confidence).
