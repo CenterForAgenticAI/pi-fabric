@@ -134,6 +134,26 @@ describe("Jev auto-approval classifier", () => {
     expect(JSON.parse(fetcher.mock.calls[0]![1]!.body as string).model).toBe("jev-1.13");
   });
 
+  it("classifies through OpenRouter decisions with the openrouter credential", async () => {
+    fetcher.mockImplementation(async () => Response.json({ ...response(), model: "typesafe/jev-1.13" }));
+    const ctx = context();
+    const result = await new FabricAutoApprovalClassifier().classify(action, { command: "bun run typecheck" }, ctx, "pi-fabric/openrouter/jev-latest");
+    expect(result).toMatchObject({ decision: "allow", model: "pi-fabric/openrouter/typesafe/jev-1.13" });
+    expect(ctx.modelRegistry.getApiKeyForProvider).toHaveBeenCalledWith("openrouter");
+    expect(ctx.modelRegistry.find).not.toHaveBeenCalled();
+    const [url, options] = fetcher.mock.calls[0]!;
+    expect(url).toBe("https://openrouter.ai/api/alpha/decisions");
+    expect(options).toMatchObject({ redirect: "error", headers: { Authorization: "Bearer fixture-only-key" } });
+    expect(JSON.parse(options!.body as string).model).toBe("~typesafe/jev-latest");
+    expect(options!.body).not.toMatch(/PRIVATE|HOSTILE|fixture-only-key/);
+  });
+
+  it("rejects OpenRouter aliases the service does not expose before credentials or network", async () => {
+    await expect(new FabricAutoApprovalClassifier().classify(action, {}, context(), "pi-fabric/openrouter/jev-preview")).rejects.toThrow("OpenRouter serves");
+    await expect(new FabricAutoApprovalClassifier().classify(action, {}, context(), "pi-fabric/openrouter/../bad")).rejects.toThrow("not available");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("uses environment auth when Pi has no key and does not need a chat model", async () => {
     vi.stubEnv("TYPESAFE_API_KEY", "environment-fixture");
     const ctx = context();

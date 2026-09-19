@@ -2,7 +2,8 @@ import type { Usage } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_JEV_CONFIG, type FabricJevConfig } from "../jev/config.js";
-import { JEV_APPROVAL_MODEL_PREFIX, isJevApprovalModel, normalizeJevApprovalModel } from "../jev/model-key.js";
+import { JEV_OPENROUTER_MODEL_PREFIX, JEV_TYPESAFE_MODEL_PREFIX, isJevApprovalModel } from "../jev/model-key.js";
+import { resolveJevClassifierTarget } from "../jev/routes.js";
 import type { ResolvedFabricAction } from "./action-registry.js";
 
 const MAX_TRANSCRIPT_CHARS = 24_000;
@@ -169,8 +170,9 @@ export class FabricAutoApprovalClassifier {
     context: ExtensionContext,
     modelKey: string,
   ): Promise<FabricAutoApprovalDecision> {
-    const model = normalizeJevApprovalModel(modelKey)!.slice(JEV_APPROVAL_MODEL_PREFIX.length);
-    if (!/^[a-zA-Z0-9._-]{1,128}$/.test(model)) throw new Error(`Invalid Jev auto-approval model; use ${JEV_APPROVAL_MODEL_PREFIX}<model-id>`);
+    const target = resolveJevClassifierTarget(modelKey);
+    if (!target.ok) throw new Error(target.message);
+    const { route, model } = target;
     let truncated = false;
     const argumentsJson = boundedJson(args, MAX_ARGUMENT_CHARS, () => { truncated = true; });
     const evidence = transcriptEvidence(context, true);
@@ -185,12 +187,12 @@ export class FabricAutoApprovalClassifier {
     }
     const client = new JevClient({ ...config, requestTimeoutMs: Math.min(config.requestTimeoutMs, CLASSIFIER_TIMEOUT_MS) }, fetch,
       new JevCredentials(config.credentialCommand, process.env, {
-        configured: () => context.modelRegistry.getProviderAuthStatus?.("jev")?.configured ?? false,
+        configured: () => context.modelRegistry.getProviderAuthStatus?.(route.providerId)?.configured ?? false,
         resolve: async signal => {
           signal.throwIfAborted();
-          return context.modelRegistry.getApiKeyForProvider?.("jev");
+          return context.modelRegistry.getApiKeyForProvider?.(route.providerId);
         },
-      }));
+      }, route.envKeys), route);
     try {
       const response = await client.evaluate({
         model,
@@ -215,8 +217,8 @@ export class FabricAutoApprovalClassifier {
       return {
         decision: answer.noul >= threshold ? "allow" : "escalate",
         reason: `Jev safety probability ${answer.noul}; auto-allow requires >= ${threshold}`,
-        model: `${JEV_APPROVAL_MODEL_PREFIX}${response.model}`,
-        // TypeSafe reports tokens but not billing amounts. Zero means unpriced.
+        model: `${route.id === "openrouter" ? JEV_OPENROUTER_MODEL_PREFIX : JEV_TYPESAFE_MODEL_PREFIX}${response.model}`,
+        // The decisions API reports tokens but not billing amounts. Zero means unpriced.
         usage: { input, output, cacheRead: 0, cacheWrite: 0, totalTokens: input + output,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
       };

@@ -33,19 +33,22 @@ const activate = <T>(section: SectionSubmenu, id: string): T => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("Jev approval probability settings", () => {
-  it("offers both namespaced models without duplicate or legacy picker entries", () => {
+  it("offers every route alias without duplicate or legacy picker entries", () => {
     const { open } = fixture("jev/jev-latest");
     const picker = activate<FabricModelSelector>(open(), "approvals.model");
     expect(picker.rpcChoices().map(choice => choice.value)).toEqual([
-      "Inherit", "pi-fabric/typesafe/jev-latest", "pi-fabric/typesafe/jev-1.13",
+      "Inherit",
+      "pi-fabric/typesafe/jev-latest",
+      "pi-fabric/openrouter/jev-1.13", "pi-fabric/openrouter/jev-latest",
+      "pi-fabric/typesafe/jev-1.13", "pi-fabric/typesafe/jev-1.13.0", "pi-fabric/typesafe/jev-preview",
     ]);
     expect(picker.rpcChoices().find(choice => choice.current)?.value).toBe("pi-fabric/typesafe/jev-latest");
   });
-  it.each([undefined, "anthropic/chat", "pi-fabric/typesafe/jev-latest", "pi-fabric/typesafe/pinned"])("shows the setting only for a Jev override: %s", model => {
+  it.each([undefined, "anthropic/chat", "pi-fabric/typesafe/jev-latest", "pi-fabric/openrouter/jev-latest", "pi-fabric/typesafe/pinned"])("shows the setting only for a Jev override: %s", model => {
     const { config, open } = fixture(model);
     expect(config.jev.autoApprovalThreshold).toBe(0.5);
     const row = open().items.find(item => item.id === thresholdId);
-    expect(Boolean(row)).toBe(Boolean(model?.startsWith("pi-fabric/typesafe/")));
+    expect(Boolean(row)).toBe(Boolean(model?.startsWith("pi-fabric/typesafe/") || model?.startsWith("pi-fabric/openrouter/")));
     if (row) expect(row.currentValue).toBe("0.5");
   });
 
@@ -116,7 +119,7 @@ describe("Jev approval probability settings", () => {
       let edits = 0;
       const notify = vi.fn();
       const select = vi.fn(async (title: string, options: string[]) => {
-        if (title.startsWith("Fabric settings › Approvals › Auto model")) return options.find(option => option.includes("jev-latest"));
+        if (title.startsWith("Fabric settings › Approvals › Auto model")) return options.find(option => option.startsWith("typesafe/jev-latest"));
         if (title.startsWith("Fabric settings › Approvals")) {
           if (edits++ === 0) {
             expect(options.some(option => option.startsWith("Jev minimum probability"))).toBe(false);

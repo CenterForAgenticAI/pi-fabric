@@ -592,7 +592,7 @@ describe("FabricSettingsComponent", () => {
     list.activateItem();
     list.submenuComponent.handleInput("jev");
     list.submenuComponent.handleInput("\r");
-    expect(applied.at(-1)).toEqual({ id: "approvals.model", value: "pi-fabric/typesafe/jev-1.13" });
+    expect(applied.at(-1)).toEqual({ id: "approvals.model", value: "pi-fabric/openrouter/jev-1.13" });
     expect(source.models.some(model => model.provider === "jev")).toBe(false);
   });
 

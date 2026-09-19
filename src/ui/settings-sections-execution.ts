@@ -1,5 +1,6 @@
 import type { SettingItem } from "@earendil-works/pi-tui";
 import { isJevApprovalModel } from "../jev/model-key.js";
+import { jevClassifierModels } from "../jev/routes.js";
 import type { SettingsSectionContext } from "./settings-section-context.js";
 import {
   setting,
@@ -246,22 +247,19 @@ export const buildApprovalsSection = (
       () => [
         setting("approvals.model", "Auto model", config.approvals.model || INHERIT_VALUE, {
           description:
-            "Pi or Jev model used as the auto-mode safety classifier. Inherit uses the active session model. Jev requires /login jev or TYPESAFE_API_KEY and the configured minimum safety probability (default 0.50); lower scores and errors require explicit approval. No executable classifier tools.",
+            "Pi or Jev model used as the auto-mode safety classifier. Inherit uses the active session model. Jev requires /login jev (TypeSafe route) or the existing openrouter credential (OpenRouter route) and the configured minimum safety probability (default 0.50); lower scores and errors require explicit approval. No executable classifier tools.",
           submenu: modelPickerSubmenu(
             theme,
             {
               ...options.modelSource,
               models: [
                 ...options.modelSource.models.filter(model => !isJevApprovalModel(`${model.provider}/${model.id}`)),
-                ...[...new Set([config.jev.model, "jev-latest", "jev-1.13"])].map(model => ({
-                  provider: "pi-fabric", id: `typesafe/${model}`,
-                  name: `Jev (TypeSafe safety classifier · ${model})`,
-                })),
+                ...jevClassifierModels(config.jev.model),
               ],
             },
             {
               headerText:
-                "Safety classifier for auto approval policies. Inherit uses the active Pi model. Jev uses typed judgments, not chat; authenticate with /login jev.",
+                "Safety classifier for auto approval policies. Inherit uses the active Pi model. Jev uses typed judgments, not chat; authenticate with /login jev for TypeSafe or /login openrouter for OpenRouter.",
               inheritName: "Use the active Pi session model",
             },
           ),

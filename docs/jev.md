@@ -8,11 +8,15 @@ For guided authoring, invoke `/skill:fabric-jev <task>`. It is user-opt-in and a
 
 On Pi 0.85.1 or newer, `/login jev` prompts privately for a TypeSafe API key and stores an ordinary API-key credential under `jev` in Pi's `auth.json`. `/logout` removes it. Jev registers an **auth-only provider with no chat models**; it does not appear as a selectable text-generating model.
 
-Resolution order:
+Jev has two upstream routes. Bare aliases (`jev-latest`, `jev-1.13`, `jev-1.13.0`, `jev-preview`) post to TypeSafe's `/v1/systemone`. OpenRouter decisions IDs (`typesafe/jev-1.13`, `~typesafe/jev-latest`) post to OpenRouter's `/api/alpha/decisions` and reuse the **existing `openrouter` credential** — the same `auth.json` entry as your chat models, so `/login openrouter` covers both. OpenRouter serves Jev on its Decisions API, not `/chat/completions`, and has no `jev-preview` alias. No second provider is registered.
+
+TypeSafe route resolution order:
 
 1. Pi's provider authentication (`auth.json`, then `TYPESAFE_API_KEY`, including supported Pi runtime overrides).
 2. `TYPESAFE_API_KEY` directly when running without Pi's auth service.
 3. An explicitly configured host-side command, if neither is available.
+
+The OpenRouter route resolves Pi's `openrouter` provider authentication first (`auth.json`, then `OPENROUTER_API_KEY`), then `OPENROUTER_API_KEY` or `TYPESAFE_OPENROUTER_API_KEY`, then the same trusted `jev.credentialCommand`.
 
 For Localterm, set this in your trusted `fabric.json` (never put the resolved secret into model-visible code):
 
@@ -30,7 +34,7 @@ The command uses argv, not a shell. It runs only when inference needs a key, wit
 
 ## Auto-mode tool safety
 
-Jev can also serve as the host's auto-approval classifier, independently of programs and observers. Choose **Approvals → Auto model → Jev (TypeSafe safety classifier)** in `/fabric settings`, or set `approvals.model` to `"pi-fabric/typesafe/jev-latest"` (or pin `"pi-fabric/typesafe/jev-1.13"`) and the relevant risk policies to `"auto"`. Authenticate with `/login jev`, `TYPESAFE_API_KEY`, or the trusted credential command above.
+Jev can also serve as the host's auto-approval classifier, independently of programs and observers. Choose **Approvals → Auto model** in `/fabric settings`, or set `approvals.model` to `"pi-fabric/typesafe/jev-latest"` and the relevant risk policies to `"auto"`. The picker also offers the pinned `pi-fabric/typesafe/jev-1.13`, `pi-fabric/typesafe/jev-1.13.0`, and `pi-fabric/typesafe/jev-preview` aliases (all resolve to the same build today), plus OpenRouter-served `pi-fabric/openrouter/jev-latest` and `pi-fabric/openrouter/jev-1.13`. Authenticate with `/login jev` and `TYPESAFE_API_KEY` on the TypeSafe route, or `/login openrouter` and `OPENROUTER_API_KEY` on the OpenRouter route.
 
 The host uses a typed Noul safety judgment, not generated text or a chat-model adapter. Probabilities at or above `jev.autoApprovalThreshold` auto-allow (default **0.50**); lower scores and errors require explicit approval. When a Jev model is selected, **Approvals → Jev minimum probability** lets you enter any finite value from 0 to 1. Higher values are more conservative; 0 allows every valid judgment. This is a probabilistic advisor, not a hard security boundary or a correctness guarantee. Read [auto approval configuration](configuration.md#jev-as-the-auto-mode-classifier) for the bounded current-turn evidence, outbound data disclosure, credential behavior, timeout and usage rules. Jev remains absent from ordinary chat-model pickers.
 
