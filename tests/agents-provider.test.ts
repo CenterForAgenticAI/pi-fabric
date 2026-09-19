@@ -2375,7 +2375,7 @@ describe("AgentsProvider switchModel", () => {
     const switchModel = vi.fn(async () => ({ ok: true }));
     const { provider } = setup([], [], undefined, {
       switchModel: switchModel as FabricMainAgentTarget["switchModel"],
-      modelsConfig: { aliases: { budget: ["cohere/command-r", "google/gemini-2.5-pro"] } },
+      modelsConfig: { aliases: { budget: { targets: ["cohere/command-r", "google/gemini-2.5-pro"] } } },
     });
     const result = await provider.invoke(
       "switchModel",
@@ -2432,7 +2432,7 @@ describe("AgentsProvider switchModel", () => {
   it("resolves visible exact, fuzzy, and alias run models before spawning", async () => {
     const { provider, agents } = setup([], [], undefined, {
       modelsConfig: {
-        aliases: { fast: ["opencode/hidden", "google/gemini-2.5-flash"] },
+        aliases: { fast: { targets: ["opencode/hidden", "google/gemini-2.5-flash"] } },
       },
     });
     const spawn = vi.spyOn(agents, "spawn");
@@ -2475,7 +2475,7 @@ describe("AgentsProvider switchModel", () => {
   it("rejects exhausted Pi model aliases instead of forwarding them", async () => {
     const { provider } = setup([], [], undefined, {
       modelsConfig: {
-        aliases: { retired: ["opencode/old", "opencode/older"] },
+        aliases: { retired: { targets: ["opencode/old", "opencode/older"] } },
       },
     });
 
@@ -2570,7 +2570,7 @@ describe("AgentsProvider switchModel", () => {
   it("rejects unknown selectors and exhausted alias chains", async () => {
     const { provider } = setup([], [], undefined, {
       switchModel: vi.fn(async () => ({ ok: true })) as FabricMainAgentTarget["switchModel"],
-      modelsConfig: { aliases: { budget: ["cohere/command-r", "mistral/mistral-large"] } },
+      modelsConfig: { aliases: { budget: { targets: ["cohere/command-r", "mistral/mistral-large"] } } },
     });
     await expect(
       provider.invoke("switchModel", { model: "cohere/command-r" }, modelContext()),

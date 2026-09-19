@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { FabricOwnedModelGuidance } from "../components/model-guidance.js";
-import type { FabricModelCandidate } from "../core/model-resolution.js";
+import type { FabricModelAliases, FabricModelCandidate } from "../core/model-resolution.js";
 import type { FabricAgentConfig, FabricMeshConfig, FabricRetentionConfig } from "../config.js";
 import type { FabricActorInfo, FabricActorRequest } from "../actors/types.js";
 import type { AgentHandleInfo, AgentRunRequest } from "../agents/types.js";
@@ -67,7 +67,7 @@ export const residentDeliveryPrefix = (rootId: string): string =>
 
 export interface ResidentPiModelState {
   available: FabricModelCandidate[];
-  aliases: Record<string, string[]>;
+  aliases: FabricModelAliases;
   defaultModel?: string;
 }
 

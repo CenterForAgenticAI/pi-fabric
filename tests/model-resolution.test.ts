@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  aliasThinking,
   normalizeModelAliases,
   resolveAvailablePiModel,
   resolveFabricModel,
@@ -28,9 +29,45 @@ describe("normalizeModelAliases", () => {
         budget: ["openai/gpt-5-mini", "google/gemini-2.5-flash"],
       }),
     ).toEqual({
-      cheap: ["google/gemini-2.5-flash"],
-      budget: ["openai/gpt-5-mini", "google/gemini-2.5-flash"],
+      cheap: { targets: ["google/gemini-2.5-flash"] },
+      budget: { targets: ["openai/gpt-5-mini", "google/gemini-2.5-flash"] },
     });
+  });
+
+  it("accepts an object entry with a fallback chain and a default thinking level", () => {
+    expect(
+      normalizeModelAliases({
+        cheap: { model: "google/gemini-2.5-flash", thinking: "low" },
+        bulk: { model: ["openai/gpt-5-mini", "google/gemini-2.5-flash"], thinking: "minimal" },
+      }),
+    ).toEqual({
+      cheap: { targets: ["google/gemini-2.5-flash"], thinking: "low" },
+      bulk: { targets: ["openai/gpt-5-mini", "google/gemini-2.5-flash"], thinking: "minimal" },
+    });
+  });
+
+  it("re-normalizes its own output so config round trips are idempotent", () => {
+    const normalized = normalizeModelAliases({
+      cheap: { model: "google/gemini-2.5-flash", thinking: "low" },
+    });
+    expect(normalizeModelAliases(normalized)).toEqual(normalized);
+  });
+
+  it("keeps the alias but ignores an invalid thinking level", () => {
+    expect(normalizeModelAliases({ cheap: { model: "google/gemini-2.5-flash", thinking: 3 } })).toEqual({
+      cheap: { targets: ["google/gemini-2.5-flash"] },
+    });
+    expect(
+      normalizeModelAliases({ cheap: { model: "google/gemini-2.5-flash", thinking: "extreme" } }),
+    ).toEqual({ cheap: { targets: ["google/gemini-2.5-flash"] } });
+  });
+
+  it("reports the thinking level of a selector that names an alias", () => {
+    const aliases = normalizeModelAliases({ Cheap: { model: "google/gemini-2.5-flash", thinking: "low" } });
+    expect(aliasThinking(aliases, "cheap")).toBe("low");
+    expect(aliasThinking(aliases, "  CHEAP ")).toBe("low");
+    expect(aliasThinking(aliases, "google/gemini-2.5-flash")).toBeUndefined();
+    expect(aliasThinking(undefined, "cheap")).toBeUndefined();
   });
 
   it("drops malformed names and targets", () => {
@@ -52,7 +89,7 @@ describe("normalizeModelAliases", () => {
       normalizeModelAliases({
         chain: ["google/gemini-2.5-flash", "google/gemini-2.5-flash", "openai/gpt-5-mini"],
       }),
-    ).toEqual({ chain: ["google/gemini-2.5-flash", "openai/gpt-5-mini"] });
+    ).toEqual({ chain: { targets: ["google/gemini-2.5-flash", "openai/gpt-5-mini"] } });
   });
 
   it("treats non-object input as empty", () => {

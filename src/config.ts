@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { renameAtomic } from "./core/atomic-write.js";
 import { quarantineDamagedFile } from "./core/damaged-file.js";
-import { normalizeModelAliases } from "./core/model-resolution.js";
+import { normalizeModelAliases, type FabricModelAliases } from "./core/model-resolution.js";
 import { PI_CORE_TOOL_NAME_SET } from "./core/pi-tools.js";
 import { DEFAULT_SHELL_HANG_MS, SHELL_HANG_MAX_MS } from "./core/shell-jobs.js";
 import {
@@ -290,8 +290,8 @@ export interface FabricSpeculationConfig {
 
 
 export interface FabricModelsConfig {
-  /** Alias name → ordered provider/model fallback chain, first available wins. */
-  aliases: Record<string, string[]>;
+  /** Alias name → ordered provider/model fallback chain plus an optional default thinking level. */
+  aliases: FabricModelAliases;
 }
 
 export interface FabricConfig {

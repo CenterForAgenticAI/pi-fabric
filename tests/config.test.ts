@@ -44,14 +44,16 @@ describe("Fabric configuration", () => {
           aliases: {
             cheap: "google/gemini-2.5-flash",
             budget: ["openai/gpt-5-mini", "google/gemini-2.5-flash"],
+            shallow: { model: "google/gemini-2.5-flash", thinking: "low" },
             broken: "not-a-model",
             empty: [],
           },
         },
       }).models.aliases,
     ).toEqual({
-      cheap: ["google/gemini-2.5-flash"],
-      budget: ["openai/gpt-5-mini", "google/gemini-2.5-flash"],
+      cheap: { targets: ["google/gemini-2.5-flash"] },
+      budget: { targets: ["openai/gpt-5-mini", "google/gemini-2.5-flash"] },
+      shallow: { targets: ["google/gemini-2.5-flash"], thinking: "low" },
     });
   });
 
