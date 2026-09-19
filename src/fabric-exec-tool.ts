@@ -76,7 +76,7 @@ import {
   observeResultRows,
   type ResultRowBalance,
 } from "./ui/row-balance.js";
-import { type SpinnerTimerState, updateSpinner } from "./ui/spinner.js";
+import { observeAnimationRows, type SpinnerTimerState, updateSpinner } from "./ui/spinner.js";
 import type { FabricToolDisplayController } from "./ui/tool-display.js";
 import { boundModelOutput, modelOutputBudget } from "./output-budget.js";
 import { formatFabricValue } from "./ui/structured.js";
@@ -305,7 +305,7 @@ export const createFabricExecTool = (
         composite.addChild(header);
         composite.addChild(new Text("\n", 0, 0));
         composite.addChild(writePreview);
-        return composite;
+        return observeAnimationRows(composite, rendererState.fabricSpinner ??= {});
       }
 
       const lines = safeTerminalText(code).split("\n");
@@ -354,7 +354,7 @@ export const createFabricExecTool = (
       composite.addChild(codePreview);
       composite.addChild(new Text("\n", 0, 0));
       composite.addChild(writePreview);
-      return composite;
+      return observeAnimationRows(composite, rendererState.fabricSpinner ??= {});
     },
     renderResult(result, { expanded, isPartial }, theme, context) {
       observePiTheme(theme);
@@ -380,7 +380,7 @@ export const createFabricExecTool = (
       const rowBalance = rendererState.fabricResultRowBalance ??= {};
       const trackRows = (component: Component): Component =>
         observeResultRows(
-          inheritComponentBackground(component),
+          observeAnimationRows(inheritComponentBackground(component), rendererState.fabricSpinner ??= {}),
           rowBalance,
           { expanded, isPartial },
         );
