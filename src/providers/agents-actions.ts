@@ -27,7 +27,7 @@ const runProperties = {
   model: {
     type: "string",
     description:
-      "Pi provider/id, a configured models.aliases name, or a search term resolved to the closest authenticated model (recency from pi-model-sort breaks ties); Claude runtime value or Veda backend model/alias are forwarded verbatim.",
+      "Pi provider/id copied from agents.models({ runner: \"pi\" }), a configured models.aliases name, or a search term resolved to the closest authenticated model (recency from pi-model-sort breaks ties). Reuse returned keys; never infer version numbers from agent names. Exact keys win; near-miss IDs resolve to the closest visible model on the same provider. Handles report the canonical model. Claude runtime value or Veda backend model/alias are forwarded verbatim.",
   },
   persona: {
     type: "string",
@@ -172,7 +172,7 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
   {
     name: "spawn",
     description:
-      "Start a child agent through Pi or Claude Code and return a handle immediately. Detached runs send Main a follow-up on terminal completion when agents.notifyOnComplete is enabled; use wait when this Fabric program needs the result and status only for progress inspection.",
+      "Start a child agent through Pi or Claude Code and return a handle immediately. For independent launches, await Promise.allSettled and inspect every result so one rejection does not abort pending sibling calls at program exit. Detached runs send Main a follow-up on terminal completion when agents.notifyOnComplete is enabled; use wait when this Fabric program needs the result and status only for progress inspection.",
     inputSchema: spawnSchema,
     risk: "agent",
   },

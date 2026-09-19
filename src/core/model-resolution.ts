@@ -1,6 +1,6 @@
 import { isFabricThinking, type FabricThinking } from "../thinking.js";
 
-const PROVIDER_MODEL_RE = /^[^\s/]+\/[^\s/]+$/;
+const PROVIDER_MODEL_RE = /^[^\s/]+\/[^\s]+$/;
 
 /** Minimal model view needed for resolution; satisfied by pi Model entries. */
 export interface FabricModelCandidate {
@@ -333,8 +333,9 @@ const unavailablePiModelError = (
 
 /**
  * Resolve a Pi participant selector strictly within the execution owner's
- * visible registry. Exact provider/id keys never fall back to fuzzy matching;
- * aliases and inexact selectors retain the normal Fabric resolution policy.
+ * visible registry. Provider-qualified selectors prefer exact IDs, then the
+ * closest visible ID/name on that same provider. Aliases retain their ordered
+ * exact-target policy; bare selectors retain normal Fabric fuzzy resolution.
  */
 export const resolveAvailablePiModel = (
   selector: string,
@@ -353,6 +354,15 @@ export const resolveAvailablePiModel = (
       (model) => modelKey(model).toLowerCase() === query.toLowerCase(),
     );
     if (exact) return exact;
+    // Recover near-miss IDs without crossing provider/auth boundaries.
+    const separator = query.indexOf("/");
+    const provider = query.slice(0, separator).toLowerCase();
+    const closest = pickClosestCandidate(
+      query.slice(separator + 1).toLowerCase(),
+      options.available.filter((model) => model.provider.toLowerCase() === provider),
+      options.lastUsed,
+    )?.model;
+    if (closest) return closest;
     throw unavailablePiModelError(query);
   }
 

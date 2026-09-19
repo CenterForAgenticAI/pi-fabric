@@ -26,13 +26,28 @@ You can give `fabric_exec` optional `agentBudget` and `tokenBudget` limits. Conf
 
 `agents.wait({id})` waits for a spawned agent; `agents.join({id})` is an alias with identical arguments, result, progress, and notification behavior. Use `wait` as the canonical spelling. The hosted `AgentService` and `AgentServiceClient` expose both methods too. [Jev programs](jev.md) follow the same `wait`/`join` naming.
 
+### Reuse discovered model keys
+
+Use `agents.models({ runner: "pi" })` and copy the returned `key` verbatim, or use an explicitly configured `models.aliases` name. Reuse the `model` returned by a successful spawn rather than reconstructing it from an agent's display name. For example, an agent named “Sol” need not share the version number of one named “Astra”. Prior success with one key does not validate a different key.
+
+`provider/model` selectors prefer an exact visible match. A near-miss ID resolves to the closest available model on the **same provider**, using Fabric's existing similarity ranking; ties prefer recent usage, then canonical key order. For example, `openai-codex/gpt-6-sol` resolves to `openai-codex/gpt-5.6-sol` when that is the closest visible model. The returned handle's `model` and the worker's `requestedModel` contain the canonical selection. Unknown providers and names without sufficient resemblance still fail before launch. Model IDs containing `/` stay provider-scoped. Configured aliases keep their ordered, exact-target fallback chains.
+
+For independent launches, await `Promise.allSettled` and inspect every result. An uncaught `Promise.all` rejection ends the Fabric program and can abort sibling calls still in flight; it does not prove every requested model was unavailable. Already completed calls are not rolled back, so retain successful handles rather than retrying the entire batch.
+
+```ts
+const results = await Promise.allSettled(requests.map(request => agents.spawn(request)));
+return results.map(result => result.status === "fulfilled"
+  ? { ok: true, handle: result.value }
+  : { ok: false, error: String(result.reason) });
+```
+
 ### Requested models are authoritative
 
 For Pi workers, Fabric reapplies the resolved `provider/model` over RPC **after startup extensions finish**, reapplies the requested thinking level, and independently reads `get_state` before sending the task. A successful `set_model` response alone is insufficient: it can echo the requested model even when an extension switches away during `model_select`. Thinking is reported at Pi's effective, capability-clamped level.
 
 Startup waits for a correlated RPC readiness response. Startup, model admission, and task execution share the run's configured `timeoutMs`; there is no separate 15-second admission cap. RPC readiness does not guarantee a fast `set_model`: authentication checks and async `model_select` hooks can still wait on provider initialization or shared resources during concurrent launches. A slow handshake may use the remaining run budget, but it never resets or extends the overall deadline.
 
-Unavailable models, rejected/malformed RPC responses, or a remaining model mismatch fail the run without sending its task. A startup or admission stall exhausts the overall deadline with `timed_out`, also without sending the task. Queued controls wait for admission too. Fabric does not substitute an MRU model or silently fall back. Standalone `AgentManager` callers can also supply a unique exact bare model ID; ambiguous IDs must be provider-qualified.
+Selectors with no available match, rejected/malformed RPC responses, or a remaining model mismatch fail the run without sending its task. A startup or admission stall exhausts the overall deadline with `timed_out`, also without sending the task. Queued controls wait for admission too. After parent-side selector resolution, the worker must use that canonical model: it does not substitute an MRU model or fall back during admission. Standalone `AgentManager` callers can also supply a unique exact bare model ID; ambiguous IDs must be provider-qualified.
 
 `requestedModel` preserves launch intent in run records; `model` follows verified child state and actual assistant attribution. The manager and participant UI preserve that observed value; the launch label cannot overwrite it. If assistant attribution drifts after admission, Fabric terminates the child and reports both requested and observed models in the failure. This verifies Pi's local provider/model identity, not a remote provider's internal routing.
 
@@ -263,7 +278,7 @@ await agents.switchModel({ model: "cheap" });
 
 The selector resolves in order: a `models.aliases` entry (a string alias is one target; an array is a fallback chain where the first authenticated target wins), an exact `provider/id`, an exact model id, then the closest match across provider, id, and display name. Closeness ties fall to the most recently used model, read from the [pi-model-sort](https://github.com/monotykamary/pi-model-sort) extension's usage store when it is installed, and then to the highest-sorting key, mirroring pi's newest-alias convention. An optional `provider` argument narrows every stage. Selectors with no resemblance to an authenticated entry and exhausted alias chains throw; the session model stays unchanged. `agents.models()` enumerates the authenticated registry entries this resolution runs against. The result reports the active model, the previous one, and how the selector resolved: `via` is the alias name for configured aliases, or `closest`, `recent`, or `latest` for fuzzy picks. A call naming the active model returns `{ switched: false, reason: "already-active" }`. The switch applies to the next model turn and later, unlike `prewalk`, which temporarily installs an executor model at a mutation boundary and then restores the boundary model.
 
-Pi-runner `model` arguments on `agents.run`, `agents.spawn`, `agents.create`, and `agents.handoff`, plus actor defaults and activation overrides, resolve through the same selector logic (aliases, closest match, recency). The execution owner's `agents.models({ runner: "pi" })` result is authoritative: unresolved exact IDs, fuzzy selectors with no match, and exhausted aliases fail with a session-availability error. Fabric revalidates the canonical model at the worker launch boundary, including remote and durable actor execution, so stale bindings cannot start a model that is no longer visible. Catalog-fresh or custom IDs must appear in the owner's visible registry before a Pi participant can use them. Claude and Veda model values keep their runner-specific behavior.
+Pi-runner `model` arguments on `agents.run`, `agents.spawn`, `agents.create`, and `agents.handoff`, plus actor defaults and activation overrides, resolve through the same selector logic (aliases, closest match, recency). The execution owner's `agents.models({ runner: "pi" })` result is authoritative: provider-qualified near-misses are matched only on that provider, selectors with no similar visible candidate and exhausted aliases fail with a session-availability error. Fabric revalidates the canonical model at the worker launch boundary, including remote and durable actor execution, so stale bindings cannot start a model that is no longer visible. Catalog-fresh or custom IDs must appear in the owner's visible registry before a Pi participant can use them. Claude and Veda model values keep their runner-specific behavior.
 
 This is the host-level equivalent of the `pi-model-switch` extension's `switch_model` tool, with aliases moved into Fabric configuration so project and agent scopes behave like every other Fabric section.
 

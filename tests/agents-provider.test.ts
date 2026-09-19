@@ -2439,6 +2439,7 @@ describe("AgentsProvider switchModel", () => {
     const selectors = [
       ["google/gemini-2.5-flash", "google/gemini-2.5-flash"],
       ["gemini", "google/gemini-2.5-pro"],
+      ["google/gemni-2.5-flash", "google/gemini-2.5-flash"],
       ["fast", "google/gemini-2.5-flash"],
     ] as const;
 
@@ -2471,6 +2472,35 @@ describe("AgentsProvider switchModel", () => {
       expect(spawn).not.toHaveBeenCalled();
     },
   );
+
+  it("launches near-miss models canonically while isolating unrelated batch failures", async () => {
+    const { provider, agents } = setup();
+    const spawn = vi.spyOn(agents, "spawn");
+    const invocation: FabricInvocationContext = {
+      ...context,
+      extensionContext: {
+        modelRegistry: { getAvailable: () => [
+          { provider: "openai-codex", id: "gpt-6-astra" },
+          { provider: "openai-codex", id: "gpt-5.6-sol" },
+        ] },
+      } as unknown as ExtensionContext,
+    };
+    const results = await Promise.allSettled([
+      provider.invoke("spawn", { task: "Astra", model: "openai-codex/gpt-6-astra" }, invocation),
+      provider.invoke("spawn", { task: "Sol", model: "openai-codex/gpt-6-sol" }, invocation),
+      provider.invoke("spawn", { task: "Unrelated", model: "openai-codex/zzzz" }, invocation),
+    ]);
+    expect(results[0]).toMatchObject({ status: "fulfilled", value: { model: "openai-codex/gpt-6-astra" } });
+    expect(results[1]).toMatchObject({ status: "fulfilled", value: { model: "openai-codex/gpt-5.6-sol" } });
+    expect(results[2]).toMatchObject({ status: "rejected", reason: expect.any(Error) });
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ model: "openai-codex/gpt-5.6-sol" }), undefined);
+    for (const result of results) {
+      if (result.status !== "fulfilled") continue;
+      const handle = result.value as { id: string; model: string };
+      await expect(agents.wait(handle.id)).resolves.toMatchObject({ status: "completed", model: handle.model });
+    }
+  });
 
   it("rejects exhausted Pi model aliases instead of forwarding them", async () => {
     const { provider } = setup([], [], undefined, {
