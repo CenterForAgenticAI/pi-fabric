@@ -94,6 +94,8 @@ export interface ResidencyClientOptions {
   participants: FabricParticipantSource;
   mainAgent: FabricMainAgentTarget;
   piModelState?: () => ResidentPiModelState;
+  onBackgroundComplete?: (result: AgentRunResult, delivered: () => void) => void;
+  onResultConsumed?: (id: string) => void;
   hostPath?: string;
 }
 
@@ -289,21 +291,23 @@ export class ResidencyClient {
       });
   }
 
-  async waitAgent(id: string, signal?: AbortSignal): Promise<AgentRunResult> {
-    if (this.#liveOwner()) {
-      await this.#command({
-        format: RESIDENT_HOST_FORMAT,
-        operation: "foreground",
-        requestId: randomUUID(),
-        rootId: this.options.config.rootId,
-        id,
-        createdAt: Date.now(),
-      }, signal).catch(() => undefined);
+  acknowledgeCompletion(id: string): void {
+    const metadata = this.#metadata(id);
+    if (!metadata) return;
+    if (!metadata.completionConsumedAt) {
+      atomicWrite(this.#metadataPath(id), { ...metadata, completionConsumedAt: Date.now() });
     }
+    this.options.onResultConsumed?.(id);
+  }
+
+  async waitAgent(id: string, signal?: AbortSignal): Promise<AgentRunResult> {
     while (true) {
       if (signal?.aborted) throw new Error(`Waiting for durable Fabric agent ${id} was aborted`);
       const status = this.statusAgent(id);
-      if (terminal(status.status) && "startedAt" in status) return status as AgentRunResult;
+      if (terminal(status.status) && "startedAt" in status) {
+        this.acknowledgeCompletion(id);
+        return status as AgentRunResult;
+      }
       await sleepUnlessAborted(STATUS_POLL_MS, signal).catch(() => undefined);
     }
   }
@@ -360,6 +364,7 @@ export class ResidencyClient {
       throw error;
     }
     if (!response.ok) throw new Error(response.error ?? `Failed to clean durable Fabric agent ${id}`);
+    this.options.onResultConsumed?.(id);
     return { cleaned: true };
   }
 
@@ -391,6 +396,7 @@ export class ResidencyClient {
     }
     fs.rmSync(metadata.runDirectory, { recursive: true, force: true });
     fs.rmSync(this.#metadataPath(metadata.id), { force: true });
+    this.options.onResultConsumed?.(metadata.id);
     return { cleaned: true };
   }
 
@@ -505,6 +511,26 @@ export class ResidencyClient {
       entry.updatedBy.id !== this.hostId
     ) {
       return;
+    }
+    const data = value.data as Partial<AgentRunResult> | undefined;
+    // Also recognize envelopes written by an older resident host.
+    const completionId = value.agentCompletionId ?? (data && typeof data.status === "string" &&
+      terminal(data.status) && typeof data.startedAt === "number" ? data.id : undefined);
+    if (value.from.kind === "agent" && typeof completionId === "string" && completionId === value.from.id) {
+      const metadata = this.#metadata(completionId);
+      if (!metadata || metadata.completionConsumedAt || !this.options.config.agents.notifyOnComplete) {
+        await this.options.mesh.delete({ key: entry.key, ifVersion: entry.version });
+        return;
+      }
+      if (this.options.onBackgroundComplete) {
+        // Keep the durable envelope until Main actually consumes it, not merely
+        // until the TUI copies it into its retractable in-memory inbox.
+        const result = this.statusAgent(completionId);
+        if (terminal(result.status) && "startedAt" in result) {
+          this.options.onBackgroundComplete(result as AgentRunResult, () => this.acknowledgeCompletion(completionId));
+        }
+        return;
+      }
     }
     this.options.mainAgent.deliverAgent({
       from: value.from,

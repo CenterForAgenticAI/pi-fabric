@@ -50,7 +50,7 @@ const handle = await agents.spawn({ task: "Map the persistence layer.", transpor
 return await agents.wait({ id: handle.id });
 ```
 
-Detached `agents.spawn()` runs already notify Main on terminal completion when `agents.notifyOnComplete` is enabled (the default). The notification is a triggered follow-up. Use `agents.wait()` when the current Fabric program needs the result, `agents.status()` only for a point-in-time progress inspection, and lifecycle subscriptions when another participant's Pi boundary matters. Calling `wait()` makes that run foreground work and suppresses the detached completion notification.
+Detached `agents.spawn()` runs notify Main on terminal completion when `agents.notifyOnComplete` is enabled (the default). Unread results are batched after the current tool turn, or wake idle Main once; concise UI notices appear immediately. `agents.wait()`/`join()` and terminal `agents.status()` acknowledge the result and retract pending notifications, even if completion preceded the wait. Running status and UI/list polling do not acknowledge it. Return the relevant outcome from your program so Main sees results you consumed. Use `wait` when the program needs a result; do not poll status in a loop. Durable spawns preserve unread deliveries and acknowledgment across reconnects. Escape/error parks results until new input. Use lifecycle subscriptions for explicit event-routing policies, not to duplicate automatic completion delivery.
 
 ## Participant lifecycle subscriptions
 

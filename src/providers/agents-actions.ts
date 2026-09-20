@@ -172,25 +172,28 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
   {
     name: "spawn",
     description:
-      "Start a child agent through Pi or Claude Code and return a handle immediately. For independent launches, await Promise.allSettled and inspect every result so one rejection does not abort pending sibling calls at program exit. Detached runs send Main a follow-up on terminal completion when agents.notifyOnComplete is enabled; use wait when this Fabric program needs the result and status only for progress inspection.",
+      "Start a child agent through Pi or Claude Code and return a handle immediately. For independent launches, await Promise.allSettled and inspect every result so one rejection does not abort pending sibling calls at program exit. Unread detached results are batched at the next safe turn boundary (or wake idle Main) when agents.notifyOnComplete is enabled. wait/join and terminal status acknowledge results and retract pending notifications. Use wait when this program needs the result; do not poll status in a loop.",
     inputSchema: spawnSchema,
     risk: "agent",
   },
   {
     name: "wait",
-    description: "Wait for a previously spawned child agent",
+    description: "Wait for a previously spawned child agent and acknowledge its result, suppressing a duplicate completion notification",
+    effect: { kind: "emission", ordering: "commutative", resources: ["agents.completions"] },
     inputSchema: idSchema,
     risk: "read",
   },
   {
     name: "join",
     description: "Alias for agents.wait: wait for a previously spawned child agent with the same progress and completion-notification behavior",
+    effect: { kind: "emission", ordering: "commutative", resources: ["agents.completions"] },
     inputSchema: idSchema,
     risk: "read",
   },
   {
     name: "status",
-    description: "Get the latest status of any known project participant",
+    description: "Get the latest status of any known project participant. A terminal child-agent result acknowledges its pending completion notification; running status does not.",
+    effect: { kind: "emission", ordering: "commutative", resources: ["agents.completions"] },
     inputSchema: idSchema,
     risk: "read",
   },

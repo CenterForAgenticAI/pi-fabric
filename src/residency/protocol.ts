@@ -175,12 +175,16 @@ export interface ResidentAgentMetadata {
   runDirectory: string;
   handle: AgentHandleInfo;
   worktreeGitRoot?: string;
+  /** Main consumed this terminal result; suppress queued delivery across reconnects. */
+  completionConsumedAt?: number;
   createdAt: number;
   updatedAt: number;
 }
 
 export interface ResidentDeliveryRecord {
   format: typeof RESIDENT_HOST_FORMAT;
+  /** Survives payload truncation; lets Main read the authoritative terminal result. */
+  agentCompletionId?: string;
   id: string;
   rootId: string;
   from: MeshIdentity;

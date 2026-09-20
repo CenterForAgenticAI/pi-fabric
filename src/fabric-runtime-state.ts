@@ -113,12 +113,12 @@ import {
   type FabricProviderDiscovery,
 } from "./protocol.js";
 import { AgentManager } from "./agents/manager.js";
+import { AgentCompletionInbox } from "./agents/completion-inbox.js";
 import { resolveInheritedSessionPins } from "./agents/session-pins.js";
 import { ResidencyClient } from "./residency/client.js";
 import { RESIDENT_HOST_FORMAT, residentRoot } from "./residency/protocol.js";
 import type { FabricRuntimePaths } from "./runtime-paths.js";
 
-const BACKGROUND_COMPLETION_MAX_CHARS = 8_000;
 const inheritedCapabilityRequirements = (): string[] => {
   const source = process.env.PI_FABRIC_CAPABILITY_REQUIREMENTS;
   if (!source) return [];
@@ -155,6 +155,7 @@ export class FabricRuntimeState {
   #repairs: RepairCompiler | undefined;
   #speculation: RuntimeStateSpeculation | undefined;
   #agents: AgentManager | undefined;
+  #completionInbox: AgentCompletionInbox | undefined;
   #actors: ActorDirectory | undefined;
   #jevObservationHost: JevObservationHost | undefined;
   #globalActors: GlobalActorRegistry | undefined;
@@ -551,6 +552,8 @@ export class FabricRuntimeState {
       }
       return { key: `${resolved.provider}/${resolved.id}`, model };
     };
+    const completionInbox = new AgentCompletionInbox(this.pi, context);
+    this.#completionInbox = completionInbox;
     this.#agents = new AgentManager(context.cwd, agentConfig, {
       fullCodeMode: this.#config.fullCodeMode,
       kernel: () => this.#config?.executor.kernel ?? "typescript",
@@ -591,27 +594,8 @@ export class FabricRuntimeState {
         const lifecycle = this.#lifecycle;
         if (lifecycle) void lifecycle.publish(event).catch(() => undefined);
       },
-      onBackgroundComplete: (result) => {
-        const durationMs = Math.max(0, (result.finishedAt ?? Date.now()) - result.startedAt);
-        const duration =
-          durationMs < 60_000
-            ? `${Math.round(durationMs / 1_000)}s`
-            : `${(durationMs / 60_000).toFixed(1)}m`;
-        const summary = result.text || result.error || "no result";
-        const clippedSummary =
-          summary.length > BACKGROUND_COMPLETION_MAX_CHARS
-            ? `${summary.slice(0, BACKGROUND_COMPLETION_MAX_CHARS)}\n[completion truncated]`
-            : summary;
-        this.pi.sendMessage(
-          {
-            customType: "pi-fabric-agent-complete",
-            content: `Fabric agent ${result.id.slice(0, 8)} ${result.status} after ${duration}: ${clippedSummary}`,
-            display: true,
-            details: result,
-          },
-          { deliverAs: "followUp", triggerTurn: true },
-        );
-      },
+      onBackgroundComplete: (result) => completionInbox.enqueue(result),
+      onResultConsumed: (id) => completionInbox.acknowledge(id),
     });
     const canManageActor = (actorId: string): boolean | undefined => {
       const participant = this.#participants?.get(actorId);
@@ -737,6 +721,8 @@ export class FabricRuntimeState {
           mesh: this.#mesh,
           participants: this.#participants,
           mainAgent,
+          onBackgroundComplete: (result, delivered) => completionInbox.enqueue(result, delivered),
+          onResultConsumed: (id) => completionInbox.acknowledge(id),
           piModelState,
           ...(this.#paths ? { hostPath: this.#paths.residentHost } : {}),
         })
@@ -1252,6 +1238,8 @@ export class FabricRuntimeState {
   }
 
   async shutdown(): Promise<void> {
+    this.#completionInbox?.close();
+    this.#completionInbox = undefined;
     this.#suppressResidentGuidanceSync = true;
     await this.#deactivateRepairs();
     clearActiveCompiledSurface();
@@ -1349,6 +1337,8 @@ export class FabricRuntimeState {
   }
 
   async #closeInternal(): Promise<void> {
+    this.#completionInbox?.close();
+    this.#completionInbox = undefined;
     await this.#deactivateRepairs();
     if (!this.#registry) return;
     await this.#participants?.quiesce().catch(() => undefined);

@@ -1285,6 +1285,20 @@ describe("AgentsProvider runner support", () => {
     expect(previews.length).toBeLessThanOrEqual(4);
   }, 10_000);
 
+  it("acknowledges model-facing terminal status but not running status or UI polling", async () => {
+    const { provider, agents } = setup();
+    const acknowledge = vi.spyOn(agents, "markForeground");
+    const handle = await provider.invoke("spawn", { task: "return a short result", transport: "process" }, context) as { id: string };
+    const initial = await provider.invoke("status", { id: handle.id }, context) as AgentRunRecord;
+    if (initial.status === "running") expect(acknowledge).not.toHaveBeenCalled();
+    acknowledge.mockClear();
+    await waitFor(() => agents.status(handle.id).status === "completed");
+    agents.listForUi();
+    expect(acknowledge).not.toHaveBeenCalled();
+    await provider.invoke("status", { id: handle.id }, context);
+    expect(acknowledge).toHaveBeenCalledExactlyOnceWith(handle.id);
+  });
+
   it.each(["wait", "join"])("attaches previews and reports friendly names through %s for spawned agents", async (method) => {
     const { provider, agents } = setup();
     const wait = vi.spyOn(agents, "wait");
