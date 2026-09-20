@@ -266,9 +266,9 @@ export const buildApprovalsSection = (
         }),
         ...(isJevApprovalModel(config.approvals.model) ? [
           setting("jev.autoApprovalThreshold", "Jev minimum probability", String(config.jev.autoApprovalThreshold), {
-            description: "Minimum safety probability for automatic approval (0–1, default 0.50). Lower values allow more actions; 0 allows every valid judgment. Errors still require approval.",
+            description: "Minimum safety probability for automatic approval (0–1, default 0.50). Lower values allow more actions; secrets and destructive verdicts still escalate. Errors still require approval.",
             submenu: probabilitySubmenu(theme, "Jev minimum probability",
-              "Enter a probability from 0 to 1 (default 0.50). Higher values are more conservative. 0 allows every valid judgment; 1 requires a probability of 1. Errors and incomplete evidence still require approval."),
+              "Enter a probability from 0 to 1 (default 0.50). Higher values are more conservative. 0 allows every judgment whose secrets and destructive verdicts are clean; 1 requires a probability of 1. Errors and missing user text still require approval."),
           }),
         ] : []),
         setting("approvals.read", "Read", config.approvals.read, {
