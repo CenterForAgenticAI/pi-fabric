@@ -690,12 +690,14 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
       "success" in event.message.details
         ? { ...event.message.details, success: boundarySucceeded }
         : event.message.details;
+    // `details` is optional on ToolResultMessage; under exactOptionalPropertyTypes
+    // an explicitly `undefined` property is rejected, so omit the key instead.
     return {
       message: {
         ...event.message,
         content: [{ type: "text", text }],
-        details,
         isError: !boundarySucceeded,
+        ...(details === undefined ? {} : { details }),
       },
     };
   });
