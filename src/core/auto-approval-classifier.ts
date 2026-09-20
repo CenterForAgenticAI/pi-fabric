@@ -2,8 +2,8 @@ import type { Usage } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_JEV_CONFIG, type FabricJevConfig } from "../jev/config.js";
-import { JEV_OPENROUTER_MODEL_PREFIX, JEV_TYPESAFE_MODEL_PREFIX, isJevApprovalModel } from "../jev/model-key.js";
-import { resolveJevClassifierTarget } from "../jev/routes.js";
+import { isJevApprovalModel } from "../jev/model-key.js";
+import { jevClassifierKey, resolveJevClassifierTarget } from "../jev/routes.js";
 import type { ResolvedFabricAction } from "./action-registry.js";
 
 const MAX_TRANSCRIPT_CHARS = 24_000;
@@ -217,7 +217,7 @@ export class FabricAutoApprovalClassifier {
       return {
         decision: answer.noul >= threshold ? "allow" : "escalate",
         reason: `Jev safety probability ${answer.noul}; auto-allow requires >= ${threshold}`,
-        model: `${route.id === "openrouter" ? JEV_OPENROUTER_MODEL_PREFIX : JEV_TYPESAFE_MODEL_PREFIX}${response.model}`,
+        model: jevClassifierKey(route, response.model),
         // The decisions API reports tokens but not billing amounts. Zero means unpriced.
         usage: { input, output, cacheRead: 0, cacheWrite: 0, totalTokens: input + output,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },

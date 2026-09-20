@@ -148,6 +148,22 @@ describe("Jev auto-approval classifier", () => {
     expect(options!.body).not.toMatch(/PRIVATE|HOSTILE|fixture-only-key/);
   });
 
+  it("classifies through Vercel AI Gateway with the vercel-ai-gateway credential", async () => {
+    fetcher.mockImplementation(async () => Response.json({ ...response(), model: "typesafe-ai/jev" }));
+    const ctx = context();
+    const result = await new FabricAutoApprovalClassifier().classify(action, { command: "bun run typecheck" }, ctx, "pi-fabric/vercel-ai-gateway/jev-latest");
+    expect(result).toMatchObject({ decision: "allow", model: "pi-fabric/vercel-ai-gateway/typesafe-ai/jev" });
+    expect(ctx.modelRegistry.getApiKeyForProvider).toHaveBeenCalledWith("vercel-ai-gateway");
+    expect(ctx.modelRegistry.find).not.toHaveBeenCalled();
+    const [url, options] = fetcher.mock.calls[0]!;
+    expect(url).toBe("https://ai-gateway.vercel.sh/typesafe/v1/systemone");
+    expect(options).toMatchObject({ redirect: "error", headers: { Authorization: "Bearer fixture-only-key" } });
+    expect(JSON.parse(options!.body as string).model).toBe("typesafe-ai/jev");
+    expect(options!.body).not.toMatch(/PRIVATE|HOSTILE|fixture-only-key/);
+    await expect(new FabricAutoApprovalClassifier().classify(action, {}, context(), "pi-fabric/vercel-ai-gateway/jev-preview")).rejects.toThrow("Vercel AI Gateway serves");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects OpenRouter aliases the service does not expose before credentials or network", async () => {
     await expect(new FabricAutoApprovalClassifier().classify(action, {}, context(), "pi-fabric/openrouter/jev-preview")).rejects.toThrow("OpenRouter serves");
     await expect(new FabricAutoApprovalClassifier().classify(action, {}, context(), "pi-fabric/openrouter/../bad")).rejects.toThrow("not available");
