@@ -8,6 +8,7 @@ import {
   analyzeRequestLifecycle,
   classifyCandidate,
   classifyControls,
+  comparePairs,
   planResume,
   summarizeAttempts,
 } from "../scripts/lib/prewalk-swe-evidence.mjs";
@@ -232,6 +233,69 @@ describe("request lifecycle accounting", () => {
     expect(() =>
       analyzeRequestLifecycle([{ type: "provider_request", number: 1, model: "unknown-model" }], limits)).toThrow(/cap/i);
   });
+  it("settles the pending request whose model the compaction names, not the last one queued", () => {
+    const state = analyzeRequestLifecycle(
+      [
+        { type: "provider_request", number: 1, model: "flash" },
+        { type: "provider_request", number: 2, model: "astra" },
+        { type: "compaction", model: "flash", usage: { cost: { total: 0.01 } } },
+      ],
+      limits,
+    );
+    expect(state.knownUsd).toBeCloseTo(0.01);
+    expect(state.unsettled.map((request) => request.model)).toEqual(["astra"]);
+    expect(state.heldUsd).toBeCloseTo(16.4);
+    expect(state.uncertain).toBe(true);
+  });
+  it("settles only the last pending request when one model is queued twice", () => {
+    const state = analyzeRequestLifecycle(
+      [
+        { type: "provider_request", number: 1, model: "flash" },
+        { type: "provider_request", number: 2, model: "flash" },
+        { type: "compaction", model: "flash", usage: { cost: { total: 0.02 } } },
+      ],
+      limits,
+    );
+    expect(state.unsettled.map((request) => request.number)).toEqual([1]);
+    expect(state.heldUsd).toBeCloseTo(0.7753728);
+  });
+  it("keeps every hold when a compaction without a model cannot be attributed", () => {
+    const state = analyzeRequestLifecycle(
+      [
+        { type: "provider_request", number: 1, model: "flash" },
+        { type: "provider_request", number: 2, model: "astra" },
+        { type: "compaction", usage: { cost: { total: 0.05 } } },
+      ],
+      limits,
+    );
+    expect(state.knownUsd).toBeCloseTo(0.05);
+    expect(state.unsettled).toHaveLength(2);
+    expect(state.heldUsd).toBeCloseTo(0.7753728 + 16.4);
+  });
+  it("settles a lone pending request from a compaction that carries no model", () => {
+    const state = analyzeRequestLifecycle(
+      [
+        { type: "provider_request", number: 1, model: "flash" },
+        { type: "compaction", usage: { cost: { total: 0.02 } } },
+      ],
+      limits,
+    );
+    expect(state.unsettled).toEqual([]);
+    expect(state.heldUsd).toBe(0);
+    expect(state.knownUsd).toBeCloseTo(0.02);
+    expect(state.uncertain).toBe(false);
+  });
+  it("does not settle a different model named by a compaction", () => {
+    const state = analyzeRequestLifecycle(
+      [
+        { type: "provider_request", number: 1, model: "flash" },
+        { type: "compaction", model: "astra", usage: { cost: { total: 0.02 } } },
+      ],
+      limits,
+    );
+    expect(state.unsettled.map((request) => request.number)).toEqual([1]);
+    expect(state.heldUsd).toBeCloseTo(0.7753728);
+  });
 });
 
 describe("truthful counters and checkpoint resume", () => {
@@ -251,6 +315,40 @@ describe("truthful counters and checkpoint resume", () => {
     expect(plan.runnable.map((r) => r.id)).toEqual(["003"]);
     expect(plan.needsRecovery.map((r) => r.id)).toEqual(["002"]);
     expect(plan.completed.map((r) => r.id)).toEqual(["001"]);
+  });
+  it("refuses a comparison whose arms lack two recorded baseline trees", () => {
+    const arm = (mode: string, baselineTree: string | null, status = "pass") => ({
+      id: mode,
+      index: 0,
+      mode,
+      baselineTree,
+      timedOut: false,
+      usageUsd: 0.01,
+      usageHoldUsd: 0,
+      verdict: { status, validComparison: true, reason: "graded" },
+    });
+    const matched = comparePairs([arm("astra", "tree-a"), arm("prewalk", "tree-a")]);
+    expect(matched.comparablePairs).toBe(1);
+    expect(matched.bothResolved).toBe(1);
+    expect((matched.pairs as Array<{ matchedTree: unknown; comparable: boolean }>)[0]).toMatchObject({
+      matchedTree: true,
+      comparable: true,
+    });
+    for (const [label, rows] of [
+      ["missing astra tree", [arm("astra", null), arm("prewalk", "tree-a")]],
+      ["mismatched trees", [arm("astra", "tree-a"), arm("prewalk", "tree-b")]],
+      ["both trees unrecorded", [arm("astra", null), arm("prewalk", null)]],
+    ] as const) {
+      const comparison = comparePairs([...rows]);
+      expect(comparison.comparablePairs, label).toBe(0);
+      expect((comparison.pairs as Array<{ matchedTree?: unknown }>)[0]?.matchedTree, label).not.toBe(true);
+    }
+  });
+  it("reports missing control arms as a failed gate instead of throwing", () => {
+    const verdict = classifyControls({ noop: null, gold: null });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.gold.status).toBe("fail");
+    expect(verdict.noop.acceptable).toBe(false);
   });
 });
 

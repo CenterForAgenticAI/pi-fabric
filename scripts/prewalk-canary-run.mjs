@@ -57,8 +57,8 @@ const fail = (error) => {
   process.exit(1);
 };
 
-const outDir = value("--out");
-const cwd = value("--cwd");
+const outDirArg = value("--out");
+const cwdArg = value("--cwd");
 const promptFile = value("--prompt-file");
 const model = value("--model");
 const thinking = value("--thinking");
@@ -70,7 +70,7 @@ const rpcRuns = Number(value("--rpc-runs") ?? 2);
 const abortGraceSeconds = Number(value("--abort-grace-seconds") ?? 0);
 const requestContract = value("--request-contract");
 const taskCheck = value("--task-check");
-if (!outDir || !cwd || !promptFile) {
+if (!outDirArg || !cwdArg || !promptFile) {
   console.error(
     "usage: node scripts/prewalk-canary-run.mjs --out <dir> --cwd <dir> --prompt-file <file> " +
       "[--model <provider/id>] [--thinking <level>] [--timeout-seconds 300] " +
@@ -80,9 +80,13 @@ if (!outDir || !cwd || !promptFile) {
   );
   process.exit(2);
 }
-if (![outDir, cwd, promptFile].every((candidate) => path.isAbsolute(candidate))) {
+if (![outDirArg, cwdArg, promptFile].every((candidate) => path.isAbsolute(candidate))) {
   fail("--out, --cwd, and --prompt-file must be absolute paths");
 }
+// Every containment and provenance comparison uses resolved paths: a trailing
+// separator on --cwd or --out must not turn a valid child into an escaping one.
+const cwd = path.resolve(cwdArg);
+const outDir = path.resolve(outDirArg);
 if (!Number.isInteger(timeoutSeconds) || timeoutSeconds <= 0) {
   fail("--timeout-seconds must be a positive integer");
 }

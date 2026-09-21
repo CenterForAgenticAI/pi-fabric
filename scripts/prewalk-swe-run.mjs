@@ -16,7 +16,7 @@
 // Nothing here talks to providers directly; the config names the commands.
 // usage: node scripts/prewalk-swe-run.mjs --config <file> [--resume]
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -57,6 +57,9 @@ for (const name of ["controls", "prepare", "run", "grade"]) {
   if (spec.timeoutMs !== undefined && (!Number.isInteger(spec.timeoutMs) || spec.timeoutMs <= 0)) {
     fail(`config.commands.${name}.timeoutMs must be a positive integer`);
   }
+  if (spec.killGraceMs !== undefined && (!Number.isInteger(spec.killGraceMs) || spec.killGraceMs <= 0)) {
+    fail(`config.commands.${name}.killGraceMs must be a positive integer`);
+  }
 }
 const budget = config.budget ?? {};
 for (const name of ["maximumTotalUsd", "priorKnownUsd", "priorUnknownWorstCaseUsd"]) {
@@ -88,9 +91,31 @@ const substitute = (text, tokens) =>
   });
 const resolve = (template, tokens) => path.resolve(root, substitute(template, tokens));
 const readJsonIfExists = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null);
+// Durable replacement: the JSON must not be observable as a torn file, and a
+// crash after the rename must not lose it. The parent directory is synced too
+// on POSIX, because that is what makes the rename itself durable; Windows has
+// no directory fsync, so there the file sync plus atomic replacement is the
+// strongest guarantee available (documented in docs/prewalk-swe.md).
 const atomicWrite = (file, data) => {
-  fs.writeFileSync(`${file}.tmp`, JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
-  fs.renameSync(`${file}.tmp`, file);
+  const temp = `${file}.tmp`;
+  const fd = fs.openSync(temp, "w", 0o600);
+  try {
+    fs.writeFileSync(fd, JSON.stringify(data, null, 2) + "\n");
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(temp, file);
+  if (process.platform === "win32") return;
+  let dirFd = null;
+  try {
+    dirFd = fs.openSync(path.dirname(file), "r");
+    fs.fsyncSync(dirFd);
+  } catch {
+    /* some filesystems reject a directory fsync; the rename already happened */
+  } finally {
+    if (dirFd !== null) fs.closeSync(dirFd);
+  }
 };
 
 const resultsPath = resolve(paths.results, {});
@@ -132,27 +157,82 @@ const runCommand = (spec, tokens, logFile) =>
     const env = { ...process.env };
     for (const [key, entry] of Object.entries(spec.env ?? {})) env[key] = substitute(String(entry), tokens);
     const started = Date.now();
+    const timeoutMs = spec.timeoutMs ?? 600_000;
+    const killGraceMs = spec.killGraceMs ?? 30_000;
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
     const fd = fs.openSync(logFile, "a", 0o600);
-    const child = spawn(commandArgv[0], commandArgv.slice(1), { cwd, env, stdio: ["ignore", fd, fd] });
+    // A detached POSIX child leads its own process group, so a timeout can
+    // reach grandchildren that would otherwise outlive the leader.
+    const child = spawn(commandArgv[0], commandArgv.slice(1), {
+      cwd,
+      env,
+      stdio: ["ignore", fd, fd],
+      detached: process.platform !== "win32",
+    });
     let timedOut = false;
+    let settled = false;
+    let closeResult = null;
+    let terminateTimer = null;
+    const killTree = (signal) => {
+      if (typeof child.pid !== "number") return;
+      if (process.platform === "win32") {
+        // Windows has no POSIX process groups; taskkill /T walks the child tree.
+        try {
+          spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+        } catch {
+          /* tree already gone */
+        }
+        return;
+      }
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        try {
+          child.kill(signal);
+        } catch {
+          /* already reaped */
+        }
+      }
+    };
+    const outcome = () =>
+      closeResult ?? { code: null, signal: null, timedOut, durationSeconds: (Date.now() - started) / 1000 };
+    // spawn() failures emit `error` and then `close`, so cleanup and resolution
+    // happen exactly once, from whichever handler reports the outcome first.
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (terminateTimer !== null) clearTimeout(terminateTimer);
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* already closed */
+      }
+      resolveRun(result);
+    };
     const timer = setTimeout(() => {
       timedOut = true;
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        /* child already gone */
-      }
-    }, spec.timeoutMs ?? 600_000);
+      killTree("SIGTERM");
+      // Escalation runs on the clock, never on `close`: a leader that exits on
+      // SIGTERM can leave descendants holding the log descriptor.
+      terminateTimer = setTimeout(() => {
+        killTree("SIGKILL");
+        terminateTimer = setTimeout(() => finish(outcome()), 100);
+      }, killGraceMs);
+    }, timeoutMs);
     child.on("error", (error) => {
-      clearTimeout(timer);
-      fs.closeSync(fd);
-      resolveRun({ code: null, signal: null, timedOut, durationSeconds: (Date.now() - started) / 1000, error: String(error?.message ?? error) });
+      closeResult = {
+        code: null,
+        signal: null,
+        timedOut,
+        durationSeconds: (Date.now() - started) / 1000,
+        error: String(error?.message ?? error),
+      };
+      if (!timedOut) finish(closeResult);
     });
     child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      fs.closeSync(fd);
-      resolveRun({ code, signal, timedOut, durationSeconds: (Date.now() - started) / 1000 });
+      closeResult = { code, signal, timedOut, durationSeconds: (Date.now() - started) / 1000 };
+      if (!timedOut) finish(closeResult);
     });
   });
 
@@ -384,9 +464,12 @@ if (!state.terminal) {
       validGrade: verdict.validComparison,
       verdict,
     });
+    // The row lands first: a crash before the finished checkpoint leaves the
+    // attempt at `starting`, which planResume routes to offline recovery
+    // instead of dropping paid work whose result was never recorded.
+    atomicWrite(resultsPath, rows);
     checkpoints[entry.id] = { phase: "finished", updatedAt: new Date().toISOString() };
     atomicWrite(checkpointsPath, checkpoints);
-    atomicWrite(resultsPath, rows);
     executed.push(entry.id);
 
     if (verdict.status === "unobserved" && !runResult.timedOut) {

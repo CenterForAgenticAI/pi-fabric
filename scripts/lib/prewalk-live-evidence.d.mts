@@ -57,7 +57,6 @@ export function requestContractPayloadProblems(
 ): string[];
 
 export const CHECK_STATUSES: readonly string[];
-export const CHECK_AXES: readonly string[];
 export interface CheckRecord { name: string; status: "pass" | "fail" | "unobserved"; detail: unknown; axis: string }
 export interface CheckLedger {
   add(name: string, status: "pass" | "fail" | "unobserved", detail?: unknown, axis?: string): boolean;

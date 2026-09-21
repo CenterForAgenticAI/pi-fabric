@@ -27,6 +27,9 @@ Maintained scripts for the in-place Prewalk SWE-bench Pro dogfood work. They rep
 ## Checkpoints and resume
 
 - The coordinator writes a `starting` checkpoint **before** any paid command; an attempt with a checkpoint may never be issued again. `--resume` is required once checkpoints exist and only schedules never-started entries.
+- The result row is persisted **before** the `finished` checkpoint, so a crash between the two leaves the attempt recoverable (`starting`) instead of silently dropping paid work that has no recorded result.
+- Checkpoints, results and control verdicts go through a synced temporary file and an atomic rename, and the parent directory is synced as well on POSIX. Windows cannot fsync a directory, so there a power loss can still lose a just-renamed file, although it is never observed half-written.
+- A deadline sends `SIGTERM` to the worker's process group and `SIGKILL` after `killGraceMs` (default 30 s); the coordinator resolves only after that escalation, so descendants holding the log descriptor cannot outlive the attempt.
 - Started-but-unfinished attempts surface as `needs-attention` for offline recovery (`prewalk-swe-recover`), never as a re-run. Finished model work with a missing grade is recoverable, not runnable.
 - Terminal states exit nonzero with an actionable reason (`needs-attention`, `budget-stopped`); counters separate processed, attempted, skipped, graded and executed pairs.
 

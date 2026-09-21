@@ -133,4 +133,36 @@ describe.skipIf(process.platform === "win32")("prewalk-canary independent task v
       expect(fs.existsSync(path.join(out, "started.json"))).toBe(false);
     }
   });
+
+  it("normalizes a trailing separator on --cwd and --out before containment and provenance", () => {
+    const root = temporary();
+    const cwd = path.join(root, "work");
+    fs.mkdirSync(path.join(cwd, "tests"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, "tests", "artifact.test.mjs"), FAILING_TEST);
+    const spec = path.join(root, "spec.json");
+    fs.writeFileSync(spec, JSON.stringify({ testFile: "tests/artifact.test.mjs" }) + "\n");
+    const promptFile = path.join(root, "prompt.txt");
+    fs.writeFileSync(promptFile, "one-shot cell\n");
+    const out = path.join(root, "cell");
+
+    const run = spawnSync(
+      process.execPath,
+      [
+        runner,
+        "--out", out + path.sep,
+        "--cwd", cwd + path.sep,
+        "--prompt-file", promptFile,
+        "--pi-binary", makeFakePi(root),
+        "--task-check", spec,
+      ],
+      { encoding: "utf8", timeout: 60_000, env: { ...process.env, FAKE_PI_MODE: "ok" } },
+    );
+    expect(run.status, `${run.stdout}${run.stderr}`).toBe(0);
+    const receipt = JSON.parse(fs.readFileSync(path.join(out, "task-check.json"), "utf8")) as Receipt;
+    expect(receipt.artifact.unchangedDuringCheck).toBe(true);
+    expect(receipt.counts).toMatchObject({ tests: 2, pass: 1, fail: 1 });
+    // Provenance carries the resolved directory, not the raw argument.
+    const started = JSON.parse(fs.readFileSync(path.join(out, "started.json"), "utf8")) as { cwd: string };
+    expect(started.cwd).toBe(cwd);
+  });
 });

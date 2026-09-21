@@ -9,6 +9,16 @@
 import { AgentSession } from "@earendil-works/pi-coding-agent";
 
 export function createPassiveHostSession(agent, sessionManager) {
+  // This shim drives real AgentSession internals, and the peer range allows a
+  // newer host than the pinned one. Fail here, beside the cause, instead of
+  // inside a turn_end subscriber when an upgrade renames a member.
+  for (const member of ["sendCustomMessage", "_flushPendingCustomMessages"]) {
+    if (typeof AgentSession.prototype[member] !== "function") {
+      throw new Error(
+        `passive host shim requires AgentSession.prototype.${member}, which the installed @earendil-works/pi-coding-agent does not provide; update scripts/lib/passive-host-session.mjs for the new host API`,
+      );
+    }
+  }
   const session = Object.create(AgentSession.prototype);
   session.agent = agent;
   session.sessionManager = sessionManager;

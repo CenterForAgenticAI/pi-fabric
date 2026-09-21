@@ -19,6 +19,7 @@ import {
   stats,
   writeExclusive,
 } from "../scripts/lib/prewalk-bench-lib.mjs";
+import { summarizeStage } from "../scripts/probe-prewalk-drift.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoots: string[] = [];
@@ -263,4 +264,40 @@ describe("probe-prewalk-drift integration", () => {
     expect(ignored.expectedListedFiles).toBe(1);
     expect(ignored.stages.baseline.kinds.stat.count).toBe(1);
   }, 120_000);
+});
+
+describe("drift stage aggregation", () => {
+  const sample = (kinds: Record<string, unknown>) => ({ wallMs: 10, totalServiceMs: 5, kinds });
+
+  it("keeps the union of kinds when a sample never observed one of them", () => {
+    const statOnly = sample({
+      stat: { count: 2, serviceMs: 4, wallMs: 6, labels: { ".": { count: 2, serviceMs: 4 } } },
+    });
+    const withSubprocess = sample({
+      stat: { count: 4, serviceMs: 8, wallMs: 9, labels: { ".": { count: 4, serviceMs: 8 } } },
+      subprocess: {
+        count: 1,
+        serviceMs: 3,
+        wallMs: 3,
+        labels: { "git ls-files": { count: 1, serviceMs: 3, listedFiles: 7 } },
+      },
+    });
+    const summary = summarizeStage([statOnly, withSubprocess]);
+    expect(Object.keys(summary.kinds).sort()).toEqual(["stat", "subprocess"]);
+    expect(summary.kinds.subprocess?.count).toBe(1);
+    expect(summary.kinds.subprocess?.labels["git ls-files"]?.count).toBe(1);
+    expect(summary.kinds.subprocess?.labels["git ls-files"]?.listedFiles).toBe(7);
+    // Statistics come from the samples that recorded the kind, not from a hole.
+    expect(summary.kinds.stat?.labels["."]?.count).toBe(2);
+    expect(summary.samples).toBe(2);
+  });
+
+  it("keeps a kind that only the first sample observed", () => {
+    const withSubprocess = sample({ subprocess: { count: 1, serviceMs: 3, wallMs: 3, labels: {} } });
+    const statOnly = sample({ stat: { count: 2, serviceMs: 4, wallMs: 6, labels: {} } });
+    const summary = summarizeStage([withSubprocess, statOnly]);
+    expect(Object.keys(summary.kinds).sort()).toEqual(["stat", "subprocess"]);
+    expect(summary.kinds.subprocess?.count).toBe(1);
+    expect(summary.kinds.stat?.count).toBe(2);
+  });
 });

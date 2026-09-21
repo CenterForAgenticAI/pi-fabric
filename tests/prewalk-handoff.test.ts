@@ -2340,3 +2340,25 @@ describe("prewalk plan checkpoint", () => {
     expect(run.audits.map((entry) => entry.ref)).toEqual(["pi.bash"]);
   });
 });
+
+describe("passive host session compatibility guard", () => {
+  it("fails before subscribing when the installed host renamed a required member", async () => {
+    const { AgentSession } = await import("@earendil-works/pi-coding-agent");
+    const saved = Object.getOwnPropertyDescriptor(AgentSession.prototype, "sendCustomMessage");
+    if (!saved) throw new Error("expected sendCustomMessage on the installed host prototype");
+    const subscribe = vi.fn();
+    try {
+      Object.defineProperty(AgentSession.prototype, "sendCustomMessage", {
+        value: undefined,
+        configurable: true,
+        writable: true,
+      });
+      expect(() =>
+        createPassiveHostSession({ subscribe } as unknown as Agent, {} as unknown as SessionManager),
+      ).toThrow(/sendCustomMessage/);
+      expect(subscribe).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(AgentSession.prototype, "sendCustomMessage", saved);
+    }
+  });
+});

@@ -452,7 +452,6 @@ if (taskCheckReport !== undefined) {
     taskCheckSummary = { path: receiptPath, sha256: null };
   } else {
     const workDir = workDirOf(receipt);
-    const problems = taskCheckReceiptProblems(receipt, { artifactSha256: artifactSha256Of(receipt, workDir) });
     taskCheckSummary = {
       path: receiptPath,
       sha256: createHash("sha256").update(fs.readFileSync(receiptPath)).digest("hex"),
@@ -460,13 +459,24 @@ if (taskCheckReport !== undefined) {
       counts: receipt.counts ?? null,
       artifact: receipt.artifact ?? null,
     };
-    ledger.add(
-      "task-verification",
-      problems.length === 0 ? "pass" : "fail",
-      problems.length === 0
-        ? { testFile: receipt.testFile ?? null, counts: receipt.counts ?? null, artifact: receipt.artifact ?? null }
-        : problems,
-    );
+    if (workDir === null) {
+      // The artifact's current content cannot be re-verified, so a receipt that
+      // only reports its own hashes must not add up to a pass.
+      ledger.add(
+        "task-verification",
+        "unobserved",
+        "work directory unresolved; artifact content could not be re-verified",
+      );
+    } else {
+      const problems = taskCheckReceiptProblems(receipt, { artifactSha256: artifactSha256Of(receipt, workDir) });
+      ledger.add(
+        "task-verification",
+        problems.length === 0 ? "pass" : "fail",
+        problems.length === 0
+          ? { testFile: receipt.testFile ?? null, counts: receipt.counts ?? null, artifact: receipt.artifact ?? null }
+          : problems,
+      );
+    }
   }
 }
 

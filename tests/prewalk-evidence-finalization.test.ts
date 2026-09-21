@@ -22,6 +22,7 @@ interface ArchiveOptions {
   report?: string | null;
   extra?: string[];
   fifo?: boolean;
+  symlinks?: Array<{ name: string; target: string }>;
 }
 
 const makeArchive = (options: ArchiveOptions = {}) => {
@@ -42,6 +43,7 @@ const makeArchive = (options: ArchiveOptions = {}) => {
   if (options.fifo && process.platform !== "win32") {
     execFileSync("mkfifo", [path.join(archive, "probe.fifo")]);
   }
+  for (const link of options.symlinks ?? []) fs.symlinkSync(link.target, path.join(archive, link.name));
   return archive;
 };
 
@@ -107,5 +109,63 @@ describe("finalize-prewalk-evidence", () => {
     const result = runCli(["--archive", empty]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("empty");
+  });
+
+  describe.skipIf(process.platform === "win32")("special-entry inventory", () => {
+    const skippedOf = (archive: string) =>
+      (
+        JSON.parse(fs.readFileSync(path.join(archive, "manifest.json"), "utf8")) as {
+          skipped: Array<{ path: string; type: string; target?: string }>;
+        }
+      ).skipped;
+
+    it("records a symlink target and verifies an unchanged special inventory", () => {
+      const archive = makeArchive({ fifo: true, symlinks: [{ name: "probe.link", target: "nested/evidence.json" }] });
+      expect(runCli(["--archive", archive]).status).toBe(0);
+      expect(skippedOf(archive)).toEqual([
+        { path: "probe.fifo", type: "fifo" },
+        { path: "probe.link", type: "symlink", target: "nested/evidence.json" },
+      ]);
+      // The symlinked file is not followed: it stays a special entry, not a second digest.
+      expect(runCli(["--archive", archive, "--verify"]).status).toBe(0);
+    });
+
+    it("detects an added or removed special entry", () => {
+      const added = makeArchive({ symlinks: [{ name: "probe.link", target: "nested/evidence.json" }] });
+      expect(runCli(["--archive", added]).status).toBe(0);
+      fs.symlinkSync("nested/evidence.json", path.join(added, "extra.link"));
+      const addedResult = runCli(["--archive", added, "--verify"]);
+      expect(addedResult.status).toBe(1);
+      expect(addedResult.stderr).toContain("extra.link");
+
+      const removed = makeArchive({ symlinks: [{ name: "probe.link", target: "nested/evidence.json" }] });
+      expect(runCli(["--archive", removed]).status).toBe(0);
+      fs.rmSync(path.join(removed, "probe.link"));
+      const removedResult = runCli(["--archive", removed, "--verify"]);
+      expect(removedResult.status).toBe(1);
+      expect(removedResult.stderr).toContain("probe.link");
+    });
+
+    it("detects a retargeted symlink even when every regular digest is unchanged", () => {
+      const archive = makeArchive({ symlinks: [{ name: "probe.link", target: "nested/evidence.json" }] });
+      expect(runCli(["--archive", archive]).status).toBe(0);
+      const link = path.join(archive, "probe.link");
+      fs.rmSync(link);
+      fs.symlinkSync("report.md", link);
+      const result = runCli(["--archive", archive, "--verify"]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("probe.link");
+    });
+
+    it("detects a special entry that changed type", () => {
+      const archive = makeArchive({ fifo: true });
+      expect(runCli(["--archive", archive]).status).toBe(0);
+      const fifo = path.join(archive, "probe.fifo");
+      fs.rmSync(fifo);
+      fs.symlinkSync("report.md", fifo);
+      const result = runCli(["--archive", archive, "--verify"]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("probe.fifo");
+    });
   });
 });

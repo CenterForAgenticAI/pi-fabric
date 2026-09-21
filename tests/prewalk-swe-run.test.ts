@@ -75,13 +75,18 @@ const baseConfig = (root: string, budget?: Record<string, unknown>) => ({
   },
 });
 
-const runCoordinator = (root: string, config: Record<string, unknown>, extra: string[] = []) => {
+const runCoordinator = (
+  root: string,
+  config: Record<string, unknown>,
+  extra: string[] = [],
+  env: Record<string, string> = {},
+) => {
   const configPath = path.join(root, "config.json");
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
   return spawnSync(process.execPath, [coordinator, "--config", configPath, ...extra], {
     encoding: "utf8",
     timeout: 120_000,
-    env: { ...process.env, FAKE_SWE_CALL_LOG: callLogPath(root) },
+    env: { ...process.env, FAKE_SWE_CALL_LOG: callLogPath(root), ...env },
   });
 };
 
@@ -167,5 +172,122 @@ describe("prewalk-swe-run coordinator (fake worker, no model calls)", () => {
     const summary = readJson(path.join(root, "evidence/summary.json")) as unknown as Summary;
     expect(summary.state).toBe("budget-stopped");
     expect(subs(root)).toEqual([]);
+  });
+
+  const hangFixture = path.join(projectRoot, "tests", "fixtures", "fake-swe-hang.mjs");
+  const syncPreload = path.join(projectRoot, "tests", "fixtures", "fake-swe-preload.cjs");
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const waitUntilGone = async (pids: number[], budgetMs = 5_000) => {
+    const deadline = Date.now() + budgetMs;
+    while (Date.now() < deadline && pids.some((pid) => alive(pid))) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return pids.every((pid) => !alive(pid));
+  };
+  const killIfAlive = (pids: number[]) => {
+    for (const pid of pids) {
+      if (!alive(pid)) continue;
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+  };
+
+  it("reports a missing command once instead of crashing on the second close", () => {
+    const root = temporary();
+    const config = baseConfig(root) as Record<string, any>;
+    config.commands.controls = { argv: [path.join(root, "absent-controls-binary")], cwd: root, timeoutMs: 30_000 };
+    const result = runCoordinator(root, config);
+    // The spawn failure resolves once and cleanup runs once: the unguarded
+    // second handler used to throw EBADF from inside the close callback and
+    // kill the coordinator with a stack trace instead of recording a verdict.
+    expect(`${result.stdout}${result.stderr}`).not.toContain("EBADF");
+    expect(result.stderr).not.toMatch(/uncaughtException|throw er;/i);
+    expect(result.signal).toBeNull();
+    const verdicts = readJson(path.join(root, "evidence/control-verdicts.json")) as Record<
+      string,
+      { ok: boolean; error?: string }
+    >;
+    expect(verdicts["001"]?.ok).toBe(false);
+    // The gate records an actionable failure instead of the run vanishing.
+    expect(String(verdicts["001"]?.error)).toMatch(/exited null without a report/);
+    // The broken gate is what failed: no paid run command is ever issued.
+    expect(subs(root).filter((sub) => sub === "run")).toEqual([]);
+    const rows = readJson(path.join(root, "evidence/results-new.json")) as unknown as Array<{ failureKind?: string }>;
+    expect(rows.map((row) => row.failureKind)).toEqual(["grader-controls", "grader-controls"]);
+  });
+
+  it("hard-kills a SIGTERM-ignoring worker together with its descendants", async () => {
+    const root = temporary();
+    const pidsFile = path.join(root, "hangers.json");
+    const config = baseConfig(root) as Record<string, any>;
+    config.commands.run = {
+      argv: [process.execPath, hangFixture, pidsFile],
+      cwd: root,
+      timeoutMs: 800,
+      killGraceMs: 400,
+    };
+    let pids: number[] = [];
+    try {
+      const result = runCoordinator(root, config);
+      expect(fs.existsSync(pidsFile), `${result.stdout}${result.stderr}`).toBe(true);
+      pids = fs.readFileSync(pidsFile, "utf8").trim().split(/\s+/).map(Number);
+      expect(pids).toHaveLength(2);
+      expect(pids.every((pid) => pid > 0)).toBe(true);
+      expect(await waitUntilGone(pids)).toBe(true);
+      // A timeout with no request evidence stops as needs-attention, not as a
+      // silent success.
+      expect(result.status).toBe(1);
+      const summary = readJson(path.join(root, "evidence/summary.json")) as unknown as Summary;
+      expect(summary.state).toBe("needs-attention");
+    } finally {
+      killIfAlive(
+        pids.length > 0
+          ? pids
+          : fs.existsSync(pidsFile)
+            ? fs.readFileSync(pidsFile, "utf8").trim().split(/\s+/).map(Number)
+            : [],
+      );
+    }
+  });
+
+  it("persists the result before the finished checkpoint and syncs around the rename", () => {
+    const root = temporary();
+    const syncLog = path.join(root, "sync.log");
+    const aborted = runCoordinator(root, baseConfig(root), [], {
+      NODE_OPTIONS: `--require ${syncPreload}`,
+      FAKE_SWE_SYNC_LOG: syncLog,
+      FAKE_SWE_ABORT_BEFORE_FINISHED_CHECKPOINT: "1",
+    });
+    expect(aborted.status).toBe(7);
+    const rows = readJson(path.join(root, "evidence/results-new.json")) as unknown as Row[];
+    expect(rows.map((row) => row.id)).toEqual(["001"]);
+    expect(rows[0]?.resolved).toBe(true);
+    const checkpoints = readJson(path.join(root, "evidence/checkpoints.json")) as Record<string, { phase: string }>;
+    expect(checkpoints["001"]?.phase).toBe("starting");
+
+    // Content is synced, then the rename, then the parent directory.
+    const events = fs.readFileSync(syncLog, "utf8").trim().split("\n");
+    const renamed = events.indexOf("rename to=results-new.json");
+    expect(renamed).toBeGreaterThan(0);
+    expect(events[renamed - 1]).toBe("fsync dir=false");
+    expect(events[renamed + 1]).toBe("fsync dir=true");
+
+    // The interrupted attempt is recoverable offline and is never reissued.
+    const resumed = runCoordinator(root, baseConfig(root), ["--resume"]);
+    expect(resumed.status).toBe(1);
+    const summary = readJson(path.join(root, "evidence/summary.json")) as unknown as Summary;
+    expect(summary.needsRecovery).toEqual(["001"]);
+    expect(summary.executedThisRun).toEqual([]);
+    expect(subs(root).filter((sub) => sub === "run")).toHaveLength(1);
   });
 });

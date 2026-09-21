@@ -126,6 +126,16 @@ export function analyzeRequestLifecycle(events, limits) {
   }
   const pending = [];
   const seen = new Set();
+  // Remove the latest pending request for one model; a model-less identity can
+  // never match, because a provider_request requires a model string.
+  const settlePending = (model) => {
+    for (let i = pending.length - 1; i >= 0; i -= 1) {
+      if (pending[i].model === model) {
+        pending.splice(i, 1);
+        return;
+      }
+    }
+  };
   let knownUsd = 0;
   let uncertain = false;
   for (const event of events) {
@@ -144,18 +154,18 @@ export function analyzeRequestLifecycle(events, limits) {
       if (stopReason === "error" || stopReason === "aborted") {
         uncertain = true;
       } else if (NUMBER(usage)) {
-        const model = typeof event.model === "string" ? event.model : null;
-        let index = -1;
-        for (let i = pending.length - 1; i >= 0; i -= 1) {
-          if (pending[i].model === model) { index = i; break; }
-        }
-        if (index >= 0) pending.splice(index, 1);
+        settlePending(typeof event.model === "string" ? event.model : null);
       }
     } else if (event.type === "compaction") {
       const usage = event.usage?.cost?.total;
       if (NUMBER(usage) && usage >= 0) {
         knownUsd += usage;
-        if (pending.length) pending.pop();
+        // Settle the request this compaction actually finished. A model identity
+        // removes only that request; without one the event is unambiguous only
+        // while a single request is open, so every hold is kept otherwise.
+        const model = typeof event.model === "string" ? event.model : null;
+        if (model !== null) settlePending(model);
+        else if (pending.length === 1) pending.pop();
       }
     }
   }
@@ -221,7 +231,9 @@ export function comparePairs(rows) {
       astra?.verdict?.validComparison === true && prewalk?.verdict?.validComparison === true;
     const matchedTree =
       astra?.baselineTree && prewalk?.baselineTree ? astra.baselineTree === prewalk.baselineTree : null;
-    const comparable = bothComparable && matchedTree !== false;
+    // Only two recorded, identical trees make a pair comparable; an unrecorded
+    // tree is an unknown, not an implicit match.
+    const comparable = bothComparable && matchedTree === true;
     const resolved = (arm) => arm?.verdict?.status === "pass";
     let status = "incomplete-or-unobserved";
     if (comparable) {

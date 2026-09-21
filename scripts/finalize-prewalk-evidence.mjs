@@ -16,7 +16,6 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { sha256, writeExclusive } from "./lib/prewalk-bench-lib.mjs";
 
 const argv = process.argv.slice(2);
@@ -61,7 +60,12 @@ const walk = () => {
       const rel = path.relative(archive, full).split(path.sep).join("/");
       if (entry.isDirectory()) visit(full);
       else if (entry.isFile() && rel !== manifestRel) files[rel] = sha256(fs.readFileSync(full));
-      else if (!entry.isFile()) skipped.push({ path: rel, type: entryType(entry) });
+      else if (!entry.isFile()) {
+        const type = entryType(entry);
+        // A symlink's target belongs to the inventory: record it without
+        // following it, so a retarget cannot hide behind unchanged digests.
+        skipped.push(type === "symlink" ? { path: rel, type, target: fs.readlinkSync(full) } : { path: rel, type });
+      }
     }
   };
   visit(archive);
@@ -92,6 +96,27 @@ if (verifyOnly) {
     delete files[rel];
   }
   for (const rel of Object.keys(files)) problems.push(`${rel}: regular file missing from the manifest`);
+  // Special entries are part of the inventory as well: an added, removed,
+  // retyped or retargeted symlink/FIFO/socket changes the archive without
+  // changing a single digest.
+  const skippedKey = (entry) =>
+    `${typeof entry?.path === "string" ? entry.path : ""}\u0000${typeof entry?.type === "string" ? entry.type : ""}\u0000${typeof entry?.target === "string" ? entry.target : ""}`;
+  if (!Array.isArray(manifest.skipped)) {
+    if (skipped.length > 0) {
+      problems.push(`manifest has no skipped inventory but the archive holds ${skipped.length} special entr${skipped.length === 1 ? "y" : "ies"}`);
+    }
+  } else {
+    const walkedSkipped = new Map(skipped.map((entry) => [skippedKey(entry), entry]));
+    for (const entry of manifest.skipped) {
+      const rel = typeof entry?.path === "string" ? entry.path : "?";
+      if (!walkedSkipped.has(skippedKey(entry))) {
+        problems.push(`${rel}: special entry missing from the archive inventory (${entry?.type ?? "unknown"})`);
+      } else {
+        walkedSkipped.delete(skippedKey(entry));
+      }
+    }
+    for (const entry of walkedSkipped.values()) problems.push(`${entry.path}: special entry missing from the manifest (${entry.type})`);
+  }
   if (problems.length > 0) fail(JSON.stringify(problems.slice(0, 20)));
   console.log(JSON.stringify({ ok: true, verified: true, archive, manifest: manifestRel, fileCount: Object.keys(manifest.files ?? {}).length, skippedCount: (manifest.skipped ?? []).length }));
   process.exit(0);

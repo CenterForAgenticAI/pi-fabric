@@ -49,7 +49,7 @@ export interface RequestLifecycleState {
   heldUsd: number;
   knownUsd: number;
 }
-export function classifyControls(arms: { noop: ControlArm; gold: ControlArm }): ControlVerdict;
+export function classifyControls(arms: { noop: ControlArm | null; gold: ControlArm | null }): ControlVerdict;
 export function classifyCandidate(input: {
   result: GradeResultRecord | null;
   controlsPassed: boolean;

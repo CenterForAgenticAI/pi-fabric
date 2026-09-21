@@ -333,6 +333,38 @@ describe("verify-prewalk-canary", () => {
     expect(JSON.parse(optOut.stdout).checks.map((check: { name: string }) => check.name)).not.toContain("task-verification");
   });
 
+  it("cannot pass on receipt hashes when no work directory resolves", () => {
+    const dist = distFor();
+    const run = makeRun({ dist });
+    const sha = writeArtifact(run);
+    const receipt = writeReceipt(run, {
+      ...artifactReceipt(run, sha, { tests: 7, pass: 7, fail: 0, skipped: 0, todo: 0 }, true),
+      cwd: "relative/work",
+    });
+    // makeRun's started.json records no cwd either, so nothing is resolvable.
+    const unresolved = runCli(["--run", run, "--dist", dist, "--task-check-report", receipt]);
+    expect(unresolved.status).toBe(1);
+    const unresolvedReport = JSON.parse(unresolved.stdout) as {
+      checks: Array<{ name: string; status: string; detail: unknown }>;
+    };
+    const unobserved = unresolvedReport.checks.find((check) => check.name === "task-verification");
+    expect(unobserved?.status).toBe("unobserved");
+    expect(JSON.stringify(unobserved?.detail)).toContain("work directory");
+
+    // An explicit absolute --work-dir re-binds the artifact content and can pass.
+    const resolved = runCli(["--run", run, "--dist", dist, "--task-check-report", receipt, "--work-dir", run]);
+    expect(resolved.status).toBe(0);
+    expect(JSON.parse(resolved.stdout).axes.artifact).toEqual([{ name: "task-verification", status: "pass" }]);
+
+    fs.writeFileSync(path.join(run, "tests", "native.test.mjs"), "// artifact edited after verification\n");
+    const stale = runCli(["--run", run, "--dist", dist, "--task-check-report", receipt, "--work-dir", run]);
+    expect(stale.status).toBe(1);
+    const staleDetail = JSON.stringify(
+      JSON.parse(stale.stdout).checks.find((check: { name: string }) => check.name === "task-verification")?.detail,
+    );
+    expect(staleDetail).toContain("artifact content changed after the check ran");
+  });
+
   it("verifies write-scope compliance separately from the artifact verdict", () => {
     const dist = distFor();
     const run = makeRun({ dist });

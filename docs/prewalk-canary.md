@@ -47,8 +47,14 @@ check blocks `ok` exactly like a failure.
 node scripts/verify-prewalk-canary.mjs --run <cellDir> [--json <newFile>] \
   [--report <newFile>] [--dist <distDir>] [--main <provider/model>] \
   [--executor <provider/model>] [--recovery-marker <text>] \
-  [--expect-prewalk <n>] [--request-contract <contract.json>]
+  [--expect-prewalk <n>] [--request-contract <contract.json>] \
+  [--work-dir <absoluteDir>]
 ```
+
+`--work-dir` supplies the cell's work directory when neither the task receipt nor
+`started.json` records an absolute `cwd`. Without a resolved directory the
+`task-verification` check is `unobserved` instead of passing on the receipt's own
+hashes.
 
 Checks: `recording-complete` (lifecycle parse; aborted assistants allowed only
 with `--recovery-marker`), `finished-ok`, `runtime-identity` (structured parse

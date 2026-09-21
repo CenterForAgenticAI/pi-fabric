@@ -252,11 +252,14 @@ function aggregateStage(stage) {
   return { wallMs: round(stage.wallMs), totalServiceMs: round(totalServiceMs), kinds };
 }
 
-function summarizeStage(runs) {
+export function summarizeStage(runs) {
   const kindNames = [...new Set(runs.flatMap((run) => Object.keys(run.kinds)))].sort();
   const kinds = {};
   for (const name of kindNames) {
-    const entries = runs.map((run) => run.kinds[name]);
+    // kindNames is the union across runs; a run may lack a kind the other
+    // observed (a git-listing fallback changes the stat/subprocess mix), so
+    // aggregate only the samples that actually recorded it.
+    const entries = runs.map((run) => run.kinds[name]).filter(Boolean);
     const labels = {};
     for (const labelName of [...new Set(entries.flatMap((entry) => Object.keys(entry.labels)))].sort()) {
       const labelEntries = entries.map((entry) => entry.labels[labelName]).filter(Boolean);
