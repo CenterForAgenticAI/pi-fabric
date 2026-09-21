@@ -30,6 +30,13 @@ import {
   resolveFabricExecPayloads,
 } from "./fabric-exec-arguments.js";
 import { repairFabricGuestCode } from "./runtime/guest-code-repair.js";
+import {
+  FABRIC_REPEAT_BLOCK,
+  FABRIC_REPEAT_WARN,
+  FabricRepeatGuard,
+  fabricRepeatBlockText,
+  fabricRepeatWarnText,
+} from "./repeat-guard.js";
 import { typeErrorRecoveryHint } from "./type-error-guidance.js";
 import { normalizeRunDisplay } from "./run-display.js";
 import type { PendingFabricHandoff } from "./prewalk/handoff.js";
@@ -139,6 +146,7 @@ export const createFabricExecTool = (
 ): ToolDefinition<any, any, any> => {
   const python = toolKernel(state) === "python";
   const monty = python && state.config.executor.pythonRuntime === "monty";
+  const repeatGuard = new FabricRepeatGuard(FABRIC_REPEAT_WARN, FABRIC_REPEAT_BLOCK);
   return decorateShell(
   defineTool({
     name: "fabric_exec",
@@ -825,6 +833,14 @@ export const createFabricExecTool = (
       // keep the same coercion here for direct internal invocations.
       const joined = Array.isArray(params.code) ? params.code.join("\n") : params.code;
       const code = state.config.executor.kernel === "python" ? joined : repairFabricGuestCode(joined);
+      const repeat = repeatGuard.observe(code);
+      if (repeat.blocked) {
+        return {
+          content: [{ type: "text", text: fabricRepeatBlockText(repeat.count) }],
+          isError: true,
+          details: undefined,
+        };
+      }
       const runDisplay = normalizeRunDisplay(params.display);
       const strings = resolveFabricExecPayloads(params);
       const tokenBudget = "tokenBudget" in params && typeof params.tokenBudget === "number"
@@ -879,6 +895,7 @@ export const createFabricExecTool = (
       if (fullFormattedValue.text) fullSections.push(fullFormattedValue.text);
       if (result.error) fullSections.push(`Runtime error: ${result.error}`);
       if (failureProgress) fullSections.push(failureProgress);
+      if (repeat.warn) fullSections.push(fabricRepeatWarnText(repeat.count, FABRIC_REPEAT_BLOCK));
       const fullRawOutput = fullSections.join("\n\n");
       const outputBudget = modelOutputBudget(
         state.config.executor.maxOutputChars,
@@ -897,6 +914,7 @@ export const createFabricExecTool = (
       if (formattedValue.text) sections.push(formattedValue.text);
       if (result.error) sections.push(`Runtime error: ${result.error}`);
       if (failureProgress) sections.push(failureProgress);
+      if (repeat.warn) sections.push(fabricRepeatWarnText(repeat.count, FABRIC_REPEAT_BLOCK));
       const rawOutput = sections.join("\n\n");
       const outputFormat =
         formattedValue.language &&
