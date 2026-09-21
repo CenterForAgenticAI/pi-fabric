@@ -5,9 +5,9 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const coordinator = path.join(projectRoot, "scripts", "prewalk-swe-run.mjs");
-const fixture = path.join(projectRoot, "tests", "fixtures", "fake-swe-harness.mjs");
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const coordinator = path.join(projectRoot, "bench", "prewalk", "prewalk-swe-run.mjs");
+const fixture = path.join(projectRoot, "bench", "prewalk", "fixtures", "fake-swe-harness.mjs");
 
 const roots: string[] = [];
 const temporary = () => {
@@ -174,8 +174,8 @@ describe("prewalk-swe-run coordinator (fake worker, no model calls)", () => {
     expect(subs(root)).toEqual([]);
   });
 
-  const hangFixture = path.join(projectRoot, "tests", "fixtures", "fake-swe-hang.mjs");
-  const syncPreload = path.join(projectRoot, "tests", "fixtures", "fake-swe-preload.cjs");
+  const hangFixture = path.join(projectRoot, "bench", "prewalk", "fixtures", "fake-swe-hang.mjs");
+  const syncPreload = path.join(projectRoot, "bench", "prewalk", "fixtures", "fake-swe-preload.cjs");
   const alive = (pid: number) => {
     try {
       process.kill(pid, 0);
@@ -277,7 +277,7 @@ describe("prewalk-swe-run coordinator (fake worker, no model calls)", () => {
 
     // Content is synced, then the rename, then the parent directory on POSIX.
     // Windows cannot fsync a directory, which is the documented limit captured
-    // in docs/prewalk-swe.md, so no directory sync is asserted there.
+    // in bench/prewalk/swe.md, so no directory sync is asserted there.
     const events = fs.readFileSync(syncLog, "utf8").trim().split("\n");
     const renamed = events.indexOf("rename to=results-new.json");
     expect(renamed).toBeGreaterThan(0);

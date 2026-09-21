@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Maintained verifier for a canary cell produced by scripts/prewalk-canary-run.mjs.
+// Maintained verifier for a canary cell produced by bench/prewalk/prewalk-canary-run.mjs.
 //
 // Reads the recorded evidence (started/finished/rpc/events/telemetry/sessions
 // and an optional probe.jsonl) and produces a tri-state check ledger: pass,
@@ -8,7 +8,7 @@
 // verifier never writes into the run directory; --json writes a NEW file and
 // refuses to overwrite an existing one.
 //
-// usage: node scripts/verify-prewalk-canary.mjs --run <cellDir> \
+// usage: node bench/prewalk/verify-prewalk-canary.mjs --run <cellDir> \
 //        [--json <newFile>] [--report <newFile>] [--dist <dir>] \
 //        [--main <provider/model>] [--executor <provider/model>] \
 //        [--recovery-marker <text>] [--expect-prewalk <n>] [--request-contract <file>]
@@ -45,7 +45,7 @@ const fail = (error) => {
 };
 
 const runArg = value("--run");
-if (!runArg) fail("usage: node scripts/verify-prewalk-canary.mjs --run <cellDir> [--json <newFile>] ...");
+if (!runArg) fail("usage: node bench/prewalk/verify-prewalk-canary.mjs --run <cellDir> [--json <newFile>] ...");
 const run = path.resolve(runArg);
 if (!fs.existsSync(run) || !fs.lstatSync(run).isDirectory()) fail(`--run is not a directory: ${run}`);
 const jsonOut = value("--json");

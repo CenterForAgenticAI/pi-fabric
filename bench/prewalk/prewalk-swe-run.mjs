@@ -14,7 +14,7 @@
 //   * exits nonzero with an actionable state for needs-attention/budget stops.
 //
 // Nothing here talks to providers directly; the config names the commands.
-// usage: node scripts/prewalk-swe-run.mjs --config <file> [--resume]
+// usage: node bench/prewalk/prewalk-swe-run.mjs --config <file> [--resume]
 
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -37,7 +37,7 @@ const fail = (message, code = 1) => {
   console.error(JSON.stringify({ ok: false, error: message }));
   process.exit(code);
 };
-if (!configPath) fail("usage: node scripts/prewalk-swe-run.mjs --config <file> [--resume]", 2);
+if (!configPath) fail("usage: node bench/prewalk/prewalk-swe-run.mjs --config <file> [--resume]", 2);
 if (!fs.existsSync(configPath)) fail(`config not found: ${configPath}`, 2);
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
 
@@ -98,7 +98,7 @@ const readJsonIfExists = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFile
 // write, sync or rename fails. The parent directory is synced too on POSIX,
 // because that is what makes the rename itself durable; Windows has no
 // directory fsync, so there the file sync plus atomic replacement is the
-// strongest guarantee available (documented in docs/prewalk-swe.md).
+// strongest guarantee available (documented in bench/prewalk/swe.md).
 const atomicWrite = (file, data) => {
   const temp = path.join(
     path.dirname(file),

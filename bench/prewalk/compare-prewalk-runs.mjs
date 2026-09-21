@@ -1,8 +1,8 @@
 // CLI for the shared prewalk comparison/archive helpers in
-// scripts/lib/prewalk-bench-lib.mjs.
+// bench/prewalk/lib/prewalk-bench-lib.mjs.
 //
-//   node scripts/compare-prewalk-runs.mjs <a.json[.gz]> <b.json[.gz]> [--out comparison.json] [--label-a name] [--label-b name]
-//   node scripts/compare-prewalk-runs.mjs --archive <raw.json> [--gz raw.json.gz] [--remove-raw]
+//   node bench/prewalk/compare-prewalk-runs.mjs <a.json[.gz]> <b.json[.gz]> [--out comparison.json] [--label-a name] [--label-b name]
+//   node bench/prewalk/compare-prewalk-runs.mjs --archive <raw.json> [--gz raw.json.gz] [--remove-raw]
 //
 // Raw JSON and gzip archives are both accepted. Every output path is created
 // exclusively: existing files are never overwritten. Without --out the

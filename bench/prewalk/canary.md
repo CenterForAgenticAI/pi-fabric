@@ -6,13 +6,13 @@ runtime code, benchmark expectations or the repository under test.
 
 ## Runner
 
-`scripts/prewalk-canary-run.mjs` spawns one fresh `pi` process with the
+`bench/prewalk/prewalk-canary-run.mjs` spawns one fresh `pi` process with the
 compiled dogfood extension at the repo root plus the maintained recorder
-(`scripts/prewalk-canary-telemetry.ts`), records the raw stream and never
+(`bench/prewalk/prewalk-canary-telemetry.ts`), records the raw stream and never
 replays a started cell.
 
 ```sh
-node scripts/prewalk-canary-run.mjs --out <cellDir> --cwd <workDir> \
+node bench/prewalk/prewalk-canary-run.mjs --out <cellDir> --cwd <workDir> \
   --prompt-file <prompt.txt> --model <provider/model> --timeout-seconds 600 \
   [--turns 16] [--rpc --rpc-runs 2] [--extension <path>]... \
   [--request-contract <contract.json>]
@@ -39,12 +39,12 @@ final state) and `rpc-entries.json`.
 
 ## Verifier
 
-`scripts/verify-prewalk-canary.mjs` reads a finished cell and emits a tri-state
+`bench/prewalk/verify-prewalk-canary.mjs` reads a finished cell and emits a tri-state
 check ledger. A check is `pass`, `fail` or `unobserved`, and an unobserved
 check blocks `ok` exactly like a failure.
 
 ```sh
-node scripts/verify-prewalk-canary.mjs --run <cellDir> [--json <newFile>] \
+node bench/prewalk/verify-prewalk-canary.mjs --run <cellDir> [--json <newFile>] \
   [--report <newFile>] [--dist <distDir>] [--main <provider/model>] \
   [--executor <provider/model>] [--recovery-marker <text>] \
   [--expect-prewalk <n>] [--request-contract <contract.json>] \
@@ -133,7 +133,7 @@ says nothing about whether the artifact it produced passes its own tests. A task
 check is therefore recorded in its own receipt and reported on its own axis.
 
 ```sh
-node scripts/prewalk-canary-run.mjs ... --task-check <spec.json>
+node bench/prewalk/prewalk-canary-run.mjs ... --task-check <spec.json>
 ```
 
 The spec names only relative paths inside `--cwd`:
@@ -153,7 +153,7 @@ content hash before and after the check. A failing suite is artifact evidence,
 never a runner problem, so `finished.ok` stays lifecycle-only.
 
 ```sh
-node scripts/verify-prewalk-canary.mjs --run <cellDir> \
+node bench/prewalk/verify-prewalk-canary.mjs --run <cellDir> \
   --task-check-report <cellDir>/task-check.json
 ```
 
@@ -163,7 +163,7 @@ artifact, a missing artifact or a malformed receipt fail, and a missing receipt
 is `unobserved`. Write-scope compliance comes from an opt-in recorder report:
 
 ```sh
-node scripts/verify-prewalk-canary.mjs --run <cellDir> --scope-report <scope.json>
+node bench/prewalk/verify-prewalk-canary.mjs --run <cellDir> --scope-report <scope.json>
 ```
 
 `{ "marker": "<scope message>", "ok": true, "writesAfter": [] }` passes only when
@@ -184,7 +184,7 @@ earlier extension's cancel can short-circuit its delivery.
 
 ## Offline probe fixture
 
-`tests/fixtures/prewalk-contract-probe.ts` registers the offline scripted
+`bench/prewalk/fixtures/prewalk-contract-probe.ts` registers the offline scripted
 provider `prewalk-probe` (`main`, `executor`): plan + status request, one
 complete two-write batch (the mutation boundary), three competing steers (the
 last one a read-only scope steer), then scripted executor turns. Environment
@@ -199,7 +199,7 @@ control flow only — never model obedience or task quality.
 
 ## Evidence finalization
 
-`scripts/finalize-prewalk-evidence.mjs` closes an evidence archive in a fixed
+`bench/prewalk/finalize-prewalk-evidence.mjs` closes an evidence archive in a fixed
 order: a successful `preservation.json` (`ok: true`) and a non-empty
 `report.md` are prerequisites; then it writes a once-only `manifest.json`. It
 hashes regular files only and records special entries (dead tmux sockets,
@@ -211,7 +211,7 @@ and an existing manifest; it never modifies anything else in the archive.
 coverage mismatches without writing.
 
 ```sh
-node scripts/finalize-prewalk-evidence.mjs --archive <dir> [--verify]
+node bench/prewalk/finalize-prewalk-evidence.mjs --archive <dir> [--verify]
 ```
 
 ## Real-task pilot (spend-gated)
@@ -223,13 +223,13 @@ A bounded matched pair on one real task, using the maintained tools only:
   fixture; the only difference is Prewalk in-place: the baseline cell's workdir
   `.pi/fabric.json` omits the `prewalk` block, the Prewalk cell keeps it. Never
   alter global settings.
-- Run with `scripts/prewalk-canary-run.mjs --request-contract <contract>` and
-  verify each cell with `scripts/verify-prewalk-canary.mjs`.
+- Run with `bench/prewalk/prewalk-canary-run.mjs --request-contract <contract>` and
+  verify each cell with `bench/prewalk/verify-prewalk-canary.mjs`.
 - Record semantic success first (task checks plus workdir drift through
   `snapshotTree`/`compareSnapshots`), then per-model tokens, latency and cost
   through `analyzeCell`/`aggregateUsage`/`attributePhases`.
 - No paid execution before the user sets an explicit spend cap. Do not feed
-  live-cell JSON to `scripts/compare-prewalk-runs.mjs`: it compares the
+  live-cell JSON to `bench/prewalk/compare-prewalk-runs.mjs`: it compares the
   synthetic queue/drift benchmark schema. A comparison against the published
   blog is not established until a matched real-task pair exists.
 

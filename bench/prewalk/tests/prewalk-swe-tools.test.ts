@@ -11,8 +11,8 @@ import {
   comparePairs,
   planResume,
   summarizeAttempts,
-} from "../scripts/lib/prewalk-swe-evidence.mjs";
-import { capturePatch } from "../scripts/lib/prewalk-patch.mjs";
+} from "../lib/prewalk-swe-evidence.mjs";
+import { capturePatch } from "../lib/prewalk-patch.mjs";
 
 interface GradeRecord {
   valid: boolean;
@@ -81,7 +81,7 @@ describe("SWE recovery grader argument validation", () => {
     const out = path.join(root, "out");
     // Stop at the next validator: this tests argument handling, not real grading.
     const result = spawnSync(process.execPath, [
-      fileURLToPath(new URL("../scripts/prewalk-swe-recover.mjs", import.meta.url)),
+      fileURLToPath(new URL("../prewalk-swe-recover.mjs", import.meta.url)),
       "--source", source, "--out", out, "--attempt", "probe", "--grade-timeout-ms", "0",
       ...(gradePython === undefined ? [] : ["--grade-python", gradePython]),
     ], { encoding: "utf8", timeout: 10_000 });

@@ -2,7 +2,7 @@
 // Minimal single-cell canary runner for future Prewalk comparisons.
 //
 // Spawns a fresh root `pi --mode json` process with the maintained telemetry
-// extension (scripts/prewalk-canary-telemetry.ts) and, by default, the compiled
+// extension (bench/prewalk/prewalk-canary-telemetry.ts) and, by default, the compiled
 // dogfood extension at the repo root. It records the raw JSON stdout plus a
 // parallel arrival-timestamp log — the only place a too-small compaction
 // attempt start is observable, because compaction_start precedes
@@ -21,7 +21,7 @@
 // have settled AND get_state reports idle with an empty queue, then the runner
 // sends EOF for a graceful shutdown.
 //
-// usage: node scripts/prewalk-canary-run.mjs --out <dir> --cwd <dir> --prompt-file <file> \
+// usage: node bench/prewalk/prewalk-canary-run.mjs --out <dir> --cwd <dir> --prompt-file <file> \
 //        [--model <provider/id>] [--thinking <level>] [--timeout-seconds 300] \
 //        [--rpc] [--rpc-runs 2] [--turns 16] [--abort-grace-seconds <seconds>] [--request-contract <file>] \
 //        [--task-check <spec.json>] \
@@ -48,9 +48,9 @@ const repeated = (flag) => {
   return values;
 };
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const recorderPath = path.join(repoRoot, "scripts", "prewalk-canary-telemetry.ts");
-const RUNTIME_FILES = ["dist/index.js", "dist/fabric-runtime-state.js", "scripts/prewalk-canary-telemetry.ts"];
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const recorderPath = path.join(repoRoot, "bench", "prewalk", "prewalk-canary-telemetry.ts");
+const RUNTIME_FILES = ["dist/index.js", "dist/fabric-runtime-state.js", "bench/prewalk/prewalk-canary-telemetry.ts"];
 
 const fail = (error) => {
   console.error(JSON.stringify({ ok: false, error }));
@@ -72,7 +72,7 @@ const requestContract = value("--request-contract");
 const taskCheck = value("--task-check");
 if (!outDirArg || !cwdArg || !promptFile) {
   console.error(
-    "usage: node scripts/prewalk-canary-run.mjs --out <dir> --cwd <dir> --prompt-file <file> " +
+    "usage: node bench/prewalk/prewalk-canary-run.mjs --out <dir> --cwd <dir> --prompt-file <file> " +
       "[--model <provider/id>] [--thinking <level>] [--timeout-seconds 300] " +
       "[--abort-grace-seconds <seconds>] " +
       "[--pi-binary <path>] [--extension <path>]... [--pi-arg <value>]... " +

@@ -7,7 +7,7 @@
 // overwrite an existing manifest and never modifies anything else in the
 // archive.
 //
-// usage: node scripts/finalize-prewalk-evidence.mjs --archive <dir> \
+// usage: node bench/prewalk/finalize-prewalk-evidence.mjs --archive <dir> \
 //        [--preservation preservation.json] [--report report.md] \
 //        [--manifest manifest.json] [--verify]
 //
@@ -30,7 +30,7 @@ const fail = (error) => {
 
 const archiveArg = value("--archive");
 if (!archiveArg) {
-  fail("usage: node scripts/finalize-prewalk-evidence.mjs --archive <dir> [--preservation <file>] [--report <file>] [--manifest <file>] [--verify]");
+  fail("usage: node bench/prewalk/finalize-prewalk-evidence.mjs --archive <dir> [--preservation <file>] [--report <file>] [--manifest <file>] [--verify]");
 }
 const archive = path.resolve(archiveArg);
 if (!fs.existsSync(archive) || !fs.lstatSync(archive).isDirectory()) {

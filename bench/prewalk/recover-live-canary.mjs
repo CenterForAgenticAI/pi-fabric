@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Recover the frozen live-canary archive with the maintained evidence parser
-// (scripts/lib/prewalk-live-evidence.mjs). Verifies every archived byte against
+// (bench/prewalk/lib/prewalk-live-evidence.mjs). Verifies every archived byte against
 // checksums.sha256, validates the frozen manifest, result routes and
 // recomputed usage, rejects incomplete evidence, and never re-runs a
 // completed paid cell. Only derived outputs are written; the frozen archive
 // stays byte-identical.
 //
-// usage: node scripts/recover-live-canary.mjs
+// usage: node bench/prewalk/recover-live-canary.mjs
 //          [--archive <dir>] [--out <dir>]
 //          [--sessions <dir>]       # optional: <dir>/<cell>/sessions/*.jsonl persisted entries
 //          [--arrival-root <dir>]   # optional: <dir>/<cell>/arrival.jsonl stdout arrival log
@@ -30,7 +30,7 @@ const value = (flag, fallback) => {
   const index = argv.indexOf(flag);
   return index >= 0 ? argv[index + 1] : fallback;
 };
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const archive = path.resolve(repoRoot, value("--archive", "docs/benchmarks/prewalk/2026-09-19/live-canary-KOtB4l"));
 const out = path.resolve(repoRoot, value("--out", `${archive}-recovery`));
 const sessionsRoot = value("--sessions");
@@ -163,7 +163,7 @@ function reportText() {
 
 Recovered analysis of the frozen four-cell canary at
 ${path.relative(repoRoot, archive)} using the maintained evidence parser
-(scripts/lib/prewalk-live-evidence.mjs). Nothing was re-run: all
+(bench/prewalk/lib/prewalk-live-evidence.mjs). Nothing was re-run: all
 ${checksumLines.length} archived files verified byte-for-byte against
 checksums.sha256, every cell's recording passed completeness validation
 (session identity, terminal agent_settled, telemetry shutdown, no turn-limit,
@@ -182,7 +182,7 @@ hashes are recorded in recovery.json.
    customType. The canary recorder read session entries as message-shaped and
    always found none. Both ON cells carry the armed and continue messages,
    including the continuation IDs in the table below. The maintained recorder
-   (scripts/prewalk-canary-telemetry.ts) projects both shapes through the
+   (bench/prewalk/prewalk-canary-telemetry.ts) projects both shapes through the
    shared normalizer, and the durable entry shape is covered by a
    deterministic SessionManager roundtrip regression.
 2. **End-to-end wall difference, not measured handoff overhead.** The
@@ -207,7 +207,7 @@ hashes are recorded in recovery.json.
    compaction_start precedes session_before_compact and the frozen archive
    recorded no stdout arrival timestamps, so attemptMs stays null. Future
    runs capture paired arrival timestamps through
-   scripts/prewalk-canary-run.mjs.
+   bench/prewalk/prewalk-canary-run.mjs.
 
 ## Recovered cells
 

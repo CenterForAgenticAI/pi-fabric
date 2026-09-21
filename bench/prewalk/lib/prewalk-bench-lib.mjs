@@ -1,6 +1,6 @@
 // Shared evidence logic for the prewalk benchmark tooling: aggregation,
-// comparison and archive helpers used by scripts/benchmark-prewalk.mjs,
-// scripts/compare-prewalk-runs.mjs and scripts/probe-prewalk-drift.mjs.
+// comparison and archive helpers used by bench/prewalk/benchmark-prewalk.mjs,
+// bench/prewalk/compare-prewalk-runs.mjs and bench/prewalk/probe-prewalk-drift.mjs.
 //
 // Units are explicit at this boundary: every time value is milliseconds and
 // every size value is bytes. stats() is nearest-rank, the same percentile

@@ -1,8 +1,8 @@
 // Local orchestration benchmark, NOT a model-quality/cost benchmark. No credentials or network.
 // bun run benchmark:prewalk --out /tmp/prewalk.json
 // --quick reduces sampling; exit 0 = complete, 2 = complete with product findings, 1 = harness error.
-// Companion evidence tooling: scripts/probe-prewalk-drift.mjs (stage/count diagnostic) and
-// scripts/compare-prewalk-runs.mjs (gzip archive + run comparison).
+// Companion evidence tooling: bench/prewalk/probe-prewalk-drift.mjs (stage/count diagnostic) and
+// bench/prewalk/compare-prewalk-runs.mjs (gzip archive + run comparison).
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -12,14 +12,14 @@ import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { groupRows, stats } from "./lib/prewalk-bench-lib.mjs";
-import { createPassiveHostSession } from "./lib/passive-host-session.mjs";
+import { createPassiveHostSession } from "../../scripts/lib/passive-host-session.mjs";
 import { build } from "esbuild";
 import { Agent } from "@earendil-works/pi-agent-core";
 import { SessionManager, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 
 const self = fileURLToPath(import.meta.url);
-const root = path.resolve(path.dirname(self), "..");
+const root = path.resolve(path.dirname(self), "../..");
 const hash = value => createHash("sha256").update(value).digest("hex");
 const bytes = value => Buffer.byteLength(typeof value === "string" ? value : JSON.stringify(value));
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,

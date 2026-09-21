@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { estimateTokens, type ExtensionAPI, type ProviderConfig } from "@earendil-works/pi-coding-agent";
 import type { Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
-import probe from "./fixtures/prewalk-contract-probe.js";
+import probe from "../fixtures/prewalk-contract-probe.js";
 
 const executor = { api: "prewalk-probe-api", provider: "prewalk-probe", id: "executor" } as Model<any>;
 const context = normalizeContext({ messages: [{ role: "user", content: "x".repeat(40000), timestamp: 1 }] });

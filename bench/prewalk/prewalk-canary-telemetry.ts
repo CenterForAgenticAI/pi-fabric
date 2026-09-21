@@ -1,6 +1,6 @@
 // Passive, opt-in telemetry recorder for Prewalk live-canary runs.
 //
-// Loaded explicitly via `pi -e scripts/prewalk-canary-telemetry.ts` with
+// Loaded explicitly via `pi -e bench/prewalk/prewalk-canary-telemetry.ts` with
 // PREWALK_CANARY_TELEMETRY pointing at the output JSONL. It only records:
 // never mutates context, session, provider, or model state, and no handler
 // returns a replacement message. The turn cap is the single deliberate

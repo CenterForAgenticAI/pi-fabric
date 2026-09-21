@@ -1,4 +1,4 @@
-// Type declarations for scripts/lib/prewalk-bench-lib.mjs, used by tests.
+// Type declarations for bench/prewalk/lib/prewalk-bench-lib.mjs, used by tests.
 export interface Stats { n: number; min: number; median: number; p95: number; max: number }
 export interface RunFileInput {
   path: string;

@@ -1,8 +1,8 @@
 // Stage/count diagnostic for the production prewalk filesystem-drift owner
 // (src/prewalk/fs-drift.ts, bundled unmodified).
 //
-//   node scripts/probe-prewalk-drift.mjs --out docs/benchmarks/prewalk/2026-09-19/drift-probe.json
-//   node scripts/probe-prewalk-drift.mjs --quick --scenarios mixed,ignored --files 4 --out /tmp/probe.json
+//   node bench/prewalk/probe-prewalk-drift.mjs --out docs/benchmarks/prewalk/2026-09-19/drift-probe.json
+//   node bench/prewalk/probe-prewalk-drift.mjs --quick --scenarios mixed,ignored --files 4 --out /tmp/probe.json
 //
 // Instrumentation is injected at bundle time: esbuild resolves the module's
 // node:child_process / node:fs/promises / node:crypto imports to counting
@@ -25,7 +25,7 @@ import { build } from "esbuild";
 import { round, roundStats, sha256, stats, writeExclusive } from "./lib/prewalk-bench-lib.mjs";
 
 const self = fileURLToPath(import.meta.url);
-const root = path.resolve(path.dirname(self), "..");
+const root = path.resolve(path.dirname(self), "../..");
 
 // ---- bundle-time instrumentation ---- //
 

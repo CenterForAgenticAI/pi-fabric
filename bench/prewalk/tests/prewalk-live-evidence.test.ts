@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { compareSnapshots, sha256, snapshotTree, type SnapshotEntry } from "../scripts/lib/prewalk-bench-lib.mjs";
+import { compareSnapshots, sha256, snapshotTree, type SnapshotEntry } from "../lib/prewalk-bench-lib.mjs";
 import {
   aggregateUsage,
   analyzeCell,
@@ -34,10 +34,10 @@ import {
   type PerModelUsage,
   type PrewalkMessage,
   type TelemetryTimeline,
-} from "../scripts/lib/prewalk-live-evidence.mjs";
-import recorder from "../scripts/prewalk-canary-telemetry.js";
+} from "../lib/prewalk-live-evidence.mjs";
+import recorder from "../prewalk-canary-telemetry.js";
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const tempRoots: string[] = [];
 const tempRoot = () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "prewalk-live-evidence-"));
@@ -1177,7 +1177,7 @@ const createRecoveryArchive = () => {
 };
 
 const recoverArchive = (archiveDir: string, out: string) => spawnSync(process.execPath, [
-  path.join(projectRoot, "scripts/recover-live-canary.mjs"), "--archive", archiveDir, "--out", out,
+  path.join(projectRoot, "bench/prewalk/recover-live-canary.mjs"), "--archive", archiveDir, "--out", out,
 ], { encoding: "utf8", timeout: 10_000 });
 
 describe("portable recorded-canary recovery", () => {
@@ -1257,8 +1257,8 @@ describe("portable recorded-canary recovery", () => {
 });
 
 describe.skipIf(process.platform === "win32")("canary runner subprocess", () => {
-  const runnerPath = path.join(projectRoot, "scripts", "prewalk-canary-run.mjs");
-  const fakePiSource = path.join(projectRoot, "tests", "fixtures", "fake-canary-pi.mjs");
+  const runnerPath = path.join(projectRoot, "bench", "prewalk", "prewalk-canary-run.mjs");
+  const fakePiSource = path.join(projectRoot, "bench", "prewalk", "fixtures", "fake-canary-pi.mjs");
   const spawnRunner = (options: {
     mode?: string;
     args?: string[];
@@ -1318,7 +1318,7 @@ describe.skipIf(process.platform === "win32")("canary runner subprocess", () => 
     expect(summaryLine(result).ok).toBe(true);
     const started = JSON.parse(fs.readFileSync(path.join(outDir, "started.json"), "utf8")) as { extensions: string[] };
     expect(started.extensions).toEqual([
-      projectRoot, path.join(projectRoot, "scripts", "prewalk-canary-telemetry.ts"),
+      projectRoot, path.join(projectRoot, "bench", "prewalk", "prewalk-canary-telemetry.ts"),
       "/tmp/first-provider", "/tmp/last-provider",
     ]);
   });
@@ -1333,13 +1333,13 @@ describe.skipIf(process.platform === "win32")("canary runner subprocess", () => 
     };
     expect(started.extensions).toEqual([
       projectRoot,
-      path.join(projectRoot, "scripts", "prewalk-canary-telemetry.ts"),
+      path.join(projectRoot, "bench", "prewalk", "prewalk-canary-telemetry.ts"),
       "/tmp/extra-provider",
     ]);
     expect(Object.keys(started.runtimeHashes)).toEqual([
       "dist/index.js",
       "dist/fabric-runtime-state.js",
-      "scripts/prewalk-canary-telemetry.ts",
+      "bench/prewalk/prewalk-canary-telemetry.ts",
     ]);
     for (const hash of Object.values(started.runtimeHashes)) {
       expect(hash === null || /^[0-9a-f]{64}$/.test(hash)).toBe(true);

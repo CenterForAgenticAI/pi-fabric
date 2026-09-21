@@ -6,8 +6,8 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const cli = path.join(projectRoot, "scripts", "verify-prewalk-canary.mjs");
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const cli = path.join(projectRoot, "bench", "prewalk", "verify-prewalk-canary.mjs");
 const roots: string[] = [];
 const tempRoot = () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "prewalk-verifier-"));

@@ -3,13 +3,13 @@
 //
 // Reads a frozen experiment root (evidence/ + work/), reclassifies its control
 // and candidate reports with the canonical classifiers in
-// scripts/lib/prewalk-swe-evidence.mjs, optionally recovers one attempt whose
+// bench/prewalk/lib/prewalk-swe-evidence.mjs, optionally recovers one attempt whose
 // patch capture failed (lock-safe, no model calls, no lock removal), regrades
 // the recovered patch with the experiment's own frozen grader, and writes every
 // derived artifact into a fresh --out directory. Original reports, results and
 // checkpoints are never modified.
 //
-// usage: node scripts/prewalk-swe-recover.mjs --source <experiment-root> --out <fresh-dir> \
+// usage: node bench/prewalk/prewalk-swe-recover.mjs --source <experiment-root> --out <fresh-dir> \
 //        [--attempt <id>] [--grade-python <path>] [--grade-script <path>] [--grade-timeout-ms <ms>]
 //
 // --grade-python defaults to <source>/work/.venv/bin/python when present,
@@ -33,7 +33,7 @@ const value = (flag) => {
 };
 const usage = () => {
   console.error(
-    "usage: node scripts/prewalk-swe-recover.mjs --source <experiment-root> --out <fresh-dir> " +
+    "usage: node bench/prewalk/prewalk-swe-recover.mjs --source <experiment-root> --out <fresh-dir> " +
       "[--attempt <id>] [--grade-python <path>] [--grade-script <path>] [--grade-timeout-ms <ms>]",
   );
   process.exit(2);

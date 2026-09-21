@@ -6,10 +6,10 @@ Maintained scripts for the in-place Prewalk SWE-bench Pro dogfood work. They rep
 
 | Path | Role |
 | --- | --- |
-| `scripts/lib/prewalk-swe-evidence.mjs` | Canonical control/candidate classification, request-lifecycle accounting, truthful attempted/skipped/graded counters, checkpoint resume planning and intent-to-treat pair comparison. |
-| `scripts/lib/prewalk-patch.mjs` | Lock-safe patch capture through a private temporary Git index with isolated object writes; never touches the repository's real index, `index.lock`, HEAD or refs. |
-| `scripts/prewalk-swe-run.mjs` | Config-driven coordinator around the existing native worker/grader commands: canonical preflight before any paid call, write-ahead checkpoints, lifecycle accounting, truthful terminal exits. |
-| `scripts/prewalk-swe-recover.mjs` | Offline reclassification and lock-safe recovery of finished-but-ungraded attempts; regrades recovered patches with the experiment's own frozen grader; writes derived verdicts plus a receipt into a fresh directory. |
+| `bench/prewalk/lib/prewalk-swe-evidence.mjs` | Canonical control/candidate classification, request-lifecycle accounting, truthful attempted/skipped/graded counters, checkpoint resume planning and intent-to-treat pair comparison. |
+| `bench/prewalk/lib/prewalk-patch.mjs` | Lock-safe patch capture through a private temporary Git index with isolated object writes; never touches the repository's real index, `index.lock`, HEAD or refs. |
+| `bench/prewalk/prewalk-swe-run.mjs` | Config-driven coordinator around the existing native worker/grader commands: canonical preflight before any paid call, write-ahead checkpoints, lifecycle accounting, truthful terminal exits. |
+| `bench/prewalk/prewalk-swe-recover.mjs` | Offline reclassification and lock-safe recovery of finished-but-ungraded attempts; regrades recovered patches with the experiment's own frozen grader; writes derived verdicts plus a receipt into a fresh directory. |
 
 ## Classifier guardrails
 
@@ -35,12 +35,12 @@ Maintained scripts for the in-place Prewalk SWE-bench Pro dogfood work. They rep
 
 ## Graceful deadline abort
 
-`scripts/prewalk-canary-run.mjs --abort-grace-seconds <n>` (RPC only): on timeout the runner first sends pi's documented RPC `abort` command and waits a bounded grace for a clean exit, then escalates to the original hard process-group termination. The timeout still fails the cell; `finished.json` records `gracefulAbort` so partial evidence is labeled instead of manufactured. Without the flag the behavior is unchanged.
+`bench/prewalk/prewalk-canary-run.mjs --abort-grace-seconds <n>` (RPC only): on timeout the runner first sends pi's documented RPC `abort` command and waits a bounded grace for a clean exit, then escalates to the original hard process-group termination. The timeout still fails the cell; `finished.json` records `gracefulAbort` so partial evidence is labeled instead of manufactured. Without the flag the behavior is unchanged.
 
 ## Recovery usage
 
 ```sh
-node scripts/prewalk-swe-recover.mjs --source <experiment-root> --out <fresh-dir> \
+node bench/prewalk/prewalk-swe-recover.mjs --source <experiment-root> --out <fresh-dir> \
   [--attempt <id>] [--grade-python <path>] [--grade-script <path>] [--grade-timeout-ms <ms>]
 ```
 

@@ -1,4 +1,4 @@
-// Type declarations for scripts/lib/prewalk-live-evidence.mjs, used by tests
+// Type declarations for bench/prewalk/lib/prewalk-live-evidence.mjs, used by tests
 // and the canary telemetry recorder.
 export const PREWALK_MESSAGE_PREFIX: string;
 export type PrewalkMessageSource = "live" | "session";

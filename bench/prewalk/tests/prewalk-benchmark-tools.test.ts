@@ -18,10 +18,10 @@ import {
   sha256,
   stats,
   writeExclusive,
-} from "../scripts/lib/prewalk-bench-lib.mjs";
-import { summarizeStage } from "../scripts/probe-prewalk-drift.mjs";
+} from "../lib/prewalk-bench-lib.mjs";
+import { summarizeStage } from "../probe-prewalk-drift.mjs";
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const tempRoots: string[] = [];
 const tempRoot = () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "prewalk-bench-tools-"));
@@ -213,7 +213,7 @@ describe("prewalk orchestration benchmark", () => {
   it("runs the quick entrypoint with passive delivery and exact request counts", () => {
     const out = path.join(tempRoot(), "queue-benchmark.json");
     const result = spawnSync(process.execPath, [
-      path.join(projectRoot, "scripts", "benchmark-prewalk.mjs"),
+      path.join(projectRoot, "bench", "prewalk", "benchmark-prewalk.mjs"),
       "--quick", "--out", out,
     ], { cwd: projectRoot, encoding: "utf8", timeout: 120_000 });
     expect(result.error).toBeUndefined();
@@ -248,7 +248,7 @@ describe("probe-prewalk-drift integration", () => {
   it("attributes listing, stat and hash stages per git fixture category", () => {
     const out = path.join(tempRoot(), "probe.json");
     const result = spawnSync(process.execPath, [
-      path.join(projectRoot, "scripts", "probe-prewalk-drift.mjs"),
+      path.join(projectRoot, "bench", "prewalk", "probe-prewalk-drift.mjs"),
       "--quick", "--files", "4", "--scenarios", "mixed,ignored", "--out", out,
     ], { cwd: projectRoot, encoding: "utf8", timeout: 120_000 });
     expect(result.status, result.stderr).toBe(0);

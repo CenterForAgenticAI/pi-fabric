@@ -5,10 +5,10 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const runner = path.join(projectRoot, "scripts", "prewalk-canary-run.mjs");
-const verifier = path.join(projectRoot, "scripts", "verify-prewalk-canary.mjs");
-const fakePiSource = path.join(projectRoot, "tests", "fixtures", "fake-canary-pi.mjs");
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const runner = path.join(projectRoot, "bench", "prewalk", "prewalk-canary-run.mjs");
+const verifier = path.join(projectRoot, "bench", "prewalk", "verify-prewalk-canary.mjs");
+const fakePiSource = path.join(projectRoot, "bench", "prewalk", "fixtures", "fake-canary-pi.mjs");
 
 const roots: string[] = [];
 const temporary = () => {
