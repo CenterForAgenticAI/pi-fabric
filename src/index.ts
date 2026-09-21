@@ -184,7 +184,7 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
   const proxyContract = new ProxyContractLedger();
   const state = new FabricState(pi, capturedTools, {
     paths: FABRIC_RUNTIME_PATHS,
-    entryIdentity: FABRIC_ENTRY_IDENTITY,
+    ...(FABRIC_ENTRY_IDENTITY ? { entryIdentity: FABRIC_ENTRY_IDENTITY } : {}),
     ...(options.managedHost ? {managedHost: options.managedHost} : {}),
   });
   const directToolApproval = new FabricDirectToolApproval(

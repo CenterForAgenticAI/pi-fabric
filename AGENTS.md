@@ -1,37 +1,5 @@
 # AGENTS.md
 
-## Current focus: Prewalk in-place production readiness
-
-Until the user explicitly reprioritizes, focus on making Prewalk **in-place**
-(`prewalk.mode: "in-place"`) production-ready: Main → executor → Main in the
-same session. Benchmarks and live dogfooding serve this feature. Trajectory
-mode and unrelated Fabric work are not part of this effort by default.
-
-- Follow **test → findings → proposed improvement → authorized fix → verify**.
-  A dogfood or benchmark request authorizes diagnostics and disposable evidence,
-  not runtime fixes, changed benchmark expectations, closure claims or unrelated
-  documentation edits. Report findings before implementing repairs.
-- The latest user request and allowed write scope outrank an older carried plan.
-  Research/review-only tasks must remain read-only across a switch. Do not turn
-  a successful mutation or model handoff into permission for more changes.
-- Verify loaded entry/lazy-runtime hashes against disk before a live run. Capture
-  a pre-run path-and-content baseline, including relevant untracked files and
-  build artifacts; isolate approved changes and runtime bookkeeping. Preserve
-  unrelated WIP. Follow the existing build rule for an authorized change, with
-  build artifact deltas kept separate from diagnostic preservation checks.
-- Prioritize unresolved in-place coverage: current-task capture and later scope
-  changes; complete mutation batches without replay; first-request plan delivery
-  under competing steers; return/compaction and failure/cancel/reload recovery.
-  Prefer the next unproven case over repeating an unchanged passing probe.
-- Separate product defects, benchmark/probe failures and evidence gaps. Match
-  benchmark source/build revisions to the runtime being evaluated. Inspect exact
-  event types, identities and provider requests where available—not substring
-  hits in probe text. Synthetic/scripted streams do not prove real-task quality,
-  latency or cost benefits; those need matched real-task baselines.
-- Report what ran, observed results, evidence paths and what remains untested.
-  One passing sample is not production-readiness closure. Keep transient probes
-  in disposable locations; do not rewrite prior evidence to make a result pass.
-
 ## Golden rule: build when done
 
 Always finish a change with a fresh build before handing it back:

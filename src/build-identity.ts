@@ -26,9 +26,17 @@ export interface FabricLoadedFileIdentityStatus {
 const sha256OfFile = (path: string): string =>
   createHash("sha256").update(readFileSync(path)).digest("hex");
 
-export const captureLoadedFileIdentity = (moduleUrl: string): FabricLoadedFileIdentity => {
-  const path = fileURLToPath(moduleUrl);
-  return { path, sha256: sha256OfFile(path) };
+export const captureLoadedFileIdentity = (
+  moduleUrl: string,
+): FabricLoadedFileIdentity | null => {
+  try {
+    const path = fileURLToPath(moduleUrl);
+    return { path, sha256: sha256OfFile(path) };
+  } catch {
+    // Registration and idle load must not fail because a provenance hash
+    // could not be read; prewalk.status already treats a missing identity as null.
+    return null;
+  }
 };
 
 export const loadedFileIdentityStatus = (

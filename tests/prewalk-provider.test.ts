@@ -97,6 +97,8 @@ describe("prewalk provider", () => {
     const file = join(dir, "lazy.js");
     writeFileSync(file, "export const generation = 1;\n");
     const loaded = captureLoadedFileIdentity(pathToFileURL(file).href);
+    expect(loaded).not.toBeNull();
+    if (!loaded) throw new Error("expected loaded identity");
     writeFileSync(file, "export const generation = 2;\n");
     const provider = new PrewalkProvider(new PrewalkController(), {
       buildIdentity: () => ({ entry: null, lazyRuntime: loaded }),
@@ -112,6 +114,8 @@ describe("prewalk provider", () => {
     expect(status.runtime.lazyRuntime.diskSha256).not.toBe(loaded.sha256);
 
     const current = captureLoadedFileIdentity(pathToFileURL(file).href);
+    expect(current).not.toBeNull();
+    if (!current) throw new Error("expected current identity");
     const freshProvider = new PrewalkProvider(new PrewalkController(), {
       buildIdentity: () => ({ entry: current, lazyRuntime: current }),
     });
@@ -120,6 +124,10 @@ describe("prewalk provider", () => {
     };
     expect(fresh.runtime.entry).toMatchObject({ stale: false });
     expect(fresh.runtime.lazyRuntime).toMatchObject({ stale: false });
+  });
+
+  it("does not throw when the loaded file cannot be hashed", () => {
+    expect(captureLoadedFileIdentity(pathToFileURL(join(tmpdir(), "missing-fabric-identity.js")).href)).toBeNull();
   });
 
   it("rejects an incomplete plan", async () => {
