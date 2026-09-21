@@ -30,7 +30,8 @@ export const wrapShellCommandForPid = (
 ): string =>
   tool === "powershell"
     ? `Set-Content -LiteralPath ${powershellQuote(pidPath)} -Value $PID\n${command}`
-    : `printf '%s\\n' "$$" > ${posixQuote(pidPath)}\n${command}`;
+    // Git Bash `$$` is an MSYS pid; Node and taskkill need /proc/$$/winpid.
+    : `printf '%s\\n' "$(cat /proc/$$/winpid 2>/dev/null || printf '%s' "$$")" > ${posixQuote(pidPath)}\n${command}`;
 
 export const formatShellHangNotice = (input: {
   elapsedMs: number;

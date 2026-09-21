@@ -26,6 +26,7 @@ describe("shell hang helpers", () => {
   it("wraps bash so the child writes its pid without extra stdout", () => {
     const wrapped = wrapShellCommandForPid("echo hi", "/tmp/job.pid", "bash");
     expect(wrapped).toContain("/tmp/job.pid");
+    expect(wrapped).toContain("/proc/$$/winpid");
     expect(wrapped.endsWith("echo hi")).toBe(true);
     expect(wrapped.startsWith("printf ")).toBe(true);
   });

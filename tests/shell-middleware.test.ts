@@ -14,9 +14,22 @@ import { PiToolsProvider } from "../src/providers/pi-tools-provider.js";
 const SECRET = "fabric-test-secret-not-a-credential";
 const registries: ActionRegistry[] = [];
 const directories: string[] = [];
+const removeDirectory = async (directory: string): Promise<void> => {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.rmSync(directory, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : "";
+      if (attempt >= 10 || (code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY")) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+    }
+  }
+};
+
 afterEach(async () => {
   await Promise.all(registries.splice(0).map(registry => registry.close()));
-  for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
+  for (const directory of directories.splice(0)) await removeDirectory(directory);
   vi.unstubAllEnvs();
 });
 
@@ -102,8 +115,9 @@ describe("cooperative bash middleware", () => {
     const h = harness();
     const nested = path.join(h.cwd, "nested");
     fs.mkdirSync(nested);
-    const result = await h.invoke({ cmd: 'printf "%s|%s|%s\\n" "${FABRIC_TEST_SECRET-unset}" "$FABRIC_PREFIX" "$PI_SESSION_ID"; pwd', cwd: "nested" });
-    expect(result.output).toBe(`unset|kept|middleware-test\n${fs.realpathSync(nested)}\n`);
+    fs.writeFileSync(path.join(nested, "marker"), "nested-ok");
+    const result = await h.invoke({ cmd: 'printf "%s|%s|%s|%s\\n" "${FABRIC_TEST_SECRET-unset}" "$FABRIC_PREFIX" "$PI_SESSION_ID" "$(cat marker)"', cwd: "nested" });
+    expect(result.output).toBe("unset|kept|middleware-test|nested-ok\n");
     expect(process.env.FABRIC_TEST_SECRET).toBe(SECRET);
     expect(h.fallback).not.toHaveBeenCalled();
     expect(h.runner.emitToolCall).toHaveBeenCalledOnce();
