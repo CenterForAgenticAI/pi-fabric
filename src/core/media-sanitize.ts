@@ -3,8 +3,9 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 
 /**
  * Media sanitization for every channel that serializes guest or provider data
- * into text: fabric_exec logs, results, and error text, worker event lines, and
- * actor host-event payloads.
+ * into text: fabric_exec logs, results, and error text, and actor host-event
+ * payloads. Worker event lines are not sanitized: one past the line cap fails the
+ * run with a bounded raw prefix as evidence.
  *
  * Raw image bytes stay available out of band (see the images side channel), so a
  * multimodal model can still receive them while text channels receive a

@@ -16,6 +16,7 @@ import { FabricExecutionService } from "../src/execution-service.js";
 import { createFabricExecTool } from "../src/fabric-exec-tool.js";
 import type { FabricState } from "../src/fabric-state.js";
 import { defaultCodePreviewSettings } from "../src/ui/code-preview.js";
+import { PrewalkController } from "../src/prewalk/controller.js";
 
 const context = {
   cwd: process.cwd(),
@@ -58,6 +59,7 @@ describe("CapturedToolsProvider", () => {
     config.approvals.execute = "allow";
     const state = {
       config, ensure: async () => {}, claimHandoff: async () => undefined,
+      prewalk: new PrewalkController(),
       execution: new FabricExecutionService(registry, config),
     } as unknown as FabricState;
     const tool = createFabricExecTool(state, defaultCodePreviewSettings(), new Map(), (tool) => tool);
