@@ -30,7 +30,8 @@ import {
 import { capturePatch } from "./lib/prewalk-patch.mjs";
 
 const argv = process.argv.slice(2);
-const configPath = argv.find((argument) => argument === "--config") === "--config" ? argv[argv.indexOf("--config") + 1] : undefined;
+const configIndex = argv.indexOf("--config");
+const configPath = configIndex >= 0 ? argv[configIndex + 1] : undefined;
 const resume = argv.includes("--resume");
 const fail = (message, code = 1) => {
   console.error(JSON.stringify({ ok: false, error: message }));

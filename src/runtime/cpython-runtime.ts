@@ -68,7 +68,7 @@ const launch = async (binary: string, enforce: boolean, cwd: string): Promise<{ 
     if (!bwrap) throw new Error("Schema enforce CPython requires bubblewrap (/usr/bin/bwrap). Install bubblewrap and enable unprivileged user namespaces; no unsandboxed fallback is permitted.");
     return {
       command: bwrap,
-      args: ["--ro-bind", "/", "/", "--unshare-all", "--die-with-parent", "--new-session", "--proc", "/proc", "--dev", "/dev", "--preserve-fds", "1", "--seccomp", "4", "--chdir", cwd, "--", python, ...args],
+      args: ["--ro-bind", "/", "/", "--unshare-all", "--die-with-parent", "--new-session", "--proc", "/proc", "--dev", "/dev", "--seccomp", "4", "--chdir", cwd, "--", python, ...args],
       seccomp: linuxCPythonNetworkFilter(process.arch),
     };
   }

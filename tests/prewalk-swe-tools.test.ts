@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   analyzeRequestLifecycle,
@@ -64,6 +65,42 @@ const execution = (overrides: Partial<Execution> = {}): Execution => ({
 const passingGold = (): Arm => ({
   result: report({ resolved: true, requiredTestsPassed: 2 }),
   execution: execution({ testExitCode: 0 }),
+});
+
+describe("SWE recovery grader argument validation", () => {
+  const validateGrader = (gradePython?: string) => {
+    const root = temporary();
+    const source = path.join(root, "source");
+    fs.mkdirSync(path.join(source, "evidence"), { recursive: true });
+    for (const name of ["results", "task-manifest", "schedule"]) {
+      fs.writeFileSync(path.join(source, "evidence", `${name}.json`), "{}\n");
+    }
+    fs.mkdirSync(path.join(source, "work/support"), { recursive: true });
+    fs.writeFileSync(path.join(source, "work/support/grade.py"), "# argument-validation fixture\n");
+    const out = path.join(root, "out");
+    // Stop at the next validator: this tests argument handling, not real grading.
+    const result = spawnSync(process.execPath, [
+      fileURLToPath(new URL("../scripts/prewalk-swe-recover.mjs", import.meta.url)),
+      "--source", source, "--out", out, "--attempt", "probe", "--grade-timeout-ms", "0",
+      ...(gradePython === undefined ? [] : ["--grade-python", gradePython]),
+    ], { encoding: "utf8", timeout: 10_000 });
+    return { result, out };
+  };
+
+  it.each([undefined, "python3", path.basename(process.execPath)])("does not interpret PATH grader %s as a filesystem path", (gradePython) => {
+    const { result, out } = validateGrader(gradePython);
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stderr.trim())).toEqual({ ok: false, error: "--grade-timeout-ms must be a positive integer" });
+    expect(fs.existsSync(out)).toBe(false);
+  });
+
+  it("retains the missing explicit grader path error", () => {
+    const missing = path.join(temporary(), "missing-python");
+    const { result, out } = validateGrader(missing);
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stderr.trim())).toEqual({ ok: false, error: `--grade-python not found: ${missing}` });
+    expect(fs.existsSync(out)).toBe(false);
+  });
 });
 
 describe("SWE control classification", () => {

@@ -346,7 +346,7 @@ export function snapshotTree(root, options = {}) {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       const rel = path.relative(relativeTo, full).split(path.sep).join("/");
-      if (skip.some((skipped) => rel === skipped || rel.startsWith(`+ ${skipped}/`) || rel.startsWith(`${skipped}/`))) continue;
+      if (skip.some((skipped) => rel === skipped || rel.startsWith(`${skipped}/`))) continue;
       if (entry.isSymbolicLink()) result[rel] = { link: fs.readlinkSync(full) };
       else if (entry.isDirectory()) visit(full);
       else if (entry.isFile()) result[rel] = { sha256: sha256(fs.readFileSync(full)) };

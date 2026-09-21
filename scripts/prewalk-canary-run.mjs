@@ -42,7 +42,7 @@ const value = (flag) => {
 };
 const repeated = (flag) => {
   const values = [];
-  for (let index = 1; index < argv.length; index += 1) {
+  for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === flag && argv[index + 1] !== undefined) values.push(argv[index + 1]);
   }
   return values;

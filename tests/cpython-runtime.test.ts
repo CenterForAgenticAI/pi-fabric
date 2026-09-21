@@ -301,6 +301,12 @@ const supportedSandbox = process.platform === "darwin" || process.platform === "
 const installedSandbox = process.platform === "darwin" ? fs.existsSync("/usr/bin/sandbox-exec") : fs.existsSync("/usr/bin/bwrap") || fs.existsSync("/bin/bwrap");
 
 describe.skipIf(!hasPython || !supportedSandbox)("CPython OS sandbox", () => {
+  it.skipIf(process.platform !== "linux" || !installedSandbox)("starts the real Linux sandbox and carries the result over inherited IPC", async () => {
+    const result = await new CPythonRuntime(binary, true).execute("return 6 * 7", echo, options);
+    expect(result.terminationReason, `${result.error}\n${result.logs.join("\n")}`).toBe("completed");
+    expect(result.value).toBe(42);
+  });
+
   it("fails closed when the OS sandbox binary is missing", async () => {
     const { access } = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
     vi.mocked(fsPromises.access).mockImplementation(async (name, mode) => {

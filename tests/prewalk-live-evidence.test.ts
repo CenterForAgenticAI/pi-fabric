@@ -572,6 +572,18 @@ describe("canonical tree snapshots", () => {
     expect(() => compareSnapshots({ a: 5 as unknown as string }, { a: "a".repeat(64) })).toThrow(/Unsupported snapshot entry/);
   });
 
+  it("skips only the requested directory, not plus-prefixed or longer sibling names", () => {
+    const root = tempRoot();
+    for (const relative of ["generated/drop.txt", "+ generated/keep.txt", "generated-extra/keep.txt"]) {
+      const file = path.join(root, relative);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, relative);
+    }
+    expect(Object.keys(snapshotTree(root, { skip: ["generated"] })).sort()).toEqual([
+      "+ generated/keep.txt", "generated-extra/keep.txt",
+    ]);
+  });
+
   it.skipIf(process.platform === "win32")("walks a tree with symlinks relative to another root", () => {
     const parent = tempRoot();
     const root = path.join(parent, "tree");
@@ -1103,39 +1115,103 @@ describe("canary telemetry recorder", () => {
   });
 });
 
-const archiveDir = path.join(projectRoot, "docs/benchmarks/prewalk/2026-09-19/live-canary-KOtB4l");
+// Synthetic parser/CLI fixtures, not live performance evidence. No private archive is required.
 const cells = ["off1", "on1", "on2", "off2"] as const;
 const readGzJsonl = (file: string) => parseJsonLines(zlib.gunzipSync(fs.readFileSync(file)).toString("utf8"), file);
+const mainModel = "fixture/main";
+const executorModel = "fixture/executor";
 
-describe("frozen live-canary recovery", () => {
-  it("verifies every archived byte against checksums.sha256", () => {
-    if (!fs.existsSync(archiveDir)) {
-      throw new Error(
-        "frozen canary evidence is not checked out: docs/benchmarks/prewalk/2026-09-19/live-canary-KOtB4l",
-      );
-    }
-    const lines = fs
-      .readFileSync(path.join(archiveDir, "checksums.sha256"), "utf8")
-      .trim()
-      .split("\n")
-      .filter(Boolean);
-    expect(lines.length).toBeGreaterThan(30);
-    for (const line of lines) {
-      const hash = line.slice(0, 64);
-      const rel = line.slice(66).trim();
-      expect(sha256(fs.readFileSync(path.join(archiveDir, rel)))).toBe(hash);
-    }
+const createRecoveryArchive = () => {
+  const archiveDir = tempRoot();
+  const files: Record<string, string | Buffer> = {
+    "manifest.json": JSON.stringify({ head: "0".repeat(40), main: { model: mainModel }, prewalk: { model: executorModel } }),
+  };
+  const gzipJsonl = (events: unknown[]) => zlib.gzipSync(events.map((event) => JSON.stringify(event)).join("\n") + "\n");
+  for (const cell of cells) {
+    const isOn = cell.startsWith("on");
+    const modelChanges = isOn ? [
+      { type: "model_select", at: 1500, model: executorModel, previous: mainModel },
+      { type: "model_select", at: 4500, model: mainModel, previous: executorModel },
+    ] : [];
+    const events = [
+      { type: "session", version: 3, id: cell },
+      assistantEvent(mainModel, 1000),
+      ...(isOn ? [
+        { type: "message_end", message: { role: "custom", customType: "pi-fabric-prewalk-armed", timestamp: 1400, details: { mode: "in-place" } } },
+        assistantEvent(executorModel, 2000),
+        assistantEvent(executorModel, 3000),
+        { type: "message_end", message: { role: "custom", customType: "pi-fabric-prewalk-continue", timestamp: 4600, details: { continuationId: `fixture-${cell}` } } },
+      ] : []),
+      assistantEvent(mainModel, 5000),
+      { type: "agent_settled" },
+    ];
+    const telemetry = [
+      { type: "session_start", sessionId: cell, at: 900 },
+      ...modelChanges,
+      ...(isOn ? [{ type: "compaction_failed", at: 4700, reason: "prewalk-return", error: "Nothing to compact (session too small)" }] : []),
+      { type: "session_shutdown", at: 6000 },
+    ];
+    // Independent expected totals for two assistantEvent records per model;
+    // never call the analyzer to construct its own expected result.
+    const totals: PerModelUsage = { requests: 2, input: 20, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 30, recordedCostEstimateUsd: 1 };
+    files[`${cell}/events.jsonl.gz`] = gzipJsonl(events);
+    files[`${cell}/telemetry.jsonl.gz`] = gzipJsonl(telemetry);
+    files[`${cell}/result.json`] = JSON.stringify({
+      perModel: { [mainModel]: totals, ...(isOn ? { [executorModel]: totals } : {}) },
+      assistantTurns: isOn ? 4 : 2,
+      finalModel: mainModel,
+      modelChanges,
+      quality: { success: true, passed: 1, total: 1 },
+      changedProtected: [],
+      wallMs: 5100,
+    });
+  }
+  for (const [relative, content] of Object.entries(files)) {
+    const file = path.join(archiveDir, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  }
+  fs.writeFileSync(path.join(archiveDir, "checksums.sha256"), Object.keys(files).sort()
+    .map((relative) => `${sha256(fs.readFileSync(path.join(archiveDir, relative)))}  ${relative}`).join("\n") + "\n");
+  return archiveDir;
+};
+
+const recoverArchive = (archiveDir: string, out: string) => spawnSync(process.execPath, [
+  path.join(projectRoot, "scripts/recover-live-canary.mjs"), "--archive", archiveDir, "--out", out,
+], { encoding: "utf8", timeout: 10_000 });
+
+describe("portable recorded-canary recovery", () => {
+  it("verifies every archived byte and recovers all four cells without changing the input", () => {
+    const archiveDir = createRecoveryArchive();
+    const before = snapshotTree(archiveDir);
+    const out = tempRoot();
+    const result = recoverArchive(archiveDir, out);
+    expect(result.status, `${result.error ?? ""}\n${result.stderr}`).toBe(0);
+    const recovered = JSON.parse(fs.readFileSync(path.join(out, "recovery.json"), "utf8")) as {
+      verifiedArchiveFiles: number; cells: Array<{ cell: string }>;
+    };
+    expect(recovered.verifiedArchiveFiles).toBe(1 + cells.length * 3);
+    expect(recovered.cells.map(({ cell }) => cell)).toEqual(cells);
+    expect(compareSnapshots(before, snapshotTree(archiveDir))).toEqual({ same: true, changed: [], added: [], removed: [] });
+  });
+
+  it("rejects corrupted archived bytes before writing a recovery", () => {
+    const archiveDir = createRecoveryArchive();
+    fs.appendFileSync(path.join(archiveDir, "on1/events.jsonl.gz"), "corrupted");
+    const out = tempRoot();
+    const result = recoverArchive(archiveDir, out);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Archive checksum mismatch: on1/events.jsonl.gz");
+    expect(fs.readdirSync(out)).toEqual([]);
   });
 
   it("recovers armed+continue with exact continuation ids for ON cells only and matches recorded usage", () => {
+    const archiveDir = createRecoveryArchive();
     const manifest = JSON.parse(fs.readFileSync(path.join(archiveDir, "manifest.json"), "utf8")) as {
       main: { model: string };
       prewalk: { model: string };
     };
-    const expectedContinuationIds: Record<string, string> = {
-      on1: "c7449dbc-5001-4b75-9c7f-2327638ff4d0",
-      on2: "aa53bb66-0dfb-41e1-a087-94774803e58b",
-    };
+    const expectedContinuationIds: Record<string, string> = { on1: "fixture-on1", on2: "fixture-on2" };
     for (const cell of cells) {
       const frozen = JSON.parse(fs.readFileSync(path.join(archiveDir, cell, "result.json"), "utf8")) as {
         perModel: Record<string, PerModelUsage>;
@@ -1159,21 +1235,14 @@ describe("frozen live-canary recovery", () => {
 
       if (cell.startsWith("on")) {
         expect(frozen.modelChanges).toHaveLength(2);
-        expect(frozen.modelChanges[0]).toMatchObject({
-          model: manifest.prewalk.model,
-          previous: manifest.main.model,
-        });
-        expect(frozen.modelChanges[1]).toMatchObject({
-          model: manifest.main.model,
-          previous: manifest.prewalk.model,
-        });
+        expect(frozen.modelChanges[0]).toMatchObject({ model: manifest.prewalk.model, previous: manifest.main.model });
+        expect(frozen.modelChanges[1]).toMatchObject({ model: manifest.main.model, previous: manifest.prewalk.model });
         expect(analysis.prewalkMessages.map((message) => message.customType)).toEqual([
-          "pi-fabric-prewalk-armed",
-          "pi-fabric-prewalk-continue",
+          "pi-fabric-prewalk-armed", "pi-fabric-prewalk-continue",
         ]);
         const details = analysis.prewalkMessages[1]?.details as { continuationId?: string };
         expect(details.continuationId).toBe(expectedContinuationIds[cell]);
-        expect(analysis.phases.handoffAt).not.toBeNull();
+        expect(analysis.phases).toMatchObject({ handoffAt: 1500, returnAt: 4500, preHandoffMainMs: 500, executorIntervalMs: 3000, executorAssistantSpanMs: 1000, returnMs: 1500 });
         expect(analysis.phases.compaction?.outcome).toBe("compaction_failed");
         expect(analysis.phases.compaction?.error).toContain("Nothing to compact");
         expect(analysis.phases.compaction?.attemptMs).toBeNull();
@@ -1193,6 +1262,7 @@ describe.skipIf(process.platform === "win32")("canary runner subprocess", () => 
   const spawnRunner = (options: {
     mode?: string;
     args?: string[];
+    leadingArgs?: string[];
     reuseOutDir?: string;
     timeoutSeconds?: number;
     rpc?: boolean;
@@ -1212,6 +1282,7 @@ describe.skipIf(process.platform === "win32")("canary runner subprocess", () => 
       process.execPath,
       [
         runnerPath,
+        ...(options.leadingArgs ?? []),
         "--out",
         outDir,
         "--cwd",
@@ -1237,6 +1308,20 @@ describe.skipIf(process.platform === "win32")("canary runner subprocess", () => 
   };
   const summaryLine = (result: { stdout: string }) =>
     JSON.parse((result.stdout.trim().split("\n").at(-1) ?? "{}")) as { ok: boolean; problems: string[] };
+
+  it("preserves repeated extension flags at argument zero and later positions", () => {
+    const { result, outDir } = spawnRunner({
+      leadingArgs: ["--extension", "/tmp/first-provider"],
+      args: ["--extension", "/tmp/last-provider"],
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(summaryLine(result).ok).toBe(true);
+    const started = JSON.parse(fs.readFileSync(path.join(outDir, "started.json"), "utf8")) as { extensions: string[] };
+    expect(started.extensions).toEqual([
+      projectRoot, path.join(projectRoot, "scripts", "prewalk-canary-telemetry.ts"),
+      "/tmp/first-provider", "/tmp/last-provider",
+    ]);
+  });
 
   it("captures a complete run with aligned arrival lines and recorded runtime hashes", () => {
     const { result, outDir } = spawnRunner({ args: ["--extension", "/tmp/extra-provider"] });

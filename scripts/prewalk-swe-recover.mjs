@@ -58,7 +58,8 @@ for (const required of ["evidence/results.json", "evidence/task-manifest.json", 
 const gradeScript = value("--grade-script") ?? path.join(source, "work/support/grade.py");
 const defaultPython = path.join(source, "work/.venv/bin/python");
 const gradePython = value("--grade-python") ?? (fs.existsSync(defaultPython) ? defaultPython : "python3");
-if (attemptId !== undefined && !fs.existsSync(gradePython)) fail(`--grade-python not found: ${gradePython}`);
+const gradePythonIsPath = path.isAbsolute(gradePython) || gradePython.includes("/") || gradePython.includes("\\");
+if (attemptId !== undefined && gradePythonIsPath && !fs.existsSync(gradePython)) fail(`--grade-python not found: ${gradePython}`);
 if (!fs.existsSync(gradeScript)) fail(`grader script not found: ${gradeScript}`);
 if (!Number.isInteger(gradeTimeoutMs) || gradeTimeoutMs <= 0) fail("--grade-timeout-ms must be a positive integer");
 
