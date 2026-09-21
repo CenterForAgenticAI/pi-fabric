@@ -9,10 +9,12 @@ import {
   probabilitySubmenu,
   stringInputSubmenu,
   modelPickerSubmenu,
+  listSubmenu,
 } from "./settings-submenus.js";
 import {
   BOOLEANS,
   summaryFor,
+  formatBlockedCount,
   EXECUTOR_KERNELS,
   PYTHON_RUNTIMES,
   EXECUTOR_RUNTIMES,
@@ -298,8 +300,33 @@ export const buildApprovalsSection = (
 };
 
 export const buildMcpSection = (
-  { config, theme, persist }: Pick<SettingsSectionContext, "config" | "theme" | "persist">,
+  { config, theme, persist, apply, options }: Pick<
+    SettingsSectionContext,
+    "config" | "theme" | "persist" | "apply" | "options"
+  >,
 ): SettingItem => {
+  const blockedItem = setting(
+    "mcp.jev.blockedServers",
+    "Block from Jev",
+    formatBlockedCount(config.mcp.jev.blockedServers.length),
+    {
+      description:
+        "Cached MCP servers. Toggle to block sending that server's tool metadata to Jev. Unlisted and future servers stay allowed.",
+    },
+  );
+  blockedItem.submenu = listSubmenu(
+    theme,
+    "mcp.jev.blockedServers",
+    "Block from Jev",
+    "Cached MCP servers. Toggle to block sending that server's tool metadata to Jev. Unlisted and future servers stay allowed.",
+    options.cachedMcpServers ?? [],
+    config.mcp.jev.blockedServers,
+    (selected) => {
+      apply("mcp.jev.blockedServers", selected);
+      blockedItem.currentValue = formatBlockedCount(selected.length);
+    },
+  );
+
   return setting("mcp", "MCP", summaryFor("mcp", config), {
     description: "Model Context Protocol provider discovery and invocation.",
     submenu: sectionSubmenu(
@@ -347,6 +374,12 @@ export const buildMcpSection = (
             "Wall-clock budget for the session-start background MCP revalidation.",
           ),
         }),
+        setting("mcp.jev.semanticSearch", "Jev semantic search", config.mcp.jev.semanticSearch ? "true" : "false", {
+          description:
+            'Opt-in: tools.search({ query, searchMode: "semantic" }) ranks actions with Jev. Default search stays lexical. Cached and future MCP servers are eligible unless blocked below.',
+          values: BOOLEANS,
+        }),
+        blockedItem,
       ],
       persist,
     ),

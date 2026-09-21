@@ -31,6 +31,8 @@ import {
   type FabricCallAudit,
   type FabricRegistryActivityEvent,
 } from "./core/action-registry.js";
+import { semanticSearchActions } from "./core/semantic-search.js";
+import { resolveJevModelRoute } from "./jev/routes.js";
 import {
   ApprovalController,
   FabricSessionApprovals,
@@ -639,14 +641,74 @@ export class FabricExecutionService {
                 args,
                 runtimeSignal,
                 async () => {
-                  const actions = await this.registry.search(
-                    String(args.query ?? ""),
-                    callContext,
-                    typeof args.limit === "number" ? args.limit : undefined,
-                  );
-                  return actions.filter(
-                    (action) => effectiveFullCodeMode || !fullCodeProvider(action.provider),
-                  );
+                  const query = String(args.query ?? "");
+                  const limit = typeof args.limit === "number" ? args.limit : undefined;
+                  const searchMode = args.searchMode;
+                  if (
+                    searchMode !== undefined &&
+                    searchMode !== "lexical" &&
+                    searchMode !== "semantic"
+                  ) {
+                    throw new Error("invalid_search_mode");
+                  }
+                  const visible = (actions: Awaited<ReturnType<ActionRegistry["search"]>>) =>
+                    actions.filter(
+                      (action) => effectiveFullCodeMode || !fullCodeProvider(action.provider),
+                    );
+                  if (searchMode === "semantic") {
+                    if (!this.config.mcp.jev.semanticSearch) {
+                      throw new Error(
+                        "Jev semantic search is disabled. Enable it in /fabric settings → MCP.",
+                      );
+                    }
+                    const listed = visible(await this.registry.list({ limit: 1_000 }, callContext));
+                    const result = await semanticSearchActions({
+                      query,
+                      actions: listed,
+                      blockedServers: this.config.mcp.jev.blockedServers,
+                      candidateLimit: this.config.mcp.jev.semanticCandidateLimit,
+                      minProbability: this.config.mcp.jev.semanticMinProbability,
+                      signal: runtimeSignal ?? new AbortController().signal,
+                      evaluate: async (request, signal) => {
+                        const { JevClient, JevCredentials } = await import("./jev/client.js");
+                        const route = resolveJevModelRoute(this.config.jev.model).route;
+                        const extensionContext = callContext.extensionContext;
+                        const client = new JevClient(
+                          this.config.jev,
+                          fetch,
+                          new JevCredentials(
+                            this.config.jev.credentialCommand,
+                            process.env,
+                            {
+                              configured: () =>
+                                extensionContext.modelRegistry.getProviderAuthStatus?.(route.providerId)
+                                  ?.configured ?? false,
+                              resolve: async (abort) => {
+                                abort.throwIfAborted();
+                                return extensionContext.modelRegistry.getApiKeyForProvider?.(
+                                  route.providerId,
+                                );
+                              },
+                            },
+                            route.envKeys,
+                          ),
+                          route,
+                        );
+                        return client.evaluate(request, signal);
+                      },
+                    });
+                    if (!result.ok) throw new Error(result.error.message);
+                    return {
+                      kind: "pi-fabric.action-search",
+                      version: 1,
+                      actions: result.actions.slice(
+                        0,
+                        Math.max(1, Math.min(limit ?? 30, 100)),
+                      ),
+                      backend: result.backend,
+                    };
+                  }
+                  return visible(await this.registry.search(query, callContext, limit));
                 },
               );
             case "fabric.$describe":

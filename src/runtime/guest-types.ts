@@ -369,6 +369,21 @@ interface FabricActionListEnvelope {
   truncated: boolean;
   limit: number;
 }
+interface FabricActionSearchBackend {
+  requested: "semantic";
+  used: "semantic" | "lexical";
+  degraded: boolean;
+  model?: string;
+  usage?: { inputTokens: number; outputTokens: number };
+  abstained?: boolean;
+  reason?: "timeout" | "rate_limited" | "service_unavailable";
+}
+interface FabricActionSearchEnvelope {
+  kind: "pi-fabric.action-search";
+  version: 1;
+  actions: FabricAction[];
+  backend: FabricActionSearchBackend;
+}
 interface FabricToolsApi {
   providers(): Promise<Array<{ name: string; description: string }>>;
   catalog(args?: { provider?: string; limit?: number }): Promise<FabricCapabilityCatalog>;
@@ -378,7 +393,7 @@ interface FabricToolsApi {
    * search() or pass envelope: true to get totals and a truncated flag.
    */
   list(args?: { provider?: string; namespace?: string; query?: string; limit?: number; envelope?: boolean }): Promise<FabricAction[] | FabricActionListEnvelope>;
-  search(args: { query: string; limit?: number }): Promise<FabricAction[]>;
+  search(args: { query: string; limit?: number; searchMode?: "lexical" | "semantic" }): Promise<FabricAction[] | FabricActionSearchEnvelope>;
   describe(args: { ref: string }): Promise<FabricAction>;
   call(args: { ref: string; args?: Record<string, unknown> }): Promise<unknown>;
   progress(args: { message: string }): Promise<void>;

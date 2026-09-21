@@ -17,6 +17,8 @@ import {
   parseFormattedNumericValue,
   populateClaudeModelSource,
 } from "../src/ui/settings.js";
+import { buildMcpSection } from "../src/ui/settings-sections-execution.js";
+import { SectionSubmenu } from "../src/ui/settings-submenus.js";
 
 const theme = {
   fg: (_color: string, text: string) => text,
@@ -59,6 +61,32 @@ describe("FabricSettingsComponent", () => {
     await loading;
     expect(source.models).toEqual([
       { provider: "claude", id: "haiku", name: "Haiku" },
+    ]);
+  });
+
+  it("nests Jev semantic search and a cached MCP block list under MCP", () => {
+    const item = buildMcpSection({
+      config: DEFAULT_FABRIC_CONFIG,
+      theme,
+      persist: () => {},
+      apply: () => {},
+      options: {
+        keepVisibleCandidates: ["fabric_exec"],
+        modelSource: fakeModelSource,
+        cachedMcpServers: ["github", "slack"],
+      },
+    });
+    const submenu = item.submenu!("", () => {}) as SectionSubmenu;
+    const ids = submenu.items.map((row) => row.id);
+    expect(ids).toContain("mcp.jev.semanticSearch");
+    expect(ids).toContain("mcp.jev.blockedServers");
+    expect(submenu.items.find((row) => row.id === "mcp.jev.semanticSearch")?.currentValue).toBe("false");
+    expect(submenu.items.find((row) => row.id === "mcp.jev.blockedServers")?.currentValue).toBe("0 blocked");
+    const blocked = submenu.items.find((row) => row.id === "mcp.jev.blockedServers")!;
+    const servers = blocked.submenu!("", () => {}) as SectionSubmenu;
+    expect(servers.items.map((row) => row.id)).toEqual([
+      "mcp.jev.blockedServers.github",
+      "mcp.jev.blockedServers.slack",
     ]);
   });
 

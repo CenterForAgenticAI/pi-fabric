@@ -887,3 +887,32 @@ describe("MCP descriptor cache configuration", () => {
     expect(config.mcp.cache.revalidateBudgetMs).toBe(1_000);
   });
 });
+
+describe("MCP Jev semantic search configuration", () => {
+  it("defaults to opt-in search with every MCP server eligible", () => {
+    const config = normalizeFabricConfig({});
+    expect(config.mcp.jev).toEqual({
+      semanticSearch: false,
+      blockedServers: [],
+      semanticCandidateLimit: 127,
+      semanticMinProbability: 0.2,
+    });
+  });
+
+  it("parses a block list and clamps candidate bounds", () => {
+    const config = normalizeFabricConfig({
+      mcp: {
+        jev: {
+          semanticSearch: true,
+          blockedServers: [" github ", "github", "", "x".repeat(200), 3],
+          semanticCandidateLimit: 400,
+          semanticMinProbability: 0.75,
+        },
+      },
+    });
+    expect(config.mcp.jev.semanticSearch).toBe(true);
+    expect(config.mcp.jev.blockedServers).toEqual(["github"]);
+    expect(config.mcp.jev.semanticCandidateLimit).toBe(127);
+    expect(config.mcp.jev.semanticMinProbability).toBe(0.75);
+  });
+});
