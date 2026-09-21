@@ -5,7 +5,6 @@ import { createProviderComponent, type FabricProviderComponent, type FabricProvi
 import type { FabricConfig } from "./config.js";
 import type { ActionRegistry } from "./core/action-registry.js";
 import { resolveAgentDir } from "./core/agent-dir.js";
-import { fabricStateDir } from "./core/fabric-state-paths.js";
 import type { MeshStore, MeshIdentity } from "./mesh/store.js";
 import type { ParticipantDirectory } from "./topology/participant-directory.js";
 import { CapturedToolsProvider } from "./providers/captured-tools-provider.js";
@@ -79,7 +78,9 @@ export class RuntimeStateBuiltins {
           ? {
               cache: new McpDescriptorCacheStore(
                 path.join(
-                  fabricStateDir(process.env.PI_FABRIC_PROJECT_ROOT ?? cwd),
+                  process.env.PI_FABRIC_PROJECT_ROOT ?? cwd,
+                  ".pi",
+                  "fabric",
                   "mcp-cache.json",
                 ),
               ),
