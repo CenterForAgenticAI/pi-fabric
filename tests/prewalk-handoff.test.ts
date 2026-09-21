@@ -22,17 +22,21 @@ import { createPassiveHostSession } from "../scripts/lib/passive-host-session.mj
 import {
   PREWALK_ARMED_MESSAGE_TYPE,
   PREWALK_PLAN_MESSAGE_TYPE,
-  claimFabricFsDriftHandoff,
-  claimFabricHandoff,
   deliverPrewalkPlanCheckpoint,
   filterPrewalkContinuationMessages,
   filterPrewalkPlanningDirectives,
   hasPrewalkArmedPrompt,
   prewalkArmedPrompt,
-  restoreBorrowedInPlaceMain,
-  runFabricHandoffAtBoundary,
-  settleInPlacePrewalk,
   withTrajectoryRearmDirective,
+} from "../src/prewalk/messages.js";
+import {
+  restoreBorrowedInPlaceMain,
+  settleInPlacePrewalk,
+} from "../src/prewalk/return.js";
+import {
+  claimFabricFsDriftHandoff,
+  claimFabricHandoff,
+  runFabricHandoffAtBoundary,
   type PendingFabricHandoff,
 } from "../src/prewalk/handoff.js";
 

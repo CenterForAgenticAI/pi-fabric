@@ -86,9 +86,11 @@ import {
 } from "./prewalk/controller.js";
 import { PrewalkDriftTracker } from "./prewalk/fs-drift.js";
 import {
+  deliverPrewalkPlanCheckpoint,
+} from "./prewalk/messages.js";
+import {
   claimFabricFsDriftHandoff,
   claimFabricHandoff,
-  deliverPrewalkPlanCheckpoint,
   runFabricHandoffAtBoundary,
   type PendingFabricHandoff,
 } from "./prewalk/handoff.js";

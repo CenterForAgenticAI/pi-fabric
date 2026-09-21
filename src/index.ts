@@ -33,10 +33,12 @@ import { setActiveCompiledSurface } from "./entropy/active.js";
 import {
   filterPrewalkContinuationMessages,
   filterPrewalkPlanningDirectives,
+  withTrajectoryRearmDirective,
+} from "./prewalk/messages.js";
+import {
   restoreBorrowedInPlaceMain,
   settleInPlacePrewalk,
-  withTrajectoryRearmDirective,
-} from "./prewalk/handoff.js";
+} from "./prewalk/return.js";
 import type { PendingFabricHandoff } from "./prewalk/handoff.js";
 import { autoArmFabricPrewalk } from "./prewalk/arm.js";
 import {

@@ -5,7 +5,7 @@ import {
   PREWALK_ARMED_MESSAGE_TYPE,
   hasPrewalkArmedPrompt,
   prewalkArmedPrompt,
-} from "./handoff.js";
+} from "./messages.js";
 
 // The single arm path shared by `/fabric prewalk` and alwaysRearm session
 // auto-arm, so drift baseline, hidden armed advisory, and status chip never

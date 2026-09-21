@@ -4,7 +4,7 @@ import type { FabricPrewalkMode } from "../src/config.js";
 import type { FabricState } from "../src/fabric-state.js";
 import { armFabricPrewalkSession, autoArmFabricPrewalk } from "../src/prewalk/arm.js";
 import { PrewalkController } from "../src/prewalk/controller.js";
-import { PREWALK_ARMED_MESSAGE_TYPE, prewalkArmedPrompt } from "../src/prewalk/handoff.js";
+import { PREWALK_ARMED_MESSAGE_TYPE, prewalkArmedPrompt } from "../src/prewalk/messages.js";
 import type { FabricThinking } from "../src/thinking.js";
 
 const CWD = "/tmp/fabric-prewalk-arm-test";
