@@ -77,11 +77,15 @@ import type {
   FabricPeerInfo,
 } from "./topology/types.js";
 import { actorParticipantRecord, agentParticipantRecords } from "./topology/records.js";
-import { PrewalkController } from "./prewalk/controller.js";
+import {
+  PrewalkController,
+  type FabricPrewalkPlanCheckpoint,
+} from "./prewalk/controller.js";
 import { PrewalkDriftTracker } from "./prewalk/fs-drift.js";
 import {
   claimFabricFsDriftHandoff,
   claimFabricHandoff,
+  deliverPrewalkPlanCheckpoint,
   runFabricHandoffAtBoundary,
   type PendingFabricHandoff,
 } from "./prewalk/handoff.js";
@@ -95,6 +99,7 @@ import {
 } from "./main-agent.js";
 import { AgentsProvider } from "./providers/agents-provider.js";
 import { CompactProvider } from "./providers/compact-provider.js";
+import { PrewalkProvider } from "./providers/prewalk-provider.js";
 import { ComponentsProvider } from "./providers/components-provider.js";
 import type { McpProviderHooks } from "./providers/mcp-provider.js";
 import { RuntimeStateBuiltins } from "./runtime-state-builtins.js";
@@ -135,6 +140,13 @@ const escapeXmlText = (value: string): string =>
 
 
 import type { FabricManagedHost } from "./managed-host.js";
+import { captureLoadedFileIdentity, type FabricLoadedFileIdentity } from "./build-identity.js";
+
+// Loaded-code identity of this lazy runtime module. Stable-path lazy imports
+// keep their first evaluation for the life of the host process, so a hash
+// captured at activation is the ground truth a reload-freshness check compares
+// the current disk file against.
+const FABRIC_RUNTIME_MODULE_IDENTITY = captureLoadedFileIdentity(import.meta.url);
 
 export interface FabricRuntimeStateOptions {
   managedHost?: FabricManagedHost;
@@ -143,6 +155,7 @@ export interface FabricRuntimeStateOptions {
   prewalkDrift?: PrewalkDriftTracker;
   sessionApprovals?: FabricSessionApprovals;
   paths?: FabricRuntimePaths;
+  entryIdentity?: FabricLoadedFileIdentity;
 }
 
 export class FabricRuntimeState {
@@ -182,6 +195,7 @@ export class FabricRuntimeState {
   readonly sessionApprovals: FabricSessionApprovals;
   readonly #paths: FabricRuntimePaths | undefined;
   readonly #managedHost: FabricManagedHost | undefined;
+  readonly #entryIdentity: FabricLoadedFileIdentity | undefined;
   #widgetDismissedAt = 0;
   #suppressResidentGuidanceSync = false;
 
@@ -196,6 +210,7 @@ export class FabricRuntimeState {
     this.sessionApprovals = options.sessionApprovals ?? new FabricSessionApprovals();
     this.#paths = options.paths;
     this.#managedHost = options.managedHost;
+    this.#entryIdentity = options.entryIdentity;
   }
 
   get initialized(): boolean {
@@ -399,6 +414,18 @@ export class FabricRuntimeState {
       jobs: this.shellJobs,
       getHangMs: () => this.#config?.executor.shellHangMs ?? DEFAULT_SHELL_HANG_MS,
     });
+    // One definition for both host modes: the controller belongs to this
+    // runtime state, so managed and normal sessions share a single wiring site.
+    await builtins.install(createProviderComponent({
+      provider: "prewalk",
+      description: "Frontier-first handoff readiness and plan record",
+      create: () => new PrewalkProvider(this.prewalk, {
+        buildIdentity: () => ({
+          entry: this.#entryIdentity ?? null,
+          lazyRuntime: FABRIC_RUNTIME_MODULE_IDENTITY,
+        }),
+      }),
+    }));
     if (this.#managedHost) {
       this.#registry.markUnavailable("jev", "Jev programs are unavailable in managed hosts");
       // Closed-world hosts must never construct unused native managers, stores or model history.
@@ -987,8 +1014,22 @@ export class FabricRuntimeState {
     // config edit must never claim once the master switch is off.
     if (this.#config?.prewalk.enabled === false) return undefined;
     let pending = claimFabricHandoff(this.prewalk, execution, sessionId, resultFormat);
+    if (pending && pending.kind !== "explicit" && this.#config?.prewalk.detectShellWrites && this.#cwd) {
+      // This audited outer boundary consumed all mutations in its window, even
+      // when the plan gate withholds the handoff. Do not rediscover those edits
+      // as shell drift on a later read. The fs-only path advances in evaluate().
+      await this.prewalkDrift.captureBaseline(sessionId, this.#cwd);
+    }
     if (!pending && this.#config?.prewalk.detectShellWrites) {
       pending = await this.#claimShellWriteHandoff(execution, sessionId, resultFormat);
+    }
+    if (pending?.kind === "prewalk-plan") {
+      // Nothing hands off yet: the frontier model owes a plan checkpoint at this
+      // boundary, and the arm stays armed for the mutation that follows it.
+      if (!deliverPrewalkPlanCheckpoint(this.pi, pending)) {
+        this.prewalk.reopenPlanCheckpoint();
+      }
+      return undefined;
     }
     if (pending) {
       this.activity.resume(outerToolCallId);
@@ -1010,7 +1051,7 @@ export class FabricRuntimeState {
     execution: FabricExecutionResult,
     sessionId: string,
     resultFormat: FabricResultFormat,
-  ): Promise<PendingFabricHandoff | undefined> {
+  ): Promise<PendingFabricHandoff | FabricPrewalkPlanCheckpoint | undefined> {
     if (!this.prewalk.isArmed(sessionId) || !this.#cwd) return undefined;
     if (!execution.audits.some((audit) => isPiShellRef(audit.ref) && audit.success === true)) {
       return undefined;

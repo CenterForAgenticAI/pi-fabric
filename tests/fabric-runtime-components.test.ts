@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { describe, expect, it, vi } from "vitest";
 import { CapturedToolCatalog } from "../src/capture/catalog.js";
 import { normalizeFabricConfig } from "../src/config.js";
+import type { FabricExecutionResult } from "../src/execution-service.js";
 import { FabricRuntimeState } from "../src/fabric-runtime-state.js";
 import { getActiveRepairCompiler } from "../src/repairs/active.js";
 import { catalogDigestFromSurface } from "../src/repairs/catalog-digest.js";
@@ -126,6 +127,7 @@ describe("Fabric runtime provider components", () => {
           "fabric.provider.memory",
           "fabric.provider.mesh",
           "fabric.provider.pi",
+          "fabric.provider.prewalk",
           "fabric.provider.schema",
           "fabric.provider.state",
         ],
@@ -151,6 +153,7 @@ describe("Fabric runtime provider components", () => {
             "state",
             "schema",
             "compact",
+            "prewalk",
             "agents",
             "memory",
             "jev",
@@ -354,6 +357,114 @@ describe("Fabric runtime provider components", () => {
     } finally {
       await runtime.shutdown();
       expect(getActiveRepairCompiler()).toBeUndefined();
+      vi.unstubAllEnvs();
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+// The runtime is the component that decides, so the checkpoint contract is
+// pinned here as well as at the claim helpers: a gated boundary delivers the
+// plan message, starts no handoff, and leaves the arm armed for the next one.
+describe("Fabric runtime prewalk plan checkpoint", () => {
+  it.each([false, true])("consumes the audited checkpoint window (shell read before plan=%s)", async (readBeforePlan) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-prewalk-gate-"));
+    fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+    vi.stubEnv("PI_CODING_AGENT_DIR", path.join(cwd, "agent"));
+    vi.stubEnv("PI_FABRIC_PROJECT_ROOT", cwd);
+
+    const pi = {
+      events: { emit: vi.fn() },
+      getThinkingLevel: vi.fn(() => "off"),
+      sendMessage: vi.fn(),
+    } as unknown as ExtensionAPI;
+    const context = {
+      cwd,
+      hasUI: false,
+      isProjectTrusted: () => true,
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      modelRegistry: { find: vi.fn(), getApiKeyAndHeaders: vi.fn() },
+      sessionManager: {
+        getSessionId: () => "runtime-prewalk-gate",
+        getSessionFile: () => undefined,
+        getBranch: () => [],
+        getLeafId: () => undefined,
+      },
+      ui: { setStatus: vi.fn(), notify: vi.fn() },
+    } as unknown as ExtensionContext;
+    const config = normalizeFabricConfig({
+      fullCodeMode: true,
+      capture: { enabled: false },
+      mcp: { enabled: false, cache: { enabled: false } },
+      mesh: { enabled: false },
+      memory: { enabled: false },
+      agents: { enabled: false },
+      residency: { enabled: false },
+      prewalk: { enabled: true, mode: "in-place", model: "anthropic/executor", requirePlan: true },
+    });
+    const fixture = path.join(cwd, "unused.mjs");
+    fs.writeFileSync(fixture, "export default {};");
+    const runtime = new FabricRuntimeState(pi, new CapturedToolCatalog(), {
+      paths: { extension: fixture, worker: fixture, residentHost: fixture, skills: cwd },
+    });
+    try {
+    await runtime.initialize(context, config);
+    runtime.prewalk.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      requirePlan: true,
+    });
+    const file = path.join(cwd, "app.ts");
+    fs.writeFileSync(file, "before");
+    await runtime.prewalkDrift.captureBaseline("session-1", cwd);
+    fs.writeFileSync(file, "after: audited edit");
+    const execution = {
+      success: true,
+      value: "outer result",
+      logs: [],
+      audits: [
+        { ref: "pi.edit", nestedToolCallId: "edit-1", startedAt: 1, endedAt: 2, success: true },
+      ],
+      phases: [],
+    } as unknown as FabricExecutionResult;
+
+    const pending = await runtime.claimHandoff(execution, "session-1", "auto", "call-1");
+
+    expect(pending).toBeUndefined();
+    expect(runtime.prewalk.status()).toMatchObject({ state: "armed" });
+    expect(pi.sendMessage).toHaveBeenCalledOnce();
+    const [message, options] = (pi.sendMessage as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]!;
+    expect(message).toMatchObject({ customType: "pi-fabric-prewalk-plan", display: false });
+    expect(options).toEqual({ deliverAs: "steer", triggerTurn: true });
+
+    // Delivery is not readiness: the arm still owes a recorded plan, so the
+    // boundary keeps withholding until prewalk.plan supplies one (the claim
+    // itself is covered in tests/prewalk-handoff.test.ts).
+    expect(runtime.prewalk.planCheckpointRequired("session-1")).toBe(true);
+    const shell = (): FabricExecutionResult => ({
+      ...execution, audits: [{ ref: "pi.bash", nestedToolCallId: "shell", startedAt: 3, endedAt: 4, success: true }],
+    });
+    runtime.activity.start("shell-read");
+    if (readBeforePlan) {
+      expect(await runtime.claimHandoff(shell(), "session-1", "auto", "shell-read")).toBeUndefined();
+      expect(runtime.prewalk.planState("session-1").prompts).toBe(1);
+    }
+    runtime.prewalk.submitPlan("session-1", {
+      outcome: "Finish the task", steps: ["Check app.ts"], verification: ["Read app.ts"], risks: "None",
+    });
+    expect(await runtime.claimHandoff(shell(), "session-1", "auto", "shell-read")).toBeUndefined();
+    fs.writeFileSync(file, "after: genuine new shell write");
+    runtime.activity.start("shell-write");
+    expect(await runtime.claimHandoff(shell(), "session-1", "auto", "shell-write")).toMatchObject({
+      kind: "prewalk-in-place", triggerRef: "fs.drift", triggerFiles: ["app.ts"],
+    });
+    await runtime.initialize(context, config);
+    expect(runtime.prewalk.status().state).toBe("idle");
+    runtime.prewalk.arm({ model: "anthropic/executor", sessionId: "session-1", requirePlan: true });
+    expect(runtime.prewalk.planState("session-1")).toEqual({ required: true, ready: false, prompts: 0 });
+    } finally {
+      await runtime.shutdown();
       vi.unstubAllEnvs();
       fs.rmSync(cwd, { recursive: true, force: true });
     }

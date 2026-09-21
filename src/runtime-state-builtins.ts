@@ -5,6 +5,7 @@ import { createProviderComponent, type FabricProviderComponent, type FabricProvi
 import type { FabricConfig } from "./config.js";
 import type { ActionRegistry } from "./core/action-registry.js";
 import { resolveAgentDir } from "./core/agent-dir.js";
+import { fabricStateDir } from "./core/fabric-state-paths.js";
 import type { MeshStore, MeshIdentity } from "./mesh/store.js";
 import type { ParticipantDirectory } from "./topology/participant-directory.js";
 import { CapturedToolsProvider } from "./providers/captured-tools-provider.js";
@@ -78,9 +79,7 @@ export class RuntimeStateBuiltins {
           ? {
               cache: new McpDescriptorCacheStore(
                 path.join(
-                  process.env.PI_FABRIC_PROJECT_ROOT ?? cwd,
-                  ".pi",
-                  "fabric",
+                  fabricStateDir(process.env.PI_FABRIC_PROJECT_ROOT ?? cwd),
                   "mcp-cache.json",
                 ),
               ),
@@ -170,6 +169,7 @@ export class RuntimeStateBuiltins {
       ...(config.mesh.enabled ? ["mesh", "state"] : ["mesh", "state"].filter((name) => this.managedHost?.has(name))),
       "schema",
       "compact",
+      "prewalk",
       "agents",
       ...(!this.managedHost && config.jev.enabled && config.schema.mode !== "enforce" ? ["jev"] : []),
       ...(config.memory.enabled || this.managedHost?.has("memory") ? ["memory"] : []),

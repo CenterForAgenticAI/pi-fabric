@@ -860,9 +860,10 @@ export const createFabricExecTool = (
 
       const selectedResultFormat =
         params.resultFormat ?? state.config.executor.resultFormat;
+      const boundarySessionId = context.sessionManager.getSessionId();
       const pendingHandoff = await state.claimHandoff(
         result,
-        context.sessionManager.getSessionId(),
+        boundarySessionId,
         selectedResultFormat,
         toolCallId,
       );
@@ -871,6 +872,22 @@ export const createFabricExecTool = (
         context.ui.setStatus(
           "fabric-prewalk",
           `waiting for fabric_exec boundary → ${String(pendingHandoff.args.model ?? "executor")}`,
+        );
+        // The nudge budget is spent and the arm still has no plan: the handoff
+        // proceeds rather than stalling the session, and that is worth saying.
+        if (pendingHandoff.readiness?.kind === "unplanned") {
+          context.ui.notify(
+            `Prewalk: handing off without a recorded plan after ${pendingHandoff.readiness.prompts} reminders.`,
+            "warning",
+          );
+        }
+      } else if (state.prewalk.planRequired(boundarySessionId)) {
+        // This boundary was withheld because the plan is still owed. Reflect the
+        // planning phase instead of leaving the footer reading "armed".
+        const prewalkStatus = state.prewalk.status();
+        context.ui.setStatus(
+          "fabric-prewalk",
+          prewalkStatus.state === "armed" ? `plan awaited → ${prewalkStatus.model}` : undefined,
         );
       }
       const fullFormattedValue = formatFabricValue(result.value, selectedResultFormat);
@@ -949,13 +966,19 @@ export const createFabricExecTool = (
         outputBudget,
         fullRawOutput || "(no output)",
       )).text;
+      // In-place prewalk continuation arrives as an in-band context message on
+      // this boundary turn, so the loop must keep running: the executor's first
+      // request follows naturally. Terminating here would strand the
+      // continuation — no queued turn remains to carry it.
+      const inPlaceContinuation = pendingHandoff?.kind === "prewalk-in-place";
       const terminate =
-        pendingHandoff !== undefined ||
-        (result.success &&
-          typeof result.value === "object" &&
-          result.value !== null &&
-          "terminate" in result.value &&
-          result.value.terminate === true);
+        !inPlaceContinuation &&
+        (pendingHandoff !== undefined ||
+          (result.success &&
+            typeof result.value === "object" &&
+            result.value !== null &&
+            "terminate" in result.value &&
+            result.value.terminate === true));
       // A nested `pi.read` of an image returns image content blocks that
       // normalizeResult stripped (the sandbox holds text only). The provider
       // handed them out-of-band to each call audit; re-attach them here so

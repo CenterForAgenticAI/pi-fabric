@@ -129,6 +129,11 @@ interface FabricPrewalkConfig {
   // Compact with the configured engine just before restoring Main's boundary
   // model after an in-place continuation settles.
   compactOnReturn: boolean;
+  // Frontier-first planning: the mutation boundary that would hand off instead
+  // asks Main to record its plan, and the handoff fires at the next mutation with
+  // that plan in the transcript. Upstream prewalk nudges the plan on turn one,
+  // before any discovery; this lands on the boundary, after it.
+  requirePlan: boolean;
   // Filesystem fallback trigger: when an armed boundary ran a successful
   // pi.bash or pi.powershell without an audited mutation, claim on stat-manifest drift so
   // shell heredocs / sed -i / formatter writes also hand off.
@@ -382,6 +387,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     alwaysRearm: false,
     compactOnReturn: true,
     detectShellWrites: true,
+    requirePlan: true,
   },
   agents: {
     enabled: true,
@@ -904,6 +910,10 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       detectShellWrites: booleanValue(
         prewalk.detectShellWrites,
         DEFAULT_FABRIC_CONFIG.prewalk.detectShellWrites,
+      ),
+      requirePlan: booleanValue(
+        prewalk.requirePlan,
+        DEFAULT_FABRIC_CONFIG.prewalk.requirePlan,
       ),
     },
     agents: {

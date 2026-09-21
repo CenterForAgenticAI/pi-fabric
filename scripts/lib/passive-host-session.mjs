@@ -1,0 +1,27 @@
+// Passive custom-message host for Prewalk delivery: the real AgentSession
+// prototype methods run against a real pi-agent-core agent, so a
+// `triggerTurn: false` send defers into the pending list while a run is active
+// and the turn_end subscription appends it after the send turn's tool results
+// — the same deferred path the production host takes. Only the state the real
+// constructor installs is wired here; see
+// node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js
+// (sendCustomMessage, _handleAgentEvent -> _flushPendingCustomMessages).
+import { AgentSession } from "@earendil-works/pi-coding-agent";
+
+export function createPassiveHostSession(agent, sessionManager) {
+  const session = Object.create(AgentSession.prototype);
+  session.agent = agent;
+  session.sessionManager = sessionManager;
+  session._pendingCustomMessages = [];
+  session._isAgentRunActive = true;
+  session._emit = () => {};
+  const unsubscribe = agent.subscribe((event) => {
+    if (event.type === "turn_end") session._flushPendingCustomMessages();
+  });
+  return {
+    sendCustomMessage: (message, options) => session.sendCustomMessage(message, options),
+    // Append anything still pending without waiting for a turn boundary.
+    flushPending: () => session._flushPendingCustomMessages(),
+    dispose: unsubscribe,
+  };
+}
