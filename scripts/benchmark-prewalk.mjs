@@ -213,6 +213,11 @@ async function driftTrials(s, settings) {
 
 async function worker(subjects, settings, workerId) {
   const s = await import(pathToFileURL(subjects).href);
+  // The subjects bundle lists each helper's owning module explicitly; a stale
+  // module path yields `undefined` and the failure would surface as a swallowed
+  // transformContext error far from its cause, so fail loudly here instead.
+  for (const name of ["PrewalkController", "PrewalkDriftTracker", "checkedPrewalkPlan", "prewalkPlanText", "claimFabricHandoff", "runFabricHandoffAtBoundary", "filterPrewalkContinuationMessages", "prewalkArmedPrompt", "prewalkPlanPrompt", "settleInPlacePrewalk"])
+    assert.equal(typeof s[name], "function", `subjects bundle is missing ${name}: update the bundle export list to that helper's current module`);
   const cells = [];
   for (const followUpMode of ["one-at-a-time", "all"]) for (const steers of [0, 1, 3])
     for (const history of [0, 100]) for (const profile of ["compact", "near-cap"])
@@ -293,7 +298,9 @@ if (argv[0] === "--worker") {
       "export { PrewalkController } from './src/prewalk/controller.ts';",
       "export { PrewalkDriftTracker } from './src/prewalk/fs-drift.ts';",
       "export { checkedPrewalkPlan, prewalkPlanText } from './src/prewalk/plan.ts';",
-      "export { claimFabricHandoff, runFabricHandoffAtBoundary, filterPrewalkContinuationMessages, prewalkArmedPrompt, prewalkPlanPrompt, settleInPlacePrewalk } from './src/prewalk/handoff.ts';",
+      "export { claimFabricHandoff, runFabricHandoffAtBoundary } from './src/prewalk/handoff.ts';",
+      "export { filterPrewalkContinuationMessages, prewalkArmedPrompt, prewalkPlanPrompt } from './src/prewalk/messages.ts';",
+      "export { settleInPlacePrewalk } from './src/prewalk/return.ts';",
     ].join("\n") }, outfile: subjects, bundle: true, packages: "external", platform: "node", format: "esm", metafile: true, logLevel: "silent" });
     const sourceHashes = Object.fromEntries(Object.keys(bundle.metafile.inputs).filter(p => p !== "<stdin>").sort().map(p => [p, hash(fs.readFileSync(path.resolve(root, p)))]));
     const workers = [];
