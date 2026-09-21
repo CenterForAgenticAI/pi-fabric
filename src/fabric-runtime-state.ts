@@ -18,10 +18,13 @@ import { buildActorContext } from "./actors/context.js";
 import { actorDeliveryNotice } from "./actors/delivery-policy.js";
 import { prepareFabricActorHostPayload } from "./actors/host-event-payload.js";
 import type { JevObservationHost } from "./jev/observation.js";
+import { resolveJevModelRoute } from "./jev/routes.js";
 import type { FabricActorHostEvent } from "./actors/types.js";
 import { CapturedToolCatalog, type CapturedToolEntry } from "./capture/catalog.js";
 import { FabricComponentCatalog } from "./components/catalog.js";
 import { FabricComponentLoader } from "./components/loader.js";
+import { FabricComponentControl } from "./components/control.js";
+import { FabricComponentConfiguration, watchComponentConfiguration } from "./components/configuration.js";
 import {
   resolveFabricModelGuidance,
   type FabricOwnedModelGuidance,
@@ -115,12 +118,12 @@ import {
   type FabricProviderDiscovery,
 } from "./protocol.js";
 import { AgentManager } from "./agents/manager.js";
+import { AgentCompletionInbox } from "./agents/completion-inbox.js";
 import { resolveInheritedSessionPins } from "./agents/session-pins.js";
 import { ResidencyClient } from "./residency/client.js";
 import { RESIDENT_HOST_FORMAT, residentRoot } from "./residency/protocol.js";
 import type { FabricRuntimePaths } from "./runtime-paths.js";
 
-const BACKGROUND_COMPLETION_MAX_CHARS = 8_000;
 const inheritedCapabilityRequirements = (): string[] => {
   const source = process.env.PI_FABRIC_CAPABILITY_REQUIREMENTS;
   if (!source) return [];
@@ -165,6 +168,7 @@ export class FabricRuntimeState {
   #repairs: RepairCompiler | undefined;
   #speculation: RuntimeStateSpeculation | undefined;
   #agents: AgentManager | undefined;
+  #completionInbox: AgentCompletionInbox | undefined;
   #actors: ActorDirectory | undefined;
   #jevObservationHost: JevObservationHost | undefined;
   #globalActors: GlobalActorRegistry | undefined;
@@ -180,6 +184,9 @@ export class FabricRuntimeState {
   #schema: SchemaController | undefined;
   #componentSupervisor: FabricComponentSupervisor | undefined;
   #componentLoader: FabricComponentLoader | undefined;
+  #componentControl: FabricComponentControl | undefined;
+  #componentConfiguration: FabricComponentConfiguration | undefined;
+  #stopComponentWatch: (() => void) | undefined;
   readonly #componentTransitionSignatures = new Map<string, string>();
   readonly #componentTransitionPublications = new Set<Promise<void>>();
   #sessionCapabilityLease: FabricCapabilityViewLease | undefined;
@@ -394,7 +401,21 @@ export class FabricRuntimeState {
       this.componentCatalog,
       this.#componentSupervisor,
     );
-    this.#registry.register(this.#managedHost?.provider("components") ?? new ComponentsProvider(this.#componentLoader));
+    if (!this.#managedHost && this.#config.schema.mode !== "enforce") {
+      this.#componentConfiguration = new FabricComponentConfiguration({
+        cwd: context.cwd, agentDir: resolveAgentDir(), projectTrusted: () => context.isProjectTrusted(),
+      });
+    }
+    this.#componentControl = new FabricComponentControl(this.#componentLoader, {
+      ...(this.#componentConfiguration ? { store: this.#componentConfiguration } : {}),
+      initialEntries: this.#config.schema.mode === "enforce" ? [] : this.#config.components,
+      assertMutable: () => {
+        if (this.#managedHost || this.#config?.schema.mode === "enforce") throw new Error("Live component configuration is unavailable in managed hosts and Schema enforce mode");
+      },
+      applied: entries => { if (this.#config) this.#config.components = entries; },
+    });
+    this.#registry.setUnavailableResolver(name => this.#componentLoader?.unavailableProviderMessage(name));
+    this.#registry.register(this.#managedHost?.provider("components") ?? new ComponentsProvider(this.#componentLoader, this.#componentControl));
     const builtinManifest = new FabricProviderComponentManifest(
       this.componentCatalog,
       this.#componentLoader,
@@ -558,6 +579,8 @@ export class FabricRuntimeState {
       }
       return { key: `${resolved.provider}/${resolved.id}`, model };
     };
+    const completionInbox = new AgentCompletionInbox(this.pi, context);
+    this.#completionInbox = completionInbox;
     this.#agents = new AgentManager(context.cwd, agentConfig, {
       fullCodeMode: this.#config.fullCodeMode,
       kernel: () => this.#config?.executor.kernel ?? "typescript",
@@ -598,27 +621,8 @@ export class FabricRuntimeState {
         const lifecycle = this.#lifecycle;
         if (lifecycle) void lifecycle.publish(event).catch(() => undefined);
       },
-      onBackgroundComplete: (result) => {
-        const durationMs = Math.max(0, (result.finishedAt ?? Date.now()) - result.startedAt);
-        const duration =
-          durationMs < 60_000
-            ? `${Math.round(durationMs / 1_000)}s`
-            : `${(durationMs / 60_000).toFixed(1)}m`;
-        const summary = result.text || result.error || "no result";
-        const clippedSummary =
-          summary.length > BACKGROUND_COMPLETION_MAX_CHARS
-            ? `${summary.slice(0, BACKGROUND_COMPLETION_MAX_CHARS)}\n[completion truncated]`
-            : summary;
-        this.pi.sendMessage(
-          {
-            customType: "pi-fabric-agent-complete",
-            content: `Fabric agent ${result.id.slice(0, 8)} ${result.status} after ${duration}: ${clippedSummary}`,
-            display: true,
-            details: result,
-          },
-          { deliverAs: "followUp", triggerTurn: true },
-        );
-      },
+      onBackgroundComplete: (result) => completionInbox.enqueue(result),
+      onResultConsumed: (id) => completionInbox.acknowledge(id),
     });
     const canManageActor = (actorId: string): boolean | undefined => {
       const participant = this.#participants?.get(actorId);
@@ -744,6 +748,8 @@ export class FabricRuntimeState {
           mesh: this.#mesh,
           participants: this.#participants,
           mainAgent,
+          onBackgroundComplete: (result, delivered) => completionInbox.enqueue(result, delivered),
+          onResultConsumed: (id) => completionInbox.acknowledge(id),
           piModelState,
           ...(this.#paths ? { hostPath: this.#paths.residentHost } : {}),
         })
@@ -817,7 +823,7 @@ export class FabricRuntimeState {
         create: (component) => {
           component.guide({
             label: "jev-programs", models: ["*/*"], targets: ["main", "participant"],
-            content: "Jev supplies typed Choice, Noul, and Score judgments, not generated text. Use jev.evaluate for batched questions; jev.run/spawn for isolated TypeScript programs that may loop using input, program.sleep, program.emit, and exact requires capabilities. run/wait return terminal envelopes (join aliases wait for both agents and Jev); inspect state and result/error. Background programs are session-owned; jev.status and jev.stop inspect/cancel them. For Main-turn advisors, spawn with observe, await program.nextEvent without polling, and opt into bounded context fields. program.advise requires jev.advise and explicit delivery; default is record-only. Return the observer ID without waiting in Main; Escape/Main abort cancels observers. Use /login jev, TYPESAFE_API_KEY, or a trusted credentialCommand. Credentials stay host-side; status never retrieves a key. See docs/jev.md for schemas, budgets, and browser integration.",
+            content: "Jev supplies typed Choice, Noul, and Score judgments, not generated text. Use jev.evaluate for batched questions; jev.run/spawn for isolated TypeScript programs that may loop using input, program.sleep, program.emit, and exact requires capabilities. run/wait return terminal envelopes (join aliases wait for both agents and Jev); inspect state and result/error. Background programs are session-owned; jev.status and jev.stop inspect/cancel them. For Main-turn advisors, spawn with observe, await program.nextEvent without polling, and opt into bounded context fields. program.advise requires jev.advise and explicit delivery; default is record-only. Return the observer ID without waiting in Main; Escape/Main abort cancels observers. Use /login jev, TYPESAFE_API_KEY, /login openrouter, OPENROUTER_API_KEY, /login vercel-ai-gateway, AI_GATEWAY_API_KEY, or a trusted credentialCommand. Credentials stay host-side; status never retrieves a key. See docs/jev.md for schemas, budgets, and browser integration.",
           });
           const observationHost = identity.kind === "main" ? new JevObservationHost(context.sessionManager.getSessionId(), advice => {
             this.pi.sendMessage({
@@ -828,13 +834,15 @@ export class FabricRuntimeState {
             }, { deliverAs: advice.delivery, triggerTurn: advice.triggerTurn });
           }) : undefined;
           this.#jevObservationHost = observationHost;
+          // A bare `jev.model` alias stays on TypeSafe; `typesafe/...` / `~typesafe/...` uses OpenRouter decisions, and `typesafe-ai/...` uses Vercel AI Gateway.
+          const jevRoute = resolveJevModelRoute(this.#config!.jev.model).route;
           const provider = new JevProvider({
             registry: this.#registry!, config: this.#config!, observationHost,
             credentialSource: {
-              configured: () => context.modelRegistry.getProviderAuthStatus?.("jev")?.configured ?? false,
+              configured: () => context.modelRegistry.getProviderAuthStatus?.(jevRoute.providerId)?.configured ?? false,
               resolve: async (signal) => {
                 signal.throwIfAborted();
-                return context.modelRegistry.getApiKeyForProvider?.("jev");
+                return context.modelRegistry.getApiKeyForProvider?.(jevRoute.providerId);
               },
             },
             authorize: (ref, parentToolCallId) => this.#schema!.authorize(ref, parentToolCallId),
@@ -928,6 +936,18 @@ export class FabricRuntimeState {
     };
     this.pi.events.emit(FABRIC_COMPONENT_DISCOVER_EVENT, componentDiscovery);
     await this.components.reconcile(enforceSchema ? [] : this.config.components);
+    const configuration = this.#componentConfiguration;
+    const control = this.#componentControl;
+    if (configuration && control) {
+      this.#stopComponentWatch = watchComponentConfiguration(configuration.paths, () => {
+        void control.reconcile().catch(error => {
+          if (context.hasUI) context.ui.notify(`Pi Fabric component configuration not applied: ${error instanceof Error ? error.message : String(error)}`, "error");
+        });
+      });
+      for (const warning of control.configuration().warnings) {
+        if (context.hasUI) context.ui.notify(warning, "warning");
+      }
+    }
   }
 
   async ensure(context: ExtensionContext): Promise<void> {
@@ -967,7 +987,7 @@ export class FabricRuntimeState {
       this.prewalkDrift.drop(context.sessionManager.getSessionId());
       if (context.hasUI) context.ui.setStatus("fabric-prewalk", undefined);
     }
-    void this.#componentLoader?.reconcile(next.components).catch((error) => {
+    void (this.#componentControl?.reconcile(next.components) ?? this.#componentLoader?.reconcile(next.components))?.catch((error) => {
       if (this.#config) this.#config.components = previousComponents;
       const detail = error instanceof Error ? error.message : String(error);
       if (context.hasUI) context.ui.notify(`Pi Fabric component reload failed: ${detail}`, "error");
@@ -1254,14 +1274,22 @@ export class FabricRuntimeState {
   }
 
   async settleComponents(): Promise<void> {
+    await this.#componentControl?.settle();
     await this.#componentLoader?.settle();
   }
 
   async shutdown(): Promise<void> {
+    this.#completionInbox?.close();
+    this.#completionInbox = undefined;
     this.#suppressResidentGuidanceSync = true;
     await this.#deactivateRepairs();
     clearActiveCompiledSurface();
     await this.#participants?.quiesce().catch(() => undefined);
+    this.#stopComponentWatch?.();
+    this.#stopComponentWatch = undefined;
+    await this.#componentControl?.close();
+    this.#componentControl = undefined;
+    this.#componentConfiguration = undefined;
     await this.#componentLoader?.close();
     await Promise.allSettled([...this.#componentTransitionPublications]);
     await this.#sessionCapabilityLease?.release().catch(() => undefined);
@@ -1350,9 +1378,16 @@ export class FabricRuntimeState {
   }
 
   async #closeInternal(): Promise<void> {
+    this.#completionInbox?.close();
+    this.#completionInbox = undefined;
     await this.#deactivateRepairs();
     if (!this.#registry) return;
     await this.#participants?.quiesce().catch(() => undefined);
+    this.#stopComponentWatch?.();
+    this.#stopComponentWatch = undefined;
+    await this.#componentControl?.close();
+    this.#componentControl = undefined;
+    this.#componentConfiguration = undefined;
     await this.#componentLoader?.close();
     await Promise.allSettled([...this.#componentTransitionPublications]);
     await this.#sessionCapabilityLease?.release().catch(() => undefined);

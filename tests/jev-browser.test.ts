@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { BrowserHarnessProvider, type BrowserHarnessSession } from "../src/jev/browser.js";
+import { validateComponentConfig } from "../src/components/validation.js";
+import { browserHarnessComponent, BrowserHarnessProvider, type BrowserHarnessSession } from "../src/jev/browser.js";
 import { callProgram, jevContext, launch, setupJev } from "./jev-test-helpers.js";
 const config = { modulePath: `${process.cwd()}/fixture-session.ts`, wsUrl: "ws://127.0.0.1:9222/devtools/browser/test", allowedMethods: ["Target.getTargets","Target.attachToTarget","Accessibility.getFullAXTree","Runtime.evaluate"] };
 function setup() {
@@ -14,6 +15,18 @@ function setup() {
   return { browser,session,loader };
 }
 describe("Browser Harness component adapter",()=>{
+  it("publishes configuration bounds for generic component preflight without loading a session", () => {
+    const validate = (value: unknown) => validateComponentConfig({ id: "browser", component: "browser-harness", config: value }, browserHarnessComponent as import("../src/components/types.js").FabricComponentDefinition);
+    expect(() => validate({ ...config, modulePath: "../sdk/session.ts" })).not.toThrow();
+    for (const value of [
+      { ...config, allowedMethods: ["*"] },
+      { ...config, wsUrl: "ws://user:password@localhost:9222" },
+      { ...config, wsUrl: "https://localhost:9222" },
+      { ...config, callTimeoutMs: 60001 },
+      { ...config, callTimeoutMs: 100.5 },
+      { ...config, unknown: true },
+    ]) expect(() => validate(value)).toThrow("Invalid config");
+  });
   it("reuses one connection and passes explicit session IDs to allowlisted CDP methods",async()=>{
     const {browser,session,loader}=setup();
     try {

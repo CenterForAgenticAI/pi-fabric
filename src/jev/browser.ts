@@ -94,6 +94,17 @@ export class BrowserHarnessProvider implements FabricProvider {
 export const browserHarnessComponent: FabricComponentDefinition<BrowserHarnessConfig> = {
   name:"browser-harness",
   description:"Optional Browser Harness JS connector; explicit debugging endpoint and exact CDP method grants",
+  configSchema: {
+    type: "object",
+    properties: {
+      modulePath: { type: "string", minLength: 1, description: "Trusted host module exporting Session; relative paths resolve against the invocation cwd." },
+      wsUrl: { type: "string", pattern: "^wss?://[^/?#@\\s]+(?:[/?#][^\\s]*)?$", description: "Explicit debugging WebSocket URL without credentials; no automatic discovery or prompt approval." },
+      allowedMethods: { type: "array", minItems: 1, maxItems: 128, items: { type: "string", pattern: "^[A-Z][A-Za-z0-9]+\\.[a-z][A-Za-z0-9]+$" }, description: "Exact CDP method grant, not an origin or target restriction. Calls are execute risk, including Runtime.evaluate." },
+      callTimeoutMs: { type: "integer", minimum: 100, maximum: 60000, description: "Both connect and per-call timeout in milliseconds; default 10000. At most 16 outstanding CDP calls. Cancellation cannot undo sent commands." },
+    },
+    required: ["modulePath", "wsUrl", "allowedMethods"],
+    additionalProperties: false,
+  },
   provides:["browser"], guarantee:"managed",
   activate(context, config) {
     const provider = new BrowserHarnessProvider({ ...config, modulePath:path.resolve(context.invocation.cwd,config.modulePath) });

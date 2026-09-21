@@ -78,6 +78,7 @@ import { ResidentActorClient } from "../residency/actor-client.js";
 import { AgentTranscriptReader } from "../ui/transcript.js";
 import { waitWithProgress, waitWithActorProgress } from "./agents-progress.js";
 import { AgentMessageRouter } from "./agents-message-router.js";
+import { terminalAgentStatuses } from "../agents/lifecycle.js";
 
 export { collectAgentToolPreviewNodes, type AgentToolPreviewTreeOptions } from "./agents-progress.js";
 
@@ -631,11 +632,18 @@ export class AgentsProvider implements FabricProvider {
           return root;
         }
         try {
-          return this.manager.status(id);
+          const result = this.manager.status(id);
+          // Model-facing terminal status returns the result; UI polling must not acknowledge it.
+          if (terminalAgentStatuses.has(result.status)) this.manager.markForeground(id);
+          return result;
         } catch (error) {
           if (!(error instanceof Error && /Unknown Fabric agent/.test(error.message))) throw error;
         }
-        if (this.residency?.hasAgent(id)) return this.residency.statusAgent(id);
+        if (this.residency?.hasAgent(id)) {
+          const result = this.residency.statusAgent(id);
+          if (terminalAgentStatuses.has(result.status)) this.residency.acknowledgeCompletion(id);
+          return result;
+        }
         const known = this.participants.get(id);
         if (known && !known.local) return known;
         try {
@@ -1257,13 +1265,15 @@ export class AgentsProvider implements FabricProvider {
       throw new Error(`Fabric participant ${id} cannot be stopped`);
     }
     if (!this.control) throw new Error("Fabric control plane is unavailable");
-    return this.control.request(
+    const result = await this.control.request(
       participant.ownerHostId,
       participant.id,
       "stop",
       {},
       participant.ownerIdentityId,
     );
+    if (this.residency?.hasAgent(id)) this.residency.acknowledgeCompletion(id);
+    return result;
   }
 
   #steeringMode(mode: unknown): "all" | "one-at-a-time" {

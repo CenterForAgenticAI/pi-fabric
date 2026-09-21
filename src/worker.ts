@@ -5,6 +5,7 @@ import path from "node:path";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import crossSpawn from "cross-spawn";
 import { StringDecoder } from "node:string_decoder";
+import { sanitizeFabricMediaText } from "./core/media-sanitize.js";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type {
   AgentRunRecord,
@@ -1105,13 +1106,20 @@ const main = async (): Promise<void> => {
       const newline = outputBuffer.indexOf("\n");
       if (newline < 0) {
         if (outputBuffer.length > MAX_EVENT_LINE_CHARS) {
-          failOversizedEvent(outputBuffer);
+          // Media first: a line over the cap only because it embeds raw base64
+          // is recoverable, while a genuinely oversized line is not.
+          outputBuffer = sanitizeFabricMediaText(outputBuffer);
+          if (outputBuffer.length > MAX_EVENT_LINE_CHARS) failOversizedEvent(outputBuffer);
         }
         break;
       }
       if (newline > MAX_EVENT_LINE_CHARS) {
-        failOversizedEvent(outputBuffer.slice(0, newline));
-        return;
+        const sanitized = sanitizeFabricMediaText(outputBuffer.slice(0, newline));
+        if (sanitized.length > MAX_EVENT_LINE_CHARS) {
+          failOversizedEvent(sanitized);
+          return;
+        }
+        outputBuffer = sanitized + outputBuffer.slice(newline);
       }
       const line = outputBuffer.slice(0, newline).replace(/\r$/, "");
       outputBuffer = outputBuffer.slice(newline + 1);

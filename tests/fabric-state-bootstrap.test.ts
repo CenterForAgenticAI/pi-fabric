@@ -64,6 +64,20 @@ const createState = (loader: never): FabricState => new FabricState(
 );
 
 describe("FabricState lazy bootstrap", () => {
+  it("rereads component configuration at first use without activating the runtime while idle", async () => {
+    const cwd = project({ components: [] });
+    const harness = runtimeHarness();
+    const state = createState(harness.loader);
+    const context = contextAt(cwd);
+    try {
+      await state.bootstrap(context);
+      fs.writeFileSync(path.join(cwd, ".pi", "fabric.json"), JSON.stringify({ components: [{ id: "late", component: "late" }] }));
+      expect(harness.loader).not.toHaveBeenCalled();
+      await state.ensure(context);
+      expect(state.config.components).toEqual([{ id: "late", component: "late" }]);
+      expect(harness.loader).toHaveBeenCalledTimes(1);
+    } finally { await state.shutdown(); fs.rmSync(cwd, { recursive: true, force: true }); }
+  });
   it("loads normalized turn policy without importing or constructing the runtime", async () => {
     const cwd = project({
       fullCodeMode: false,

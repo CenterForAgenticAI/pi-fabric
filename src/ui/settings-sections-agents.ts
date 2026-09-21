@@ -327,7 +327,7 @@ export const buildAgentsSection = (
           values: BOOLEANS,
         }),
         setting("agents.notifyOnComplete", "Notify on complete", config.agents.notifyOnComplete ? "true" : "false", {
-          description: "Post a message when a background agent completes.",
+          description: "Show background completion notices and deliver unread results to Main at a safe boundary. Results already received through wait or terminal status do not wake Main again.",
           values: BOOLEANS,
         }),
       ],

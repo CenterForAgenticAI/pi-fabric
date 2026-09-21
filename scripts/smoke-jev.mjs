@@ -84,9 +84,12 @@ try {
       const body = JSON.parse(options.body);
       assert.equal(body.model, "jev-latest");
       assert.equal(body.questions.safe_to_auto_approve.type, "noul");
+      assert.equal(body.questions.touches_secrets.type, "noul");
+      assert.equal(body.questions.destructive.type, "noul");
+      assert.equal(body.questions.targets_agent_artifacts.type, "noul");
       assert.equal(body.state.action.ref, "jev.spawn");
       classifications++;
-      return Response.json({ model: "jev-latest", answers: { safe_to_auto_approve: { type: "noul", noul: probability } }, usage: { input_tokens: 20, output_tokens: 3 } });
+      return Response.json({ model: "jev-latest", answers: { safe_to_auto_approve: { type: "noul", noul: probability }, touches_secrets: { type: "noul", noul: 0 }, destructive: { type: "noul", noul: 0 }, targets_agent_artifacts: { type: "noul", noul: 0 } }, usage: { input_tokens: 20, output_tokens: 3 } });
     };
     config.approvals.read = "auto";
     config.approvals.model = "pi-fabric/typesafe/jev-latest";

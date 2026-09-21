@@ -50,7 +50,7 @@ const handle = await agents.spawn({ task: "Map the persistence layer.", transpor
 return await agents.wait({ id: handle.id });
 ```
 
-Detached `agents.spawn()` runs already notify Main on terminal completion when `agents.notifyOnComplete` is enabled (the default). The notification is a triggered follow-up. Use `agents.wait()` when the current Fabric program needs the result, `agents.status()` only for a point-in-time progress inspection, and lifecycle subscriptions when another participant's Pi boundary matters. Calling `wait()` makes that run foreground work and suppresses the detached completion notification.
+Detached `agents.spawn()` runs notify Main on terminal completion when `agents.notifyOnComplete` is enabled (the default). Unread results are batched after the current tool turn, or wake idle Main once; concise UI notices appear immediately. `agents.wait()`/`join()` and terminal `agents.status()` acknowledge the result and retract pending notifications, even if completion preceded the wait. Running status and UI/list polling do not acknowledge it. Return the relevant outcome from your program so Main sees results you consumed. Use `wait` when the program needs a result; do not poll status in a loop. Durable spawns preserve unread deliveries and acknowledgment across reconnects. Escape/error parks results until new input. Use lifecycle subscriptions for explicit event-routing policies, not to duplicate automatic completion delivery.
 
 ## Participant lifecycle subscriptions
 
@@ -207,6 +207,8 @@ Mailbox:
 - `agents.setDeliveryPolicy({ id, delivery, triggerTurn, scope? })` replaces the explicit project/global continuation policy without recreating the actor. In the dashboard, press `y` on an actor/template for the same control.
 - `agents.messages({ id, limit? })` returns the actor mailbox history. Create the actor with `scope: "session"` when its history must be private to one root Pi session.
 - `agents.remove({ id })` returns `{ removed }`. Session actors require the local owner. Durable actor removal routes to the resident owner.
+- `agents.import({ id?, name?, as? })` stamps a global template into the current project as a fresh live actor with no inherited history (no messages, session, or run logs). Identify the template by `id` or `name`; `as` renames the imported actor so it cannot collide with a live one. From the TUI: `/fabric import`.
+- `agents.export({ id, overwrite? })` writes a live project actor's definition to the global registry as a project-independent template, again without history. A name collision throws unless `overwrite` is `true`.
 - `agents.log({ id, type?, lines?, runId? })` reads the shared actor log or a locally owned one-shot run. `type` is `session` (the actor's `session.jsonl` transcript — every user/assistant turn and tool call), `run` (the last retained run's `events.jsonl` event stream), or `all` (both; default `session` for actors). Actors retain their last `MAX_RETAINED_RUNS` runs so logs survive after success. Returns `{ actorId, actorName, sessionFile, logDir, session, run?, retainedRuns }` (actors) or `{ id, runDirectory, logFile, status?, events }` (one-shot runs). Use this to inspect what an "offending" actor actually sent to its model. From the TUI: `/fabric log <id>` previews, `/fabric export-log <id> [path]` writes the raw `session.jsonl` + retained `runs/` to disk.
 
 ## Recursive queries

@@ -6,7 +6,15 @@ import type { FabricCapabilityRequirement } from "../components/types.js";
 import type { FabricKernel } from "../runtime/kernel.js";
 import type { FabricParticipantResidency } from "../topology/types.js";
 
-export type FabricActorPiHostEvent = Exclude<ExtensionEvent["type"], "project_trust">;
+// Pi's extension event union is closed; every member we want the actor host
+// to observe must appear in FABRIC_ACTOR_PI_HOST_EVENTS below. `project_trust`
+// uses pi's dedicated trust handler, and pi 0.86's `cache_warming_decision` is
+// a host-internal prompt-cache maintenance control event, so neither is an
+// actor observation and both are excluded here.
+export type FabricActorPiHostEvent = Exclude<
+  ExtensionEvent["type"],
+  "project_trust" | "cache_warming_decision"
+>;
 
 const defineFabricActorPiHostEvents = <
   const Events extends readonly FabricActorPiHostEvent[],

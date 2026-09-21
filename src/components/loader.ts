@@ -1,3 +1,4 @@
+import { componentEntries, validateComponentConfig } from "./validation.js";
 import { stableJsonHash } from "../core/stable-hash.js";
 import { FabricComponentCatalog } from "./catalog.js";
 import { FabricComponentSupervisor } from "./supervisor.js";
@@ -15,7 +16,6 @@ interface LoadedComponent {
   entryHash: string;
 }
 
-const ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 const cloneEntry = (entry: FabricComponentEntry): FabricComponentEntry => structuredClone(entry);
 const entryHash = (entry: FabricComponentEntry): string => stableJsonHash(entry);
@@ -57,6 +57,7 @@ export class FabricComponentLoader {
     name: string;
     description?: string;
     revision: number;
+    configSchema?: Record<string, unknown>;
     requirements: string[];
     provisions: string[];
   }> {
@@ -64,6 +65,7 @@ export class FabricComponentLoader {
       name: definition.name,
       ...(definition.description ? { description: definition.description } : {}),
       revision,
+      ...(definition.configSchema ? { configSchema: structuredClone(definition.configSchema) } : {}),
       requirements: (definition.requires ?? []).map((requirement) =>
         typeof requirement === "string" ? requirement : requirement.ref,
       ),
@@ -71,6 +73,39 @@ export class FabricComponentLoader {
         typeof provision === "string" ? provision : provision.provider,
       ),
     }));
+  }
+
+  describe(name: string) {
+    const definition = this.definitions().find(candidate => candidate.name === name);
+    if (!definition) throw new Error(`Unknown Fabric component definition: ${name}`);
+    return { ...definition, instances: this.list().filter(instance => instance.component === name) };
+  }
+
+  validateEntries(entries: readonly FabricComponentEntry[]): void {
+    const next = this.#entryMap(entries);
+    for (const id of next.keys()) {
+      if (this.#pinned.has(id)) throw new Error(`Fabric component entry id is reserved by a pinned component: ${id}`);
+    }
+    const provisions = new Map<string, string>();
+    for (const entry of [...this.#pinned.values(), ...next.values()]) {
+      if (entry.disabled) continue;
+      for (const provision of this.catalog.get(entry.component)?.definition.provides ?? []) {
+        const name = typeof provision === "string" ? provision : provision.provider;
+        const owner = provisions.get(name);
+        if (owner) throw new Error(`Fabric components ${owner} and ${entry.id} declare the same provider: ${name}`);
+        provisions.set(name, entry.id);
+      }
+    }
+  }
+
+  unavailableProviderMessage(provider: string): string | undefined {
+    const definitions = this.definitions().filter(definition => definition.provisions.includes(provider));
+    if (!definitions.length) return undefined;
+    const names = definitions.map(definition => definition.name);
+    const entries = [...this.#targetEntries().values()].filter(entry => names.includes(entry.component));
+    if (entries.length) return `Component instances ${entries.map(entry => entry.id).join(", ")} provide ${provider}, but none is active. Inspect components.status and components.list configuration diagnostics; use components.reconcile after correcting configuration.`;
+    const name = names[0]!;
+    return `Component definition ${name} is registered, but no instance provides ${provider}. Call components.describe({component:${JSON.stringify(name)}}), then components.plan({entries:[{id:${JSON.stringify(provider)},component:${JSON.stringify(name)},config:{...}}]}) and components.apply with that plan's request and revision. Session scope needs no file edit or /fabric reload.`;
   }
 
   list(): FabricComponentInfo[] {
@@ -211,13 +246,9 @@ export class FabricComponentLoader {
 
   #entryMap(entries: readonly FabricComponentEntry[]): Map<string, FabricComponentEntry> {
     const next = new Map<string, FabricComponentEntry>();
-    for (const rawEntry of entries) {
-      const entry = cloneEntry(rawEntry);
-      if (!ID_PATTERN.test(entry.id)) throw new Error(`Invalid Fabric component id: ${entry.id}`);
-      if (!entry.component.trim()) {
-        throw new Error(`Fabric component entry ${entry.id} has an empty component name`);
-      }
-      if (next.has(entry.id)) throw new Error(`Duplicate Fabric component entry id: ${entry.id}`);
+    for (const entry of componentEntries(entries)) {
+      const definition = this.catalog.get(entry.component)?.definition;
+      if (definition) validateComponentConfig(entry, definition);
       next.set(entry.id, entry);
     }
     return next;
@@ -240,6 +271,7 @@ export class FabricComponentLoader {
       if (entry.disabled) continue;
       const catalogEntry = this.catalog.get(entry.component);
       if (!catalogEntry) continue;
+      validateComponentConfig(entry, catalogEntry.definition);
       targets.set(entry.id, {
         entry: cloneEntry(entry),
         definition: catalogEntry.definition,

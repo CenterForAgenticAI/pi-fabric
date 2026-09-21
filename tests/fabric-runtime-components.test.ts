@@ -193,6 +193,41 @@ describe("Fabric runtime provider components", () => {
       }, invocation) as { id: string };
       const joined = runtime.registry.invoke("jev.join", { id: spawned.id }, invocation);
       await new Promise(resolve => setTimeout(resolve, 20));
+      const registry = runtime.registry;
+      const jevRevision = runtime.components.status("fabric.provider.jev").revision;
+      runtime.registerExternalComponent({
+        name: "live-fixture", provides: ["livefixture"],
+        configSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
+        activate(component, config) {
+          const value = (config as { value: string }).value;
+          const descriptor = { name: "value", description: "Fixture value", inputSchema: { type: "object", additionalProperties: false }, risk: "read" as const };
+          component.provide({
+            name: "livefixture", description: "Synthetic live provider",
+            async list() { return [descriptor]; }, async describe() { return descriptor; },
+            async invoke() { return value; }, async close() {},
+          });
+        },
+      });
+      const probe = await runtime.execution.execute({
+        code: `const definition = await components.describe({component:"live-fixture"});
+          if (!definition.configSchema) throw new Error("Missing configuration schema");
+          const plan = await components.plan({scope:"global",entries:[{id:"live",component:"live-fixture",config:{value:"one"}}]});
+          await components.apply({...plan.request,expectedRevision:plan.revision});
+          return await tools.call({ref:"livefixture.value"});`,
+        context, signal: undefined, parentToolCallId: "component-live-probe", onPartial() {},
+      });
+      expect(probe.success, probe.error ?? JSON.stringify(probe.typeErrors)).toBe(true);
+      expect(probe.value).toBe("one");
+      const componentFile = path.join(cwd, "agent", "fabric.json");
+      const temporary = `${componentFile}.tmp`;
+      fs.writeFileSync(temporary, JSON.stringify({ components: [{ id: "live", component: "live-fixture", config: { value: "two" } }] }));
+      fs.renameSync(temporary, componentFile);
+      await vi.waitFor(async () => expect(await registry.invoke("livefixture.value", {}, invocation)).toBe("two"), { timeout: 3000 });
+      fs.writeFileSync(componentFile, JSON.stringify({ components: [] }));
+      await vi.waitFor(() => expect(registry.has("livefixture")).toBe(false), { timeout: 3000 });
+      expect(runtime.registry).toBe(registry);
+      expect(runtime.components.status("fabric.provider.jev").revision).toBe(jevRevision);
+      expect(await registry.invoke("jev.status", { id: spawned.id }, invocation)).toMatchObject({ state: "running" });
       await runtime.registry.invoke("components.reload", { id: "fabric.provider.jev" }, invocation);
       expect(await joined).toMatchObject({ state: "cancelled" });
       expect(runtime.componentGraph().components.find(c => c.id === "fabric.provider.jev")?.state).toBe("active");
