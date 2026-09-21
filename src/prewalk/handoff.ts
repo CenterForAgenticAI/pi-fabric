@@ -23,19 +23,79 @@ import type {
 } from "../agents/types.js";
 import {
   buildThinkingDigest,
-  THINKING_DIGEST_CUSTOM_TYPE,
   thinkingTransferPolicy,
   type ThinkingTransferInput,
 } from "../agents/thinking-transfer.js";
-import type { FabricPrewalkClaim, PrewalkController } from "./controller.js";
+import { MAX_PREWALK_PLAN_PROMPTS } from "./controller.js";
+import type {
+  FabricPrewalkBorrowedMain,
+  FabricPrewalkClaim,
+  FabricPrewalkPlanCheckpoint,
+  FabricPrewalkReadiness,
+  PrewalkContinuationMessage,
+  PrewalkController,
+} from "./controller.js";
+import { prewalkPlanText } from "./plan.js";
 import type { PrewalkFsDrift } from "./fs-drift.js";
 
 const PREWALK_CONTINUE_PROMPT = [
   "Continue the existing task in this same session under the new executor model.",
   "Do not stop merely because the model changed or because the first mutation succeeded.",
-  "Finish the remaining implementation, check matching call sites for consistency, and run the relevant verification before reporting completion.",
+  "Finish what the user actually asked for: complete the remaining implementation steps, check the matching call sites for consistency, and run the relevant verification before reporting completion. If the request was read-only — a plan, a review, an investigation — the deliverable is the answer, not a code change.",
+  "Once the relevant checks pass, report completion once and stop: do not re-run unchanged passing checks, repeat finished closeout, or re-derive decisions already made — reopen work only for a failed check, contradicting evidence, or a changed request.",
   "Report completion with concrete identifiers — relay links, PR and issue numbers, commit hashes, and artifact paths verbatim so the user can follow up without digging.",
 ].join(" ");
+
+// Frontier plan checkpoint: the boundary that would have handed off instead asks
+// Main to record the approach first. Upstream prewalk nudges the plan on turn one,
+// before any discovery; this lands on the mutation boundary, so the plan is written
+// with the exploration already done and the reasoning still on the frontier model.
+export const PREWALK_PLAN_MESSAGE_TYPE = "pi-fabric-prewalk-plan";
+
+export const prewalkPlanPrompt = (model: string): string =>
+  [
+    `Prewalk plan checkpoint → ${model}: no plan is recorded for this task, so this boundary is withheld — the executor inherits only this transcript.`,
+    "Raw reasoning replay is not guaranteed: when the executor cannot replay this model's thinking, a bounded advisory digest of its recent lines may be delivered with the continuation, but it is deliberation, not commitments, and does not replace the explicit plan.",
+    "Record the plan now with prewalk.plan({ outcome, steps, verification, risks }) inside fabric_exec: the outcome, the remaining steps in execution order with the exact files, symbols, commands and checks, the risks and edge cases, and how each step is verified.",
+    "Keep it concrete enough that a less capable model finishes without re-deriving the design. Then continue the task on this model — the handoff fires at the next successful mutation once the plan is recorded.",
+  ].join(" ");
+
+// Delivered as a steer so it lands before the next LLM call: the frontier model
+// answers the checkpoint before it can touch another file. triggerTurn covers a
+// boundary that ended Main's turn. Custom messages never fire `input`, so this can
+// never be captured as the next prewalk task.
+export const deliverPrewalkPlanCheckpoint = (
+  pi: ExtensionAPI,
+  checkpoint: FabricPrewalkPlanCheckpoint,
+): boolean => {
+  const { arm, mutation } = checkpoint;
+  const files = Array.isArray(mutation.args?.files)
+    ? (mutation.args.files as unknown[]).filter(
+        (entry): entry is string => typeof entry === "string",
+      )
+    : [];
+  try {
+    pi.sendMessage(
+      {
+        customType: PREWALK_PLAN_MESSAGE_TYPE,
+        content: prewalkPlanPrompt(arm.model),
+        display: false,
+        details: {
+          mode: arm.mode,
+          model: arm.model,
+          trigger: mutation.ref,
+          ...(arm.task ? { task: arm.task } : {}),
+          ...(files.length > 0 ? { files } : {}),
+        },
+      },
+      { deliverAs: "steer", triggerTurn: true },
+    );
+    return true;
+  } catch {
+    // A missed checkpoint must never fail the boundary; the caller reopens it.
+    return false;
+  }
+};
 
 // Forced continuation after a completed trajectory handoff: Main must not
 // settle idle at the boundary. The executor's implementation is the source of
@@ -56,8 +116,10 @@ const PREWALK_TRAJECTORY_INCOMPLETE_PROMPT = [
   "Propose the next step (retry, adjust, or continue manually) and stop; do not take over the implementation unprompted.",
 ].join(" ");
 
-// Thrown-boundary variant for both modes: the handoff failed before its
-// continuation even started (unavailable model, missing auth, queue failure).
+// Thrown-boundary variant for terminating boundaries: the handoff failed
+// before its continuation even started (unavailable model, missing auth,
+// queue failure). In-place failures keep the run alive and need no queued
+// copy; trajectory boundaries still end the turn silently.
 const PREWALK_FAILURE_PROMPT = [
   "A prewalk handoff at this boundary failed — the boundary result above is final; do not retry the handoff autonomously.",
   "Tell the user now, briefly: that the handoff failed and why (from the result above), relaying any identifiers verbatim, and propose the next step.",
@@ -120,14 +182,60 @@ const prewalkContinuationId = (message: unknown): string | undefined => {
 export const filterPrewalkContinuationMessages = <Message>(
   messages: Message[],
   accept: (continuationId: string) => boolean,
+  pending?: { continuationId: string; message: Message },
 ): { messages: Message[]; changed: boolean } => {
   let changed = false;
+  let delivered = false;
   const filtered = messages.filter((message) => {
     const continuationId = prewalkContinuationId(message);
     if (continuationId === undefined) return true;
     const keep = continuationId.length > 0 && accept(continuationId);
+    if (keep) delivered = true;
     if (!keep) changed = true;
     return keep;
+  });
+  // Under one-at-a-time steering, pending user steers drain before the queued
+  // continuation, so the executor's first requests would run without the task,
+  // plan or digest (LQ1). Inject the canonical payload until the queued original
+  // itself reaches a request; the accept callback marks the delivery, keeping
+  // settlement keyed to the first sighting. Steer order is untouched —
+  // injection only adds context the queue would deliver later anyway.
+  if (!delivered && pending && accept(pending.continuationId)) {
+    filtered.push(pending.message);
+    changed = true;
+  }
+  return { messages: changed ? filtered : messages, changed };
+};
+
+// Planning directives (arm advisory, plan checkpoint) are phase-scoped
+// guidance for the frontier model while its arm cycle is live. Once a handoff
+// claims the arm — or the arm is off — carrying them into requests invites the
+// executor to treat planning as still open. Persisted history is untouched:
+// only the request projection drops them, mirroring the stale-continuation
+// filter above and upstream prewalk's transient plan nudge.
+const isPrewalkPlanningDirective = <Message>(
+  message: Message,
+): boolean => {
+  const custom = message as { role?: unknown; customType?: unknown };
+  return (
+    custom !== null &&
+    typeof custom === "object" &&
+    custom.role === "custom" &&
+    (custom.customType === PREWALK_ARMED_MESSAGE_TYPE ||
+      custom.customType === PREWALK_PLAN_MESSAGE_TYPE)
+  );
+};
+
+export const filterPrewalkPlanningDirectives = <Message>(
+  messages: Message[],
+  visible: boolean,
+): { messages: Message[]; changed: boolean } => {
+  if (visible) return { messages, changed: false };
+  let changed = false;
+  const filtered = messages.filter((message) => {
+    if (!isPrewalkPlanningDirective(message)) return true;
+    changed = true;
+    return false;
   });
   return { messages: changed ? filtered : messages, changed };
 };
@@ -135,15 +243,21 @@ export const filterPrewalkContinuationMessages = <Message>(
 // Advisory arm-time framing, delivered as a hidden nextTurn custom message:
 // LLM-visible, TUI-hidden, and never fired as an `input` event, so it cannot
 // be captured as the next prewalk task and never triggers a turn by itself.
-export const prewalkArmedPrompt = (mode: FabricPrewalkMode, model: string): string =>
-  [
-    `Prewalk armed → ${model} (${mode}): the first successful pi.edit / pi.write / schema.commit — or file changes produced by shell commands — inside fabric_exec hands off to the executor automatically; ${
-      mode === "trajectory"
-        ? "the executor takes over the implementation there, and a hidden follow-up asks you to verify its work and summarize when it finishes."
-        : `this session switches to ${model} and keeps working.`
-    }`,
-    "Reads never fire it; trigger reports mark the handoff moment only — the workspace is the source of truth, so verify file state with reads before continuing. For multi-step work, restate the remaining steps before your first edit.",
-  ].join("\n");
+export const prewalkArmedPrompt = (
+  mode: FabricPrewalkMode, model: string, requirePlan = true,
+): string => [
+  `Prewalk armed → ${model} (${mode}): ${requirePlan
+    ? "this session owes a recorded plan before handoff. Record it with prewalk.plan({ outcome, steps, verification, risks }) inside fabric_exec; after that, "
+    : ""}the first successful pi.edit / pi.write / schema.commit — or file changes produced by shell commands — hands off automatically; ${
+    mode === "trajectory"
+      ? "the executor takes over the requested work there, and a hidden follow-up asks you to verify its work and summarize when it finishes."
+      : `this session switches to ${model} and keeps working.`
+  }`,
+  ...(requirePlan ? [
+    `A mutation boundary without a recorded plan is withheld and asks again (up to ${MAX_PREWALK_PLAN_PROMPTS} reminders), then hands off unplanned with a warning. Plan before your first edit; Fabric delivers the recorded plan directly to the executor.`,
+  ] : []),
+  "Reads never fire a handoff. Trigger reports mark the handoff moment only — the workspace is the source of truth, so verify file state with reads before continuing.",
+].join("\n");
 
 const customMessageText = (content: unknown): string | undefined => {
   if (typeof content === "string") return content;
@@ -199,12 +313,15 @@ export interface PendingFabricHandoff {
   // cap; absent for audited mutation triggers.
   triggerFiles?: string[];
   triggerFilesTruncated?: number;
+  // Absent for explicit handoffs, which do not participate in the plan gate.
+  readiness?: FabricPrewalkReadiness;
 }
 
 // Appended to the replaced boundary tool result so the framing persists with
-// what Main keeps seeing, anchoring every later turn. Advisory only: prewalk
-// cannot gate the next claim on a plan. Shell writes DO count as triggers when
-// prewalk.detectShellWrites is enabled (the fs-drift fallback claims them).
+// what Main keeps seeing, anchoring every later turn. Advisory only: the directive
+// is text, not a gate — prewalk.requirePlan gates the claim itself. Shell writes DO
+// count as triggers when prewalk.detectShellWrites is enabled (the fs-drift fallback
+// claims them).
 const TRAJECTORY_REARM_DIRECTIVE = [
   "Prewalk handoff completed — the executor's result above is final; don't redo it.",
   "Prewalk re-armed: on the next request, restate remaining steps (skip if trivial), then make changes via pi.edit / pi.write or shell file changes in fabric_exec to hand off again.",
@@ -229,7 +346,7 @@ export const claimFabricHandoff = (
   execution: FabricExecutionResult,
   sessionId: string,
   resultFormat: FabricResultFormat,
-): PendingFabricHandoff | undefined => {
+): PendingFabricHandoff | FabricPrewalkPlanCheckpoint | undefined => {
   if (execution.handoffRequest) {
     controller.completeTask();
     let audit: FabricCallAudit | undefined;
@@ -251,9 +368,10 @@ export const claimFabricHandoff = (
     };
   }
 
-  const claim = controller.claim(execution.audits, sessionId);
-  if (!claim) return undefined;
-  const pending = buildPrewalkPending(claim, resultFormat);
+  const outcome = controller.claim(execution.audits, sessionId);
+  if (!outcome) return undefined;
+  if (outcome.kind === "prewalk-plan") return outcome;
+  const pending = buildPrewalkPending(outcome, resultFormat);
   execution.audits.push(pending.audit);
   return pending;
 };
@@ -269,10 +387,11 @@ export const claimFabricFsDriftHandoff = (
   sessionId: string,
   drift: PrewalkFsDrift,
   resultFormat: FabricResultFormat,
-): PendingFabricHandoff | undefined => {
-  const claim = controller.claimFsDrift(sessionId, drift.files);
-  if (!claim) return undefined;
-  const pending = buildPrewalkPending(claim, resultFormat);
+): PendingFabricHandoff | FabricPrewalkPlanCheckpoint | undefined => {
+  const outcome = controller.claimFsDrift(sessionId, drift.files);
+  if (!outcome) return undefined;
+  if (outcome.kind === "prewalk-plan") return outcome;
+  const pending = buildPrewalkPending(outcome, resultFormat);
   if (drift.files.length > 0) {
     pending.triggerFiles = drift.files;
     if (drift.truncated > 0) pending.triggerFilesTruncated = drift.truncated;
@@ -286,11 +405,16 @@ const buildPrewalkPending = (
   resultFormat: FabricResultFormat,
 ): PendingFabricHandoff => {
   const inPlace = claim.arm.mode === "in-place";
+  const readiness = claim.readiness;
+  const task = [
+    claim.arm.task,
+    ...(!inPlace && readiness.kind === "planned" ? [prewalkPlanText(readiness.plan)] : []),
+  ].filter(Boolean).join("\n\n");
   const nestedToolCallId = `${NESTED_TOOL_CALL_ID_PREFIX}prewalk_${randomUUID()}`;
   const args = {
     model: claim.arm.model,
     name: inPlace ? "In-place Prewalk" : "Prewalk trajectory executor",
-    ...(claim.arm.task ? { task: claim.arm.task } : {}),
+    ...(task ? { task } : {}),
     // Thinking applies to the child executor only; in-place keeps Main's level.
     ...(!inPlace && claim.arm.thinking ? { thinking: claim.arm.thinking } : {}),
   };
@@ -300,7 +424,10 @@ const buildPrewalkPending = (
     startedAt: Date.now(),
     tool: inPlace ? "prewalk" : "handoff",
     provider: inPlace ? "fabric" : "agents",
-    args: { ...args, seq: claim.seq },
+    args: {
+      ...args, seq: claim.seq, readiness: readiness.kind,
+      ...(readiness.kind === "unplanned" ? { planPrompts: readiness.prompts } : {}),
+    },
   };
   return {
     kind: inPlace ? "prewalk-in-place" : "prewalk-trajectory",
@@ -309,6 +436,7 @@ const buildPrewalkPending = (
     resultFormat,
     triggerRef: claim.mutation.ref,
     triggerSeq: claim.seq,
+    readiness,
   };
 };
 
@@ -323,6 +451,19 @@ const modelForKey = (key: string, context: ExtensionContext) => {
   );
   if (!model) throw new Error(`Prewalk model is unavailable: ${key}`);
   return model;
+};
+
+// A model switch can reject or throw, and every return site needs the same
+// answer; the caller reports the failure, so the cause is not rethrown here.
+const setModelSafely = async (
+  extension: ExtensionAPI,
+  model: Parameters<ExtensionAPI["setModel"]>[0],
+): Promise<boolean> => {
+  try {
+    return await extension.setModel(model);
+  } catch {
+    return false;
+  }
 };
 
 const runInPlacePrewalk = async (
@@ -369,56 +510,77 @@ const runInPlacePrewalk = async (
   if (!switched) {
     throw new Error(`No authentication configured for prewalk model: ${modelKey}`);
   }
+  // Record the borrow as soon as the switch succeeds: the continuation below
+  // can still fail to queue, and a failed rollback must leave recovery data.
+  controller.borrowMain(returnModelKey);
 
+  let continuationMessage: PrewalkContinuationMessage | undefined;
   try {
+    // One hidden continuation delivers everything the executor needs: the
+    // task, the recorded plan, and — when the reasoning channel is not
+    // replayable — a bounded advisory digest of the frontier model's
+    // deliberation. It is sent as a passive context message (triggerTurn
+    // false): the host defers it to the end of the boundary turn and appends
+    // it after the tool results, so the executor's next request carries it
+    // without a queued turn of its own. The controller copy is the canonical
+    // payload for the context hook, which injects it into any earlier request
+    // that would otherwise run without it (LQ1: competing steers no longer
+    // delay it, and no completion-only request follows).
     const transferPolicy = thinkingTransferPolicy(transfer);
-    if (transferPolicy !== "preserved") {
-      const digest = buildThinkingDigest(branch, transfer);
-      if (digest) {
-        extension.sendMessage(
-          {
-            customType: THINKING_DIGEST_CUSTOM_TYPE,
-            content: digest.content,
-            display: false,
-            details: {
-              mode: "in-place",
-              policy: transferPolicy,
-              citedBlocks: digest.citedBlocks,
-              target: modelKey,
-              trigger: pending.triggerRef,
-            },
-          },
-          { deliverAs: "followUp" },
-        );
-      }
-    }
-    extension.sendMessage(
-      {
-        customType: PREWALK_CONTINUE_MESSAGE_TYPE,
-        content: PREWALK_CONTINUE_PROMPT,
-        display: false,
-        details: {
-          mode: "in-place",
-          model: modelKey,
-          continuationId,
-          returnModel: returnModelKey,
-          trigger: pending.triggerRef,
-        },
+    const digest = transferPolicy !== "preserved"
+      ? buildThinkingDigest(branch, transfer)
+      : undefined;
+    const taskText =
+      typeof pending.args.task === "string" && pending.args.task.trim().length > 0
+        ? pending.args.task
+        : undefined;
+    continuationMessage = {
+      role: "custom",
+      customType: PREWALK_CONTINUE_MESSAGE_TYPE,
+      content: [
+        PREWALK_CONTINUE_PROMPT,
+        ...(taskText ? [taskText] : []),
+        ...(pending.readiness?.kind === "planned" ? [prewalkPlanText(pending.readiness.plan)] : []),
+        ...(digest ? [digest.content] : []),
+      ].join("\n\n"),
+      display: false,
+      details: {
+        mode: "in-place",
+        model: modelKey,
+        continuationId,
+        returnModel: returnModelKey,
+        trigger: pending.triggerRef,
+        ...(digest
+          ? {
+              thinkingTransfer: {
+                policy: transferPolicy,
+                citedBlocks: digest.citedBlocks,
+                target: modelKey,
+              },
+            }
+          : {}),
       },
-      { deliverAs: "followUp", triggerTurn: true },
-    );
+      timestamp: Date.now(),
+    };
+    extension.sendMessage(continuationMessage, { triggerTurn: false });
   } catch (error) {
-    const restored = await extension.setModel(returnModel);
+    const restored = await setModelSafely(extension, returnModel);
     if (!restored) {
+      // Main is stuck on the executor: disarm so the next mutation cannot hand
+      // off again, but keep the borrow so a later session start or /fabric
+      // reload retries the return instead of losing Main.
+      controller.cancel();
       throw new Error(
         `Prewalk could not queue its continuation or return Main to ${returnModelKey}`,
         { cause: error },
       );
     }
+    // Main is back: discharge the borrow and let the armed task survive.
+    controller.clearBorrowed();
     throw error;
   }
 
-  controller.beginContinuation(continuationId, returnModelKey);
+  controller.beginContinuation(continuationId, returnModelKey, continuationMessage);
   context.ui.notify(
     `Prewalk is continuing in Main with ${modelKey}, then returning to ${returnModelKey}.`,
     "info",
@@ -455,13 +617,62 @@ export interface InPlacePrewalkSettleOptions {
   };
 }
 
+// A restarted process has no in-memory borrow record, yet the branch still
+// proves Main is owed a return: a persisted in-place continuation whose
+// executor switch is the session's last recorded model change. A later model
+// change (completed return, manual pick, another cycle) supersedes it, and a
+// malformed or trajectory record carries no return identity.
+const prewalkRecoveryCandidate = (
+  branch: ReadonlyArray<unknown>,
+): FabricPrewalkBorrowedMain | undefined => {
+  let continuationIndex = -1;
+  let details: { continuationId?: unknown; model?: unknown; returnModel?: unknown } | undefined;
+  for (let index = branch.length - 1; index >= 0; index -= 1) {
+    const entry = branch[index] as { type?: unknown; customType?: unknown; details?: unknown };
+    if (entry?.type !== "custom_message" || entry.customType !== PREWALK_CONTINUE_MESSAGE_TYPE) {
+      continue;
+    }
+    if (typeof entry.details !== "object" || entry.details === null) continue;
+    if ((entry.details as { mode?: unknown }).mode !== "in-place") continue;
+    continuationIndex = index;
+    details = entry.details as { continuationId?: unknown; model?: unknown; returnModel?: unknown };
+    break;
+  }
+  if (continuationIndex < 0 || !details) return undefined;
+  const continuationId = typeof details.continuationId === "string" ? details.continuationId : "";
+  const executorModel = typeof details.model === "string" ? details.model.trim() : "";
+  const returnModel = typeof details.returnModel === "string" ? details.returnModel.trim() : "";
+  if (!continuationId || !executorModel || !returnModel || returnModel === executorModel) {
+    return undefined;
+  }
+  let recordedExecutor: string | undefined;
+  for (let index = 0; index < branch.length; index += 1) {
+    const entry = branch[index] as { type?: unknown; provider?: unknown; modelId?: unknown };
+    if (entry?.type !== "model_change") continue;
+    if (index > continuationIndex) return undefined;
+    recordedExecutor = `${String(entry.provider)}/${String(entry.modelId)}`;
+  }
+  return recordedExecutor === executorModel ? { returnModel, executorModel } : undefined;
+};
+
 export const restoreBorrowedInPlaceMain = async (
   controller: PrewalkController,
   extension: ExtensionAPI,
   context: ExtensionContext,
 ): Promise<boolean> => {
-  const borrowed = controller?.borrowedReturn?.();
-  if (!borrowed) return false;
+  let borrowed = controller?.borrowedReturn?.();
+  let recovered = false;
+  if (!borrowed) {
+    // Restart recovery: adopt the persisted continuation's return tuple, then
+    // restore through the same path. Success clears the adopted record — the
+    // restore's recorded model change supersedes the historical candidate —
+    // while failure keeps it so the auto-arm guard can still refuse to capture
+    // the executor as Main.
+    const candidate = prewalkRecoveryCandidate(context.sessionManager?.getBranch?.() ?? []);
+    if (!candidate || !controller.hydrateBorrowedMain(candidate)) return false;
+    borrowed = candidate;
+    recovered = true;
+  }
   const currentKey = context.model
     ? `${context.model.provider}/${context.model.id}`
     : undefined;
@@ -480,12 +691,7 @@ export const restoreBorrowedInPlaceMain = async (
     return false;
   }
 
-  let restored = false;
-  try {
-    restored = await extension.setModel(model);
-  } catch {
-    restored = false;
-  }
+  const restored = await setModelSafely(extension, model);
   if (!restored) {
     context.ui.setStatus("fabric-prewalk", `return failed → ${borrowed.returnModel}`);
     context.ui.notify(
@@ -495,6 +701,7 @@ export const restoreBorrowedInPlaceMain = async (
     return false;
   }
 
+  if (recovered) controller.clearBorrowed();
   context.ui.notify(`Restored Main to ${borrowed.returnModel} after in-place prewalk.`, "info");
   return true;
 };
@@ -511,7 +718,11 @@ export const settleInPlacePrewalk = async (
 
   const model = modelForReturnKey(settlement.returnModel, context);
   if (!model) {
-    controller.finishContinuation(sessionId, settlement.continuationId);
+    // A failed return is not completion: dropping to the shared cancel path
+    // disarms without re-arming while preserving borrowedReturn, so a later
+    // session start or /fabric reload can still restore Main. Repeated settle
+    // calls find no continuation and stay quiet.
+    controller.cancel();
     context.ui.setStatus("fabric-prewalk", `return failed → ${settlement.returnModel}`);
     context.ui.notify(
       `Prewalk completed, but Main could not return to unavailable model ${settlement.returnModel}.`,
@@ -537,14 +748,13 @@ export const settleInPlacePrewalk = async (
     }
     await options.compact.maybeCommit(context);
   }
-  let restored = false;
-  try {
-    restored = await extension.setModel(model);
-  } catch {
-    restored = false;
-  }
+  const restored = await setModelSafely(extension, model);
   if (!restored) {
-    controller.finishContinuation(sessionId, settlement.continuationId);
+    // A failed return is not completion: dropping to the shared cancel path
+    // disarms without re-arming while preserving borrowedReturn, so a later
+    // session start or /fabric reload can still restore Main. Repeated settle
+    // calls find no continuation and stay quiet.
+    controller.cancel();
     context.ui.setStatus("fabric-prewalk", `return failed → ${settlement.returnModel}`);
     context.ui.notify(
       `Prewalk completed, but Main could not return to ${settlement.returnModel}. Check model authentication.`,
@@ -673,9 +883,11 @@ export const runFabricHandoffAtBoundary = async (
     const failure = { handedOff: false, continued: false, completed: false, status: "failed", error: message };
     const continuing = !inPlace && queueHandoffFailureContinuation(extension, context, { ...failure, error });
     if (continuing) controller.cancel();
-    if (!continuing && pending.kind.startsWith("prewalk-")) {
-      // Thrown failures end the turn silently too (the boundary terminates
-      // Main's inference), so queue the same report-and-propose reply.
+    if (!continuing && pending.kind.startsWith("prewalk-") && !inPlace) {
+      // In-place failures do not terminate the boundary: Main keeps running in
+      // the same turn with the failed result in context, so a queued report
+      // would only add a duplicate turn. Trajectory failures still end the
+      // turn silently, so they queue the report-and-propose reply.
       queuePrewalkFollowUp(
         extension,
         PREWALK_FAILURE_MESSAGE_TYPE,

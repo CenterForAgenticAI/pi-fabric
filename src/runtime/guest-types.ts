@@ -1241,6 +1241,32 @@ interface FabricCompactApi {
   cancel(): Promise<{ cancelled: true }>;
 }
 
+interface FabricPrewalkFileIdentityStatus {
+  path: string;
+  loadedSha256: string;
+  diskSha256: string;
+  stale: boolean;
+}
+interface FabricPrewalkApi {
+  plan(args: {
+    outcome: string;
+    steps: string[];
+    verification: string[];
+    risks: string;
+  }): Promise<{ recorded: true; readiness: "ready"; plan: string }>;
+  status(): Promise<{
+    state: "idle" | "armed" | "handing_off" | "continuation_pending";
+    planRequired: boolean;
+    planReady: boolean;
+    planPrompts: number;
+    claimedReadiness: "planned" | "disabled" | "unplanned" | null;
+    runtime?: {
+      entry: FabricPrewalkFileIdentityStatus | null;
+      lazyRuntime: FabricPrewalkFileIdentityStatus | null;
+    };
+  }>;
+}
+
 interface FabricWorkflowAgentOptions extends Omit<FabricAgentRequest, "task"> {
   label?: string;
 }
@@ -1294,6 +1320,7 @@ declare const state: FabricStateApi;
 declare const schema: FabricSchemaApi;
 declare const components: FabricComponentsApi;
 declare const compact: FabricCompactApi;
+declare const prewalk: FabricPrewalkApi;
 ${JEV_GUEST_DECLARATIONS}
 declare const council: FabricCouncilApi;
 declare const workflow: FabricWorkflowApi;

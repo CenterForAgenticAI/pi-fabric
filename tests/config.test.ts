@@ -173,18 +173,21 @@ describe("Fabric configuration", () => {
       alwaysRearm: false,
       compactOnReturn: true,
       detectShellWrites: true,
+      requirePlan: true,
     });
     expect(normalizeFabricConfig({ prewalk: { model: "   " } }).prewalk).toEqual({
       mode: "in-place",
       alwaysRearm: false,
       compactOnReturn: true,
       detectShellWrites: true,
+      requirePlan: true,
     });
     expect(normalizeFabricConfig({ prewalk: { alwaysRearm: true } }).prewalk).toEqual({
       mode: "in-place",
       alwaysRearm: true,
       compactOnReturn: true,
       detectShellWrites: true,
+      requirePlan: true,
     });
     expect(normalizeFabricConfig({ prewalk: { mode: "trajectory" } }).prewalk.mode).toBe(
       "trajectory",
@@ -775,6 +778,7 @@ describe("Fabric configuration", () => {
       alwaysRearm: false,
       compactOnReturn: true,
       detectShellWrites: true,
+      requirePlan: true,
     });
   });
 
