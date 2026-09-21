@@ -63,9 +63,16 @@ const invokeBash = async (
   return { result, jobs };
 };
 
+// A Windows shell chain costs more to start than a tight hang threshold allows,
+// and a detached shell there can be reaped before a probe observes it. The spill
+// contract itself is asserted on every platform; only these probes are scoped.
+const windowsShell = process.platform === "win32";
+const SHORT_COMMAND_HANG_MS = windowsShell ? 2_000 : 80;
+const PID_PROBE_EXACT = !windowsShell;
+
 describe("pi.bash auto-spill", () => {
   it("lets a short command pass through unchanged", async () => {
-    const { result } = await invokeBash('printf "hi\\n"', 80);
+    const { result } = await invokeBash('printf "hi\\n"', SHORT_COMMAND_HANG_MS);
     expect(result.ok).toBe(true);
     expect(result.output).toBe("hi\n");
     expect(result.details).not.toMatchObject({ running: true });
@@ -82,7 +89,7 @@ describe("pi.bash auto-spill", () => {
     expect(fs.existsSync(logPath)).toBe(true);
     const pid = result.details?.pid;
     expect(pid).toEqual(expect.any(Number));
-    if (typeof pid === "number") {
+    if (typeof pid === "number" && PID_PROBE_EXACT) {
       expect(() => process.kill(pid, 0)).not.toThrow();
       try { process.kill(-pid, "SIGKILL"); } catch { process.kill(pid, "SIGKILL"); }
     }
@@ -110,10 +117,7 @@ describe("pi.bash auto-spill", () => {
     expect(result.details?.logPath).toBeTruthy();
     const pid = result.details?.pid;
     expect(pid).toEqual(expect.any(Number));
-    // A background detach returns before the shell settles, so Windows can
-    // report a pid whose process is already reaped. The contract proved here is
-    // the immediate ok/running/log result; the pid probe is exact on POSIX.
-    if (typeof pid === "number" && process.platform !== "win32") {
+    if (typeof pid === "number" && PID_PROBE_EXACT) {
       expect(() => process.kill(pid, 0)).not.toThrow();
       try { process.kill(-pid, "SIGKILL"); } catch { process.kill(pid, "SIGKILL"); }
     }
