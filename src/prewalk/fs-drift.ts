@@ -110,7 +110,9 @@ const listWalkFiles = async (
     }
     for (const entry of entries) {
       const absolute = path.join(dir, entry.name);
-      const relative = path.relative(root, absolute);
+      // The git listing reports "/" while a walk on Windows reports "\"; both
+      // feed one baseline manifest, so report one canonical separator.
+      const relative = path.relative(root, absolute).split(path.sep).join("/");
       // Prune runtime state before walking, counting or statting its contents.
       if (isFabricStateRelativePath(relative)) continue;
       if (entry.isDirectory()) {

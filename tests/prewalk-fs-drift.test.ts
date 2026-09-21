@@ -277,6 +277,9 @@ describe("PrewalkDriftTracker", () => {
     await writeFile(path.join(root, "watched.ts"), "one-changed");
     const drift = await tracker.evaluate("session-1", root);
     expect(drift?.files.slice().sort()).toEqual([".idea/notes.md", "watched.ts"]);
+    // Reported separators are canonical on every platform, so drift evidence
+    // reads the same whether it came from the git listing or a Windows walk.
+    expect(drift?.files.every((file) => !file.includes("\\"))).toBe(true);
     expect(drift?.modified).toBe(2);
   });
 });
