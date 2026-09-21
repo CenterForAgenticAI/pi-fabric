@@ -112,20 +112,25 @@ describe("finalize-prewalk-evidence", () => {
   });
 
   describe.skipIf(process.platform === "win32")("special-entry inventory", () => {
+    type SkippedEntry = { path: string; type: string; target?: string };
     const skippedOf = (archive: string) =>
       (
         JSON.parse(fs.readFileSync(path.join(archive, "manifest.json"), "utf8")) as {
-          skipped: Array<{ path: string; type: string; target?: string }>;
+          skipped: SkippedEntry[];
         }
       ).skipped;
+    // Directory order is not part of the contract, so compare by path.
+    const byPath = (entries: SkippedEntry[]) => [...entries].sort((left, right) => left.path.localeCompare(right.path));
 
     it("records a symlink target and verifies an unchanged special inventory", () => {
       const archive = makeArchive({ fifo: true, symlinks: [{ name: "probe.link", target: "nested/evidence.json" }] });
       expect(runCli(["--archive", archive]).status).toBe(0);
-      expect(skippedOf(archive)).toEqual([
-        { path: "probe.fifo", type: "fifo" },
-        { path: "probe.link", type: "symlink", target: "nested/evidence.json" },
-      ]);
+      expect(byPath(skippedOf(archive))).toEqual(
+        byPath([
+          { path: "probe.fifo", type: "fifo" },
+          { path: "probe.link", type: "symlink", target: "nested/evidence.json" },
+        ]),
+      );
       // The symlinked file is not followed: it stays a special entry, not a second digest.
       expect(runCli(["--archive", archive, "--verify"]).status).toBe(0);
     });

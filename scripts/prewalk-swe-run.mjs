@@ -92,29 +92,44 @@ const substitute = (text, tokens) =>
 const resolve = (template, tokens) => path.resolve(root, substitute(template, tokens));
 const readJsonIfExists = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null);
 // Durable replacement: the JSON must not be observable as a torn file, and a
-// crash after the rename must not lose it. The parent directory is synced too
-// on POSIX, because that is what makes the rename itself durable; Windows has
-// no directory fsync, so there the file sync plus atomic replacement is the
+// crash after the rename must not lose it. The temporary file is unique and
+// created exclusively in the same directory, so a concurrent or abandoned
+// writer cannot truncate the one being written, and it is removed if the
+// write, sync or rename fails. The parent directory is synced too on POSIX,
+// because that is what makes the rename itself durable; Windows has no
+// directory fsync, so there the file sync plus atomic replacement is the
 // strongest guarantee available (documented in docs/prewalk-swe.md).
 const atomicWrite = (file, data) => {
-  const temp = `${file}.tmp`;
-  const fd = fs.openSync(temp, "w", 0o600);
+  const temp = path.join(
+    path.dirname(file),
+    `.${path.basename(file)}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`,
+  );
   try {
-    fs.writeFileSync(fd, JSON.stringify(data, null, 2) + "\n");
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  fs.renameSync(temp, file);
-  if (process.platform === "win32") return;
-  let dirFd = null;
-  try {
-    dirFd = fs.openSync(path.dirname(file), "r");
-    fs.fsyncSync(dirFd);
-  } catch {
-    /* some filesystems reject a directory fsync; the rename already happened */
-  } finally {
-    if (dirFd !== null) fs.closeSync(dirFd);
+    const fd = fs.openSync(temp, "wx", 0o600);
+    try {
+      fs.writeFileSync(fd, JSON.stringify(data, null, 2) + "\n");
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(temp, file);
+    if (process.platform === "win32") return;
+    let dirFd = null;
+    try {
+      dirFd = fs.openSync(path.dirname(file), "r");
+      fs.fsyncSync(dirFd);
+    } catch {
+      /* some filesystems reject a directory fsync; the rename already happened */
+    } finally {
+      if (dirFd !== null) fs.closeSync(dirFd);
+    }
+  } catch (error) {
+    try {
+      fs.rmSync(temp, { force: true });
+    } catch {
+      /* nothing left to remove */
+    }
+    throw error;
   }
 };
 
@@ -177,8 +192,12 @@ const runCommand = (spec, tokens, logFile) =>
       if (typeof child.pid !== "number") return;
       if (process.platform === "win32") {
         // Windows has no POSIX process groups; taskkill /T walks the child tree.
+        // The grace period is preserved by terminating the tree without /F and
+        // forcing it only on the escalation signal.
+        const args = ["/PID", String(child.pid), "/T"];
+        if (signal === "SIGKILL") args.push("/F");
         try {
-          spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+          spawnSync("taskkill", args, { stdio: "ignore" });
         } catch {
           /* tree already gone */
         }

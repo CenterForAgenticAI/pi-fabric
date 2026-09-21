@@ -275,12 +275,15 @@ describe("prewalk-swe-run coordinator (fake worker, no model calls)", () => {
     const checkpoints = readJson(path.join(root, "evidence/checkpoints.json")) as Record<string, { phase: string }>;
     expect(checkpoints["001"]?.phase).toBe("starting");
 
-    // Content is synced, then the rename, then the parent directory.
+    // Content is synced, then the rename, then the parent directory on POSIX.
+    // Windows cannot fsync a directory, which is the documented limit captured
+    // in docs/prewalk-swe.md, so no directory sync is asserted there.
     const events = fs.readFileSync(syncLog, "utf8").trim().split("\n");
     const renamed = events.indexOf("rename to=results-new.json");
     expect(renamed).toBeGreaterThan(0);
     expect(events[renamed - 1]).toBe("fsync dir=false");
-    expect(events[renamed + 1]).toBe("fsync dir=true");
+    if (process.platform === "win32") expect(events[renamed + 1]).not.toBe("fsync dir=true");
+    else expect(events[renamed + 1]).toBe("fsync dir=true");
 
     // The interrupted attempt is recoverable offline and is never reissued.
     const resumed = runCoordinator(root, baseConfig(root), ["--resume"]);
