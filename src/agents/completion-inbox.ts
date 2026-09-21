@@ -26,33 +26,37 @@ export class AgentCompletionInbox {
 
   constructor(readonly pi: ExtensionAPI, context: ExtensionContext) {
     this.#context = context;
-    this.#unsubscribe.push(
-      pi.on("turn_end", (event, ctx) => {
+    const subscribe = (event: string, handler: (...handlerArgs: any[]) => unknown): void => {
+      if (typeof pi.on !== "function") return;
+      const unsubscribe = (pi.on as (name: string, fn: (...fnArgs: any[]) => unknown) => unknown)(event, handler);
+      if (typeof unsubscribe === "function") this.#unsubscribe.push(unsubscribe as () => void);
+    };
+    subscribe("turn_end", (event, ctx) => {
         this.#context = ctx;
-        const stopReason = event.message.role === "assistant" ? event.message.stopReason : undefined;
+        const stopReason = event.message?.role === "assistant" ? event.message.stopReason : undefined;
         if (ctx.signal?.aborted || stopReason === "aborted" || stopReason === "error") {
           this.#suspended = true;
           return;
         }
         this.#flush();
-      }),
-      pi.on("before_agent_start", (_event, ctx) => {
+      });
+    subscribe("before_agent_start", (_event, ctx) => {
         this.#context = ctx;
         let message: CompletionMessage | undefined;
         // Join the user's first inference; do not enqueue an extra turn behind it.
         this.#flush((value) => { message = value; });
         return message ? { message } : undefined;
-      }),
-      pi.on("agent_settled", (_event, ctx) => {
+      });
+    subscribe("agent_settled", (_event, ctx) => {
         if (this.#context.signal?.aborted || ctx.signal?.aborted) this.#suspended = true;
         this.#context = ctx;
         this.#schedule();
-      }),
-      pi.on("input", (_event, ctx) => {
+      });
+    subscribe("input", (_event, ctx) => {
         this.#context = ctx;
         this.#suspended = false;
-      }),
-      pi.on("session_tree", (_event, ctx) => {
+      });
+    subscribe("session_tree", (_event, ctx) => {
         this.#context = ctx;
         // Navigation abandons this frontier, not the visible run history.
         for (const { result, delivered } of this.#pending.values()) {
@@ -60,8 +64,7 @@ export class AgentCompletionInbox {
           this.#confirmDelivery(delivered);
         }
         this.#pending.clear();
-      }),
-    );
+      });
   }
 
   enqueue(result: Completion, delivered?: () => void): void {

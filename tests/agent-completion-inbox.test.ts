@@ -41,6 +41,18 @@ afterEach(() => {
 });
 
 describe("AgentCompletionInbox", () => {
+  it("stays inert when ExtensionAPI.on is missing or does not return unsubscribe", () => {
+    const context = { hasUI: false, isIdle: () => true, hasPendingMessages: () => false } as unknown as ExtensionContext;
+    const missing = new AgentCompletionInbox({ sendMessage: vi.fn() } as unknown as ExtensionAPI, context);
+    inboxes.push(missing);
+    expect(() => missing.close()).not.toThrow();
+    const noUnsub = new AgentCompletionInbox({
+      on: () => undefined, sendMessage: vi.fn(),
+    } as unknown as ExtensionAPI, context);
+    inboxes.push(noUnsub);
+    expect(() => noUnsub.close()).not.toThrow();
+  });
+
   it("shows concise status immediately but batches unread results only after the entire tool turn", async () => {
     const h = harness();
     h.inbox.enqueue(result("a"));

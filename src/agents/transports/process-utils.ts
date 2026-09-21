@@ -182,12 +182,23 @@ export const resolveScriptRuntimeSync = (options: ScriptRuntimeOptions = {}): st
   throw missingRuntimeError(execPath, requireNode, requireBun);
 };
 
+const typescriptWorker = (workerPath: string): boolean =>
+  /.[cm]?tsx?$/i.test(path.extname(workerPath));
+
+const runtimeOptionsForWorker = (
+  workerPath: string,
+  options?: ScriptRuntimeOptions,
+): ScriptRuntimeOptions | undefined => {
+  if (!typescriptWorker(workerPath) || options?.requireNode || options?.requireBun) return options;
+  return { ...options, requireBun: true };
+};
+
 export const scriptSpawnArgs = async (
   workerPath: string,
   workerArguments: readonly string[],
   options?: ScriptRuntimeOptions,
 ): Promise<string[]> => {
-  const runtime = await resolveScriptRuntime(options);
+  const runtime = await resolveScriptRuntime(runtimeOptionsForWorker(workerPath, options));
   return [runtime, workerPath, ...workerArguments];
 };
 
@@ -202,7 +213,7 @@ export const spawnDetached = async (
   workerArguments: string[],
   cwd: string,
 ): Promise<{ pid: number; stop(): Promise<void>; isAlive(): Promise<boolean> }> => {
-  const runtime = await resolveScriptRuntime();
+  const runtime = await resolveScriptRuntime(runtimeOptionsForWorker(workerPath));
   const child = spawn(runtime, [workerPath, ...workerArguments], {
     cwd,
     detached: process.platform !== "win32",

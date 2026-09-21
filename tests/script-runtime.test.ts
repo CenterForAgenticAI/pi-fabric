@@ -90,4 +90,11 @@ describe("script runtime resolution", () => {
       resolveScriptRuntimeSync({ execPath: "/usr/local/bin/bun", requireNode: true }),
     ).toThrow();
   });
+
+  it("launches TypeScript workers with bun so Node test hosts can boot src/worker.ts", async () => {
+    if (!await commandAvailable("bun")) return;
+    const args = await scriptSpawnArgs("src/worker.ts", ["--id", "x"]);
+    expect(path.basename(args[0]!).replace(/\.exe$/i, "")).toBe("bun");
+    expect(args[1]).toBe("src/worker.ts");
+  });
 });
