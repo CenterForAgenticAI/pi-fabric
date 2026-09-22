@@ -56,6 +56,7 @@ const lazy = [
   "ui/conversation-native-reader.js",
   "ui/model-picker.js",
   "ui/settings.js",
+  "worker/event-projection.js",
   "worker/options.js",
   "worker/run-record.js",
   "worker/session-export.js",

@@ -34,6 +34,12 @@ You can give `fabric_exec` optional `agentBudget` and `tokenBudget` limits. Conf
 
 Durable spawns use the same inbox. Undelivered envelopes survive disconnects; receipts survive reconnects. Escape or an errored Main turn parks pending results until new input rather than immediately restarting Main. Explicit lifecycle subscriptions, actor messages, and trajectory handoffs retain their separate delivery policies. A terminal run can still report incomplete work; Main must inspect its result.
 
+### Image-heavy lifecycle events
+
+Pi repeats message history in `agent_end.messages` and tool results in `turn_end.toolResults`. Fabric streams past these redundant top-level fields, recording empty arrays in the worker event log. Large accumulated histories therefore do not trip the event-size guard or interrupt completion/retries. Authoritative message/tool events, final text, usage, and Pi's persisted session history are unchanged.
+
+The 4,194,304-character guard still applies to other event data, including a single oversized authoritative message. It is not a model token limit. Already-running workers keep their loaded implementation; newly launched workers use the rebuilt/updated package.
+
 ### Reuse discovered model keys
 
 Use `agents.models({ runner: "pi" })` and copy the returned `key` verbatim, or use an explicitly configured `models.aliases` name. Reuse the `model` returned by a successful spawn rather than reconstructing it from an agent's display name. For example, an agent named “Sol” need not share the version number of one named “Astra”. Prior success with one key does not validate a different key.

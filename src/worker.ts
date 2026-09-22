@@ -27,6 +27,13 @@ type CompactControlModule = typeof import("./agents/compact-control.js");
 type WorkerOptionsModule = typeof import("./worker/options.js");
 type WorkerRunRecordModule = typeof import("./worker/run-record.js");
 type WorkerSessionExportModule = typeof import("./worker/session-export.js");
+type WorkerEventProjectionModule = typeof import("./worker/event-projection.js");
+const loadWorkerEventProjection = async (): Promise<WorkerEventProjectionModule> => {
+  if (!import.meta.url.endsWith(".ts")) return import("./worker/event-projection.js");
+  const sourceModulePath = "./worker/event-projection.ts";
+  return import(sourceModulePath) as Promise<WorkerEventProjectionModule>;
+};
+
 type WorkerModelControlModule = typeof import("./worker/model-control.js");
 
 const loadWorkerModelControl = async (): Promise<WorkerModelControlModule> => {
@@ -194,12 +201,13 @@ process.on("unhandledRejection", (error) => {
 });
 
 const main = async (): Promise<void> => {
-  const [optionHelpers, loadedRunRecordHelpers, sessionExportHelpers, {parseStructuredValue, validateAgentResult}, { PiModelControl }] = await Promise.all([
+  const [optionHelpers, loadedRunRecordHelpers, sessionExportHelpers, {parseStructuredValue, validateAgentResult}, { PiModelControl }, { PiEventProjection }] = await Promise.all([
     loadWorkerOptions(),
     loadWorkerRunRecord(),
     loadWorkerSessionExport(),
     loadAgentResult(),
     loadWorkerModelControl(),
+    loadWorkerEventProjection(),
   ]);
   runRecordHelpers = loadedRunRecordHelpers;
   const {
@@ -369,6 +377,7 @@ const main = async (): Promise<void> => {
   // once the child closes instead of treating stdout as NDJSON lines.
   let vedaOutput = "";
   let vedaParsed: Record<string, unknown> | undefined;
+  const eventProjection = options.runner === "pi" ? new PiEventProjection() : undefined;
   const outputDecoder = new StringDecoder("utf8");
   const stderrDecoder = new StringDecoder("utf8");
   let terminalStatus: AgentRunStatus | undefined;
@@ -1100,20 +1109,19 @@ const main = async (): Promise<void> => {
       vedaOutput += decoded;
       return;
     }
-    outputBuffer += decoded;
+    outputBuffer += eventProjection ? eventProjection.write(decoded) : decoded;
     while (true) {
       const newline = outputBuffer.indexOf("\n");
       if (newline < 0) {
-        // A partial line past the cap is already anomalous: fail with bounded
-        // evidence instead of growing the buffer. Redaction cannot decide this
-        // - it collapses any long base64-alphabet run, including plain text,
-        // which would let an unbounded line slip through as 'recovered'.
+        // Redundant Pi lifecycle history has already been elided while streaming.
+        // Keep the cap on authoritative messages and all other event fields;
+        // broad base64/text redaction must not bypass this safety boundary.
         if (outputBuffer.length > MAX_EVENT_LINE_CHARS) failOversizedEvent(outputBuffer);
         break;
       }
       if (newline > MAX_EVENT_LINE_CHARS) {
-        // A complete oversized line fails on its raw length: the raw prefix is
-        // the evidence, and redaction is not a licence to keep the run alive.
+        // The retained record still exceeds the cap. Preserve bounded evidence;
+        // do not use broad text redaction to keep an anomalous run alive.
         failOversizedEvent(outputBuffer.slice(0, newline));
         return;
       }
@@ -1176,7 +1184,8 @@ const main = async (): Promise<void> => {
   if (options.runner === "veda") {
     vedaOutput += outputDecoder.end();
   } else {
-    outputBuffer += outputDecoder.end();
+    const tail = outputDecoder.end();
+    outputBuffer += eventProjection ? eventProjection.write(tail) + eventProjection.end() : tail;
   }
   recordStderr(stderrDecoder.end());
   if (options.runner === "veda") {

@@ -197,6 +197,44 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     }
   }, 30_000);
 
+  it.each(["large-lifecycle", "large-lifecycle-retry"])(
+    "preserves progress through oversized lifecycle history (%s)", async (behavior) => {
+      process.env.FAKE_PI_BEHAVIOR = behavior;
+      const result = await run("finish the image-heavy task", 10_000);
+      expect(result.status).toBe("completed");
+      expect(result.error).toBeUndefined();
+      const retried = behavior.endsWith("retry");
+      expect(result.text).toBe(retried ? "retry completed" : "progress preserved");
+      expect(result.usage.input).toBe(retried ? 300 : 100);
+      expect(result.usage.output).toBe(retried ? 125 : 50);
+      expect(result.toolCalls).toBe(1);
+      expect(result.turns).toBe(1);
+      const log = fs.readFileSync(result.logFile!, "utf8");
+      expect(log.length).toBeLessThan(10_000);
+      const events = log.trim().split("\n").map((line) => JSON.parse(line));
+      expect(events.find((event) => event.type === "turn_end")).toMatchObject({ toolResults: [], turnIndex: 1 });
+      expect(events.filter((event) => event.type === "agent_end")).toEqual(retried ? [
+        { type: "agent_end", messages: [], willRetry: true },
+        { type: "agent_end", messages: [], willRetry: false },
+      ] : [{ type: "agent_end", messages: [], willRetry: false }]);
+      expect(events.some((event) => event.type === "message_end" && event.message.content === result.text)).toBe(true);
+      expect(fs.existsSync(path.join(path.dirname(result.logFile!), "oversized-event-prefix.txt"))).toBe(false);
+    }, 30_000,
+  );
+
+  it("loads the history projector from a native source worker too", async () => {
+    process.env.FAKE_PI_BEHAVIOR = "large-lifecycle";
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-source-worker-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 10_000 }, {
+      workerPath: path.resolve("src/worker.ts"), piBinary, runRoot: root,
+    });
+    managers.push(manager);
+    const result = await manager.run({ task: "preserve source-worker progress", transport: "process" });
+    expect(result.status).toBe("completed");
+    expect(result.text).toBe("progress preserved");
+  }, 30_000);
+
   it("preserves a bounded prefix when an agent event exceeds the line limit", async () => {
     process.env.FAKE_PI_BEHAVIOR = "oversized-event";
     const result = await run("do it", 10_000);
