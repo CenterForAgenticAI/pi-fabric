@@ -88,7 +88,7 @@ describe("Fabric runtime provider components", () => {
     const config = normalizeFabricConfig({
       fullCodeMode: true,
       capture: { enabled: true },
-      components: [{ id: "guidance-only", component: "guidance-only" }],
+      components: [{ id: "guidance-only", component: "guidance-only" }, { id: "optional-device", component: "third-party-device", config: { label: "fixture" } }],
       mcp: { enabled: false, cache: { enabled: false } },
       mesh: { enabled: true },
       memory: { enabled: true },
@@ -111,6 +111,11 @@ describe("Fabric runtime provider components", () => {
       await runtime.initialize(context, config);
 
       expect(getActiveRepairCompiler()).toBe(runtime.repairs);
+      // Concrete connector definitions belong to external packages, not Fabric.
+      expect(runtime.componentCatalog.get("browser-harness")).toBeUndefined();
+      expect(runtime.componentCatalog.get("macos-harness")).toBeUndefined();
+      expect(runtime.registry.providers().map(provider => provider.name)).not.toContain("browser");
+      expect(runtime.registry.providers().map(provider => provider.name)).not.toContain("macos");
       expect(runtime.repairs.catalogDigest).toBe(catalogDigestFromSurface({
         providers: runtime.registry.providers().map((provider) => provider.name),
         capturedTools: [],
@@ -188,6 +193,29 @@ describe("Fabric runtime provider components", () => {
         cwd, signal: undefined, parentToolCallId: "jev-reload-test", nestedToolCallId: "jev-reload-test",
         extensionContext: context, update() {}, approve: async () => {}, audits: [], maxResultChars: 32_768,
       };
+      // Configuration can precede extension discovery. The host knows no device API.
+      expect(runtime.components.status("optional-device").state).toBe("waiting");
+      expect(runtime.registry.has("devicefixture")).toBe(false);
+      let deviceInvocations = 0;
+      let deviceClosed = 0;
+      runtime.registerExternalComponent({
+        name: "third-party-device", provides: ["devicefixture"], guarantee: "managed",
+        configSchema: { type: "object", properties: { label: { type: "string" } }, required: ["label"], additionalProperties: false },
+        activate(component, config) {
+          const descriptor = { name: "sample", description: "Third-party device fixture", inputSchema: { type: "object", additionalProperties: false }, risk: "read" as const };
+          component.provide({
+            name: "devicefixture", description: "An arbitrary external connector",
+            async list() { return [descriptor]; }, async describe() { return descriptor; },
+            async invoke() { deviceInvocations++; return { label: (config as { label: string }).label }; },
+            async close() { deviceClosed++; },
+          });
+        },
+      });
+      await runtime.settleComponents();
+      expect(runtime.components.status("optional-device").state).toBe("active");
+      expect(deviceInvocations).toBe(0);
+      expect(await runtime.registry.invoke("devicefixture.sample", {}, invocation)).toEqual({ label: "fixture" });
+      expect(deviceInvocations).toBe(1);
       const spawned = await runtime.registry.invoke("jev.spawn", {
         program: { name: "self-pinned-loop", code: "while (true) await program.sleep(10);", requires: ["jev.evaluate"], inputSchema: {}, outputSchema: {} }, input: null,
       }, invocation) as { id: string };
@@ -226,6 +254,7 @@ describe("Fabric runtime provider components", () => {
       fs.writeFileSync(componentFile, JSON.stringify({ components: [] }));
       await vi.waitFor(() => expect(registry.has("livefixture")).toBe(false), { timeout: 3000 });
       expect(runtime.registry).toBe(registry);
+      expect(deviceClosed).toBe(1);
       expect(runtime.components.status("fabric.provider.jev").revision).toBe(jevRevision);
       expect(await registry.invoke("jev.status", { id: spawned.id }, invocation)).toMatchObject({ state: "running" });
       await runtime.registry.invoke("components.reload", { id: "fabric.provider.jev" }, invocation);

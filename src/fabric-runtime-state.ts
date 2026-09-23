@@ -429,10 +429,6 @@ export class FabricRuntimeState {
       this.#managedHost,
     );
     const enforceSchema = this.#config.schema.mode === "enforce";
-    if (!this.#managedHost && !enforceSchema) {
-      const { browserHarnessComponent } = await import("./jev/browser.js");
-      this.componentCatalog.register(browserHarnessComponent, { overwrite: true });
-    }
     await builtins.tools(context.cwd, this.#config, this.capturedTools, {
       jobs: this.shellJobs,
       getHangMs: () => this.#config?.executor.shellHangMs ?? DEFAULT_SHELL_HANG_MS,

@@ -149,11 +149,15 @@ observer = await tools.call(ref="jev.spawn", args=request)
 return {"id": observer["id"], "state": observer["state"]}
 ```
 
-## Browser composition
+## Model-neutral browser and desktop composition
+
+Connectors are independent packages, not built-in Jev or Fabric adapters. Read `docs/harnesses.md` through the link in `docs/jev.md` for installing their normal Pi extensions and configuring them through `components.describe`, `components.plan`, and `components.apply`. Definitions arrive through the existing component registration/discovery protocol; missing definitions wait rather than auto-loading code. Inspect the installed connector's schemas—Fabric does not mandate observe/act names for every provider. Ordinary models and deterministic programs can use these harnesses too; do not add inference to exact deterministic routes.
 
 **Branch pointer:** when browser access is requested, follow the Browser Harness section of `<skill-dir>/../../../docs/jev.md` before enabling `browser-harness`. Configure a trusted SDK `modulePath`, explicit authorized `wsUrl`, and narrow `allowedMethods`; enabling Jev alone never connects or scans. Keep `autoAllow: false`.
 
-The artifact may require `jev.evaluate`, `browser.connect`, and `browser.cdp`. Connect explicitly, attach an authorized target using `Target.attachToTarget`, and use its returned `sessionId` for page-scoped calls. Revalidate observed candidate IDs/revisions before acting; no guessed IDs or shared active-tab pointer. CDP is `execute` risk and method grants are not origin/target restrictions. Cancelling a sent command cannot undo it. Send compact text/JSON, not screenshots, to Jev; prefer narrow application connectors over arbitrary `Runtime.evaluate`.
+Prefer `browser.observe`, `browser.act`, and `browser.waitForChange` (or the corresponding `macos.*` refs) at unknown UI decision boundaries. Discover descriptors first. Browser configuration adds `interactionModulePath` and exact `allowedOrigins`; native configuration explicitly allows apps and starts a persistent bridge only on `macos.connect`. Connect/attach before the loop and pass the actual scope (`{sessionId}` for browser, `{app}` for macOS) as input; declare only the exact refs the program uses, including `jev.evaluate`. The program selects among candidate IDs and advertised operations; `act` performs freshness validation inside the host operation. Execute only the target head matching the selected operation.
+
+Treat `executed` as dispatch, not success: verify the task's postcondition from fresh evidence. `stale` means re-observe; `blocked` means stop/resolve approval, not bypass; `outcome_unknown` means inspect, never blindly retry. Waits return a fresh observation and replace old handles. Cancellation is not rollback. Preserve known exact API/shortcut routes and separately authorized raw CDP/AX/vision escape hatches for unsupported mechanics, then re-observe. Raw method grants are not origin/target restrictions. Keep field values literal or obtain text from Main/an authorized helper; Jev does not generate prose. Send compact, redacted text/JSON, never screenshots or unrelated private data.
 
 **Soft pointer:** https://docs.typesafe.ai/llms.txt and its relevant primitive/confidence/cookbook pages help refine judgments; the local Fabric contract remains authoritative for supported calls.
 

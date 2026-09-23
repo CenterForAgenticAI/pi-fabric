@@ -308,7 +308,9 @@ Every external action keeps Fabric argument validation, approvals, Schema policy
 
 ## Browser Harness JS
 
-The optional `browser-harness` component imports your trusted Browser Harness SDK and maintains one connection. It is separate from Jev and usable through ordinary Fabric calls. Nothing scans or connects to your browser merely because Jev is enabled.
+For the default guarded workflow, see [external connector components](harnesses.md). First load the harness-owned Pi extension; Fabric does not auto-register connector definitions. Then configure `interactionModulePath` and `allowedOrigins` to expose `browser.observe`, `browser.act`, and `browser.waitForChange`; the optional `macos-harness` component exposes the same concepts over native AX. These connectors do not depend on Jev. Prefer observed candidates over arbitrary evaluators for unknown UI decisions; retain exact deterministic routes and explicitly granted raw APIs for supported tasks and escape hatches. `act` validates inside the host operation, and an `executed` receipt is not verification of the goal.
+
+The following raw-CDP path remains available through the independently installed Browser Harness component. That connector imports your trusted Browser Harness SDK and maintains one connection. It is separate from Jev and usable through ordinary Fabric calls. Nothing scans or connects to your browser merely because Jev is enabled.
 
 ```json
 {
@@ -359,4 +361,4 @@ After `bun run build`, `bun run test:jev:dist` checks the compiled public entry 
 
 No real browser state or secrets are printed by these probes. Live tests exercise all three primitives, foreground/background inference loops, and a feedback controller using changing synthetic screen observations and source control IDs. `tests/jev-realtime-loop.test.ts` replays both realtime shapes offline: batched target heads with one request per tick, factorized control axes with pulse/epoch motor control, labeled degraded decisions, a death stop, and status/stop on a paced loop. Unit tests exercise the Browser Harness adapter with an injected session; they do not attach to a personal browser.
 
-Public host APIs and types are exported from `pi-fabric/jev`. Fabric lifecycle and trust semantics are detailed in [components.md](components.md). Current TypeSafe contracts: [API](https://docs.typesafe.ai/api), [Choice](https://docs.typesafe.ai/primitives/choice), [Noul](https://docs.typesafe.ai/primitives/noul), [Score](https://docs.typesafe.ai/primitives/score), and [confidence](https://docs.typesafe.ai/confidence).
+Jev host APIs and types are exported from `pi-fabric/jev`. Connector implementations live in their own packages and register through `pi-fabric/protocol`. Browser adapter exports have been removed from `pi-fabric/jev`; load the Browser Harness-owned extension instead. Fabric lifecycle and trust semantics are detailed in [components.md](components.md). Current TypeSafe contracts: [API](https://docs.typesafe.ai/api), [Choice](https://docs.typesafe.ai/primitives/choice), [Noul](https://docs.typesafe.ai/primitives/noul), [Score](https://docs.typesafe.ai/primitives/score), and [confidence](https://docs.typesafe.ai/confidence).

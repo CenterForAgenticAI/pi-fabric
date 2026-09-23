@@ -20,5 +20,4 @@ export {
   type JevRoute,
   type JevRouteTarget,
 } from "./jev/routes.js";
-export { BrowserHarnessProvider, browserHarnessComponent, type BrowserHarnessConfig, type BrowserHarnessSession } from "./jev/browser.js";
 export type { JevJson, JevQuestion, JevRequest, JevAnswer, JevResponse, JevProgram, JevLaunch, JevRunInfo, JevRunState, JevEvent, JevObserve, JevHostEvent, JevHostEventName, JevObservationStats, JevAdvice, JevAdviceResult } from "./jev/types.js";
