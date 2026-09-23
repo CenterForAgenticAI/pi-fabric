@@ -1,3 +1,5 @@
+import { acceptSampleAccounting } from "../verified/policy.js";
+
 export const MAX_SUMMARY_BYTES = 32 * 1024;
 const MAX_REQUEST_SOURCE_BYTES = 8 * 1024;
 
@@ -71,10 +73,12 @@ export const sampleAddressedFrom = <T extends AddressedValue>(
   const earliest: T[] = [];
   const latest: T[] = [];
   let omitted = 0;
+  let total = 0;
   let omittedFirstEntryId: string | undefined;
   let omittedLastEntryId: string | undefined;
 
   for (const value of source) {
+    total++;
     if (earliest.length < earliestLimit) {
       earliest.push(value);
       continue;
@@ -87,6 +91,9 @@ export const sampleAddressedFrom = <T extends AddressedValue>(
     omittedLastEntryId = displaced.entryId;
   }
 
+  if (!acceptSampleAccounting(total, earliest.length + latest.length, omitted, maxValues)) {
+    throw new Error("Addressed sample failed conservation/bound verification");
+  }
   return {
     values: [...earliest, ...latest],
     omitted,

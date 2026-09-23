@@ -1,3 +1,4 @@
+import { boundedEffectResources, unknownConflict, knownConflict } from "../verified/policy.js";
 import type { ResolvedFabricAction } from "../core/action-registry.js";
 import type {
   FabricComponentEffectConflict,
@@ -13,12 +14,7 @@ export class FabricComponentIndependenceError extends Error {
   }
 }
 
-const normalizeResources = (resources: readonly string[] | undefined): string[] => {
-  const normalized = [...new Set((resources ?? [])
-    .filter((resource): resource is string => typeof resource === "string" && resource.length > 0)
-    .map((resource) => resource.slice(0, 256)))].slice(0, 64);
-  return normalized.length > 0 ? normalized : ["*"];
-};
+const normalizeResources = boundedEffectResources;
 
 export const trackedRegistration = (
   registration: FabricComponentEffectRegistration | undefined,
@@ -100,16 +96,20 @@ export const effectConflictsBetween = (
   if (!left.hasEffects || !right.hasEffects) return [];
   const conflicts: FabricComponentConflictBasis[] = [];
   if (
-    (left.hasUnknown && (left.hasUnknownNoncommutative || right.hasNoncommutative)) ||
-    (right.hasUnknown && (right.hasUnknownNoncommutative || left.hasNoncommutative))
+    unknownConflict(
+      left.hasUnknown, left.hasUnknownNoncommutative, left.hasNoncommutative,
+      right.hasUnknown, right.hasUnknownNoncommutative, right.hasNoncommutative,
+    )
   ) {
     conflicts.push({ resources: ["*"], reason: "unknown_resource" });
   }
   const overlap = [...left.resourceNoncommutative.keys()]
     .filter((resource) =>
-      right.resourceNoncommutative.has(resource) &&
-      ((left.resourceNoncommutative.get(resource) ?? false) ||
-        (right.resourceNoncommutative.get(resource) ?? false)),
+      knownConflict(
+        right.resourceNoncommutative.has(resource),
+        left.resourceNoncommutative.get(resource) ?? false,
+        right.resourceNoncommutative.get(resource) ?? false,
+      ),
     )
     .sort();
   if (overlap.length > 0) {

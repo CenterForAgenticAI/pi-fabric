@@ -37,10 +37,19 @@
     "docs/",
     "README.md",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "LAWS.bend",
+    "PROOF.bend",
+    "proofs/",
+    "scripts/verified-kernels.mjs",
+    "scripts/test-verified-kernels.mjs"
   ],
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json --emitDeclarationOnly && node scripts/build.mjs && bun run assert:build-artifacts",
+    "proof:generate": "node scripts/verified-kernels.mjs --write",
+    "proof:check": "node scripts/verified-kernels.mjs --check && node scripts/test-verified-kernels.mjs",
+    "proof:artifact": "node scripts/verified-kernels.mjs --artifact",
+    "proof:dist": "node scripts/smoke-verified-kernels.mjs",
+    "build": "bun run proof:artifact && node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json --emitDeclarationOnly && node scripts/build.mjs && bun run assert:build-artifacts",
     "typecheck": "tsc --noEmit",
     "test:jev:live": "PI_FABRIC_JEV_LIVE=1 vitest run tests/jev-live.test.ts",
     "test:jev:dist": "node scripts/smoke-jev.mjs",
@@ -61,7 +70,7 @@
     "lint:dead": "knip --no-gitignore",
     "assert:lazy-graph": "node scripts/assert-lazy-graph-host-free.mjs",
     "assert:build-artifacts": "node scripts/assert-build-artifacts.mjs",
-    "prepack": "bun run typecheck && bun run build"
+    "prepack": "bun run proof:check && bun run typecheck && bun run build"
   },
   "keywords": [
     "pi-package",

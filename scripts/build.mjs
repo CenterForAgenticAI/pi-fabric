@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { build } from "esbuild";
+import { copyFileSync, mkdirSync } from "node:fs";
 
 const primaryEntryPoints = [
   "src/index.ts",
@@ -80,6 +81,12 @@ const result = await build({
   metafile: true,
   logLevel: "info",
 });
+
+// tsc does not copy input .d.ts files; ship the generated kernel ABI and receipt.
+mkdirSync("dist/verified/generated", { recursive: true });
+for (const file of ["kernel.js", "kernel.d.ts", "manifest.json"]) {
+  copyFileSync(`src/verified/generated/${file}`, `dist/verified/generated/${file}`);
+}
 
 const bundledPackages = Object.keys(result.metafile.inputs).filter((input) =>
   input.includes("node_modules/"),

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { canClose } from "../verified/policy.js";
 import type { FabricComponentProviderLease } from "../components/types.js";
 import type { FabricProvider } from "../protocol.js";
 
@@ -254,10 +255,7 @@ export class FabricProviderBindings {
 
   async #maybeClose(binding: FabricProviderBinding): Promise<void> {
     if (
-      binding.state !== "retiring" ||
-      binding.ownerRetained ||
-      binding.retainers > 0 ||
-      binding.inFlight > 0
+      !canClose(binding.state === "retiring", binding.ownerRetained, binding.retainers > 0, binding.inFlight > 0)
     ) {
       return;
     }

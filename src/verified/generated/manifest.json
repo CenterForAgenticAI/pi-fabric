@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "bend": "2.0.25",
+  "inputs": {
+    "LAWS.bend": "f3d3800a70e557c859620d0417285a1e6b22a3398b6824d35a09a8154a1c586e",
+    "PROOF.bend": "88ed587e5fcc33b0f626e51f808f2b33b44a52807c858e40169035fc7fcc01e8",
+    "proofs/kernel.bend": "858b03d5b7836cab5b4db154fd58b0ba9eb2cdd154598deb556f36a9dfa90109",
+    "proofs/abi.json": "f8413a2d710bde2ee31f935192d69b5efcb5a46042881d9774b1015b9a9d6718",
+    "proofs/types.d.ts": "5730b69c25659f264992a29620cb6518a30fc2280ca173c6caa768919f65602d",
+    "scripts/verified-kernels.mjs": "8996628d9562702dd800438544069102b2051fe18527707ee93b4e8dfa2dc72a"
+  },
+  "javascript": "9312102c3e7d4df2ced066fc7e98fe00ec52d9c4cb89714e14b9738f1034750d",
+  "declarations": "b71d2dfafbf00399e8327c3d03edac106c709e5f32d2ceccc410df75de3b4839"
+}

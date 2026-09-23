@@ -35,11 +35,28 @@ jobs:
           fi
       - name: Install dependencies
         run: bun install --frozen-lockfile
+      - name: Install pinned Bend proof compiler
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/bend.tar.gz" https://github.com/bendlang/bend/releases/download/v2.0.25/bend-2.0.25-linux-x64.tar.gz
+          echo "91c0e2640f8d2e3e73fd3dd62ed4d178ce9a6f7ce8f8980b4dc4abf7a6f9ccd4  $RUNNER_TEMP/bend.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/bend.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/bend/bin" >> "$GITHUB_PATH"
+      - name: Check proofs, reproduce executable kernels, and reject invalid mutations
+        if: runner.os == 'Linux'
+        env:
+          BEND_NO_TELEMETRY: '1'
+        run: bun run proof:check
+      - name: Test verified-kernel ABI on both platforms
+        run: bunx vitest run tests/verified-kernels.test.ts tests/verified-artifact.test.ts
       - name: Type check
         run: bun run typecheck
       # Some integration tests execute the published worker entrypoints in dist.
       - name: Build
         run: bun run build
+      - name: Check bundled verified-kernel behavior
+        run: bun run proof:dist
       - name: Test Windows type-checker regression
         if: runner.os == 'Windows'
         run: bunx vitest run tests/type-checker.test.ts

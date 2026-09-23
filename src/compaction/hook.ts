@@ -6,9 +6,10 @@ import {
   type SessionBeforeTreeEvent,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import { acceptCompactionCut, acceptSummaryBounds } from "../verified/policy.js";
 import { calculateContextTokens, DEFAULT_COMPACTION_SETTINGS, estimateTokens } from "../core/token-math.js";
 import { buildSessionContext, sessionEntryToContextMessages } from "../core/session-context.js";
-import { clipUtf8, MAX_SUMMARY_BYTES } from "./bounds.js";
+import { clipUtf8, MAX_SUMMARY_BYTES, utf8Bytes } from "./bounds.js";
 import { modelCompactionKey } from "./threshold.js";
 import { NO_BUILTIN_ENRICHERS, runEnrichers, type CompactionEnricher } from "./enrichers.js";
 import { compileFabricBranchSummary } from "./branch-summary.js";
@@ -476,7 +477,7 @@ const computeContinuityCut = (
   );
 };
 
-export const computeCut = (
+const proposeCut = (
   branchEntries: SessionEntry[],
   options?: { tokensBefore: number; budget: FabricCompactionBudget },
 ): CutResult => {
@@ -507,6 +508,30 @@ export const computeCut = (
     live.slice(0, closed).map((item) => item.entry),
     live[closed]!.entry.id,
   );
+};
+
+/** Selection stays an optimized TypeScript producer. Every successful proposal,
+ * including legacy and compact-all paths, passes the compiled acceptance gate. */
+export const computeCut = (
+  branchEntries: SessionEntry[],
+  options?: { tokensBefore: number; budget: FabricCompactionBudget },
+): CutResult => {
+  const proposed = proposeCut(branchEntries, options);
+  if (!proposed.ok) return proposed;
+  const live = collectLive(branchEntries);
+  const kept = proposed.firstKeptEntryId
+    ? live.findIndex((item) => item.entry.id === proposed.firstKeptEntryId)
+    : live.length;
+  if (kept < 0) return { ok: false, reason: "empty" };
+  const boundaryIndex = live[kept]?.branchIndex ?? branchEntries.length;
+  const retained = live.slice(kept).reduce((sum, item) => sum + item.estimatedTokens, 0);
+  const budget = proposed.budget?.rawTailTokenBudget ?? continuityTailLimit(options?.budget.keepRecentTokens);
+  if (!acceptCompactionCut({
+    eligible: kept === live.length || live[kept]!.cutPoint,
+    afterPrevious: boundaryIndex > (findLastCompaction(branchEntries)?.index ?? -1),
+    retained, budget, boundary: boundaryIndex,
+  }, callResultSpans(branchEntries).values())) return { ok: false, reason: "empty" };
+  return proposed;
 };
 
 interface FabricCompactionDetailsV1 {
@@ -756,7 +781,10 @@ export const compileFabricSummary = (
     : undefined;
   // The maximum-summary reservation should make this unreachable unless fixed overhead alone
   // makes the target infeasible. Never persist an expanding or nominally unsafe result.
-  if (budgetDetails && budgetDetails.projectedTokensAfter > budgetDetails.targetContextTokens) {
+  if (!acceptSummaryBounds(
+    utf8Bytes(summary), MAX_SUMMARY_BYTES,
+    budgetDetails?.projectedTokensAfter ?? 0, budgetDetails?.targetContextTokens ?? 0,
+  )) {
     return {
       cancel: true,
       reason: "fabric: no deterministic summary fits the continuity context target",

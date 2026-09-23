@@ -1,3 +1,4 @@
+import { transitionCurrent, cleanupState as verifiedCleanupState } from "../verified/policy.js";
 import { validateComponentConfig } from "./validation.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -1110,12 +1111,13 @@ export class FabricComponentSupervisor {
         }
       }
       let retryDelayMs = 0;
-      if (cleanupErrors.length > 0) {
+      const recovery = verifiedCleanupState(cleanupErrors.length > 0, diverted);
+      if (recovery === 2) {
         component.state = "quarantined";
         component.consecutiveDiversions = 0;
         component.error = errorMessage(error);
         component.cleanupErrors = cleanupErrors;
-      } else if (diverted) {
+      } else if (recovery === 1) {
         component.state = "waiting";
         component.consecutiveDiversions++;
         retryDelayMs = Math.min(2 ** (component.consecutiveDiversions - 1), 100);
@@ -1158,10 +1160,10 @@ export class FabricComponentSupervisor {
   }
 
   #transitionCurrent(component: ManagedComponent, epoch: number): boolean {
-    return !component.retired &&
-      component.epoch === epoch &&
-      this.#components.get(component.entry.id) === component &&
-      !this.#closed;
+    return transitionCurrent(
+      component.retired, component.epoch === epoch,
+      this.#components.get(component.entry.id) === component, this.#closed,
+    );
   }
 
   async #unload(component: ManagedComponent, visited: Set<string>): Promise<void> {

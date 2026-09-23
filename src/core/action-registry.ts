@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { effectConflictsBetween, registrationEffect, summarizeEffects } from "../components/effect-policy.js";
 
 /** Effective page size for registry list(): caller default 100, hard cap 1000.
  *  Exported so guest discovery surfaces slice identically to the registry. */
@@ -250,22 +251,10 @@ const conflictBetween = (
   left: FabricActionEffect,
   right: FabricActionEffect,
 ): { resources: string[]; reason: FabricEffectConflict["reason"] } | undefined => {
-  if (left.kind === "none" || right.kind === "none") return undefined;
-  const resources = (effect: FabricActionEffect): string[] =>
-    [...new Set((effect.resources ?? []).filter(
-      (resource): resource is string => typeof resource === "string" && resource.length > 0,
-    ).map((resource) => resource.slice(0, 256)))].slice(0, 64);
-  const leftResources = resources(left);
-  const rightResources = resources(right);
-  if (leftResources.length === 0 || rightResources.length === 0) {
-    if (left.ordering === "commutative" && right.ordering === "commutative") return undefined;
-    return { resources: ["*"], reason: "unknown_resource" };
-  }
-  const rightSet = new Set(rightResources);
-  const overlap = leftResources.filter((resource) => rightSet.has(resource)).sort();
-  if (overlap.length === 0) return undefined;
-  if (left.ordering === "commutative" && right.ordering === "commutative") return undefined;
-  return { resources: overlap, reason: "shared_resource" };
+  return effectConflictsBetween(
+    summarizeEffects([registrationEffect({ label: "left", ...left })]),
+    summarizeEffects([registrationEffect({ label: "right", ...right })]),
+  )[0];
 };
 
 export class ActionRegistry {
