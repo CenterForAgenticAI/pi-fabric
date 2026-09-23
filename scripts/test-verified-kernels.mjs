@@ -8,10 +8,65 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const env = { ...process.env, BEND_NO_TELEMETRY: "1" };
 const bend = process.env.BEND_BIN || "bend";
-if (execFileSync(bend, ["version"], { encoding: "utf8", env }).trim() !== "bend 2.0.25") throw new Error("Bend 2.0.25 required");
+if (execFileSync(bend, ["version"], { encoding: "utf8", env }).trim() !== "bend 2.0.26") throw new Error("Bend 2.0.26 required");
 const inputs = JSON.parse(readFileSync(join(root, "src/verified/generated/manifest.json"), "utf8")).inputs;
 const originals = Object.fromEntries(Object.keys(inputs).filter((path) => path.endsWith(".bend")).map((path) => [path, readFileSync(join(root, path), "utf8")]));
 const mutations = [
+  ["storage CAS bypass", "proofs/storage-plans.bend", "equal(version, actual)", "True{}"],
+  ["storage deny all", "proofs/storage-kernel.bend", "C.reduce(request, slot)", "C.Conflict{}"],
+  ["storage wrong key", "proofs/storage-plans.bend", "PutNext{key, value, identity, next(version), next(highWater)}", "PutNext{Nil{}, value, identity, next(version), next(highWater)}"],
+  ["storage wrong payload", "proofs/storage-plans.bend", "PutNext{key, value, identity, next(version), next(highWater)}", "PutNext{key, Nil{}, identity, next(version), next(highWater)}"],
+  ["storage wrong identity", "proofs/storage-plans.bend", "PutNext{key, value, identity, next(version), next(highWater)}", "PutNext{key, value, Nil{}, next(version), next(highWater)}"],
+  ["storage put revision reuse", "proofs/storage-plans.bend", "PutNext{key, value, identity, next(version), next(highWater)}", "PutNext{key, value, identity, version, next(highWater)}"],
+  ["storage delete revision reuse", "proofs/storage-plans.bend", "DeleteNext{key, next(version), next(highWater)}", "DeleteNext{key, version, next(highWater)}"],
+  ["storage clock reuse", "proofs/storage-plans.bend", "PutNext{key, value, identity, next(version), next(highWater)}", "PutNext{key, value, identity, next(version), highWater}"],
+  ["storage ignores eviction clock", "proofs/storage-plans.bend", "case False{}:\n      highWater", "case False{}:\n      version"],
+  ["storage ignores clock exhaustion", "proofs/storage-plans.bend", "room(version) && room(highWater)", "room(version)"],
+  ["storage overflow bypass", "proofs/storage-plans.bend", "room(version) && room(highWater)", "True{}"],
+  ["storage lost carry", "proofs/storage-plans.bend", "Revision{1n+high, 0n}", "Revision{high, 0n}"],
+  ["storage reset low limb", "proofs/storage-plans.bend", "Revision{high, 1n+low}", "Revision{high, 0n}"],
+  ["storage missing-delete refusal", "proofs/storage-plans.bend", "case Delete{} False{}:\n      Unchanged{}", "case Delete{} False{}:\n      Conflict{}"],
+
+  ["lifecycle staged admission denied", "proofs/lifecycle.bend", "case _:\n      cleanup || Bool.not(revoked)", "case Staged{}:\n      False{}\n    case _:\n      cleanup || Bool.not(revoked)"],
+  ["lifecycle retiring admission denied", "proofs/lifecycle.bend", "case _:\n      cleanup || Bool.not(revoked)", "case Retiring{}:\n      cleanup\n    case _:\n      cleanup || Bool.not(revoked)"],
+  ["lifecycle failed cleanup denied", "proofs/lifecycle.bend", "case Failed{}:\n      cleanup", "case Failed{}:\n      False{}"],
+  ["lifecycle activation loses work", "proofs/lifecycle.bend", "Life{Active{}, owner, holds, calls, revoked}, Granted{}", "Life{Active{}, owner, holds, 0n, revoked}, Granted{}"],
+  ["lifecycle quarantine loses work", "proofs/lifecycle.bend", "Life{Failed{}, False{}, holds, calls, True{}}, Granted{}", "Life{Failed{}, False{}, holds, 0n, True{}}, Granted{}"],
+  ["lifecycle completes failed close", "proofs/lifecycle.bend", "case Complete{} _:\n      Outcome{life, Denied{}}", "case Complete{} _:\n      Outcome{life, Granted{}}"],
+
+  ["authority widening", "proofs/authority-state.bend", "select(R.covered(candidate, grants, True{}), candidate)", "select(True{}, candidate)"],
+  ["authority deny all", "proofs/authority-state.bend", "select(R.covered(candidate, grants, True{}), candidate)", "Released{}"],
+  ["authority subset direction", "proofs/authority-state.bend", "R.covered(candidate, grants, True{})", "R.covered(grants, candidate, True{})"],
+  ["authority release reuse", "proofs/authority-state.bend", "def release(authority: Authority) -> Authority:\n  Released{}", "def release(authority: Authority) -> Authority:\n  authority"],
+  ["authority wrapper widening", "proofs/authority-kernel.bend", "A.derive(parent, candidate)", "A.issue(candidate)"],
+  ["authority wrapper release reuse", "proofs/authority-kernel.bend", "A.release(authority)", "authority"],
+  ["lifecycle uncounted work", "proofs/lifecycle.bend", "Life{phase, owner, holds, 1n+calls, revoked}, Granted{}", "Life{phase, owner, holds, calls, revoked}, Granted{}"],
+  ["lifecycle close under lease", "proofs/lifecycle.bend", "case Close{} Life{Retiring{}, False{}, 0n, 0n, revoked}:", "case Close{} Life{Retiring{}, False{}, holds, 0n, revoked}:"],
+  ["lifecycle close under work", "proofs/lifecycle.bend", "case Close{} Life{Retiring{}, False{}, 0n, 0n, revoked}:", "case Close{} Life{Retiring{}, False{}, 0n, calls, revoked}:"],
+  ["lifecycle revocation drops work", "proofs/lifecycle.bend", "Life{retiring(phase), False{}, holds, calls, True{}}", "Life{retiring(phase), False{}, holds, 0n, True{}}"],
+  ["lifecycle owner release drops holds", "proofs/lifecycle.bend", "Life{phase, False{}, holds, calls, revoked}, Granted{}", "Life{phase, False{}, 0n, calls, revoked}, Granted{}"],
+  ["lifecycle close not reserved", "proofs/lifecycle.bend", "Life{Closing{}, False{}, 0n, 0n, revoked}, StartClose{}", "Life{Retiring{}, False{}, 0n, 0n, revoked}, StartClose{}"],
+  ["lifecycle revoked admission", "proofs/lifecycle.bend", "cleanup || Bool.not(revoked)", "True{}"],
+  ["lifecycle wrapper bypass", "proofs/lifecycle-kernel.bend", "L.bindingStep(life, event)", "L.Outcome{life, L.Granted{}}"],
+
+  ["state authority bypass", "proofs/state-plans.bend", "R.nameEqual(granted, key, True{})", "True{}"],
+  ["state stale revision bypass", "proofs/state-plans.bend", "&& R.nameEqual(expected, observed, True{})", "&& True{}"],
+  ["state cancellation bypass", "proofs/state-plans.bend", "Bool.not(stopped)", "True{}"],
+  ["state revocation bypass", "proofs/state-plans.bend", "active && (", "True{} && ("],
+  ["state payload substitution", "proofs/state-plans.bend", "Write{key, expected, value}", "Write{key, expected, Nil{}}"],
+  ["state target substitution", "proofs/state-plans.bend", "Write{key, expected, value}", "Write{expected, expected, value}"],
+  ["state deny all", "proofs/state-plans.bend", "Write{key, expected, value}", "Denied{}"],
+  ["state wrapper ignores cancellation", "proofs/state-kernel.bend", "C.writePlan(grant, key, expected, observed, value, stopped)", "C.writePlan(grant, key, expected, observed, value, False{})"],
+
+  ["provider ticket reuse", "proofs/provider-plans.bend", "Outcome{Ticket{S.revoke(grant), expected, payload}", "Outcome{Ticket{grant, expected, payload}"],
+  ["provider descriptor bypass", "proofs/provider-plans.bend", "S.writePlan(grant, key, expected, observed, payload, stopped)", "S.writePlan(grant, key, expected, expected, payload, stopped)"],
+  ["provider identity substitution", "proofs/provider-plans.bend", "S.writePlan(grant, key, expected, observed, payload, stopped)", "S.writePlan(grant, Nil{}, expected, observed, payload, stopped)"],
+  ["provider payload substitution", "proofs/provider-plans.bend", "S.writePlan(grant, key, expected, observed, payload, stopped)", "S.writePlan(grant, key, expected, observed, Nil{}, stopped)"],
+  ["provider deny all", "proofs/provider-plans.bend", "S.writePlan(grant, key, expected, observed, payload, stopped)", "S.Denied{}"],
+  ["provider wrapper cancellation bypass", "proofs/provider-kernel.bend", "P.take(ticket, key, observed, stopped)", "P.take(ticket, key, observed, False{})"],
+  ["provider wrapper revocation bypass", "proofs/provider-kernel.bend", "P.revoke(ticket)", "ticket"],
+  ["provider consumed payload corruption", "proofs/provider-plans.bend", "Outcome{Ticket{S.revoke(grant), expected, payload}", "Outcome{Ticket{S.revoke(grant), expected, Nil{}}"],
+
   ["deny valid sources", "proofs/resources.bend", "select(nonempty(names) && identitiesValid(names, True{}), names)", "Unknown{}"],
   ["lost original resource", "proofs/resources.bend", "covered(original, candidate, True{}) && covered(candidate, original, True{})", "True{} && covered(candidate, original, True{})"],
   ["injected resource", "proofs/resources.bend", "covered(original, candidate, True{}) && covered(candidate, original, True{})", "covered(original, candidate, True{}) && True{}"],

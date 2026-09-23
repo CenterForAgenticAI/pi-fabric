@@ -133,9 +133,9 @@ not an automatically inferred conversational objective.
 - On pi's `onError` with `"Compaction cancelled"`, `"Already compacted"`,
   or `"Nothing to compact (session too small)"`, Fabric clears the intent
   and `last` records `status: "cancelled"` with the raw pi message in
-  `error`. No compaction happened — the too-small message is Pi rejecting a
+  `error`. No compaction happened. The too-small message is Pi rejecting a
   manual compaction whose session sits below `keepRecentTokens`, so every
-  message would be kept anyway — and the outcome stays observable without
+  message would be kept anyway. The outcome stays observable without
   being silently dropped. Only exact messages are benign: an error merely
   containing one of the phrases stays `failed`.
 - On any other error, Fabric clears the intent and `last` records

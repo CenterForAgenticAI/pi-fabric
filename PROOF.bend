@@ -1,8 +1,122 @@
+import ./proofs/storage-proof.bend as StorageProof
+import ./LAWS.bend as Laws
+import ./proofs/authority-proof.bend as AP
+import ./proofs/lifecycle-proof.bend as LP
 import ./proofs/resource-proof.bend as RP
 import ./proofs/resources.bend as R
 import Base
-import ./LAWS.bend as Laws
+import ./proofs/state-plans.bend as SP
+import ./proofs/state-proof.bend as SPP
 import ./proofs/kernel.bend as K
+import ./proofs/provider-plans.bend as DP
+
+def Laws.authority_issue_exact(grants):
+  AP.issueExact(grants)
+
+def Laws.authority_issue_live(grants):
+  {==}
+
+def Laws.authority_use_safe(authority, grant, allowed):
+  AP.useSafe(authority, grant, allowed)
+
+def Laws.authority_use_complete(authority, grant, member):
+  AP.useAccepted(authority, grant, member)
+
+def Laws.authority_derive_safe(parent, candidate):
+  AP.deriveSafe(parent, candidate)
+
+def Laws.authority_derive_complete(parent, candidate, subset):
+  AP.deriveAccepted(parent, candidate, subset)
+
+def Laws.authority_child_use_safe(parent, candidate, grant, used):
+  AP.childUseSafe(parent, candidate, grant, used)
+
+def Laws.authority_released_refused(authority, grant):
+  AP.releasedCannotUse(authority, grant)
+
+def Laws.authority_released_cannot_derive(authority, candidate):
+  AP.releasedCannotDerive(authority, candidate)
+
+def Laws.authority_released_not_live(authority):
+  AP.releaseNotLive(authority)
+
+
+
+
+def Laws.state_read_safe(grant, key, stopped):
+  SPP.readSelected(grant, key, stopped, SP.allowed(grant, key, stopped), {==})
+
+def Laws.state_write_safe(grant, key, expected, observed, value, stopped):
+  SPP.writeSelected(grant, key, expected, observed, value, stopped, SP.allowed(grant, key, stopped) && R.nameEqual(expected, observed, True{}), {==})
+
+def Laws.state_read_complete(key):
+  %Equal.sym(Bool, R.nameEqual(key, key, True{}), True{}, RP.nameRefl(key)) : {SP.selectRead(_, key) == SP.Read{key} : SP.Plan}
+  {==}
+
+def Laws.state_write_complete(key, revision, value):
+  %Equal.sym(Bool, R.nameEqual(key, key, True{}), True{}, RP.nameRefl(key)) : {SP.selectWrite(_ && R.nameEqual(revision, revision, True{}), key, revision, value) == SP.Write{key, revision, value} : SP.Plan}
+  %Equal.sym(Bool, R.nameEqual(revision, revision, True{}), True{}, RP.nameRefl(revision)) : {SP.selectWrite(_, key, revision, value) == SP.Write{key, revision, value} : SP.Plan}
+  {==}
+
+def Laws.state_stale_refused(grant, key, expected, observed, value, stopped, different):
+  SPP.staleSelected(grant, key, expected, observed, value, stopped, SP.allowed(grant, key, stopped) && R.nameEqual(expected, observed, True{}), {==}, different)
+
+def Laws.state_revoked_read(grant, key, stopped):
+  match grant:
+    case SP.Grant{active, granted}:
+      {==}
+
+def Laws.state_revoked_write(grant, key, expected, observed, value, stopped):
+  match grant:
+    case SP.Grant{active, granted}:
+      {==}
+
+def Laws.state_canceled_read(grant, key):
+  match grant:
+    case SP.Grant{False{}, granted}:
+      {==}
+    case SP.Grant{True{}, granted}:
+      {==}
+
+def Laws.state_canceled_write(grant, key, expected, observed, value):
+  match grant:
+    case SP.Grant{False{}, granted}:
+      {==}
+    case SP.Grant{True{}, granted}:
+      {==}
+
+def Laws.provider_plan_safe(ticket, key, observed, stopped):
+  match ticket:
+    case DP.Ticket{grant, expected, payload}:
+      Laws.state_write_safe(grant, key, expected, observed, payload, stopped)
+
+def Laws.provider_ticket_consumed(ticket, key, observed, stopped):
+  match ticket:
+    case DP.Ticket{SP.Grant{active, granted}, expected, payload}:
+      ({==}, ({==}, ({==}, {==})))
+
+def Laws.provider_replay_refused(ticket, key, observed, stopped, again, revision):
+  match ticket:
+    case DP.Ticket{SP.Grant{active, granted}, expected, payload}:
+      {==}
+
+def Laws.provider_revocation_consumes(ticket):
+  match ticket:
+    case DP.Ticket{SP.Grant{active, granted}, expected, payload}:
+      ({==}, ({==}, ({==}, {==})))
+
+def Laws.provider_revoked_refused(ticket, key, observed, stopped):
+  match ticket:
+    case DP.Ticket{SP.Grant{active, granted}, expected, payload}:
+      {==}
+
+def Laws.provider_canceled_refused(ticket, key, observed):
+  match ticket:
+    case DP.Ticket{grant, expected, payload}:
+      Laws.state_canceled_write(grant, key, expected, observed, payload)
+
+def Laws.provider_admission_complete(key, revision, payload):
+  Laws.state_write_complete(key, revision, payload)
 
 def discriminate(b: Bool) -> Type:
   match b:

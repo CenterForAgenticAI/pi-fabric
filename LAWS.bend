@@ -2,6 +2,179 @@ import ./proofs/resources.bend as R
 import ./proofs/resource-spec.bend as RS
 import Base
 import ./proofs/kernel.bend as K
+import ./proofs/state-plans.bend as SP
+import ./proofs/state-spec.bend as SS
+import ./proofs/state-kernel.bend as SK
+
+import ./proofs/provider-plans.bend as DP
+import ./proofs/provider-spec.bend as DS
+import ./proofs/provider-kernel.bend as DK
+
+import ./proofs/authority-kernel.bend as AK
+import ./proofs/authority-state.bend as A
+import ./proofs/authority-spec.bend as AS
+
+law authority_issue_exact:
+  for +grants: +List<+List<Nat>>
+  {AK.authorityIssue(grants) == A.Active{grants} : A.Authority}
+
+law authority_issue_live:
+  for +grants: +List<+List<Nat>>
+  {AK.authorityLive(AK.authorityIssue(grants)) == True{} : Bool}
+
+law authority_use_safe:
+  for +authority: A.Authority
+  for +grant: +List<Nat>
+  for allowed: {AK.authorityAllows(authority, grant) == True{} : Bool}
+  AS.CanUse(authority, grant)
+
+law authority_use_complete:
+  for +authority: A.Authority
+  for +grant: +List<Nat>
+  for member: AS.CanUse(authority, grant)
+  {AK.authorityAllows(authority, grant) == True{} : Bool}
+
+law authority_derive_safe:
+  for +parent: A.Authority
+  for +candidate: +List<+List<Nat>>
+  AS.DerivationSafe(parent, candidate, AK.authorityDerive(parent, candidate))
+
+law authority_derive_complete:
+  for +parent: A.Authority
+  for +candidate: +List<+List<Nat>>
+  for subset: AS.CanDerive(parent, candidate)
+  AS.DerivationAccepted(candidate, AK.authorityDerive(parent, candidate))
+
+law authority_child_use_safe:
+  for +parent: A.Authority
+  for +candidate: +List<+List<Nat>>
+  for +grant: +List<Nat>
+  for used: {AK.authorityAllows(AK.authorityDerive(parent, candidate), grant) == True{} : Bool}
+  AS.CanUse(parent, grant)
+
+law authority_released_refused:
+  for +authority: A.Authority
+  for +grant: +List<Nat>
+  {AK.authorityAllows(AK.authorityRelease(authority), grant) == False{} : Bool}
+
+law authority_released_cannot_derive:
+  for +authority: A.Authority
+  for +candidate: +List<+List<Nat>>
+  {AK.authorityDerive(AK.authorityRelease(authority), candidate) == A.Released{} : A.Authority}
+
+law authority_released_not_live:
+  for +authority: A.Authority
+  {AK.authorityLive(AK.authorityRelease(authority)) == False{} : Bool}
+
+law provider_plan_safe:
+  for +ticket: DP.Ticket
+  for +key: +List<Nat>
+  for +observed: +List<Nat>
+  for +stopped: Bool
+  DS.Safe(ticket, key, observed, stopped, DP.plan(DK.providerTake(ticket, key, observed, stopped)))
+
+law provider_ticket_consumed:
+  for +ticket: DP.Ticket
+  for +key: +List<Nat>
+  for +observed: +List<Nat>
+  for +stopped: Bool
+  DS.Consumed(ticket, DP.next(DK.providerTake(ticket, key, observed, stopped)))
+
+law provider_replay_refused:
+  for +ticket: DP.Ticket
+  for +key: +List<Nat>
+  for +observed: +List<Nat>
+  for +stopped: Bool
+  for +again: +List<Nat>
+  for +revision: +List<Nat>
+  {DP.plan(DK.providerTake(DP.next(DK.providerTake(ticket, key, observed, stopped)), again, revision, False{})) == SP.Denied{} : SP.Plan}
+
+law provider_revocation_consumes:
+  for +ticket: DP.Ticket
+  DS.Consumed(ticket, DK.providerRevoke(ticket))
+
+law provider_revoked_refused:
+  for +ticket: DP.Ticket
+  for +key: +List<Nat>
+  for +observed: +List<Nat>
+  for +stopped: Bool
+  {DP.plan(DK.providerTake(DK.providerRevoke(ticket), key, observed, stopped)) == SP.Denied{} : SP.Plan}
+
+law provider_canceled_refused:
+  for +ticket: DP.Ticket
+  for +key: +List<Nat>
+  for +observed: +List<Nat>
+  {DP.plan(DK.providerTake(ticket, key, observed, True{})) == SP.Denied{} : SP.Plan}
+
+law provider_admission_complete:
+  for +key: +List<Nat>
+  for +revision: +List<Nat>
+  for +payload: +List<Nat>
+  {DP.plan(DK.providerTake(DP.Ticket{SP.Grant{True{}, key}, revision, payload}, key, revision, False{})) == SP.Write{key, revision, payload} : SP.Plan}
+
+law state_read_safe:
+  for +grant: SP.Grant
+  for +key: +List<Nat>
+  for +stopped: Bool
+  SS.ReadSafe(grant, key, stopped, SK.stateRead(grant, key, stopped))
+
+law state_write_safe:
+  for +grant: SP.Grant
+  for +key: +List<Nat>
+  for +expected: +List<Nat>
+  for +observed: +List<Nat>
+  for +value: +List<Nat>
+  for +stopped: Bool
+  SS.WriteSafe(grant, key, expected, observed, value, stopped, SK.stateWrite(grant, key, expected, observed, value, stopped))
+
+law state_read_complete:
+  for +key: +List<Nat>
+  {SK.stateRead(SP.Grant{True{}, key}, key, False{}) == SP.Read{key} : SP.Plan}
+
+law state_write_complete:
+  for +key: +List<Nat>
+  for +revision: +List<Nat>
+  for +value: +List<Nat>
+  {SK.stateWrite(SP.Grant{True{}, key}, key, revision, revision, value, False{}) == SP.Write{key, revision, value} : SP.Plan}
+
+law state_stale_refused:
+  for +grant: SP.Grant
+  for +key: +List<Nat>
+  for +expected: +List<Nat>
+  for +observed: +List<Nat>
+  for +value: +List<Nat>
+  for +stopped: Bool
+  for different: {expected != observed : +List<Nat>}
+  {SK.stateWrite(grant, key, expected, observed, value, stopped) == SP.Denied{} : SP.Plan}
+
+law state_revoked_read:
+  for +grant: SP.Grant
+  for +key: +List<Nat>
+  for +stopped: Bool
+  {SK.stateRead(SK.stateRevoke(grant), key, stopped) == SP.Denied{} : SP.Plan}
+
+law state_revoked_write:
+  for +grant: SP.Grant
+  for +key: +List<Nat>
+  for +expected: +List<Nat>
+  for +observed: +List<Nat>
+  for +value: +List<Nat>
+  for +stopped: Bool
+  {SK.stateWrite(SK.stateRevoke(grant), key, expected, observed, value, stopped) == SP.Denied{} : SP.Plan}
+
+law state_canceled_read:
+  for +grant: SP.Grant
+  for +key: +List<Nat>
+  {SK.stateRead(grant, key, True{}) == SP.Denied{} : SP.Plan}
+
+law state_canceled_write:
+  for +grant: SP.Grant
+  for +key: +List<Nat>
+  for +expected: +List<Nat>
+  for +observed: +List<Nat>
+  for +value: +List<Nat>
+  {SK.stateWrite(grant, key, expected, observed, value, True{}) == SP.Denied{} : SP.Plan}
+
 
 # Specification boundary: review changes here independently from implementation.
 # Predicates below spell out requirements rather than importing the kernel's

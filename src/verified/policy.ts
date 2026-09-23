@@ -1,3 +1,4 @@
+import { BEND_NAT_MAX } from "./nat.js";
 import {
   cutAccepted, chunkAccepted, certificateAccepted, summaryWithin, sampleWithin,
   type BendList, type Span,
@@ -9,6 +10,7 @@ export {
 } from "./generated/kernel.js";
 
 const isNatural = (value: number): boolean => Number.isSafeInteger(value) && value >= 0;
+const isArithmeticNatural = (value: number): boolean => isNatural(value) && value <= BEND_NAT_MAX;
 
 export const bendList = <T>(values: readonly T[]): BendList<T> => {
   let list: BendList<T> = { $: "Nil" };
@@ -25,7 +27,7 @@ export const acceptSummaryBounds = (bytes: number, byteLimit: number, projected:
   summaryWithin(BigInt(bytes), BigInt(byteLimit), BigInt(projected), BigInt(target));
 
 export const acceptSampleAccounting = (total: number, retained: number, omitted: number, limit: number): boolean =>
-  [total, retained, omitted, limit].every(isNatural) &&
+  [total, retained, omitted, limit].every(isArithmeticNatural) && retained + omitted <= BEND_NAT_MAX &&
   sampleWithin(BigInt(total), BigInt(retained), BigInt(omitted), BigInt(limit));
 
 export interface CutSpan {
@@ -70,7 +72,7 @@ export interface TextRange { start: number; end: number; total: number; complete
 export const acceptMemoryChunk = (
   range: TextRange, length: number, expectedStart: number, expectedTotal: number,
 ): boolean => {
-  if (![range.start, range.end, range.total, length, expectedStart, expectedTotal].every(isNatural) ||
+  if (![range.start, range.end, range.total, length, expectedStart, expectedTotal].every(isArithmeticNatural) || range.start + length > BEND_NAT_MAX ||
       typeof range.complete !== "boolean") return false;
   return chunkAccepted({
     $: "Chunk", start: BigInt(range.start), end: BigInt(range.end), total: BigInt(range.total),

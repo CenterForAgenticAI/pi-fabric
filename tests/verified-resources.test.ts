@@ -6,11 +6,6 @@ import { effectConflictsBetween, summarizeEffects } from "../src/components/effe
 const source = (names: readonly unknown[] | undefined) => resourceSource(encodeResourceNames(names));
 const normalize = (names: readonly unknown[] | undefined, proposal: readonly unknown[]) => resourceNormalize(source(names), encodeResourceNames(proposal));
 const decoded = (names: readonly unknown[] | undefined, proposal: readonly unknown[]) => decodeResourceScope(normalize(names, proposal));
-const rawConflict = (left: readonly unknown[] | undefined, right: readonly unknown[] | undefined, lo: boolean, ro: boolean): boolean => {
-  const unknown = (names: readonly unknown[] | undefined) => !names?.length || names.some(name => typeof name !== "string" || !name.length || name === "*");
-  return (lo || ro) && (unknown(left) || unknown(right) || left!.some(name => right!.includes(name)));
-};
-
 describe("verified full-declaration resource policy", () => {
   it("checks the omitted 65th identity against the original, not a producer count", () => {
     const original = [...Array.from({ length: 64 }, (_, i) => `r${i}`), "shared"];
@@ -55,15 +50,24 @@ describe("verified full-declaration resource policy", () => {
       expect(boundedEffectResources([left, right])).toEqual([...new Set([left, right])]);
     }
   });
-  it("matches unbounded raw semantics and preserves conflicts for arbitrary proposals", () => {
-    const originals: Array<readonly unknown[] | undefined> = [undefined, [], [""], ["*"], [0], ["a"], ["b"], ["a", "b"], ["a", "a"], ["a".repeat(257)]];
-    const proposals = [[], ["a"], ["b"], ["a", "b"], ["extra"], ["*"], ["a".repeat(256)]];
-    const cases = originals.map(names => ({ names, raw: source(names), normalized: proposals.map(proposal => normalize(names, proposal)) }));
-    for (const left of cases) for (const right of cases) for (const lo of [false, true]) for (const ro of [false, true]) {
-      const conflict = resourceConflict(left.raw, right.raw, lo, ro);
-      expect(conflict).toBe(rawConflict(left.names, right.names, lo, ro));
-      for (const nl of left.normalized) for (const nr of right.normalized) if (conflict) expect(resourceConflict(nl, nr, lo, ro)).toBe(true);
+  it("maps source classifications and ordering fields into conflict decisions", () => {
+    // Universal refinement/preservation lives in PROOF.bend. These fixed
+    // vectors exercise the JS encoder and both ordering argument positions.
+    const cases = [
+      [["a"], ["a"], true, false, true],
+      [["a"], ["b"], true, true, false],
+      [["a"], ["a"], false, false, false],
+      [["*"], ["b"], true, false, true],
+      [["a"], ["*"], true, false, true],
+      [undefined, ["a"], false, true, true],
+      [[], ["a"], false, false, false],
+      [[0], ["a"], false, true, true],
+    ] as const;
+    for (const [left, right, lo, ro, expected] of cases) {
+      expect(resourceConflict(source(left), source(right), lo, ro)).toBe(expected);
     }
+    expect(resourceConflict(normalize(["a", "b", "a"], ["b", "a"]), source(["a"]), true, false)).toBe(true);
+    expect(resourceConflict(normalize(["a", "b"], ["a"]), source(["b"]), true, false)).toBe(true);
   });
   it("handles long declarations without backend recursion overflow", () => {
     expect(boundedEffectResources(Array(20_000).fill("same"))).toEqual(["same"]);

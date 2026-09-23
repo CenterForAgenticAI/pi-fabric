@@ -14,8 +14,8 @@ describe("verified kernel artifact receipt", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-proof-artifact-"));
     temporary.push(dir);
     const manifestPath = "src/verified/generated/manifest.json";
-    const manifest = JSON.parse(fs.readFileSync(path.join(root, manifestPath), "utf8")) as { inputs: Record<string, string> };
-    for (const file of [...Object.keys(manifest.inputs), manifestPath, "src/verified/generated/kernel.js", "src/verified/generated/kernel.d.ts"]) {
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, manifestPath), "utf8")) as { inputs: Record<string, string>; outputs: Record<string, string> };
+    for (const file of [...Object.keys(manifest.inputs), manifestPath, ...Object.keys(manifest.outputs)]) {
       fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
       fs.copyFileSync(path.join(root, file), path.join(dir, file));
     }
@@ -23,10 +23,14 @@ describe("verified kernel artifact receipt", () => {
     const script = path.join(dir, "scripts/verified-kernels.mjs");
     const options = { encoding: "utf8" as const, env: { ...process.env, BEND_BIN: path.join(dir, "no-bend") }, timeout: 20_000 };
     expect(execFileSync(process.execPath, [script, "--artifact"], options)).toContain("matches its proof sources");
-    for (const file of ["proofs/kernel.bend", "src/verified/generated/kernel.js", "src/verified/generated/kernel.d.ts", manifestPath]) {
+    for (const file of ["proofs/kernel.bend", "proofs/provider-plans.bend", "proofs/state-plans.bend", "proofs/authority-state.bend", "proofs/lifecycle.bend", "proofs/storage-plans.bend", ...Object.keys(manifest.outputs), manifestPath]) {
       const target = path.join(dir, file);
       const original = fs.readFileSync(target, "utf8");
-      fs.writeFileSync(target, file === manifestPath ? original.replace('"bend": "2.0.25"', '"bend": "0.0.0"') : original + "\n// changed\n");
+      const changed = file === manifestPath
+        ? JSON.stringify({ ...JSON.parse(original), bend: "0.0.0" }, null, 2) + "\n"
+        : original + "\n// changed\n";
+      expect(changed).not.toBe(original);
+      fs.writeFileSync(target, changed);
       const result = spawnSync(process.execPath, [script, "--artifact"], options);
       expect(result.error).toBeUndefined();
       expect(result.status).toBe(1);

@@ -1,40 +1,92 @@
 # Verified policy kernels
 
-Fabric executes JavaScript compiled from `proofs/kernel.bend`. This is not a
-parallel reference model: the production acceptance points call that generated
-code. TypeScript retains host integration, source observation, optimized
+Fabric executes JavaScript compiled from the registered Bend kernel entry points.
+Production acceptance points and state transitions call that generated code;
+there is no parallel reference implementation standing in for production.
+TypeScript retains host integration, source observation, optimized
 candidate production, and diagnostics. There is no handwritten fallback when a
 kernel rejects a candidate.
 
-`LAWS.bend` and `proofs/resource-spec.bend` are the specification review
-boundaries. `PROOF.bend` and `proofs/resource-proof.bend` supply the proofs. Review changes to the laws independently of changes to implementations;
-never weaken a claim just to make a changed implementation check. These initial
-specifications still need human review. Independent predicates in the law file
-prevent changing the kernel's condition builder from silently changing its law.
+`LAWS.bend`, `proofs/resource-spec.bend`, `proofs/state-spec.bend`,
+`proofs/provider-spec.bend`, `proofs/authority-spec.bend`,
+`proofs/lifecycle-spec.bend`, and `proofs/storage-spec.bend` define the specification
+review boundaries.
+`PROOF.bend` and its imported proof modules supply the closed proofs.
+Review laws independently of implementations; never weaken a claim
+to make an implementation check. Compiler checking does not replace independent
+specification review. Independent predicates prevent a change to the kernel's
+condition builder from silently changing its law.
 
 ## Acceptance ledger
 
-All six candidate areas have a production bridge. The proof boundary is a set
+Policy kernels cover the following areas through production bridges. The proof boundary is a set
 of small policy kernels, **not a proof of every subsystem invariant**.
 
 | Area | Executed/checked policy | Authoritative production path | Evidence |
 | --- | --- | --- | --- |
 | Effect independence | Complete-source normalization preserves every conflict; exact outputs preserve identities in both directions and obey bounds; effect-group traversal checks all pairs | `verified/resources.ts`, `components/effect-policy.ts`, `components/effect-scope.ts`, `core/action-registry.ts` | `resource_conflict_preserved`, `resource_refinement`, `resource_output_valid`, `resource_groups_exact`; source/ABI/registry/component regressions |
-| Component lifecycle | Publication eligibility requires current epoch/owner, non-retirement, open supervisor; ordinary provider close requires retirement and no owners/retainers/calls; one-use disposer admission; cleanup failure chooses quarantine | `components/supervisor.ts`, `core/provider-bindings.ts`, `components/effect-scope.ts` | `transition_sound`, `close_sound`, `cleanup_failure_quarantines`, `consume_retires`; existing async lifecycle tests |
+| Component lifecycle | Publication eligibility requires current epoch/owner, non-retirement and an open supervisor; one-use disposer admission; cleanup failure chooses quarantine | `components/supervisor.ts`, `components/effect-scope.ts` | `transition_sound`, `cleanup_failure_quarantines`, `consume_retires`; async lifecycle and inverse-stack tests |
+| Capability authority | Exact parent-subset derivation, authorized membership, release refusal and positive acceptance over complete grants | `verified/authority.ts`, `core/action-registry.ts` | `authority_derive_safe`, `authority_child_use_safe`, `authority_released_refused`, `authority_derive_complete`; provenance and snapshot tests |
+| Binding lifecycle | Admission and exact count transitions; retirement/revocation preserve holds and work; close reserves a generation only after owner, holds and calls clear | `core/provider-bindings.ts`, `core/provider-operations.ts` | `lifecycle-spec.bend` laws; real-settlement, repeated-release, shutdown, quarantine and finalizer tests |
 | Compaction | Every successful proposed cut satisfies eligibility, prior-marker ordering, estimated tail budget and every matched call/result span; rendered byte/estimated-token bounds; retained-plus-omitted sample accounting | `compaction/hook.ts`, `compaction/bounds.ts` | `span_sound`, `spans_sound`, `cut_sound`, `summary_bounds`, `sample_accounting`; compaction and bridge tests |
 | Memory | Active selection cannot admit a non-member unless all-branch selection is explicit; source/lineage bindings must both match; chunks have exact lengths, contiguous offsets, truthful completion and progress; truncated coverage cannot be complete | `memory/normalize.ts`, `memory/expand-service.ts`, `memory/digest.ts`, `memory/index.ts` | `active_lineage_only`, `explicit_all_lineages`, `pointer_sound`, `chunk_sound`, `coverage_sound`; source-bound pagination/lineage/integrity tests |
 | Entropy normal forms | Canonical arguments stay original; candidate acceptance requires a proved plan, an actual change, and acceptance by the unchanged schema | `entropy/normal-form.ts` | `normalization_sound`, `canonical_identity`; identity/idempotence/forged-plan tests |
+| Storage CAS | Exact key/value/identity forwarding, stale refusal, key and high-water successors, missing-delete no-op, safe-integer overflow refusal | `verified/storage.ts`, `mesh/store.ts` | `storage_safe`, `storage_put_complete`, `storage_delete_complete`, `storage_stale_refused`, overflow laws; eviction, corruption, request-mutation and writer-race tests |
 | State and Schema | Pending protocol-2 heads need a commit marker; valid committed heads survive marker eviction; certificate checks all hold; consumption produces an inactive token | `state/store.ts`, `schema/controller.ts` | `head_sound`, `pending_without_marker_hidden`, `committed_head_visible`, `certificate_sound`, `consume_once`, `consume_retires`; state/schema protocol tests |
 
 `all_sound` and `all_complete` establish the conjunction checker by induction,
 not just a finite truth table. `spans_sound` separately lifts per-span evidence
-over arbitrary finite lists. Tests enumerate small domains and exercise large
-numeric values to check the compiler ABI and TypeScript boundary; those tests
-are not presented as universal proofs.
+over arbitrary finite lists. Lifecycle `begin_open_complete`,
+`retain_open_complete`, and `inspect_open_complete` establish exact successful
+outcomes from the independent `Open` predicate across every phase, cleanup mode
+and counter value, alongside the existing safety and exact-transition laws.
+
+### Proof-backed testing
+
+Bend checks universal policy properties. JavaScript tests check the emitted ABI
+and host boundaries with fixed, distinguishing examples. Cartesian products of
+already-proved conditions are unnecessary:
+
+- Resource refinement and conflict preservation use the universal laws, not a
+  second handwritten conflict interpreter and a source/proposal cross-product.
+- Authority derivation, provider tickets, storage CAS and lifecycle decisions
+  retain positive and negative wire examples with unequal fields and counters.
+- Certificate checks retain each host diagnostic position and multiple-failure
+  precedence. Conjunction laws replace the Boolean matrix.
+
+Keep encoding, numeric-limit, limb-carry, mutation/aliasing, artifact-provenance
+and packaged-runtime probes: the compiler and TypeScript codecs are trusted
+boundaries, not proved implementations. Keep real cancellation, settlement,
+cleanup ordering, locking, corruption and migration regressions too.
+
+Not every enumeration is redundant. The addressed-sampling sweep checks a
+TypeScript producer and its omitted-entry identities; proved accounting alone
+does not prove that producer. Component scheduling and diagnostic projections
+also retain their host-level tests. Before pruning a decision matrix, identify
+which policy assertions the closed laws cover, including positive completeness,
+and retain focused tests for the remaining host observables. A safety law alone
+can still permit an implementation that denies valid requests.
+
+### Universal provider dispatch
+
+All registry action routes execute `proofs/provider-kernel.bend` plans:
+ordinary invocation, scoped acquisition, speculative launch, and cached-result
+replay. Seven laws establish exact authority/descriptor/payload-slot forwarding,
+single-use consumption, replay refusal, cancellation, revocation, and admission
+completeness. The state-plan specifications are reused unchanged.
+
+Policy, dispatch, authority, lifecycle and storage kernels are separate generated
+libraries bound by the version-2 artifact receipt. The operation interpreter loads
+on first use,
+not idle startup. Shared full-text plan definitions and lemmas in
+`proofs/state-*.bend` support the provider proofs; they do not establish storage
+transaction correctness or expose a separate state-provider API. See
+[provider capabilities](provider-capabilities.md) for the runtime contract and
+its trust boundaries.
 
 ### Complete-resource conflict preservation
 
-The footprint bridge now proves the normalization-to-conflict-preservation
+The footprint bridge proves the normalization-to-conflict-preservation
 property over arbitrary finite declarations and arbitrary proposed outputs:
 
 ```text
@@ -63,12 +115,12 @@ The production path is:
    flags provide diagnostics only. They cannot turn a compiled conflict into an
    empty conflict list, even if the diagnostic data is inconsistent.
 
-In particular, a proposer that silently drops resource 65 now fails the full-list
+In particular, a proposer that silently drops resource 65 fails the full-list
 coverage check. The theorem does not assume that TypeScript reported the correct
 count, overlap, validity, or unknown-scope flags.
 
 The independent specification uses equality witnesses, set membership, structural
-list bounds, and shared-resource witnesses—not copies of producer Boolean flags.
+list bounds, and shared-resource witnesses. It does not copy producer Boolean flags.
 The 14 resource laws establish (the root claims name the actual exported entry
 functions, so changing a forwarding wrapper also breaks the proof):
 
@@ -120,7 +172,7 @@ range through Bend, and checks the proposed continuation against the resulting
 cursor. Source reads/hashes, parent-graph reconstruction, normalization,
 Unicode slicing and page composition remain host responsibilities. The exact
 claim concerns normalized text, not byte-for-byte JSONL reconstruction. A source
-or lineage change fails closed rather than reinterpreting an old pointer.
+or lineage change fails closed; old pointers are never reinterpreted.
 
 Entropy's schema validator and plan derivation remain TypeScript. Their actual
 results feed the compiled acceptance decision; the original object is returned
@@ -137,17 +189,22 @@ postcondition commands are not formally verified.
 
 ### Lifecycle limits
 
-The compiled predicates own the eligibility and cleanup-outcome decisions; this
-is **not** a rewrite of the asynchronous supervisor as a fully proved reducer.
-Epoch allocation, faithful event observation, publication sequencing, retained
-view accounting, force-close/shutdown behavior, inverse-stack LIFO/once-only
-execution, and fairness are still TypeScript protocols checked by integration
-tests. Arbitrary inverses, ambient effects, liveness, schedule confluence, and
+Provider bindings execute the compiled event reducer for admission, holds,
+in-flight work, retirement, revocation and close reservation. Independent laws
+prove exact count updates and prevent close while ownership remains. The host
+interprets commands, observes actual promise settlement and releases private
+one-use leases. Those observations and interpreter effects remain trusted.
+
+The component supervisor still uses compiled eligibility and cleanup predicates.
+Its epoch allocation, publication sequencing, inverse-stack execution and fairness
+remain TypeScript protocols checked by integration tests. Neither reducer proves
+that provider promises account for every subprocess or remote effect.
+Arbitrary inverses, ambient effects, liveness, schedule confluence, and
 author-defined observational equivalence are not claimed as Bend theorems.
 
 ## Reproducible bridge
 
-The contributor toolchain pins **Bend 2.0.25**. Installed Fabric needs neither
+The contributor toolchain pins **Bend 2.0.26**. Installed Fabric needs neither
 Bend nor a Bend loader. Linux CI downloads that exact release archive and checks
 its SHA-256 before running proofs. Windows tests execute the checked-in generated
 JS and ABI; native Bend currently requires Linux, macOS, or WSL.
@@ -157,7 +214,8 @@ bend PROOF.bend --check-only
 bun run proof:generate    # prove, compile, regenerate JS + declarations + receipt
 bun run proof:check       # reprove, reproduce byte-for-byte, reject negative mutations
 bun run proof:artifact    # compiler-free source/bridge/artifact freshness check
-bunx vitest run tests/verified-kernels.test.ts tests/verified-resources.test.ts tests/verified-artifact.test.ts
+bunx vitest run tests/verified-kernels.test.ts tests/verified-resources.test.ts tests/verified-providers.test.ts tests/verified-artifact.test.ts
+bunx vitest run tests/verified-authority.test.ts tests/verified-lifecycle.test.ts tests/verified-storage.test.ts
 bun run typecheck
 bun run build
 bun run proof:dist        # probe the actual bundled registry/compactor and kernel
@@ -183,9 +241,12 @@ main keeps the kernel definitions reachable for compilation. The build bridge:
 
 No algorithm is translated into handwritten JS. The small bridge, ABI
 conversions, Bend checker/compiler/Base, esbuild, and JS engine are part of the
-trusted computing base. Source `Nat` values cross as nonnegative safe-integer
-`BigInt`s; adapters reject NaN, infinities, fractions and unsafe integers rather
-than silently truncating. Booleans and tagged records/lists follow the emitted
+trusted computing base. Numeric adapters reject NaN, infinities, fractions and
+unsafe integers. Comparison-only primitives accept JS-safe integer `BigInt`s.
+Arithmetic guards respect the pinned backend's immediate `Nat` bound of
+`2^48 - 1`; chunk/sample sums and lifecycle increments fail closed before overflow.
+Storage revisions use canonical radix-`2^32` limbs to cover the full JS-safe integer
+range. Booleans and tagged records/lists follow the emitted
 ABI. Tests exercise those representations on both CI platforms.
 
 Every build checks artifact freshness before bundling. Linux CI and `prepack`

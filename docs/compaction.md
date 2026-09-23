@@ -152,8 +152,8 @@ Source-model usage does not calibrate a new executor; its budget uses structural
 estimates until target usage exists. The finalized outer tool result and any
 thinking-transfer digest enter the child log before compaction, so neither
 escapes the cut and the outer call/result pair remains closure-safe. A failed
-requested handoff compaction rejects the handoff rather than launching the
-uncompacted fork. Without destination metadata, the bounded fallback applies.
+requested handoff compaction rejects the handoff and prevents the
+uncompacted fork from launching. Without destination metadata, the bounded fallback applies.
 
 ## Bounded sections
 

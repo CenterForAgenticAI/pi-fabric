@@ -64,6 +64,7 @@
     "benchmark:memory-heads": "bun run build && node scripts/benchmark-memory-heads.mjs",
     "benchmark:memory-recall": "bun run build && node scripts/benchmark-memory-recall.mjs",
     "benchmark:conversation": "bun run build && node --expose-gc scripts/benchmark-conversation.mjs",
+    "benchmark:provider-dispatch": "node scripts/benchmark-provider-dispatch.mjs",
     "benchmark:activity": "node --expose-gc scripts/benchmark-activity.mjs",
     "benchmark:turn-cpu": "node scripts/benchmark-turn-cpu.mjs",
     "benchmark:startup": "node scripts/benchmark-startup.mjs",

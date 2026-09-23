@@ -1556,6 +1556,8 @@ describe("outer-boundary Prewalk", () => {
     }
     await agent.continue();
 
+    // Do not mistake an aborted host loop for successful queue delivery.
+    expect(agent.state.errorMessage).toBeUndefined();
     // Three legitimate steering turns, with no late Fabric-only continuation.
     expect(requests).toHaveLength(3);
     // The executor's first request already carries task, plan and digest.

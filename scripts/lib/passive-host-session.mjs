@@ -23,6 +23,9 @@ export function createPassiveHostSession(agent, sessionManager) {
   session.agent = agent;
   session.sessionManager = sessionManager;
   session._pendingCustomMessages = [];
+  // Current hosts rebuild finalized context when flushing a custom message.
+  // The real constructor initializes the projection's message-to-entry index.
+  session._entryIdsByMessage = new WeakMap();
   session._isAgentRunActive = true;
   session._emit = () => {};
   const unsubscribe = agent.subscribe((event) => {
