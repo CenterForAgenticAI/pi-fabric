@@ -22,6 +22,18 @@ export const clipUtf8 = (text: string, maxBytes: number, suffix = "…"): string
   return `${output}${suffix}`;
 };
 
+// Preserve complete multiline text when it fits, and make byte loss explicit.
+export const boundedExcerpt = (text: string, maxBytes: number): { text: string; omittedBytes: number } => {
+  const sourceBytes = utf8Bytes(text);
+  if (sourceBytes <= maxBytes) return { text, omittedBytes: 0 };
+  const prefix = clipUtf8(text, Math.max(0, maxBytes - 64), "");
+  const omittedBytes = sourceBytes - utf8Bytes(prefix);
+  return {
+    text: clipUtf8(`${prefix}\n[omitted ${omittedBytes} UTF-8 bytes]`, maxBytes, ""),
+    omittedBytes,
+  };
+};
+
 export interface CanonicalText {
   text: string;
   truncated: boolean;

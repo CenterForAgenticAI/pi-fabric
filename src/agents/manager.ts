@@ -56,6 +56,7 @@ import type {
 } from "./types.js";
 import { WorktreeManager } from "./worktree-manager.js";
 import { writeHandoffSession } from "./handoff.js";
+import type { FabricCompactionBudget } from "../compaction/hook.js";
 import {
   activeBudgetState,
   appendBudgetLedger,
@@ -445,6 +446,9 @@ export class AgentManager {
   readonly #preparePiModel:
     | ((model: string | undefined) => Promise<string | void>)
     | undefined;
+  readonly #resolveHandoffCompactionBudget:
+    | ((model: string | undefined, cwd: string) => Promise<FabricCompactionBudget>)
+    | undefined;
   readonly #resolveParticipantGuidance: AgentParticipantGuidanceResolver | undefined;
   readonly #resolveInheritedSessionPins: (() => InheritedSessionPin[] | undefined) | undefined;
   readonly #piModelPreparations = new Map<string, Promise<string | undefined>>();
@@ -490,6 +494,7 @@ export class AgentManager {
       onResultConsumed?: (id: string) => void;
       onLifecycle?: (event: FabricLifecyclePublishRequest) => void;
       preparePiModel?: (model: string | undefined) => Promise<string | void>;
+      resolveHandoffCompactionBudget?: (model: string | undefined, cwd: string) => Promise<FabricCompactionBudget>;
       resolveParticipantGuidance?: AgentParticipantGuidanceResolver;
       resolveInheritedSessionPins?: () => InheritedSessionPin[] | undefined;
     } = {},
@@ -512,6 +517,7 @@ export class AgentManager {
     this.#onResultConsumed = options.onResultConsumed;
     this.#onLifecycle = options.onLifecycle;
     this.#preparePiModel = options.preparePiModel;
+    this.#resolveHandoffCompactionBudget = options.resolveHandoffCompactionBudget;
     this.#resolveParticipantGuidance = options.resolveParticipantGuidance;
     this.#resolveInheritedSessionPins = options.resolveInheritedSessionPins;
     this.#currentDepth = Math.max(0, Number(process.env.PI_FABRIC_DEPTH ?? "0") || 0);
@@ -771,6 +777,7 @@ export class AgentManager {
             path.join(runDirectory, "handoff-session"),
             request.thinkingTransfer,
             request.handoffCompact,
+            request.handoffCompact ? await this.#resolveHandoffCompactionBudget?.(model, agentCwd) : undefined,
           )
         : request.sessionFile;
       const adapter = await this.#resolveTransport(request.transport ?? this.config.transport);
