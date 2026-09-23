@@ -16,6 +16,13 @@ assert.equal(kernel.headReadable(true, true, false, true, false), false);
 assert.equal(kernel.useNormalized(true, true, true, true), false);
 assert.deepEqual(kernel.consume(true), { $: "Tuple", fst: true, snd: false });
 
+const list = (values) => values.reduceRight((tail, head) => ({ $: "Con", head, tail }), { $: "Nil" });
+const names = (values) => list(values.map(value => list(Array.from({ length: value.length }, (_, i) => BigInt(value.charCodeAt(i))))));
+const declaration = [...Array.from({ length: 64 }, (_, i) => `r${i}`), "shared"];
+const normalized = kernel.resourceNormalize(kernel.resourceSource(names(declaration)), names(declaration.slice(0, 64)));
+assert.deepEqual(normalized, { $: "Unknown" });
+assert.equal(kernel.resourceConflict(normalized, kernel.resourceSource(names(["shared"])), true, false), true);
+
 const registry = new ActionRegistry();
 let entered;
 let release;

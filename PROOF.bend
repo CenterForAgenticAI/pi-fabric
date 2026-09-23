@@ -1,3 +1,5 @@
+import ./proofs/resource-proof.bend as RP
+import ./proofs/resources.bend as R
 import Base
 import ./LAWS.bend as Laws
 import ./proofs/kernel.bend as K
@@ -292,3 +294,45 @@ def Laws.chunk_complete(chunk, p):
 
 def Laws.certificate_complete(conditions, p):
   Laws.all_complete(conditions, p)
+
+def Laws.resource_refinement(original, candidate):
+  RP.normalizationRefinement(original, candidate)
+
+def Laws.resource_output_valid(original, candidate):
+  RP.normalizationValid(original, candidate)
+
+def Laws.resource_conflict_exact(left, right, lo, ro, p):
+  RP.conflictSound(left, right, lo, ro, p)
+
+def Laws.resource_conflict_complete(left, right, lo, ro, p):
+  RP.conflictComplete(left, right, lo, ro, p)
+
+def Laws.resource_conflict_preserved(left, right, lp, rp, lo, ro, p):
+  RP.conflictComplete(R.normalize(left, lp), R.normalize(right, rp), lo, ro, RP.preserveEvidence(left, right, lp, rp, lo, ro, RP.conflictSound(left, right, lo, ro, p)))
+
+def Laws.resource_precision(original, candidate, quality, forward, backward):
+  RP.normalizePrecise(original, candidate, quality, forward, backward)
+
+def Laws.resource_identity(names, quality):
+  RP.normalizeIdentity(names, quality)
+
+def Laws.resource_recheck_idempotent(original, candidate):
+  RP.normalizeRecheck(original, candidate)
+
+def Laws.resource_groups_exact(left, right):
+  RP.groupsExact(left, right, False{})
+
+def Laws.resource_source_refinement(names):
+  RP.sourceRefinesSelected(R.nonempty(names) && R.identitiesValid(names, True{}), names)
+
+def Laws.resource_source_valid(names):
+  RP.sourceValidSelected(R.nonempty(names) && R.identitiesValid(names, True{}), names, {==})
+
+def Laws.resource_pair_sound(left, right, p):
+  RP.pairSound(left, right, p)
+
+def Laws.resource_pair_complete(left, right, p):
+  RP.pairComplete(left, right, p)
+
+def Laws.resource_source_complete(names, p):
+  RP.sourceComplete(names, p)

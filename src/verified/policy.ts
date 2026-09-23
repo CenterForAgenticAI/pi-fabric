@@ -1,5 +1,5 @@
 import {
-  footprintFits, cutAccepted, chunkAccepted, certificateAccepted, summaryWithin, sampleWithin,
+  cutAccepted, chunkAccepted, certificateAccepted, summaryWithin, sampleWithin,
   type BendList, type Span,
 } from "./generated/kernel.js";
 
@@ -18,21 +18,7 @@ export const bendList = <T>(values: readonly T[]): BendList<T> => {
   return list;
 };
 
-/** Resource identities are never shortened or silently dropped. Overflow widens
- * to the unknown footprint; the generated gate alone admits an exact list. */
-export const boundedEffectResources = (resources: readonly string[] | undefined): string[] => {
-  const names = new Set<string>();
-  let valid = Array.isArray(resources);
-  for (const resource of Array.isArray(resources) ? resources : []) {
-    if (typeof resource !== "string" || resource.length === 0 || resource.length > 256 || resource === "*") {
-      valid = false;
-      break;
-    }
-    names.add(resource);
-    if (names.size > 64) break;
-  }
-  return footprintFits(BigInt(names.size), 64n, valid && names.size > 0) ? [...names] : ["*"];
-};
+export { boundedEffectResources } from "./resources.js";
 
 export const acceptSummaryBounds = (bytes: number, byteLimit: number, projected: number, target: number): boolean =>
   [bytes, byteLimit, projected, target].every(isNatural) &&

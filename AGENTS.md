@@ -88,11 +88,12 @@ the checked-in artifact hashes without requiring Bend. After a version bump the 
 
 ## Verified policy kernels
 
-`LAWS.bend` is the independently reviewed specification; never weaken a law to
-make an implementation pass. `PROOF.bend` proves the actual executable source in
+`LAWS.bend` and `proofs/resource-spec.bend` are independently reviewed
+specifications; never weaken a law to make an implementation pass. `PROOF.bend` proves the actual executable source in
 `proofs/kernel.bend`. After changing these sources, the ABI, or the generation
 bridge, run `bun run proof:generate`, `bun run proof:check`, and the targeted
-`tests/verified-kernels.test.ts` plus relevant integration tests. Do not hand-edit
+`tests/verified-kernels.test.ts`, `tests/verified-resources.test.ts`, and
+`tests/verified-artifact.test.ts` plus relevant integration tests. Do not hand-edit
 `src/verified/generated/`. See `docs/verified-kernels.md` for the acceptance ledger
 and explicit host/adapter assumptions. Always finish with `bun run build`.
 

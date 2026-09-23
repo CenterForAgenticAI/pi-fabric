@@ -1,4 +1,5 @@
 import Base
+import ./resources.bend as R
 
 # This module is the executable policy, not a reference implementation.
 def all(xs: +List<Bool>) -> Bool:
@@ -114,11 +115,23 @@ def sampleWithin(total: Nat, retained: Nat, omitted: Nat, limit: Nat) -> Bool:
   +kept = retained
   all([Nat.is_eq(total, Nat.add(kept, omitted)), Nat.is_le(kept, limit)])
 
+def resourceSource(names: +List<+List<Nat>>) -> R.Scope:
+  R.source(names)
+
+def resourceNormalize(original: R.Scope, candidate: +List<+List<Nat>>) -> R.Scope:
+  R.normalize(original, candidate)
+
+def resourceConflict(left: R.Scope, right: R.Scope, lo: Bool, ro: Bool) -> Bool:
+  R.conflict(left, right, lo, ro)
+
+def resourceGroups(left: +List<R.Effect>, right: +List<R.Effect>) -> Bool:
+  R.groups(left, right, False{})
+
 type Kernel is Type:
-  Kernel{knownConflict: Bool -> Bool -> Bool -> Bool, summaryWithin: Nat -> Nat -> Nat -> Nat -> Bool, sampleWithin: Nat -> Nat -> Nat -> Nat -> Bool, footprintFits: Nat -> Nat -> Bool -> Bool, unknownConflict: Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool, transitionCurrent: Bool -> Bool -> Bool -> Bool -> Bool, canClose: Bool -> Bool -> Bool -> Bool -> Bool, cleanupState: Bool -> Bool -> U32, spansSafe: +List<Span> -> Nat -> Bool, cutAccepted: Cut -> Bool, lineageSelected: Bool -> Bool -> Bool, pointerCurrent: Bool -> Bool -> Bool, chunkAccepted: Chunk -> Bool, coverageComplete: Bool -> Bool -> Bool, useNormalized: Bool -> Bool -> Bool -> Bool -> Bool, headReadable: Bool -> Bool -> Bool -> Bool -> Bool -> Bool, certificateAccepted: +List<Bool> -> Bool, consume: Bool -> Bool & Bool}
+  Kernel{resourceSource: +List<+List<Nat>> -> R.Scope, resourceNormalize: R.Scope -> +List<+List<Nat>> -> R.Scope, resourceConflict: R.Scope -> R.Scope -> Bool -> Bool -> Bool, resourceGroups: +List<R.Effect> -> +List<R.Effect> -> Bool, knownConflict: Bool -> Bool -> Bool -> Bool, summaryWithin: Nat -> Nat -> Nat -> Nat -> Bool, sampleWithin: Nat -> Nat -> Nat -> Nat -> Bool, footprintFits: Nat -> Nat -> Bool -> Bool, unknownConflict: Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool, transitionCurrent: Bool -> Bool -> Bool -> Bool -> Bool, canClose: Bool -> Bool -> Bool -> Bool -> Bool, cleanupState: Bool -> Bool -> U32, spansSafe: +List<Span> -> Nat -> Bool, cutAccepted: Cut -> Bool, lineageSelected: Bool -> Bool -> Bool, pointerCurrent: Bool -> Bool -> Bool, chunkAccepted: Chunk -> Bool, coverageComplete: Bool -> Bool -> Bool, useNormalized: Bool -> Bool -> Bool -> Bool -> Bool, headReadable: Bool -> Bool -> Bool -> Bool -> Bool -> Bool, certificateAccepted: +List<Bool> -> Bool, consume: Bool -> Bool & Bool}
 
 def kernel() -> Kernel:
-  Kernel{knownConflict, summaryWithin, sampleWithin, footprintFits, unknownConflict, transitionCurrent, canClose, cleanupState, spansSafe, cutAccepted, lineageSelected, pointerCurrent, chunkAccepted, coverageComplete, useNormalized, headReadable, certificateAccepted, consume}
+  Kernel{resourceSource, resourceNormalize, resourceConflict, resourceGroups, knownConflict, summaryWithin, sampleWithin, footprintFits, unknownConflict, transitionCurrent, canClose, cleanupState, spansSafe, cutAccepted, lineageSelected, pointerCurrent, chunkAccepted, coverageComplete, useNormalized, headReadable, certificateAccepted, consume}
 
 # The CLI only emits JS for a runnable main. The build bridge removes its two
 # invocation statements and exports kernel(); no IO is executed at import.

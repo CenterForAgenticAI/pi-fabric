@@ -1,3 +1,5 @@
+import ./proofs/resources.bend as R
+import ./proofs/resource-spec.bend as RS
 import Base
 import ./proofs/kernel.bend as K
 
@@ -240,3 +242,88 @@ law certificate_complete:
   for +conditions: +List<Bool>
   for p: AllTrue(conditions)
   {K.certificateAccepted(conditions) == True{} : Bool}
+
+# Full declarations enter this checker. Candidate production has no authority.
+law resource_refinement:
+  for +original: R.Scope
+  for +candidate: +List<+List<Nat>>
+  RS.Refines(original, K.resourceNormalize(original, candidate))
+
+law resource_output_valid:
+  for +original: R.Scope
+  for +candidate: +List<+List<Nat>>
+  RS.OutputValid(K.resourceNormalize(original, candidate))
+
+law resource_conflict_exact:
+  for +left: R.Scope
+  for +right: R.Scope
+  for +lo: Bool
+  for +ro: Bool
+  for p: {K.resourceConflict(left, right, lo, ro) == True{} : Bool}
+  RS.Conflicts(left, right, lo, ro)
+
+law resource_conflict_complete:
+  for +left: R.Scope
+  for +right: R.Scope
+  for +lo: Bool
+  for +ro: Bool
+  for p: RS.Conflicts(left, right, lo, ro)
+  {K.resourceConflict(left, right, lo, ro) == True{} : Bool}
+
+law resource_conflict_preserved:
+  for +left: R.Scope
+  for +right: R.Scope
+  for +lp: +List<+List<Nat>>
+  for +rp: +List<+List<Nat>>
+  for +lo: Bool
+  for +ro: Bool
+  for p: {K.resourceConflict(left, right, lo, ro) == True{} : Bool}
+  {K.resourceConflict(K.resourceNormalize(left, lp), K.resourceNormalize(right, rp), lo, ro) == True{} : Bool}
+
+law resource_precision:
+  for +original: +List<+List<Nat>>
+  for +candidate: +List<+List<Nat>>
+  for quality: RS.Quality(candidate)
+  for forward: RS.Subset(original, candidate)
+  for backward: RS.Subset(candidate, original)
+  {K.resourceNormalize(R.Exact{original}, candidate) == R.Exact{candidate} : R.Scope}
+
+law resource_identity:
+  for +names: +List<+List<Nat>>
+  for quality: RS.Quality(names)
+  {K.resourceNormalize(R.Exact{names}, names) == R.Exact{names} : R.Scope}
+
+law resource_recheck_idempotent:
+  for +original: R.Scope
+  for +candidate: +List<+List<Nat>>
+  {K.resourceNormalize(K.resourceNormalize(original, candidate), candidate) == K.resourceNormalize(original, candidate) : R.Scope}
+
+law resource_groups_exact:
+  for +left: +List<R.Effect>
+  for +right: +List<R.Effect>
+  {K.resourceGroups(left, right) == RS.Groups(left, right) : Bool}
+
+law resource_source_refinement:
+  for +names: +List<+List<Nat>>
+  RS.Refines(R.Exact{names}, K.resourceSource(names))
+
+law resource_source_valid:
+  for +names: +List<+List<Nat>>
+  RS.SourceValid(K.resourceSource(names))
+
+law resource_pair_sound:
+  for +left: R.Effect
+  for +right: R.Effect
+  for p: {R.pairConflict(left, right) == True{} : Bool}
+  RS.EffectConflicts(left, right)
+
+law resource_pair_complete:
+  for +left: R.Effect
+  for +right: R.Effect
+  for p: RS.EffectConflicts(left, right)
+  {R.pairConflict(left, right) == True{} : Bool}
+
+law resource_source_complete:
+  for +names: +List<+List<Nat>>
+  for p: RS.SourceValid(R.Exact{names})
+  {K.resourceSource(names) == R.Exact{names} : R.Scope}

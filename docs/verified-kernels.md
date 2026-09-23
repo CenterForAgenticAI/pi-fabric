@@ -6,8 +6,8 @@ code. TypeScript retains host integration, source observation, optimized
 candidate production, and diagnostics. There is no handwritten fallback when a
 kernel rejects a candidate.
 
-`LAWS.bend` is the specification review boundary. `PROOF.bend` supplies the
-proofs. Review changes to the laws independently of changes to implementations;
+`LAWS.bend` and `proofs/resource-spec.bend` are the specification review
+boundaries. `PROOF.bend` and `proofs/resource-proof.bend` supply the proofs. Review changes to the laws independently of changes to implementations;
 never weaken a claim just to make a changed implementation check. These initial
 specifications still need human review. Independent predicates in the law file
 prevent changing the kernel's condition builder from silently changing its law.
@@ -19,7 +19,7 @@ of small policy kernels, **not a proof of every subsystem invariant**.
 
 | Area | Executed/checked policy | Authoritative production path | Evidence |
 | --- | --- | --- | --- |
-| Effect independence | Exact named/unknown conflict decisions; symmetry of unknown conflict; exact footprints require valid bounded metadata | `components/effect-policy.ts`, `components/effect-scope.ts`, `core/action-registry.ts` | `footprint_sound`, `unknown_conflict_exact`, `unknown_conflict_symmetric`, `known_conflict_exact`; policy/registry/component regression tests |
+| Effect independence | Complete-source normalization preserves every conflict; exact outputs preserve identities in both directions and obey bounds; effect-group traversal checks all pairs | `verified/resources.ts`, `components/effect-policy.ts`, `components/effect-scope.ts`, `core/action-registry.ts` | `resource_conflict_preserved`, `resource_refinement`, `resource_output_valid`, `resource_groups_exact`; source/ABI/registry/component regressions |
 | Component lifecycle | Publication eligibility requires current epoch/owner, non-retirement, open supervisor; ordinary provider close requires retirement and no owners/retainers/calls; one-use disposer admission; cleanup failure chooses quarantine | `components/supervisor.ts`, `core/provider-bindings.ts`, `components/effect-scope.ts` | `transition_sound`, `close_sound`, `cleanup_failure_quarantines`, `consume_retires`; existing async lifecycle tests |
 | Compaction | Every successful proposed cut satisfies eligibility, prior-marker ordering, estimated tail budget and every matched call/result span; rendered byte/estimated-token bounds; retained-plus-omitted sample accounting | `compaction/hook.ts`, `compaction/bounds.ts` | `span_sound`, `spans_sound`, `cut_sound`, `summary_bounds`, `sample_accounting`; compaction and bridge tests |
 | Memory | Active selection cannot admit a non-member unless all-branch selection is explicit; source/lineage bindings must both match; chunks have exact lengths, contiguous offsets, truthful completion and progress; truncated coverage cannot be complete | `memory/normalize.ts`, `memory/expand-service.ts`, `memory/digest.ts`, `memory/index.ts` | `active_lineage_only`, `explicit_all_lineages`, `pointer_sound`, `chunk_sound`, `coverage_sound`; source-bound pagination/lineage/integrity tests |
@@ -32,20 +32,77 @@ over arbitrary finite lists. Tests enumerate small domains and exercise large
 numeric values to check the compiler ABI and TypeScript boundary; those tests
 are not presented as universal proofs.
 
-### Conservative footprints
+### Complete-resource conflict preservation
 
-An exact footprint preserves full resource identities. Missing, invalid,
-wildcard, overlong (>256 UTF-16 code units), or oversized (>64 distinct names)
-metadata becomes `["*"]`. Names are never shortened and excess names are never
-dropped. This changes the previous lossy behavior: a conflict at position 65
-can no longer disappear. Both registry call policy and component lifetime
-policy share normalization and conflict decisions.
+The footprint bridge now proves the normalization-to-conflict-preservation
+property over arbitrary finite declarations and arbitrary proposed outputs:
 
-The TypeScript adapter counts distinct identities, supplies the flags, and
-constructs the diagnostic resource list. Those observations are trusted adapter
-code, covered by direct and production-path regression tests. The proofs do not
-show that an author has truthfully declared every real resource or that a
-`commutative` label describes the actual host effect.
+```text
+conflict(A, B)
+  => conflict(normalize(A, proposalA), normalize(B, proposalB))
+```
+
+`proofs/resources.bend` is the executable implementation. Its checked functions
+are exported through `proofs/kernel.bend` and compiled into the same generated
+library as the other policies. There is no second TypeScript overlap algorithm
+that can grant independence.
+
+The production path is:
+
+1. `src/verified/resources.ts` snapshots and encodes the **complete original**
+   declaration. No resource-count or name-length limit is applied during encoding.
+2. TypeScript proposes a small deduplicated list. This producer is untrusted for
+   policy correctness: it may omit, shorten, reorder, duplicate, or add names.
+3. The compiled checker independently verifies nonempty metadata, the 64-resource
+   and 256-code-unit bounds, wildcard exclusion, and **both directions of set
+   inclusion** between the original and proposed lists.
+4. An accepted exact scope retains the checked identities. Every rejected proposal
+   becomes the compiled `Unknown` scope; an unknown source cannot become exact.
+5. Component lifetime and registry call policy compare complete effect declarations
+   through the compiled conflict/group operations. TypeScript summary maps and
+   flags provide diagnostics only. They cannot turn a compiled conflict into an
+   empty conflict list, even if the diagnostic data is inconsistent.
+
+In particular, a proposer that silently drops resource 65 now fails the full-list
+coverage check. The theorem does not assume that TypeScript reported the correct
+count, overlap, validity, or unknown-scope flags.
+
+The independent specification uses equality witnesses, set membership, structural
+list bounds, and shared-resource witnesses—not copies of producer Boolean flags.
+The 14 resource laws establish (the root claims name the actual exported entry
+functions, so changing a forwarding wrapper also breaks the proof):
+
+- Source interpretation preserves names or widens to unknown; exact sources are
+  nonempty and contain no empty/malformed or wildcard identity. Every well-formed
+  source remains exact before normalization, without a count or name-length cap.
+- Exact normalization preserves resource membership in **both** directions.
+- Every exact output meets the resource/name bounds and excludes wildcards.
+- Conflict computation is sound and complete for named/unknown active scopes;
+  quiet effects cannot conflict, and both-commutative effects remain independent.
+- Normalization cannot erase a conflict, for **any** proposed output.
+- Valid bounded set-equivalent proposals are accepted, preventing a deny-all
+  implementation. Identity proposals are unchanged.
+- Rechecking a result with the same proposal is idempotent.
+- Group traversal is equivalent to checking every effect pair, not just the first.
+
+Precision has an explicit premise: the candidate must be valid, bounded and
+set-equivalent to its source. A broken producer can still cause conservative
+false positives by supplying a bad proposal; it cannot create false independence.
+The proof does not claim that an arbitrary producer finds a good proposal.
+
+Identities are encoded as complete UTF-16 code-unit lists, including NUL and lone
+surrogates. There are no lossy hashes, Unicode normalization, prefix clipping or
+separately assigned integer IDs. Non-string values encode an invalid empty name;
+missing/non-array resource collections encode missing scope. The decoder checks
+the code-unit ABI. Tests cover every UTF-16 unit, adversarial proposals, the
+64/65 and 256/257 boundaries, and 20,000-entry declarations.
+
+The remaining trust boundary is faithful snapshot/ABI conversion and effect-kind/
+ordering encoding, Bend's checker/compiler/Base, bundling and the JS runtime,
+and truthful provider declarations. The TypeScript wire codec is tested, not
+itself formally verified. Hash receipts and CI bind the entire transitive proof
+source set to its generated artifact; finite tests are not substitutes for the
+universal preservation proof.
 
 ### Producer/checker boundaries
 
@@ -100,7 +157,7 @@ bend PROOF.bend --check-only
 bun run proof:generate    # prove, compile, regenerate JS + declarations + receipt
 bun run proof:check       # reprove, reproduce byte-for-byte, reject negative mutations
 bun run proof:artifact    # compiler-free source/bridge/artifact freshness check
-bunx vitest run tests/verified-kernels.test.ts
+bunx vitest run tests/verified-kernels.test.ts tests/verified-resources.test.ts tests/verified-artifact.test.ts
 bun run typecheck
 bun run build
 bun run proof:dist        # probe the actual bundled registry/compactor and kernel
@@ -119,7 +176,8 @@ main keeps the kernel definitions reachable for compilation. The build bridge:
 4. Parses the emitted program and requires the exact pinned CLI footer.
 5. Removes only its two invocation statements and exports the compiler-produced
    definitions through Bend's own trampoline, checking names and arities.
-6. Tree-shakes unused runtime code and rejects host IO/imports in the result.
+6. Tree-shakes unused runtime code and rejects host IO/imports before compacting
+   compiler-local identifiers and syntax. Public ABI export names stay stable.
 7. Writes generated JS, ABI declarations, and a SHA-256 receipt over the proof
    sources, ABI, bridge, and generated artifacts.
 
@@ -137,9 +195,10 @@ copied into `dist/verified/generated/`. Laws, proofs, kernel source and Bend's
 license are included in the package for inspection. The receipt is a freshness
 record, **not a standalone independently verified proof certificate**.
 
-Negative probes delete a proof or deliberately break footprint bounds, epoch
-checks, tool-pair closure, chunk completion, canonical identity, commit-marker
-visibility, and one-use consumption. The pinned compiler must reject each
+Negative probes delete a proof or deliberately break footprint bounds, source
+coverage, identity matching, source validation, group traversal, positive
+acceptance, epoch checks, tool-pair closure, chunk completion, canonical identity,
+commit-marker visibility, and one-use consumption. The pinned compiler must reject each
 mutation while the specification remains unchanged.
 
 ## What remains outside the claims

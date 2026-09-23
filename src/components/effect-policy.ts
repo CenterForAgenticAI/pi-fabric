@@ -1,4 +1,5 @@
-import { boundedEffectResources, unknownConflict, knownConflict } from "../verified/policy.js";
+import { unknownConflict, knownConflict } from "../verified/policy.js";
+import { boundedEffectResources, encodeResourceEffects, resourceGroups } from "../verified/resources.js";
 import type { ResolvedFabricAction } from "../core/action-registry.js";
 import type {
   FabricComponentEffectConflict,
@@ -46,6 +47,7 @@ export const actionEffect = (
 };
 
 interface FabricComponentEffectSummary {
+  declarations: ReturnType<typeof encodeResourceEffects>;
   hasEffects: boolean;
   hasNoncommutative: boolean;
   hasUnknown: boolean;
@@ -81,6 +83,7 @@ export const summarizeEffects = (
     }
   }
   return {
+    declarations: encodeResourceEffects(effects),
     hasEffects: effectful > 0,
     hasNoncommutative,
     hasUnknown,
@@ -93,7 +96,9 @@ export const effectConflictsBetween = (
   left: FabricComponentEffectSummary,
   right: FabricComponentEffectSummary,
 ): FabricComponentConflictBasis[] => {
-  if (!left.hasEffects || !right.hasEffects) return [];
+  // Only the compiled full-declaration decision can grant independence.
+  // The summaries below explain a conflict; they cannot erase one.
+  if (!resourceGroups(left.declarations, right.declarations)) return [];
   const conflicts: FabricComponentConflictBasis[] = [];
   if (
     unknownConflict(
@@ -115,7 +120,7 @@ export const effectConflictsBetween = (
   if (overlap.length > 0) {
     conflicts.push({ resources: overlap, reason: "shared_resource" });
   }
-  return conflicts;
+  return conflicts.length > 0 ? conflicts : [{ resources: ["*"], reason: "unknown_resource" }];
 };
 
 export const compareEffectInfo = (

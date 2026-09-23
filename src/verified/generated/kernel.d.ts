@@ -1,5 +1,8 @@
 // Generated ABI declarations; see proofs/abi.json.
 export type BendList<T> = { $: "Nil" } | { $: "Con"; head: T; tail: BendList<T> };
+export type ResourceName = BendList<bigint>;
+export type ResourceScope = { $: "Unknown" } | { $: "Exact"; names: BendList<ResourceName> };
+export type ResourceEffect = { $: "Quiet" } | { $: "Effect"; ordered: boolean; scope: ResourceScope };
 export interface Span { $: "Span"; first: bigint; last: bigint; paired: boolean }
 export interface Cut { $: "Cut"; eligible: boolean; afterPrevious: boolean; retained: bigint; budget: bigint; boundary: bigint; spans: BendList<Span> }
 export interface Chunk { $: "Chunk"; start: bigint; end: bigint; total: bigint; expectedStart: bigint; expectedTotal: bigint; length: bigint; complete: boolean }
@@ -22,3 +25,7 @@ export declare function lineageSelected(allBranches: boolean, member: boolean): 
 export declare function knownConflict(shared: boolean, leftOrdered: boolean, rightOrdered: boolean): boolean;
 export declare function summaryWithin(bytes: bigint, byteLimit: bigint, projected: bigint, target: bigint): boolean;
 export declare function sampleWithin(total: bigint, retained: bigint, omitted: bigint, limit: bigint): boolean;
+export declare function resourceSource(names: BendList<ResourceName>): ResourceScope;
+export declare function resourceNormalize(original: ResourceScope, candidate: BendList<ResourceName>): ResourceScope;
+export declare function resourceConflict(left: ResourceScope, right: ResourceScope, leftOrdered: boolean, rightOrdered: boolean): boolean;
+export declare function resourceGroups(left: BendList<ResourceEffect>, right: BendList<ResourceEffect>): boolean;

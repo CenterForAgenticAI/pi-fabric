@@ -9,8 +9,19 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const env = { ...process.env, BEND_NO_TELEMETRY: "1" };
 const bend = process.env.BEND_BIN || "bend";
 if (execFileSync(bend, ["version"], { encoding: "utf8", env }).trim() !== "bend 2.0.25") throw new Error("Bend 2.0.25 required");
-const originals = Object.fromEntries(["LAWS.bend", "PROOF.bend", "proofs/kernel.bend"].map((path) => [path, readFileSync(join(root, path), "utf8")]));
+const inputs = JSON.parse(readFileSync(join(root, "src/verified/generated/manifest.json"), "utf8")).inputs;
+const originals = Object.fromEntries(Object.keys(inputs).filter((path) => path.endsWith(".bend")).map((path) => [path, readFileSync(join(root, path), "utf8")]));
 const mutations = [
+  ["deny valid sources", "proofs/resources.bend", "select(nonempty(names) && identitiesValid(names, True{}), names)", "Unknown{}"],
+  ["lost original resource", "proofs/resources.bend", "covered(original, candidate, True{}) && covered(candidate, original, True{})", "True{} && covered(candidate, original, True{})"],
+  ["injected resource", "proofs/resources.bend", "covered(original, candidate, True{}) && covered(candidate, original, True{})", "covered(original, candidate, True{}) && True{}"],
+  ["truncated identity", "proofs/resources.bend", "case Nil{} Con{h, t}:\n      False{}", "case Nil{} Con{h, t}:\n      equal"],
+  ["oversized candidate", "proofs/resources.bend", "bounded(candidate, 64n)", "bounded(candidate, 65n)"],
+  ["overlong identity", "proofs/resources.bend", "nameBounded(name, 256n)", "nameBounded(name, 257n)"],
+  ["forgotten unknown", "proofs/resources.bend", "case Unknown{}:\n      Unknown{}", "case Unknown{}:\n      Exact{Nil{}}"],
+  ["dropped effect group", "proofs/resources.bend", "groups(t, ys, found || against(ys, h, False{}))", "groups(t, ys, found)"],
+  ["deny every exact footprint", "proofs/resources.bend", "case True{}:\n      Exact{candidate}", "case True{}:\n      Unknown{}"],
+  ["invalid source admitted", "proofs/resources.bend", "select(nonempty(names) && identitiesValid(names, True{}), names)", "select(True{}, names)"],
   ["open law", "PROOF.bend", "def Laws.canonical_identity(plan, changed, accepted):\n  {==}", ""],
   ["footprint overflow", "proofs/kernel.bend", "all(footprintConditions(count, limit, valid))", "True{}"],
   ["stale lifecycle publication", "proofs/kernel.bend", "[Bool.not(retired), epoch, owner, Bool.not(closed)]", "[Bool.not(retired), True{}, owner, Bool.not(closed)]"],
