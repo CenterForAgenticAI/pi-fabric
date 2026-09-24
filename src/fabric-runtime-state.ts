@@ -121,6 +121,7 @@ import {
 } from "./protocol.js";
 import { AgentManager } from "./agents/manager.js";
 import { AgentCompletionInbox } from "./agents/completion-inbox.js";
+import { ShellEventInbox } from "./core/shell-inbox.js";
 import { resolveInheritedSessionPins } from "./agents/session-pins.js";
 import { ResidencyClient } from "./residency/client.js";
 import { RESIDENT_HOST_FORMAT, residentRoot } from "./residency/protocol.js";
@@ -171,6 +172,7 @@ export class FabricRuntimeState {
   #speculation: RuntimeStateSpeculation | undefined;
   #agents: AgentManager | undefined;
   #completionInbox: AgentCompletionInbox | undefined;
+  #shellInbox: ShellEventInbox | undefined;
   #actors: ActorDirectory | undefined;
   #jevObservationHost: JevObservationHost | undefined;
   #globalActors: GlobalActorRegistry | undefined;
@@ -198,7 +200,8 @@ export class FabricRuntimeState {
   readonly #builtinComponentNames = new Set<string>();
   readonly componentCatalog = new FabricComponentCatalog();
   readonly activity: FabricActivityStore;
-  readonly shellJobs = new FabricShellJobStore();
+  #shellJobs = new FabricShellJobStore();
+  get shellJobs(): FabricShellJobStore { return this.#shellJobs; }
   readonly prewalk: PrewalkController;
   readonly prewalkDrift: PrewalkDriftTracker;
   readonly sessionApprovals: FabricSessionApprovals;
@@ -342,6 +345,7 @@ export class FabricRuntimeState {
     this.#suppressResidentGuidanceSync = true;
     try {
       await this.#closeInternal();
+      this.#shellJobs = new FabricShellJobStore();
     } finally {
       this.#suppressResidentGuidanceSync = false;
     }
@@ -433,6 +437,9 @@ export class FabricRuntimeState {
       jobs: this.shellJobs,
       getHangMs: () => this.#config?.executor.shellHangMs ?? DEFAULT_SHELL_HANG_MS,
     });
+    if (!this.#managedHost && (this.#config.fullCodeMode || enforceSchema)) {
+      this.#shellInbox = new ShellEventInbox(this.pi, context, this.shellJobs);
+    }
     // One definition for both host modes: the controller belongs to this
     // runtime state, so managed and normal sessions share a single wiring site.
     await builtins.install(createProviderComponent({
@@ -1294,6 +1301,8 @@ export class FabricRuntimeState {
   async shutdown(): Promise<void> {
     this.#completionInbox?.close();
     this.#completionInbox = undefined;
+    this.#shellInbox?.close();
+    this.#shellInbox = undefined;
     this.#suppressResidentGuidanceSync = true;
     await this.#deactivateRepairs();
     clearActiveCompiledSurface();
@@ -1393,6 +1402,9 @@ export class FabricRuntimeState {
   async #closeInternal(): Promise<void> {
     this.#completionInbox?.close();
     this.#completionInbox = undefined;
+    this.#shellInbox?.close();
+    this.#shellInbox = undefined;
+    await this.shellJobs.close();
     await this.#deactivateRepairs();
     if (!this.#registry) return;
     await this.#participants?.quiesce().catch(() => undefined);
@@ -1410,7 +1422,6 @@ export class FabricRuntimeState {
     await this.#residency?.close();
     await this.#actors?.close();
     await this.#agents?.close();
-    await this.shellJobs.close();
     const externalNames = new Set(this.#externalProviders.keys());
     try {
       await this.#registry.close(externalNames);
