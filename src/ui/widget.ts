@@ -282,7 +282,7 @@ export class FabricWidget implements Component {
     for (const job of [...liveShells, ...recentShells].slice(0, 3)) {
       const elapsed = formatDuration((job.finishedAt ?? snapshot.now) - job.startedAt) || "0s";
       const status = job.stopping ? "stopping" : job.monitor && !job.finishedAt ? `monitor:${job.monitor.delivery}` : job.status;
-      lines.push(`  ${this.theme.fg("accent", job.id.slice(0, 8))} ${status} · ${elapsed} · ${safeText(job.description ?? job.command)}`);
+      lines.push(this.theme.fg("dim", `  ${job.id.slice(0, 8)} ${status} · ${elapsed} · ${safeText(job.description ?? job.command)}`));
     }
     if (liveShells.length + recentShells.length > 3) lines.push(this.theme.fg("dim", `  +${liveShells.length + recentShells.length - 3} more shell tasks`));
 

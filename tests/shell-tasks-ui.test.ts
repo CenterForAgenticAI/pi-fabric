@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FabricState } from "../src/fabric-state.js";
-import { FabricShellJobStore } from "../src/core/shell-jobs.js";
+import { FabricShellJobStore, type FabricShellJobInfo } from "../src/core/shell-jobs.js";
 import { ShellTasksView } from "../src/ui/shell-tasks.js";
 import { FabricUiController } from "../src/ui/controller.js";
 import { FabricWidget, shouldShowFabricWidget } from "../src/ui/widget.js";
@@ -28,6 +28,38 @@ const fixture = () => {
 };
 
 describe("background shell UI", () => {
+  it.each<[string, Partial<FabricShellJobInfo>]>([
+    ["running", { status: "running" }],
+    ["spilled", {}],
+    ["stopping", { stopping: true }],
+    ["monitor:ui", { monitor: { delivery: "ui", timeoutMs: 300000, intervalMs: 5000 } }],
+    ["monitor:wake", { monitor: { delivery: "wake", timeoutMs: 300000, intervalMs: 5000 } }],
+    ["exited", { status: "exited", finishedAt: 13000 }],
+    ["failed", { status: "failed", finishedAt: 13000 }],
+    ["killed", { status: "killed", finishedAt: 13000 }],
+    ["timed_out", { status: "timed_out", finishedAt: 13000 }],
+  ])("renders the entire %s shell row in the header's grey", (status, overrides) => {
+    const h = fixture();
+    const ansiTheme = {
+      ...theme,
+      fg: (color: string, text: string) => `\u001b[${color === "dim" ? "90" : "36"}m${text}\u001b[39m`,
+    } as Theme;
+    const job: FabricShellJobInfo = {
+      id: "7b6eb606-1234", tool: "bash", command: "sleep 30", startedAt: 10000,
+      spilledAt: 10000, status: "spilled", eventCount: 0, unread: false, stopping: false,
+      ...overrides,
+    };
+    for (const description of [undefined, "Watch CI 界\u001b[2J"]) {
+      const snapshot = { ...h.controller.snapshot(), now: 13000, shells: [description === undefined ? job : { ...job, description }] };
+      const widget = new FabricWidget(ansiTheme, () => snapshot, 5);
+      const lines = widget.render(120);
+      expect(lines[0]).toContain(ansiTheme.fg("dim", " · /fabric tasks · ctrl+alt+t"));
+      expect(lines[1]).toBe(ansiTheme.fg("dim", `  7b6eb606 ${status} · 3s · ${description ? "Watch CI 界" : "sleep 30"}`));
+      for (const width of [1, 12, 40, 80]) {
+        expect(widget.render(width).every(line => visibleWidth(line) <= width)).toBe(true);
+      }
+    }
+  });
   it("keeps the widget live after the executor is idle and refreshes elapsed time without output", async () => {
     vi.useFakeTimers(); vi.setSystemTime(10000);
     const h = fixture(); h.controller.start(h.context);
