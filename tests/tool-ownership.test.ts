@@ -117,6 +117,49 @@ describe("FabricToolOwnership", () => {
   });
 });
 
+describe("FabricToolOwnership.filter", () => {
+  it("passes names through unchanged until ownership is applied and after release", () => {
+    const state = hostWith(["read", "web_enable"]);
+    const ownership = new FabricToolOwnership(state.host);
+    const hidden = new Set(["web_enable"]);
+
+    expect(ownership.filter(["read", "web_enable"], hidden)).toEqual(["read", "web_enable"]);
+
+    ownership.apply(true, hidden);
+    ownership.release();
+    expect(ownership.filter(["read", "web_enable"], hidden)).toEqual(["read", "web_enable"]);
+  });
+
+  it("strips core and hidden captured names a foreign extension tries to activate", () => {
+    // A dynamic tool loader (pi-web-access's web_enable) or a later
+    // before_agent_start handler calls pi.setActiveTools while Fabric owns
+    // the set; hidden names must not reach the model's next request.
+    const state = hostWith(["read", "ask", "web_enable"]);
+    const ownership = new FabricToolOwnership(state.host);
+    const hidden = new Set(["web_enable", "web_search"]);
+    ownership.apply(true, hidden);
+    expect(state.active()).toEqual(["ask", "fabric_exec"]);
+
+    expect(
+      ownership.filter(["ask", "fabric_exec", "web_enable", "web_search", "bash"], hidden),
+    ).toEqual(["ask", "fabric_exec"]);
+    expect(ownership.filter(["ask"], hidden)).toEqual(["ask", "fabric_exec"]);
+  });
+
+  it("restores hidden names a foreign extension added once full code mode is released", () => {
+    const state = hostWith(["read"]);
+    const ownership = new FabricToolOwnership(state.host);
+    const hidden = new Set(["web_search"]);
+    ownership.apply(true, hidden);
+
+    state.host.setActiveTools(ownership.filter(["fabric_exec", "web_search"], hidden));
+    expect(state.active()).toEqual(["fabric_exec"]);
+
+    expect(ownership.release()).toBe(true);
+    expect([...state.active()].sort()).toEqual(["fabric_exec", "read", "web_search"]);
+  });
+});
+
 describe("createToolOwnershipReassertion", () => {
   it("no-ops scheduled reassertions that run before the host is ready", async () => {
     // Registry rebuilds fire during extension load, before session_start
