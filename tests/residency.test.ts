@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { currentStampFields } from "../src/core/process-liveness.js";
 import { ActorManager } from "../src/actors/manager.js";
 import { AgentManager } from "../src/agents/manager.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
@@ -796,6 +797,38 @@ describe.skipIf(!hasResidentHost || process.platform === "win32")("durable parti
     await client.cleanupAgent(second.id);
     await client.close();
     await state.participants.close();
+  });
+
+  it("refreshes its owner record without changing its identity", { timeout: 45_000 }, async () => {
+    const state = await rootHarness("resident-heartbeat");
+    const client = new ResidencyClient({
+      config: state.config,
+      mesh: state.mesh,
+      participants: state.participants,
+      mainAgent: state.mainAgent,
+      hostPath,
+    });
+    const ownerPath = path.join(state.config.residencyRoot, "owner.json");
+    const readOwner = (): ResidentHostOwner => JSON.parse(fs.readFileSync(ownerPath, "utf8")) as ResidentHostOwner;
+    try {
+      const handle = await client.spawnAgent({ task: "heartbeat", transport: "process", residency: "durable" });
+      const first = readOwner();
+      // The host runs in this PID namespace, so it records the same one.
+      expect(first.pidNamespace).toBe(currentStampFields().pidNamespace);
+      expect(first.heartbeatAt).toBeGreaterThanOrEqual(first.readyAt);
+      await waitFor(() => (readOwner().heartbeatAt ?? 0) > (first.heartbeatAt ?? 0), 10_000);
+      expect(readOwner()).toMatchObject({
+        token: first.token,
+        pid: first.pid,
+        startedAt: first.startedAt,
+        readyAt: first.readyAt,
+      });
+      await client.waitAgent(handle.id);
+      await client.cleanupAgent(handle.id);
+    } finally {
+      await client.close();
+      await state.participants.close();
+    }
   });
 
   it("completes and cleans a durable agent after its originating Main closes", { timeout: 45_000 }, async () => {

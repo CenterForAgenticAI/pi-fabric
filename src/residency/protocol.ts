@@ -107,6 +107,8 @@ export interface ResidentHostOwner {
   token: string;
   startedAt: number;
   readyAt: number;
+  /** Last refresh by the running host; absent in older records. */
+  heartbeatAt?: number;
 }
 
 interface ResidentSpawnCommand {

@@ -5,7 +5,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeJsonAtomic } from "../core/atomic-write.js";
-import { currentStampFields, processLiveness, stampFromRecord } from "../core/process-liveness.js";
+import { currentStampFields } from "../core/process-liveness.js";
+import { RESIDENT_HEARTBEAT_MS, residentOwnerLive } from "./owner-state.js";
 import {
   normalizeModelAliases,
   resolveAvailablePiModel,
@@ -60,11 +61,7 @@ const readJson = <T>(filePath: string): T | undefined => {
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-const processAlive = (record: { pid?: unknown; pidNamespace?: unknown; startTime?: unknown }): boolean => {
-  const stamp = stampFromRecord(record);
-  if (!Number.isSafeInteger(stamp.pid) || stamp.pid <= 0) return false;
-  return processLiveness(stamp) !== "dead";
-};
+
 
 class ResidentHostAlreadyRunning extends Error {}
 
@@ -133,6 +130,8 @@ class ResidentHost {
   readonly #deliveryPrefix: string;
   readonly #token = randomUUID();
   #requestTimer: NodeJS.Timeout | undefined;
+  #heartbeatTimer: NodeJS.Timeout | undefined;
+  #owner: ResidentHostOwner | undefined;
   #pollingRequests = false;
   #closed = false;
   #started = false;
@@ -336,7 +335,7 @@ class ResidentHost {
       REQUEST_POLL_MS,
     );
     const now = Date.now();
-    const owner: ResidentHostOwner = {
+    this.#owner = {
       format: RESIDENT_HOST_FORMAT,
       hostId: this.hostId,
       pid: process.pid,
@@ -344,8 +343,13 @@ class ResidentHost {
       token: this.#token,
       startedAt: now,
       readyAt: now,
+      heartbeatAt: now,
     };
-    atomicWrite(this.#ownerPath, owner);
+    atomicWrite(this.#ownerPath, this.#owner);
+    // Clients in another PID namespace cannot probe this process; the
+    // heartbeat is what tells them the host still runs.
+    this.#heartbeatTimer = setInterval(() => this.#heartbeat(), RESIDENT_HEARTBEAT_MS);
+    this.#heartbeatTimer.unref();
     fs.rmSync(this.#errorPath, { force: true });
     await this.#pollRequests();
   }
@@ -355,6 +359,8 @@ class ResidentHost {
     this.#closed = true;
     if (this.#requestTimer) clearInterval(this.#requestTimer);
     this.#requestTimer = undefined;
+    if (this.#heartbeatTimer) clearInterval(this.#heartbeatTimer);
+    this.#heartbeatTimer = undefined;
     while (this.#pollingRequests) await delay(10);
     await this.participants.quiesce().catch(() => undefined);
     await this.lifecycle.close().catch(() => undefined);
@@ -702,25 +708,37 @@ class ResidentHost {
     }
   }
 
+  #heartbeat(): void {
+    if (this.#closed || !this.#owner) return;
+    // Never overwrite an owner record another host has since claimed.
+    if (readJson<ResidentHostOwner>(this.#ownerPath)?.token !== this.#token) return;
+    this.#owner = { ...this.#owner, heartbeatAt: Date.now() };
+    try {
+      atomicWrite(this.#ownerPath, this.#owner);
+    } catch {
+      // A missed refresh is recovered by the next one.
+    }
+  }
+
   #acquireLock(): void {
     fs.mkdirSync(this.config.residencyRoot, { recursive: true, mode: 0o700 });
     const existing = readJson<ResidentHostOwner>(this.#ownerPath);
-    if (existing && processAlive(existing)) {
+    if (existing && residentOwnerLive(existing)) {
       throw new ResidentHostAlreadyRunning(`Fabric resident host is already running (${existing.pid})`);
     }
     try {
       const descriptor = fs.openSync(this.#lockPath, "wx", 0o600);
-      fs.writeFileSync(descriptor, JSON.stringify({ token: this.#token, pid: process.pid, ...currentStampFields() }));
+      fs.writeFileSync(descriptor, JSON.stringify({ token: this.#token, pid: process.pid, ...currentStampFields(), createdAt: Date.now() }));
       fs.closeSync(descriptor);
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "EEXIST") {
-        const locked = readJson<{ pid?: unknown; pidNamespace?: unknown; startTime?: unknown }>(this.#lockPath);
-        if (locked && processAlive(locked)) {
+        const locked = readJson<Parameters<typeof residentOwnerLive>[0]>(this.#lockPath);
+        if (locked && residentOwnerLive(locked)) {
           throw new ResidentHostAlreadyRunning(`Fabric resident host is starting (${locked.pid})`);
         }
         fs.rmSync(this.#lockPath, { force: true });
         const descriptor = fs.openSync(this.#lockPath, "wx", 0o600);
-        fs.writeFileSync(descriptor, JSON.stringify({ token: this.#token, pid: process.pid, ...currentStampFields() }));
+        fs.writeFileSync(descriptor, JSON.stringify({ token: this.#token, pid: process.pid, ...currentStampFields(), createdAt: Date.now() }));
         fs.closeSync(descriptor);
       } else {
         throw error;

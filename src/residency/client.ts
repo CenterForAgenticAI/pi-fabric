@@ -3,13 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeJsonAtomic } from "../core/atomic-write.js";
-import { stampFromRecord } from "../core/process-liveness.js";
+import { residentOwnerLive } from "./owner-state.js";
 import type { FabricActorInfo, FabricActorRequest } from "../actors/types.js";
 import type { FabricAgentLog, AgentHandleInfo, AgentRunRecord, AgentRunRequest, AgentRunResult } from "../agents/types.js";
 import { readChildToolAllowlist } from "../core/child-tool-allowlist.js";
 import { resolveAgentCwd } from "../agents/manager.js";
 import { isFabricWorktreePath } from "../agents/worktree-paths.js";
-import { executeFile, processIsAlive, spawnDetached } from "../agents/transports/process-utils.js";
+import { executeFile, spawnDetached } from "../agents/transports/process-utils.js";
 import { readJsonlPage } from "../log-tail.js";
 import type { FabricOwnedModelGuidance } from "../components/model-guidance.js";
 import type { FabricMainAgentTarget } from "../main-agent.js";
@@ -478,8 +478,7 @@ export class ResidencyClient {
     if (
       owner?.format !== RESIDENT_HOST_FORMAT ||
       owner.hostId !== this.hostId ||
-      !Number.isSafeInteger(owner.pid) ||
-      !processIsAlive(stampFromRecord(owner))
+      !residentOwnerLive(owner)
     ) {
       return undefined;
     }
