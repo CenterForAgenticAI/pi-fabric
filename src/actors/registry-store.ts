@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { writeJsonAtomic } from "../core/atomic-write.js";
+import { formatLockOwner, parseLockOwner, processLiveness } from "../core/process-liveness.js";
 
 const ACTOR_REGISTRY_LOCK_TIMEOUT_MS = 5_000;
 const ACTOR_REGISTRY_STALE_LOCK_MS = 30_000;
@@ -49,20 +50,11 @@ export class ActorRegistryStore {
     const ownerPath = path.join(lockPath, "owner");
     const deadline = Date.now() + ACTOR_REGISTRY_LOCK_TIMEOUT_MS;
     const token = randomUUID();
-    const processAlive = (pid: number): boolean => {
-      if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    };
     fs.mkdirSync(this.#actorRoot, { recursive: true, mode: 0o700 });
     while (true) {
       try {
         fs.mkdirSync(lockPath, { mode: 0o700 });
-        fs.writeFileSync(ownerPath, `${token}\n${process.pid}\n${Date.now()}\n`, {
+        fs.writeFileSync(ownerPath, formatLockOwner(token), {
           encoding: "utf8",
           mode: 0o600,
         });
@@ -71,9 +63,9 @@ export class ActorRegistryStore {
         if (errorCode(error) !== "EEXIST") throw error;
         try {
           const firstOwner = fs.readFileSync(ownerPath, "utf8");
-          const [, pidText, createdText] = firstOwner.trim().split("\n");
-          const stale = Date.now() - Number(createdText) > ACTOR_REGISTRY_STALE_LOCK_MS;
-          if (stale && !processAlive(Number(pidText))) {
+          const { createdAt, stamp } = parseLockOwner(firstOwner);
+          const stale = Date.now() - createdAt > ACTOR_REGISTRY_STALE_LOCK_MS;
+          if (stale && processLiveness(stamp) !== "alive") {
             const secondOwner = fs.readFileSync(ownerPath, "utf8");
             if (secondOwner === firstOwner) {
               fs.rmSync(lockPath, { recursive: true, force: true });

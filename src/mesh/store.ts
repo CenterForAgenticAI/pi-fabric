@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { writeFileAtomic } from "../core/atomic-write.js";
+import { formatLockOwner, parseLockOwner, processLiveness } from "../core/process-liveness.js";
 import { readJsonlPage } from "../log-tail.js";
 import { captureStoragePut, captureStorageDelete, storageRevision } from "../verified/storage.js";
 
@@ -75,16 +76,6 @@ const errorCode = (error: unknown): string | undefined =>
   error instanceof Error && "code" in error && typeof error.code === "string"
     ? error.code
     : undefined;
-
-const processAlive = (pid: number): boolean => {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 const jsonClone = <T>(value: T): T => {
   const serialized = JSON.stringify(value);
@@ -687,7 +678,7 @@ export class MeshStore {
     while (true) {
       try {
         fs.mkdirSync(this.#lockPath, { mode: 0o700 });
-        fs.writeFileSync(ownerPath, `${token}\n${process.pid}\n${Date.now()}\n`, {
+        fs.writeFileSync(ownerPath, formatLockOwner(token), {
           encoding: "utf8",
           mode: 0o600,
         });
@@ -733,10 +724,9 @@ export class MeshStore {
       }
     }
     if (owner !== undefined) {
-      const [, pidText, createdText] = owner.trim().split("\n");
-      const createdAt = Number(createdText);
+      const { createdAt, stamp } = parseLockOwner(owner);
       if (Number.isFinite(createdAt) && Date.now() - createdAt <= this.#staleLockMs) return false;
-      if (processAlive(Number(pidText))) return false;
+      if (processLiveness(stamp) === "alive") return false;
       try {
         if (fs.readFileSync(ownerPath, "utf8") !== owner) return false;
         fs.rmSync(this.#lockPath, { recursive: true, force: true });

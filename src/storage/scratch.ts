@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { currentStampFields, processLiveness, stampFromRecord, type ProcessStamp } from "../core/process-liveness.js";
 
 export const SCRATCH_OWNER_FILE = ".fabric-scratch.json";
 export const SCRATCH_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
@@ -21,16 +22,16 @@ interface Owner {
   version: 1;
   kind: ScratchKind;
   pid: number;
+  pidNamespace?: string;
+  startTime?: string;
   createdAt: number;
   closedAt?: number;
   orphanedAt?: number;
 }
 const timestamp = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
-export const processAlive = (pid: number): boolean => {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return true; // uncertainty is not death
-  try { process.kill(pid, 0); return true; }
-  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
-};
+/** Deletion guard: only a proven-dead owner is dead; uncertainty is not death. */
+export const processAlive = (owner: number | ProcessStamp): boolean =>
+  processLiveness(typeof owner === "number" ? { pid: owner } : owner) !== "dead";
 export const ownedStat = (file: string): fs.Stats | undefined => {
   try {
     const stat = fs.lstatSync(file);
@@ -59,7 +60,7 @@ export const createScratch = (kind: ScratchKind, tempRoot = os.tmpdir()): string
   try {
     fs.chmodSync(directory, 0o700);
     fs.writeFileSync(path.join(directory, SCRATCH_OWNER_FILE), JSON.stringify({
-      app: "pi-fabric-scratch", version: 1, kind, pid: process.pid, createdAt: Date.now(),
+      app: "pi-fabric-scratch", version: 1, kind, pid: process.pid, ...currentStampFields(), createdAt: Date.now(),
     } satisfies Owner), { mode: 0o600, flag: "wx" });
   } catch (error) {
     fs.rmSync(directory, { recursive: true, force: true });
@@ -139,7 +140,7 @@ export const sweepScratch = async (options: ScratchSweepOptions): Promise<Scratc
         if (processAlive(childPid)) continue;
       }
       if (owner.closedAt === undefined) {
-        if (processAlive(owner.pid)) continue;
+        if (processAlive(stampFromRecord(owner))) continue;
         if (owner.orphanedAt === undefined) {
           result.orphaned.push(directory);
           if (!options.dryRun) await fs.promises.writeFile(path.join(directory, SCRATCH_OWNER_FILE), JSON.stringify({ ...owner, orphanedAt: now }), { mode: 0o600 });
@@ -166,7 +167,7 @@ export const sweepScratch = async (options: ScratchSweepOptions): Promise<Scratc
       const names = await fs.promises.readdir(candidate.directory);
       if (names.length !== candidate.files.size || names.some(name => !candidate.files.has(name))) continue;
       if ([...candidate.files].some(([name, stat]) => !unchanged(stat, ownedStat(path.join(candidate.directory, name))))) continue;
-      if (candidate.owner.closedAt === undefined && processAlive(candidate.owner.pid)) continue;
+      if (candidate.owner.closedAt === undefined && processAlive(stampFromRecord(candidate.owner))) continue;
       if (candidate.childPid !== undefined && processAlive(candidate.childPid)) continue;
       await fs.promises.rm(candidate.directory, { recursive: true, force: true });
       result.removed.push(candidate.directory);

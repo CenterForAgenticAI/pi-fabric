@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeJsonAtomic } from "../core/atomic-write.js";
+import { currentStampFields, processLiveness, stampFromRecord } from "../core/process-liveness.js";
 import {
   normalizeModelAliases,
   resolveAvailablePiModel,
@@ -59,16 +60,10 @@ const readJson = <T>(filePath: string): T | undefined => {
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-const processAlive = (pid: number): boolean => {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // On Windows, EPERM means the process exists but cannot be opened for
-    // signaling; only ESRCH (or other errors) mean it is gone.
-    return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "EPERM";
-  }
+const processAlive = (record: { pid?: unknown; pidNamespace?: unknown; startTime?: unknown }): boolean => {
+  const stamp = stampFromRecord(record);
+  if (!Number.isSafeInteger(stamp.pid) || stamp.pid <= 0) return false;
+  return processLiveness(stamp) !== "dead";
 };
 
 class ResidentHostAlreadyRunning extends Error {}
@@ -345,6 +340,7 @@ class ResidentHost {
       format: RESIDENT_HOST_FORMAT,
       hostId: this.hostId,
       pid: process.pid,
+      ...currentStampFields(),
       token: this.#token,
       startedAt: now,
       readyAt: now,
@@ -709,22 +705,22 @@ class ResidentHost {
   #acquireLock(): void {
     fs.mkdirSync(this.config.residencyRoot, { recursive: true, mode: 0o700 });
     const existing = readJson<ResidentHostOwner>(this.#ownerPath);
-    if (existing && processAlive(existing.pid)) {
+    if (existing && processAlive(existing)) {
       throw new ResidentHostAlreadyRunning(`Fabric resident host is already running (${existing.pid})`);
     }
     try {
       const descriptor = fs.openSync(this.#lockPath, "wx", 0o600);
-      fs.writeFileSync(descriptor, JSON.stringify({ token: this.#token, pid: process.pid }));
+      fs.writeFileSync(descriptor, JSON.stringify({ token: this.#token, pid: process.pid, ...currentStampFields() }));
       fs.closeSync(descriptor);
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "EEXIST") {
-        const locked = readJson<{ pid?: unknown }>(this.#lockPath);
-        if (typeof locked?.pid === "number" && processAlive(locked.pid)) {
+        const locked = readJson<{ pid?: unknown; pidNamespace?: unknown; startTime?: unknown }>(this.#lockPath);
+        if (locked && processAlive(locked)) {
           throw new ResidentHostAlreadyRunning(`Fabric resident host is starting (${locked.pid})`);
         }
         fs.rmSync(this.#lockPath, { force: true });
         const descriptor = fs.openSync(this.#lockPath, "wx", 0o600);
-        fs.writeFileSync(descriptor, JSON.stringify({ token: this.#token, pid: process.pid }));
+        fs.writeFileSync(descriptor, JSON.stringify({ token: this.#token, pid: process.pid, ...currentStampFields() }));
         fs.closeSync(descriptor);
       } else {
         throw error;

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { currentProcessStamp, formatLockOwner } from "../src/core/process-liveness.js";
 import {
   MeshStore,
   type MeshIdentity,
@@ -289,6 +290,42 @@ describe("MeshStore lock recovery", () => {
     ).rejects.toThrow("Timed out waiting for the Fabric mesh lock");
     expect(fs.existsSync(lockPath)).toBe(true);
     expect(fs.readFileSync(path.join(lockPath, "owner"), "utf8")).toContain(`${process.pid}\n`);
+  });
+
+  it("sweeps a stale lock whose pid was reused by another process", async () => {
+    const store = createStore();
+    const own = currentProcessStamp();
+    const reused = formatLockOwner("crashed", Date.now() - 60_000, { ...own, startTime: "1" });
+    const lockPath = holdLock(store, reused);
+
+    const event = await store.publish({ topic: "team.auth", from: identity, text: "recovered" });
+
+    expect(event.sequence).toBe(1);
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("waits for a fresh lock held from another PID namespace, even when its pid is live here", async () => {
+    const store = createStore({ lockTimeoutMs: 300 });
+    const foreign = formatLockOwner("sandbox", Date.now(), { pid: process.pid, pidNamespace: "pid:[1]" });
+    const lockPath = holdLock(store, foreign);
+
+    await expect(
+      store.publish({ topic: "team.auth", from: identity, text: "blocked" }),
+    ).rejects.toThrow("Timed out waiting for the Fabric mesh lock");
+    expect(fs.existsSync(lockPath)).toBe(true);
+  });
+
+  it("sweeps a stale lock held from another PID namespace instead of trusting a colliding pid", async () => {
+    const store = createStore();
+    // PID 1 is always live here; recorded in a sandbox it names the sandbox's
+    // own init, which says nothing about this namespace.
+    const foreign = formatLockOwner("sandbox", Date.now() - 60_000, { pid: 1, pidNamespace: "pid:[1]" });
+    const lockPath = holdLock(store, foreign);
+
+    const event = await store.publish({ topic: "team.auth", from: identity, text: "recovered" });
+
+    expect(event.sequence).toBe(1);
+    expect(fs.existsSync(lockPath)).toBe(false);
   });
 
   it("waits out a fresh ownerless lock instead of sweeping an in-flight acquisition", async () => {

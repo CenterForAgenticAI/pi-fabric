@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { writeJsonAtomic } from "../core/atomic-write.js";
+import { currentStampFields, stampFromRecord } from "../core/process-liveness.js";
 import { ownedStat, processAlive } from "./scratch.js";
 
 export const FABRIC_RUN_ROOT_PREFIX = "pi-fabric-runs-";
@@ -8,6 +9,8 @@ const RUN_ROOT_OWNER_FILE = ".fabric-owner.json";
 const TERMINAL_STATUSES = new Set(["completed", "failed", "stopped", "timed_out"]);
 interface RunRootOwner {
   pid: number;
+  pidNamespace?: string;
+  startTime?: string;
   startedAt: number;
   heartbeatAt: number;
   orphanedAt?: number;
@@ -51,12 +54,12 @@ const writeOwner = (root: string, owner: RunRootOwner): void => {
 };
 export const markRunRootActive = (root: string, now = Date.now()): void => {
   const existing = readJson<RunRootOwner>(ownerPath(root));
-  writeOwner(root, { pid: process.pid, startedAt: validOwner(existing) ? existing.startedAt : now, heartbeatAt: now });
+  writeOwner(root, { pid: process.pid, ...currentStampFields(), startedAt: validOwner(existing) ? existing.startedAt : now, heartbeatAt: now });
 };
 export const heartbeatRunRoot = markRunRootActive;
 export const markRunRootClosed = (root: string, now = Date.now(), childrenStopped = false): void => {
   const existing = readJson<RunRootOwner>(ownerPath(root));
-  writeOwner(root, { pid: process.pid, startedAt: validOwner(existing) ? existing.startedAt : now, heartbeatAt: now, closedAt: now, childrenStopped });
+  writeOwner(root, { pid: process.pid, ...currentStampFields(), startedAt: validOwner(existing) ? existing.startedAt : now, heartbeatAt: now, closedAt: now, childrenStopped });
 };
 const recordAgeReference = (record: RunRecordSummary, fallback: number): number =>
   time(record.finishedAt) ? record.finishedAt : time(record.updatedAt) ? record.updatedAt : fallback;
@@ -149,7 +152,7 @@ export const sweepTempRunRoots = (options: {
       if (removeEmptyRunRoot(root)) result.removedRoots.push(root);
       continue;
     }
-    if (processAlive(owner.pid)) continue;
+    if (processAlive(stampFromRecord(owner))) continue;
     if (owner.orphanedAt === undefined) {
       try { writeOwner(root, { ...owner, orphanedAt: now }); } catch {}
       continue;

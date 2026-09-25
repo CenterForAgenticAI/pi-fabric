@@ -6,6 +6,7 @@ import path from "node:path";
 import { FabricTraceSafeError } from "../audit/trace.js";
 import { schemaRefAllowedInEnforce } from "./policy.js";
 import { writeJsonAtomic } from "../core/atomic-write.js";
+import { formatCommitLockOwner, parseCommitLockOwner, processLiveness } from "../core/process-liveness.js";
 import type { FabricSchemaConfig, FabricSchemaTrustedCommand } from "../config.js";
 import type { MeshIdentity, MeshStateEntry, MeshStore } from "../mesh/store.js";
 import type { FabricInvocationContext } from "../protocol.js";
@@ -31,6 +32,8 @@ const WORKSPACE_KEY = "schema/workspace";
 const HYPOTHESIS_PREFIX = "schema/hypothesis/";
 const CERTIFICATE_PREFIX = "schema/certificate/";
 const OUTPUT_LIMIT = 64 * 1024;
+/** An unobservable commit-lock owner holds the lock at most this long. */
+const SCHEMA_STALE_COMMIT_LOCK_MS = 30_000;
 
 interface BeforeImage {
   path: string;
@@ -816,7 +819,7 @@ export class SchemaController {
     fs.mkdirSync(this.#journalRoot, { recursive: true, mode: 0o700 });
     try {
       const descriptor = fs.openSync(this.#lockPath, "wx", 0o600);
-      fs.writeFileSync(descriptor, `${process.pid}\n${Date.now()}\n`);
+      fs.writeFileSync(descriptor, formatCommitLockOwner());
       fs.closeSync(descriptor);
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "EEXIST") {
@@ -830,15 +833,18 @@ export class SchemaController {
   #recoverJournals(): void {
     fs.mkdirSync(this.#journalRoot, { recursive: true, mode: 0o700 });
     try {
-      const [pidText] = fs.readFileSync(this.#lockPath, "utf8").split("\n");
-      const pid = Number(pidText);
-      if (Number.isSafeInteger(pid) && pid > 0) {
-        try {
-          process.kill(pid, 0);
-          return;
-        } catch {
-          // The owner is gone; recover its applying journal below.
-        }
+      const owner = parseCommitLockOwner(fs.readFileSync(this.#lockPath, "utf8"));
+      const liveness = processLiveness(owner.stamp);
+      if (liveness === "alive") return;
+      // An owner Fabric cannot observe (another PID namespace, or a denied
+      // probe) keeps a recent lock; a dead owner, or an unobservable one past
+      // the stale window or without a readable creation time, releases it.
+      if (
+        liveness === "unknown" &&
+        Number.isFinite(owner.createdAt) &&
+        Date.now() - owner.createdAt <= SCHEMA_STALE_COMMIT_LOCK_MS
+      ) {
+        return;
       }
       fs.rmSync(this.#lockPath, { force: true });
     } catch (error) {

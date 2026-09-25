@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { closeScratch, createScratch, SCRATCH_OWNER_FILE, sweepScratch } from "../src/storage/scratch.js";
+import { currentProcessStamp, currentStampFields } from "../src/core/process-liveness.js";
 import { NativeReaderCheckpoint } from "../src/ui/conversation-native-reader-checkpoint.js";
 
 const HOUR = 3_600_000;
@@ -87,6 +88,28 @@ describe("managed scratch retention", () => {
     expect((await sweepScratch({ tempRoot, now: 40 * HOUR })).removed).toEqual([]);
     expect((await sweepScratch({ tempRoot, now: 45 * HOUR })).removed).toEqual([]);
     expect((await sweepScratch({ tempRoot, now: 46 * HOUR })).removed).toEqual([orphan]);
+  });
+
+  it("never orphans a host recorded in another PID namespace", async () => {
+    const tempRoot = sandbox();
+    // The sandboxed owner's pid is dead here, which says nothing about it.
+    const foreign = fixture(tempRoot, "checkpoint", { pid: 2147483647, pidNamespace: "pid:[1]" });
+    expect((await sweepScratch({ tempRoot, now: 40 * HOUR, dryRun: true })).orphaned).toEqual([]);
+    expect((await sweepScratch({ tempRoot, now: 100 * HOUR })).removed).toEqual([]);
+    expect(fs.existsSync(foreign)).toBe(true);
+  });
+
+  it.runIf(process.platform === "linux")("orphans a host whose pid was reused", async () => {
+    const tempRoot = sandbox();
+    const own = currentProcessStamp();
+    const reused = fixture(tempRoot, "checkpoint", { pid: process.pid, pidNamespace: own.pidNamespace, startTime: "1" });
+    expect((await sweepScratch({ tempRoot, now: 40 * HOUR, dryRun: true })).orphaned).toEqual([reused]);
+  });
+
+  it("stamps new scratch owners with the process identity", () => {
+    const directory = createScratch("output", sandbox());
+    const owner = JSON.parse(fs.readFileSync(path.join(directory, SCRATCH_OWNER_FILE), "utf8"));
+    expect(owner).toMatchObject({ pid: process.pid, ...currentStampFields() });
   });
 
   it("protects shell children even after their host dies", async () => {

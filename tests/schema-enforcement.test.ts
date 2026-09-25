@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { formatCommitLockOwner } from "../src/core/process-liveness.js";
 import { CapturedToolCatalog } from "../src/capture/catalog.js";
 import { DEFAULT_FABRIC_CONFIG, type FabricSchemaMode } from "../src/config.js";
 import { ActionRegistry } from "../src/core/action-registry.js";
@@ -493,6 +494,66 @@ describe("Schema transactions", () => {
     expect(JSON.parse(fs.readFileSync(path.join(journalRoot, "crashed.json"), "utf8"))).toMatchObject({
       status: "rolled_back",
       error: "recovered incomplete transaction",
+    });
+  });
+
+  describe("commit lock ownership across PID namespaces", () => {
+    const crashedJournal = (setup: ReturnType<typeof fixture>) => {
+      const target = path.join(setup.cwd, "a.txt");
+      fs.writeFileSync(target, "mutated\n");
+      const journalRoot = path.join(setup.mesh.root, "schema-transactions");
+      fs.writeFileSync(
+        path.join(journalRoot, "crashed.json"),
+        JSON.stringify({
+          format: 1,
+          id: "crashed",
+          status: "applying",
+          before: [{
+            path: "a.txt",
+            absolute: target,
+            existed: true,
+            content: Buffer.from("original\n").toString("base64"),
+            mode: 0o644,
+          }],
+          createdAt: Date.now(),
+        }),
+      );
+      return { target, lockPath: path.join(journalRoot, ".commit.lock") };
+    };
+
+    it("never rolls back a transaction a sandboxed owner may still be applying", () => {
+      const setup = fixture();
+      const { target, lockPath } = crashedJournal(setup);
+      // Its pid is dead in this namespace; that says nothing about the sandbox.
+      fs.writeFileSync(lockPath, formatCommitLockOwner(Date.now(), { pid: 2147483647, pidNamespace: "pid:[1]" }));
+      new SchemaController(setup.cwd, setup.config, setup.mesh, identity, setup.state);
+      expect(fs.readFileSync(target, "utf8")).toBe("mutated\n");
+      expect(fs.existsSync(lockPath)).toBe(true);
+    });
+
+    it("recovers once an unobservable owner's lock is past the stale window", () => {
+      const setup = fixture();
+      const { target, lockPath } = crashedJournal(setup);
+      fs.writeFileSync(lockPath, formatCommitLockOwner(Date.now() - 60_000, { pid: 2147483647, pidNamespace: "pid:[1]" }));
+      new SchemaController(setup.cwd, setup.config, setup.mesh, identity, setup.state);
+      expect(fs.readFileSync(target, "utf8")).toBe("original\n");
+      expect(fs.existsSync(lockPath)).toBe(false);
+    });
+
+    it("recovers a corrupt lock without a creation time", () => {
+      const setup = fixture();
+      const { target } = crashedJournal(setup);
+      fs.writeFileSync(path.join(setup.mesh.root, "schema-transactions", ".commit.lock"), "garbage");
+      new SchemaController(setup.cwd, setup.config, setup.mesh, identity, setup.state);
+      expect(fs.readFileSync(target, "utf8")).toBe("original\n");
+    });
+
+    it("keeps the lock of a live owner in this namespace", () => {
+      const setup = fixture();
+      const { target } = crashedJournal(setup);
+      fs.writeFileSync(path.join(setup.mesh.root, "schema-transactions", ".commit.lock"), formatCommitLockOwner());
+      new SchemaController(setup.cwd, setup.config, setup.mesh, identity, setup.state);
+      expect(fs.readFileSync(target, "utf8")).toBe("mutated\n");
     });
   });
 

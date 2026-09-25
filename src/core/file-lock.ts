@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { formatLockOwner, parseLockOwner, processLiveness } from "./process-liveness.js";
 
 const DEFAULT_LOCK_ATTEMPTS = 50;
 const DEFAULT_LOCK_DELAY_MS = 5;
@@ -36,16 +37,6 @@ const sleepSync = (() => {
     return (): void => undefined;
   }
 })();
-
-const processAlive = (pid: number): boolean => {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 const sleepAsync = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -90,7 +81,7 @@ export const withExclusiveFileLockAsync = async <T>(
     try {
       await fs.promises.mkdir(lock, { mode: 0o700 });
       try {
-        await fs.promises.writeFile(ownerPath, `${token}\n${process.pid}\n${Date.now()}\n`, {
+        await fs.promises.writeFile(ownerPath, formatLockOwner(token), {
           encoding: "utf-8",
           mode: 0o600,
         });
@@ -104,17 +95,18 @@ export const withExclusiveFileLockAsync = async <T>(
       if (errorCode(error) !== "EEXIST") throw error;
       try {
         const firstOwner = await fs.promises.readFile(ownerPath, "utf8");
-        const [, pidText, createdText] = firstOwner.trim().split("\n");
-        const stale = Date.now() - Number(createdText) > staleMs;
-        if (stale && !processAlive(Number(pidText))) {
+        const { createdAt, stamp } = parseLockOwner(firstOwner);
+        const stale = Date.now() - createdAt > staleMs;
+        if (stale && processLiveness(stamp) !== "alive") {
           const secondOwner = await fs.promises.readFile(ownerPath, "utf8");
           if (
             secondOwner === firstOwner &&
             await reapStaleLockAsync(lock, async (claimed) => {
               try {
                 const owner = await fs.promises.readFile(path.join(claimed, "owner"), "utf8");
-                const [, pid, created] = owner.trim().split("\n");
-                return Date.now() - Number(created) > staleMs && !processAlive(Number(pid));
+                const claimedOwner = parseLockOwner(owner);
+                return Date.now() - claimedOwner.createdAt > staleMs &&
+                  processLiveness(claimedOwner.stamp) !== "alive";
               } catch {
                 return false;
               }
@@ -207,7 +199,7 @@ export const withExclusiveFileLock = <T>(
     try {
       fs.mkdirSync(lock, { mode: 0o700 });
       try {
-        fs.writeFileSync(ownerPath, `${token}\n${process.pid}\n${Date.now()}\n`, {
+        fs.writeFileSync(ownerPath, formatLockOwner(token), {
           encoding: "utf-8",
           mode: 0o600,
         });
@@ -221,17 +213,18 @@ export const withExclusiveFileLock = <T>(
       if (errorCode(error) !== "EEXIST") throw error;
       try {
         const firstOwner = fs.readFileSync(ownerPath, "utf8");
-        const [, pidText, createdText] = firstOwner.trim().split("\n");
-        const stale = Date.now() - Number(createdText) > staleMs;
-        if (stale && !processAlive(Number(pidText))) {
+        const { createdAt, stamp } = parseLockOwner(firstOwner);
+        const stale = Date.now() - createdAt > staleMs;
+        if (stale && processLiveness(stamp) !== "alive") {
           const secondOwner = fs.readFileSync(ownerPath, "utf8");
           if (
             secondOwner === firstOwner &&
             reapStaleLock(lock, (claimed) => {
               try {
                 const owner = fs.readFileSync(path.join(claimed, "owner"), "utf8");
-                const [, pid, created] = owner.trim().split("\n");
-                return Date.now() - Number(created) > staleMs && !processAlive(Number(pid));
+                const claimedOwner = parseLockOwner(owner);
+                return Date.now() - claimedOwner.createdAt > staleMs &&
+                  processLiveness(claimedOwner.stamp) !== "alive";
               } catch {
                 return false;
               }

@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { processLiveness, type ProcessStamp } from "../../core/process-liveness.js";
 
 export interface ExecFileResult {
   stdout: string;
@@ -82,16 +83,15 @@ export const commandAvailable = async (
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`;
 
-export const processIsAlive = (pid: number): boolean => {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // On Windows, EPERM means the process exists but cannot be opened for
-    // signaling; only ESRCH (or other errors) mean it is gone.
-    return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "EPERM";
-  }
+/**
+ * Liveness of a process Fabric spawned or tracks. Only proven death is death:
+ * on Windows EPERM means the process exists but cannot be opened for
+ * signaling, and an owner in another PID namespace cannot be observed.
+ */
+export const processIsAlive = (owner: number | ProcessStamp): boolean => {
+  const stamp = typeof owner === "number" ? { pid: owner } : owner;
+  if (!Number.isSafeInteger(stamp.pid) || stamp.pid <= 0) return false;
+  return processLiveness(stamp) !== "dead";
 };
 
 const GENERIC_RUNTIME = /^(node|bun)(\.exe)?$/;

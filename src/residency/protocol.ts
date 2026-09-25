@@ -100,6 +100,10 @@ export interface ResidentHostOwner {
   format: typeof RESIDENT_HOST_FORMAT;
   hostId: string;
   pid: number;
+  /** Linux PID-namespace identity of the host; absent in older records. */
+  pidNamespace?: string;
+  /** Linux process start time of the host; absent in older records. */
+  startTime?: string;
   token: string;
   startedAt: number;
   readyAt: number;
