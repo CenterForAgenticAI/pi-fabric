@@ -70,7 +70,7 @@ const closedPiInputSchema = (name: PiCoreToolName, source: unknown): Record<stri
     properties.background = {
       type: "boolean",
       description:
-        "Detach immediately: returns ok:true with taskId, pid and a bounded live log. Completion notifies the owning agent. Inspect/stop with tools.call tasks.get/tasks.stop. monitor also detaches, requires explicit ui/wake delivery and has a finite deadline. Do not poll.",
+        "Detach immediately: returns ok:true with taskId, pid and a bounded live log. Completion notifies the owning agent. Inspect/stop with tools.call tasks.get/tasks.stop; bounded controllers can await tasks.wait/tasks.watch without polling. monitor also detaches, requires explicit ui/wake delivery and has a finite deadline. Do not poll.",
     };
   }
   if (name === "edit") {

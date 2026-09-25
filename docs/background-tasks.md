@@ -73,6 +73,24 @@ are retained for at most 24 hours. Logs use Fabric's private scratch retention.
 The 1MiB in-memory tail and 8MiB disk log limits remain unchanged: a log is **not a
 full-output archive**, and truncation is disclosed.
 
+## Programmatic wait and watch
+
+For a bounded controller such as `jev.run`/`spawn`, use event-driven task calls:
+
+```ts
+const receipt = await tools.call({ref:"tasks.wait",args:{id:taskId,timeoutMs:30000}});
+// For tasks started with monitor (prefer delivery:"ui" for code-owned supervision):
+const batch = await tools.call({ref:"tasks.watch",args:{id:taskId,after:0,timeoutMs:5000}});
+return {receipt,batch};
+```
+
+- `wait` returns `{task,output,timedOut}`. It waits for terminal metadata, then reads the bounded tail; inspect `task.status` and `task.exitCode`. A successful terminal read acknowledges pending delivery like `get`. A timeout returns the current snapshot, not a failed-process verdict.
+- `watch` requires an opt-in monitor. The launch-time `monitor.match` is the case-sensitive literal filter. It returns `{task,reason,lines,omitted,nextCursor}` when a new batch exists, the task finishes, or the observation ceiling expires. `reason` is `event`, `finished`, or `timeout`; a final event may precede `finished` on the next call.
+- Start `after` at 0; pass the returned `nextCursor` on later calls. Only the latest batch (at most eight previews) is retained. `omitted` counts matching previews lost since the supplied cursor, including intermediate overwritten batches. A cursor from the future is rejected. Truncation markers and monitor filtering/deduplication still apply: this is not a lossless stdout/RPC channel.
+- Defaults: wait 30 seconds, watch 5 seconds; each accepts `timeoutMs` from 1 to 300000. Ready evidence returns immediately. Neither timeout nor cancellation stops or renews the task. Store shutdown rejects pending observations and removes their subscriptions.
+- No polling, inference, or extra wakeups are performed by wait/watch. Ordinary background tasks and wake-enabled monitors retain their existing notification behavior. Main usually yields for those notifications; a controller can use UI-only monitors and wait/watch without a model turn per event.
+- A detached task belongs to the Pi session, not the observing Jev program. Stopping that program cancels its pending wait/watch, not the task. Preserve IDs, set finite process deadlines, and explicitly call `tasks.stop` when required.
+
 ## Opt-in monitors
 
 ```ts

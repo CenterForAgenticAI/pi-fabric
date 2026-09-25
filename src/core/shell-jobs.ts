@@ -362,6 +362,7 @@ export class FabricShellJobStore {
   readonly #jobs = new Map<string, FabricShellJob>();
   readonly #listeners = new Set<(event: FabricShellJobEvent) => void>();
   #closed = false;
+  readonly #closing = new AbortController();
 
   subscribe(listener: (event: FabricShellJobEvent) => void): () => void {
     this.#listeners.add(listener);
@@ -378,7 +379,7 @@ export class FabricShellJobStore {
   constructor(readonly tempRoot = tmpdir()) {}
 
   #prune(): void {
-    const completed = [...this.#jobs.values()].filter((job) => job.finished);
+    const completed = [...this.#jobs.values()].filter((job) => job.finishedAt !== undefined);
     completed.sort((a, b) => (a.finishedAt ?? 0) - (b.finishedAt ?? 0));
     for (const [index, job] of completed.entries()) {
       if (index < completed.length - SHELL_COMPLETED_HANDLES || Date.now() - (job.finishedAt ?? 0) >= SHELL_COMPLETED_MAX_AGE_MS) this.#jobs.delete(job.id);
@@ -395,6 +396,40 @@ export class FabricShellJobStore {
     this.#jobs.set(job.id, job);
     this.#emit({ type: "started", job: job.info() });
     return job;
+  }
+
+  /** Event-driven, bounded observation. Timeout/cancellation never stops the job. */
+  waitFor(id: string, options: { after?: number; timeoutMs: number; signal?: AbortSignal | undefined }): Promise<{ task: FabricShellJobInfo; timedOut: boolean }> {
+    options.signal?.throwIfAborted();
+    this.#closing.signal.throwIfAborted();
+    const job = this.get(id);
+    if (!job) throw new Error(`Unknown shell task: ${id}`);
+    if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 300_000)
+      throw new Error("Task observation timeoutMs must be an integer from 1 to 300000");
+    if (options.after !== undefined && (!Number.isSafeInteger(options.after) || options.after < 0 || options.after > job.eventCount))
+      throw new Error("Task observation after must be an existing event cursor");
+    return new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let unsubscribe = () => {};
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        unsubscribe();
+        options.signal?.removeEventListener("abort", abort);
+        this.#closing.signal.removeEventListener("abort", closing);
+      };
+      const abort = () => { cleanup(); reject(options.signal?.reason ?? new Error("Task observation cancelled")); };
+      const closing = () => { cleanup(); reject(new Error("Shell job store is closed")); };
+      const complete = (timedOut: boolean) => { cleanup(); resolve({ task: job.info(), timedOut }); };
+      const check = () => {
+        if (job.info().finishedAt !== undefined || (options.after !== undefined && job.eventCount > options.after)) complete(false);
+      };
+      unsubscribe = this.subscribe(event => { if (event.job.id === id) check(); });
+      options.signal?.addEventListener("abort", abort, { once: true });
+      this.#closing.signal.addEventListener("abort", closing, { once: true });
+      timer = setTimeout(() => complete(true), options.timeoutMs);
+      // Subscribe before inspecting: an exit or monitor batch cannot fall into a gap.
+      check();
+    });
   }
 
   stop(id: string): boolean {
@@ -439,6 +474,7 @@ export class FabricShellJobStore {
 
   async close(): Promise<void> {
     this.#closed = true;
+    this.#closing.abort(new Error("Shell job store is closed"));
     this.#listeners.clear();
     const live = this.live();
     for (const job of live) {
