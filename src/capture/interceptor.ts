@@ -16,6 +16,12 @@ interface ToolCaptureHub {
   listeners: Set<ToolCaptureListener>;
 }
 
+type ActiveToolFilter = (names: string[]) => string[];
+
+interface ActiveToolFilterHub {
+  filters: Set<ActiveToolFilter>;
+}
+
 export interface RegisteredToolCaptureController {
   setPolicy(config: FabricToolCaptureConfig): void;
   dispose(): void;
@@ -32,10 +38,17 @@ export interface RegisteredToolCaptureOptions {
   // captured tools as registered; hiding from the model happens exclusively in
   // the active tool set (see FabricToolOwnership).
   onCatalogRefresh?: () => void;
+  // Applied to every extension `pi.setActiveTools()` call while this capture
+  // is installed. All extension APIs share one runtime whose setActiveTools is
+  // bound by ExtensionRunner.bindCore, so filtering there stops a dynamic tool
+  // loader or a later before_agent_start handler from re-exposing captured
+  // tools between Fabric's own ownership reassertions.
+  filterActiveTools?: ActiveToolFilter;
 }
 
 const HUB_SYMBOL = Symbol.for("pi-fabric.registered-tool-capture.v1");
 const ANCHOR_SYMBOL = Symbol.for("pi-fabric.registered-tool-anchor.v1");
+const FILTER_HUB_SYMBOL = Symbol.for("pi-fabric.active-tool-filter.v1");
 
 const definitionDelegatesTo = (
   definition: ToolDefinition<any, any, any>,
@@ -120,6 +133,60 @@ const captureHub = (Runner: ExtensionRunnerConstructor): ToolCaptureHub => {
     let tools = original.call(this);
     for (const listener of [...hub.listeners]) tools = listener(tools, this);
     return tools;
+  };
+  return hub;
+};
+
+const filterActiveToolNames = (hub: ActiveToolFilterHub, names: string[]): string[] => {
+  let next = [...names];
+  for (const filter of [...hub.filters]) {
+    try {
+      next = filter(next);
+    } catch { /* a failing filter must not block the host's tool update */ }
+  }
+  return next;
+};
+
+// Wraps the setActiveTools action ExtensionRunner.bindCore copies into the
+// shared extension runtime. Returns undefined when the host runner has no
+// bindCore (older or foreign layouts); refresh and turn reassertion still apply.
+const activeToolFilterHub = (
+  Runner: ExtensionRunnerConstructor,
+): ActiveToolFilterHub | undefined => {
+  const prototype = Runner.prototype as ExtensionRunner & Record<PropertyKey, unknown>;
+  const existing = prototype[FILTER_HUB_SYMBOL] as ActiveToolFilterHub | undefined;
+  if (existing) return existing;
+
+  const original = prototype.bindCore as unknown;
+  if (typeof original !== "function") return undefined;
+  const bindCore = original as (this: ExtensionRunner, ...args: unknown[]) => unknown;
+
+  const hub: ActiveToolFilterHub = { filters: new Set() };
+  Object.defineProperty(prototype, FILTER_HUB_SYMBOL, {
+    value: hub,
+    configurable: false,
+    enumerable: false,
+    writable: false,
+  });
+  (prototype as unknown as Record<string, unknown>).bindCore = function bindFabricFilteredCore(
+    this: ExtensionRunner,
+    actions: unknown,
+    ...rest: unknown[]
+  ): unknown {
+    const setActiveTools =
+      typeof actions === "object" && actions !== null
+        ? (actions as { setActiveTools?: unknown }).setActiveTools
+        : undefined;
+    if (typeof setActiveTools !== "function") return bindCore.call(this, actions, ...rest);
+    const set = setActiveTools as (names: string[]) => void;
+    return bindCore.call(
+      this,
+      {
+        ...(actions as object),
+        setActiveTools: (names: string[]) => set(filterActiveToolNames(hub, names)),
+      },
+      ...rest,
+    );
   };
   return hub;
 };
@@ -221,7 +288,11 @@ const extensionRunnerConstructors = async (): Promise<ExtensionRunnerConstructor
 export const installRegisteredToolCapture = async (
   options: RegisteredToolCaptureOptions,
 ): Promise<RegisteredToolCaptureController> => {
-  const hubs = (await extensionRunnerConstructors()).map(captureHub);
+  const constructors = await extensionRunnerConstructors();
+  const hubs = constructors.map(captureHub);
+  const filterHubs = options.filterActiveTools
+    ? constructors.flatMap((Runner) => activeToolFilterHub(Runner) ?? [])
+    : [];
   const anchorToken = {};
   Object.defineProperty(options.anchorDefinition, ANCHOR_SYMBOL, {
     value: anchorToken,
@@ -247,6 +318,8 @@ export const installRegisteredToolCapture = async (
   };
 
   for (const hub of hubs) hub.listeners.add(listener);
+  const filter = options.filterActiveTools;
+  if (filter) for (const hub of filterHubs) hub.filters.add(filter);
   return {
     setPolicy(config) {
       policy = clonePolicy(config);
@@ -256,6 +329,7 @@ export const installRegisteredToolCapture = async (
       if (disposed) return;
       disposed = true;
       for (const hub of hubs) hub.listeners.delete(listener);
+      if (filter) for (const hub of filterHubs) hub.filters.delete(filter);
       options.catalog.clear();
     },
   };

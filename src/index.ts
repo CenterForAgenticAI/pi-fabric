@@ -217,13 +217,14 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
   // the model even when a late-loading extension triggers a refresh. Refresh
   // callbacks arrive before session initialization too, so reassertion waits
   // for state to be ready rather than reading an uninitialized config.
+  const ownershipActive = (): boolean => {
+    const policy = capturePolicy();
+    return policy.enabled && policy.hideFromModel && fabricOwnsModelTools();
+  };
   const { reassert: reassertToolOwnership, schedule: scheduleOwnershipReassert } =
     createToolOwnershipReassertion({
       ready: () => state.cwd !== undefined,
-      active: () => {
-        const policy = capturePolicy();
-        return policy.enabled && policy.hideFromModel && fabricOwnsModelTools();
-      },
+      active: ownershipActive,
       hiddenNames: hiddenCapturedToolNames,
       apply: (hidden) => toolOwnership.apply(true, hidden),
     });
@@ -289,6 +290,13 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
     onCatalogRefresh: () => {
       scheduleOwnershipReassert();
     },
+    // Reassertion alone runs only on registry refresh and once per prompt; a
+    // loader tool mid-run or a later before_agent_start handler could
+    // otherwise re-expose captured tools until the next prompt.
+    filterActiveTools: (names) =>
+      state.cwd !== undefined && ownershipActive()
+        ? toolOwnership.filter(names, hiddenCapturedToolNames())
+        : names,
   });
   registerHandoffCompletionRenderer(pi);
   pi.registerTool(fabricTool);

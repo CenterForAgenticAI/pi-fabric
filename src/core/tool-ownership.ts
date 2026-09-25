@@ -177,6 +177,28 @@ export class FabricToolOwnership {
     return this.#restore(this.host.getActiveTools());
   }
 
+  // Filters a foreign `setActiveTools` request while Fabric owns the active
+  // set: the result is what `apply(true, hidden)` would leave after the
+  // request. Hidden names the request tried to add are remembered, so leaving
+  // full code mode or moving a name into `capture.keepVisible` still exposes
+  // them. Outside ownership, requests pass through unchanged.
+  filter(names: readonly string[], hidden: ReadonlySet<string>): string[] {
+    if (!this.#savedNativeCoreTools) return [...names];
+    const next: string[] = [];
+    names.forEach((name, index) => {
+      if (PI_CORE_TOOL_NAME_SET.has(name)) return;
+      if (hidden.has(name)) {
+        if (!this.#savedHiddenExtensionTools.has(name)) {
+          this.#savedHiddenExtensionTools.set(name, index);
+        }
+        return;
+      }
+      next.push(name);
+    });
+    if (!next.includes(FABRIC_TOOL_NAME)) next.push(FABRIC_TOOL_NAME);
+    return next;
+  }
+
   #restore(active: string[]): boolean {
     const saved = this.#savedNativeCoreTools;
     const savedHidden = this.#savedHiddenExtensionTools;

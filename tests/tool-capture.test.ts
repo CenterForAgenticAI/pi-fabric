@@ -3,8 +3,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  createExtensionRuntime,
   createSyntheticSourceInfo,
   defineTool,
+  type ExtensionActions,
+  type ExtensionContextActions,
   ExtensionRunner,
   type RegisteredTool,
 } from "@earendil-works/pi-coding-agent";
@@ -237,6 +240,60 @@ describe("registered extension tool capture", () => {
     controller.dispose();
     runner.getAllRegisteredTools();
     expect(refreshes).toBe(2);
+  });
+
+  it("filters extension setActiveTools calls through the bound runtime while installed", async () => {
+    // Every extension's pi.setActiveTools() goes through the shared runtime
+    // that ExtensionRunner.bindCore wires up; filtering there is what stops a
+    // loader tool or a later before_agent_start handler from re-exposing
+    // captured tools between Fabric's own reassertions.
+    const fabricTool = tool("fabric_exec");
+    const controller = await installRegisteredToolCapture({
+      anchorDefinition: fabricTool,
+      catalog: new CapturedToolCatalog(),
+      filterActiveTools: (names) => names.filter((name) => name !== "web_enable"),
+    });
+    controllers.push(controller);
+
+    const runtime = createExtensionRuntime();
+    const runner = Object.create(ExtensionRunner.prototype) as ExtensionRunner;
+    (runner as unknown as { runtime: typeof runtime }).runtime = runtime;
+    const hostSetActiveTools = vi.fn();
+    runner.bindCore(
+      { setActiveTools: hostSetActiveTools } as unknown as ExtensionActions,
+      {} as unknown as ExtensionContextActions,
+    );
+
+    runtime.setActiveTools(["fabric_exec", "web_enable"]);
+    expect(hostSetActiveTools).toHaveBeenLastCalledWith(["fabric_exec"]);
+
+    controller.dispose();
+    runtime.setActiveTools(["fabric_exec", "web_enable"]);
+    expect(hostSetActiveTools).toHaveBeenLastCalledWith(["fabric_exec", "web_enable"]);
+  });
+
+  it("passes setActiveTools through unfiltered when a filter throws", async () => {
+    const fabricTool = tool("fabric_exec");
+    const controller = await installRegisteredToolCapture({
+      anchorDefinition: fabricTool,
+      catalog: new CapturedToolCatalog(),
+      filterActiveTools: () => {
+        throw new Error("boom");
+      },
+    });
+    controllers.push(controller);
+
+    const runtime = createExtensionRuntime();
+    const runner = Object.create(ExtensionRunner.prototype) as ExtensionRunner;
+    (runner as unknown as { runtime: typeof runtime }).runtime = runtime;
+    const hostSetActiveTools = vi.fn();
+    runner.bindCore(
+      { setActiveTools: hostSetActiveTools } as unknown as ExtensionActions,
+      {} as unknown as ExtensionContextActions,
+    );
+
+    runtime.setActiveTools(["read"]);
+    expect(hostSetActiveTools).toHaveBeenLastCalledWith(["read"]);
   });
 
   it("discovers the bundled runtime's distinct ExtensionRunner identity (pi >= 0.84.3)", async () => {
