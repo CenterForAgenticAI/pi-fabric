@@ -61,6 +61,7 @@ const lazy = [
   "ui/settings.js",
   "worker/event-projection.js",
   "worker/options.js",
+  "worker/recovery-watchdog.js",
   "worker/run-record.js",
   "worker/session-export.js",
 ];
