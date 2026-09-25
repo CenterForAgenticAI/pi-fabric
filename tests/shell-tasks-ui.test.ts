@@ -28,21 +28,25 @@ const fixture = () => {
 };
 
 describe("background shell UI", () => {
-  it.each<[string, Partial<FabricShellJobInfo>]>([
-    ["running", { status: "running" }],
-    ["spilled", {}],
-    ["stopping", { stopping: true }],
-    ["monitor:ui", { monitor: { delivery: "ui", timeoutMs: 300000, intervalMs: 5000 } }],
-    ["monitor:wake", { monitor: { delivery: "wake", timeoutMs: 300000, intervalMs: 5000 } }],
-    ["exited", { status: "exited", finishedAt: 13000 }],
-    ["failed", { status: "failed", finishedAt: 13000 }],
-    ["killed", { status: "killed", finishedAt: 13000 }],
-    ["timed_out", { status: "timed_out", finishedAt: 13000 }],
-  ])("renders the entire %s shell row in the header's grey", (status, overrides) => {
+  it.each<[string, Partial<FabricShellJobInfo>, Parameters<Theme["fg"]>[0], string]>([
+    ["running", { status: "running" }, "accent", "◐"],
+    ["spilled", {}, "accent", "◐"],
+    ["stopping", { stopping: true }, "warning", "◐"],
+    ["monitor:ui", { monitor: { delivery: "ui", timeoutMs: 300000, intervalMs: 5000 } }, "accent", "◐"],
+    ["monitor:wake", { monitor: { delivery: "wake", timeoutMs: 300000, intervalMs: 5000 } }, "accent", "◐"],
+    ["exited", { status: "exited", finishedAt: 13000 }, "success", "✓"],
+    ["failed", { status: "failed", finishedAt: 13000 }, "error", "✗"],
+    ["killed", { status: "killed", finishedAt: 13000 }, "dim", "■"],
+    ["timed_out", { status: "timed_out", finishedAt: 13000 }, "error", "✗"],
+    ["exited", { status: "exited", finishedAt: 13000, monitor: { delivery: "ui", timeoutMs: 300000, intervalMs: 5000 } }, "success", "✓"],
+    ["stopping", { stopping: true, monitor: { delivery: "wake", timeoutMs: 300000, intervalMs: 5000 } }, "warning", "◐"],
+  ])("renders %s shells with semantic status icons, muted labels and dim metrics", (status, overrides, color, glyph) => {
+    vi.useFakeTimers(); vi.setSystemTime(13000);
     const h = fixture();
+    const colors: Record<string, number> = { dim: 90, muted: 37, accent: 36, success: 32, error: 31, warning: 33 };
     const ansiTheme = {
       ...theme,
-      fg: (color: string, text: string) => `\u001b[${color === "dim" ? "90" : "36"}m${text}\u001b[39m`,
+      fg: (color: string, text: string) => `\u001b[${colors[color]}m${text}\u001b[39m`,
     } as Theme;
     const job: FabricShellJobInfo = {
       id: "7b6eb606-1234", tool: "bash", command: "sleep 30", startedAt: 10000,
@@ -54,11 +58,31 @@ describe("background shell UI", () => {
       const widget = new FabricWidget(ansiTheme, () => snapshot, 5);
       const lines = widget.render(120);
       expect(lines[0]).toContain(ansiTheme.fg("dim", " · /fabric tasks · ctrl+alt+t"));
-      expect(lines[1]).toBe(ansiTheme.fg("dim", `  7b6eb606 ${status} · 3s · ${description ? "Watch CI 界" : "sleep 30"}`));
+      expect(lines[1]).toBe(
+        `  ${ansiTheme.fg(color, glyph)} ${ansiTheme.fg("muted", "7b6eb606")} ${ansiTheme.fg("muted", status)}` +
+        `${ansiTheme.fg("dim", " · 3s · ")}${ansiTheme.fg("muted", description ? "Watch CI 界" : "sleep 30")}`,
+      );
       for (const width of [1, 12, 40, 80]) {
         expect(widget.render(width).every(line => visibleWidth(line) <= width)).toBe(true);
       }
     }
+  });
+
+  it("animates spilled shell icons and replaces them with a fixed completion icon", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(10000);
+    const h = fixture();
+    const job = h.jobs.begin("bash", "sleep 30"); job.spill();
+    const widget = new FabricWidget(theme, () => ({ ...h.controller.snapshot(), now: Date.now(), shells: h.jobs.list() }), 5);
+    expect(widget.render(120)[1]).toMatch(/^  ◐ /);
+    vi.setSystemTime(10250);
+    expect(widget.hasChanged()).toBe(true);
+    expect(widget.render(120)[1]).toMatch(/^  ◓ /);
+    await job.finish(0);
+    expect(widget.hasChanged()).toBe(true);
+    expect(widget.render(120)[1]).toMatch(/^  ✓ .* exited /);
+    vi.setSystemTime(10500);
+    expect(widget.hasChanged()).toBe(false);
+    expect(widget.render(120)[1]).toMatch(/^  ✓ /);
   });
   it("keeps the widget live after the executor is idle and refreshes elapsed time without output", async () => {
     vi.useFakeTimers(); vi.setSystemTime(10000);

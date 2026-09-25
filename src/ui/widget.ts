@@ -17,20 +17,20 @@ import {
 } from "./types.js";
 
 const statusGlyph = (status: string): string => {
-  if (status === "completed" || status === "done") return "✓";
+  if (status === "completed" || status === "done" || status === "exited") return "✓";
   if (status === "failed" || status === "timed_out") return "✗";
   if (status === "blocked") return "!";
-  if (status === "stopped" || status === "cancelled") return "■";
+  if (status === "stopped" || status === "cancelled" || status === "killed") return "■";
   if (status === "queued" || status === "pending" || status === "ready") return "○";
   if (status === "idle" || status === "state") return "·";
   return spinnerFrame();
 };
 
 const colorStatus = (theme: Theme, status: string, value: string): string => {
-  if (status === "completed" || status === "done") return theme.fg("success", value);
+  if (status === "completed" || status === "done" || status === "exited") return theme.fg("success", value);
   if (status === "failed" || status === "timed_out") return theme.fg("error", value);
-  if (status === "blocked") return theme.fg("warning", value);
-  if (status === "running" || status === "in_progress") return theme.fg("accent", value);
+  if (status === "blocked" || status === "stopping") return theme.fg("warning", value);
+  if (status === "running" || status === "in_progress" || status === "spilled") return theme.fg("accent", value);
   return theme.fg("dim", value);
 };
 
@@ -281,8 +281,13 @@ export class FabricWidget implements Component {
     const lines = [hasActiveConversations ? `${taskHeader} · ${this.theme.fg("dim", FABRIC_CONVERSATION_HINT)}` : taskHeader];
     for (const job of [...liveShells, ...recentShells].slice(0, 3)) {
       const elapsed = formatDuration((job.finishedAt ?? snapshot.now) - job.startedAt) || "0s";
-      const status = job.stopping ? "stopping" : job.monitor && !job.finishedAt ? `monitor:${job.monitor.delivery}` : job.status;
-      lines.push(this.theme.fg("dim", `  ${job.id.slice(0, 8)} ${status} · ${elapsed} · ${safeText(job.description ?? job.command)}`));
+      const status = job.stopping ? "stopping" : job.status;
+      const label = job.monitor && job.finishedAt === undefined && !job.stopping ? `monitor:${job.monitor.delivery}` : status;
+      const glyph = colorStatus(this.theme, status, statusGlyph(status));
+      lines.push(
+        `  ${glyph} ${this.theme.fg("muted", job.id.slice(0, 8))} ${this.theme.fg("muted", label)}` +
+        `${this.theme.fg("dim", ` · ${elapsed} · `)}${this.theme.fg("muted", safeText(job.description ?? job.command))}`,
+      );
     }
     if (liveShells.length + recentShells.length > 3) lines.push(this.theme.fg("dim", `  +${liveShells.length + recentShells.length - 3} more shell tasks`));
 
