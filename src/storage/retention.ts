@@ -1,15 +1,31 @@
 import fs from "node:fs";
 import path from "node:path";
-import { writeJsonAtomic } from "../core/atomic-write.js";
+import {
+  type OwnerIdentity,
+  ownerHeartbeatFields,
+  ownerIdentityFields,
+  ownerLiveness,
+  recordOwnerLiveness,
+  writeJsonAtomic,
+} from "../core/atomic-write.js";
 import { ownedStat, processAlive } from "./scratch.js";
 
 export const FABRIC_RUN_ROOT_PREFIX = "pi-fabric-runs-";
 const RUN_ROOT_OWNER_FILE = ".fabric-owner.json";
 const TERMINAL_STATUSES = new Set(["completed", "failed", "stopped", "timed_out"]);
+/**
+ * A run root is heartbeated by each retention sweep of its owner, every 15
+ * minutes (`RETENTION_SWEEP_INTERVAL_MS` in agents/manager.ts). Across PID
+ * namespaces a signal probe means nothing, so three missed sweeps prove the
+ * owner dead.
+ */
+export const RUN_ROOT_HEARTBEAT_TTL_MS = 45 * 60 * 1_000;
 interface RunRootOwner {
   pid: number;
   startedAt: number;
   heartbeatAt: number;
+  // Optional owner identity (namespace-safe liveness); absent on old markers.
+  identity?: Omit<OwnerIdentity, "pid">;
   orphanedAt?: number;
   closedAt?: number;
   childrenStopped?: boolean;
@@ -51,23 +67,38 @@ const writeOwner = (root: string, owner: RunRootOwner): void => {
 };
 export const markRunRootActive = (root: string, now = Date.now()): void => {
   const existing = readJson<RunRootOwner>(ownerPath(root));
-  writeOwner(root, { pid: process.pid, startedAt: validOwner(existing) ? existing.startedAt : now, heartbeatAt: now });
+  writeOwner(root, { pid: process.pid, startedAt: validOwner(existing) ? existing.startedAt : now, ...ownerHeartbeatFields(now) });
 };
 export const heartbeatRunRoot = markRunRootActive;
 export const markRunRootClosed = (root: string, now = Date.now(), childrenStopped = false): void => {
   const existing = readJson<RunRootOwner>(ownerPath(root));
-  writeOwner(root, { pid: process.pid, startedAt: validOwner(existing) ? existing.startedAt : now, heartbeatAt: now, closedAt: now, childrenStopped });
+  writeOwner(root, { pid: process.pid, startedAt: validOwner(existing) ? existing.startedAt : now, ...ownerHeartbeatFields(now), closedAt: now, childrenStopped });
+};
+// Identity-less (old) markers keep the plain signal probe. Uncertainty is not death.
+const ownerAlive = (owner: RunRootOwner, now: number): boolean =>
+  recordOwnerLiveness(owner, {
+    heartbeatTtlMs: RUN_ROOT_HEARTBEAT_TTL_MS,
+    legacyAlive: processAlive,
+    probes: { now: () => now },
+  }) !== "dead";
+// A process-transport child lives in its owner's namespace; its start time is
+// unrecorded. Without an owner identity, keep the plain signal probe.
+const childAlive = (owner: RunRootOwner | undefined, pid: number): boolean => {
+  const identity = ownerIdentityFields(owner?.identity);
+  if (!identity) return processAlive(pid);
+  const { startedAt: _startedAt, ...place } = identity;
+  return ownerLiveness({ ...place, pid }, { legacyAlive: processAlive }) !== "dead";
 };
 const recordAgeReference = (record: RunRecordSummary, fallback: number): number =>
   time(record.finishedAt) ? record.finishedAt : time(record.updatedAt) ? record.updatedAt : fallback;
 const runFiles = new Set(["task.txt", "status.json", "events.jsonl", "lifecycle.jsonl", "steer.jsonl", "schema.json", "images.json"]);
 /** Unknown transports/contents and live descendants veto removal, even under a dead host. */
-const safeRunTree = (root: string, childrenStopped: boolean, depth = 0): boolean => {
+const safeRunTree = (root: string, childrenStopped: boolean, owner?: RunRootOwner, depth = 0): boolean => {
   if (depth > 32 || !ownedStat(root)?.isDirectory()) return false;
   const record = readJson<RunRecordSummary>(path.join(root, "status.json"));
   const pid = record?.transport === "process" && typeof record.sessionId === "string" && /^\d+$/.test(record.sessionId)
     ? Number(record.sessionId) : undefined;
-  if (pid !== undefined && processAlive(pid)) return false;
+  if (pid !== undefined && childAlive(owner, pid)) return false;
   if (!record?.status || !TERMINAL_STATUSES.has(record.status)) {
     if (!childrenStopped && pid === undefined) return false;
     if (!ownedStat(path.join(root, "task.txt"))?.isFile()) return false;
@@ -84,7 +115,7 @@ const safeRunTree = (root: string, childrenStopped: boolean, depth = 0): boolean
         continue;
       }
       if (stat.isDirectory() && name === "nested") {
-        for (const child of fs.readdirSync(file)) if (!safeRunTree(path.join(file, child), false, depth + 1)) return false;
+        for (const child of fs.readdirSync(file)) if (!safeRunTree(path.join(file, child), false, owner, depth + 1)) return false;
         continue;
       }
       return false;
@@ -92,14 +123,14 @@ const safeRunTree = (root: string, childrenStopped: boolean, depth = 0): boolean
     return true;
   } catch { return false; }
 };
-const safeRootContents = (root: string, childrenStopped: boolean): boolean => {
-  try { return fs.readdirSync(root).every((name) => name === RUN_ROOT_OWNER_FILE || safeRunTree(path.join(root, name), childrenStopped)); }
+const safeRootContents = (root: string, childrenStopped: boolean, owner?: RunRootOwner): boolean => {
+  try { return fs.readdirSync(root).every((name) => name === RUN_ROOT_OWNER_FILE || safeRunTree(path.join(root, name), childrenStopped, owner)); }
   catch { return false; }
 };
 export const canRemoveManagedRunRoot = (root: string): boolean => {
   if (!ownedStat(root)?.isDirectory()) return false;
   const owner = readJson<RunRootOwner>(ownerPath(root));
-  return validOwner(owner) && owner.pid === process.pid && safeRootContents(root, true);
+  return validOwner(owner) && owner.pid === process.pid && safeRootContents(root, true, owner);
 };
 export const removeEmptyRunRoot = (root: string): boolean => {
   try {
@@ -116,7 +147,7 @@ const pruneClosedRunRoot = (root: string, owner: RunRootOwner, orphanMs: number,
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const directory = path.join(root, entry.name);
-    if (!safeRunTree(directory, owner.childrenStopped === true)) continue;
+    if (!safeRunTree(directory, owner.childrenStopped === true, owner)) continue;
     const record = readJson<RunRecordSummary>(path.join(directory, "status.json"));
     const terminal = !!record?.status && TERMINAL_STATUSES.has(record.status);
     const reference = terminal ? recordAgeReference(record!, ownedStat(directory)?.mtimeMs ?? now) : owner.closedAt!;
@@ -149,12 +180,12 @@ export const sweepTempRunRoots = (options: {
       if (removeEmptyRunRoot(root)) result.removedRoots.push(root);
       continue;
     }
-    if (processAlive(owner.pid)) continue;
+    if (ownerAlive(owner, now)) continue;
     if (owner.orphanedAt === undefined) {
       try { writeOwner(root, { ...owner, orphanedAt: now }); } catch {}
       continue;
     }
-    if (now - owner.orphanedAt < options.orphanedTempRunRetentionMs || !safeRootContents(root, false)) continue;
+    if (now - owner.orphanedAt < options.orphanedTempRunRetentionMs || !safeRootContents(root, false, owner)) continue;
     try { fs.rmSync(root, { recursive: true, force: true }); result.removedRoots.push(root); } catch {}
   }
   return result;
