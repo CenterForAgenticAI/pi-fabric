@@ -45,6 +45,7 @@ import {
   ownsFabricToolSource,
 } from "./core/tool-ownership.js";
 import { readChildToolAllowlist } from "./core/child-tool-allowlist.js";
+import { FabricHostPolicy } from "./core/host-policy.js";
 import { formatForeground } from "./core/foreground-tools.js";
 import {
   expandSkillDirMarkersForRead,
@@ -80,6 +81,8 @@ import {
   FABRIC_PROVIDER_REGISTER_EVENT,
   FABRIC_PROVIDER_WITHDRAW_EVENT,
   FABRIC_TOOL_PLACEMENT_EVENT,
+  FABRIC_HOST_POLICY_EVENT,
+  readFabricHostPolicyRequestV1,
   readFabricProviderWithdrawalV1,
   readFabricToolPlacementRequestV1,
   snapshotFabricProgramRunRequestV1,
@@ -207,7 +210,9 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
   );
   const capturedTools = new CapturedToolCatalog();
   const proxyContract = new ProxyContractLedger();
+  const hostPolicy = new FabricHostPolicy();
   const state = new FabricState(pi, capturedTools, {
+    hostPolicy,
     paths: FABRIC_RUNTIME_PATHS,
     ...(FABRIC_ENTRY_IDENTITY ? { entryIdentity: FABRIC_ENTRY_IDENTITY } : {}),
     ...(options.managedHost ? {managedHost: options.managedHost} : {}),
@@ -298,6 +303,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     return (name) => {
       if (allowlist && !allowlist.has(name)) return false;
       const captured = capturedTools.get(name) !== undefined;
+      if (hostPolicy.previewDenial(PI_CORE_TOOL_NAME_SET.has(name) ? "pi" : "extensions", name)) return false;
       if (PI_CORE_TOOL_NAME_SET.has(name)) {
         if (!registry.has("pi")) return false;
         if (options.managedHost) return captured;
@@ -326,6 +332,20 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
       }));
     },
   );
+
+  // An embedding host narrows this instance before it runs anything (from its
+  // extension factory or session_start). Fabric replies before emit returns;
+  // accepted means the policy is in force. The first program or provider call
+  // seals it, so a later request is refused instead of racing admitted work.
+  const unsubscribeHostPolicy = pi.events.on(FABRIC_HOST_POLICY_EVENT, (value: unknown) => {
+    const read = readFabricHostPolicyRequestV1(value);
+    if (!read) return;
+    if (!read.ok) {
+      read.reply({ version: 1, accepted: false, reason: `Invalid Pi Fabric host policy: ${read.reason}` });
+      return;
+    }
+    read.request.reply(hostPolicy.apply(read.request.policy));
+  });
 
   // Host program runs (daemons, embedders) use the live session's context.
   let programRunContext: ExtensionContext | undefined;
@@ -1204,6 +1224,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     unsubscribeProviderRegistration();
     unsubscribeProviderWithdrawal();
     unsubscribeToolPlacement();
+    unsubscribeHostPolicy();
     unsubscribeProgramRun();
     programRunContext = undefined;
     pendingHandoffs.clear();

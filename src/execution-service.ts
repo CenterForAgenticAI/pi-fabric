@@ -312,12 +312,13 @@ export class FabricExecutionService {
     const offeredFence = options.invokedBy === "host" ? undefined : durableToolFence(options.parentToolCallId);
     const executor = this.config.executor;
     const codemodeProfile = executor.codemodeProfile;
-    if (
-      process.env.PI_FABRIC_WRITE_POLICY &&
-      (executor.kernel === "python"
-        ? executor.pythonRuntime !== "monty"
-        : this.config.schema.mode !== "enforce" && executor.runtime !== "quickjs")
-    ) {
+    const nativeExecutor = executor.kernel === "python"
+      ? executor.pythonRuntime !== "monty"
+      : this.config.schema.mode !== "enforce" && executor.runtime !== "quickjs";
+    // Reading the denial seals the host policy before this program can run.
+    const hostExecutorDenial = this.registry.hostPolicy?.executorDenial();
+    if (nativeExecutor && hostExecutorDenial) throw new Error(hostExecutorDenial);
+    if (process.env.PI_FABRIC_WRITE_POLICY && nativeExecutor) {
       // Native executors bypass a confined child's tool_call write guard.
       const { readWritePolicy } = await import("./agents/write-guard.js");
       if (readWritePolicy()?.shell !== "unconfined") {
