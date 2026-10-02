@@ -69,6 +69,7 @@ import type {
   FabricSpeculationRuntime,
 } from "../speculation/types.js";
 import type { FabricNestedToolResultProxy } from "./tool-result-proxy.js";
+import type { FabricHostPolicy } from "./host-policy.js";
 import {
   FabricProviderBindings,
   type FabricProviderBinding,
@@ -305,6 +306,7 @@ export class ActionRegistry {
   readonly #activeEffects = new Map<string, { ref: string; effect: FabricActionEffect }>();
   readonly #unavailable = new Map<string, string>();
   #unavailableResolver: ((name: string) => string | undefined) | undefined;
+  #hostPolicy: FabricHostPolicy | undefined;
   #speculation: FabricSpeculationRuntime | undefined;
   #speculationEligibility: ((action: ResolvedFabricAction) => boolean) | undefined;
 
@@ -362,6 +364,20 @@ export class ActionRegistry {
 
   setUnavailableResolver(resolve: (name: string) => string | undefined): void {
     this.#unavailableResolver = resolve;
+  }
+
+  /** Host restrictions checked before any provider prepares or runs an action. */
+  setHostPolicy(policy: FabricHostPolicy | undefined): void {
+    this.#hostPolicy = policy;
+  }
+
+  get hostPolicy(): FabricHostPolicy | undefined {
+    return this.#hostPolicy;
+  }
+
+  #assertHostPolicy(action: ResolvedFabricAction): void {
+    const denial = this.#hostPolicy?.denial(action);
+    if (denial) throw new FabricTraceSafeError(denial);
   }
 
   markUnavailable(name: string, reason: string): void {
@@ -790,6 +806,7 @@ export class ActionRegistry {
       if (!provider.acquire) {
         throw new Error(`Fabric provider does not implement scoped acquisition: ${provider.name}`);
       }
+      this.#assertHostPolicy(action);
       // Supervised callers may supply the same policy hooks as invoke. Base
       // contexts remain supported; their host owns authorization/approval.
       if (context.authorize) {
@@ -878,6 +895,7 @@ export class ActionRegistry {
           `Fabric scoped action ${ref} requires a supervised acquisition context`,
         );
       }
+      this.#assertHostPolicy(action);
       if (context.authorize) {
         await runAbortable(context.signal, () => context.authorize!(structuredClone(action)));
       }
@@ -1209,6 +1227,7 @@ export class ActionRegistry {
       }
       const authority = { ref: action.ref, descriptor: actionDescriptorHash(action) };
       if (action.risk !== "read" || action.effect?.kind !== "none" || !this.#speculationEligibility(structuredClone(action))) return undefined;
+      if (this.#hostPolicy?.denial(action)) return undefined;
       const effectiveSchema = effectiveInputSchema(
         action.ref,
         action.inputSchema,

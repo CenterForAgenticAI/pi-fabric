@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { FabricHostPolicy } from "./core/host-policy.js";
 import { resolveAgentDir } from "./core/agent-dir.js";
 import {
   resolveAvailablePiModel,
@@ -180,6 +181,8 @@ export interface FabricRuntimeStateOptions {
   entryIdentity?: FabricLoadedFileIdentity;
   /** Foreground tools declared beside fabric_exec; fences cache holds. */
   foregroundTools?: () => readonly string[];
+  /** Restrictions the embedding host applied through FABRIC_HOST_POLICY_EVENT. */
+  hostPolicy?: FabricHostPolicy;
 }
 
 export class FabricRuntimeState {
@@ -232,6 +235,7 @@ export class FabricRuntimeState {
   readonly #managedHost: FabricManagedHost | undefined;
   readonly #entryIdentity: FabricLoadedFileIdentity | undefined;
   readonly #foregroundTools: (() => readonly string[]) | undefined;
+  readonly #hostPolicy: FabricHostPolicy | undefined;
   #widgetDismissedAt = 0;
   #suppressResidentGuidanceSync = false;
 
@@ -250,6 +254,7 @@ export class FabricRuntimeState {
     this.#managedHost = options.managedHost;
     this.#entryIdentity = options.entryIdentity;
     this.#foregroundTools = options.foregroundTools;
+    this.#hostPolicy = options.hostPolicy;
   }
 
   get initialized(): boolean {
@@ -433,6 +438,7 @@ export class FabricRuntimeState {
     this.#registry = new ActionRegistry(
       new FabricToolResultProxy(() => this.capturedTools.runner),
     );
+    this.#registry.setHostPolicy(this.#hostPolicy);
     this.#configureSpeculation();
     this.#unsubscribeCapturedCatalog?.();
     this.#unsubscribeCapturedCatalog = this.capturedTools.subscribe(() => {

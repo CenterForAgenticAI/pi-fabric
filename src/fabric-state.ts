@@ -52,12 +52,14 @@ import type { FabricRuntimePaths } from "./runtime-paths.js";
 import type { FabricLoadedFileIdentity } from "./build-identity.js";
 
 import { FabricManagedHost, type FabricManagedHostOptions } from "./managed-host.js";
+import type { FabricHostPolicy } from "./core/host-policy.js";
 
 export interface FabricStateOptions {
   managedHost?: FabricManagedHostOptions;
   paths?: FabricRuntimePaths;
   runtimeLoader?: () => Promise<typeof import("./fabric-runtime-state.js")>;
   entryIdentity?: FabricLoadedFileIdentity;
+  hostPolicy?: FabricHostPolicy;
 }
 
 type ActivationHook = (context: ExtensionContext) => void | Promise<void>;
@@ -540,6 +542,7 @@ export class FabricState {
         ...(this.#options.paths ? { paths: this.#options.paths } : {}),
         ...(this.#entryIdentity ? { entryIdentity: this.#entryIdentity } : {}),
         foregroundTools: () => this.foregroundTools().tools,
+        ...(this.#options.hostPolicy ? { hostPolicy: this.#options.hostPolicy } : {}),
       },
     );
   }
