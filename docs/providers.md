@@ -123,6 +123,32 @@ The reply is `{ version: 1, mode, tools }`. `mode` is `"full-code"`, `"enforce"`
 
 `model` wins when both apply; optional `programCallable` lists the reported `model` tools that a program can also call, such as foreground tools, and is omitted when empty. Omitting `tools` reports every tool registered with Pi; at most 1,024 names of up to 256 characters each are accepted. An invalid query gets no reply. Placement describes state at the time of the query. A later mode change, reload, or tool refresh can change it, so query when you need the answer and do not cache it.
 
+## Host policy
+
+An extension that embeds Fabric for a restricted agent, such as a delegate worker runner, can narrow that instance with `FABRIC_HOST_POLICY_EVENT` (`pi-fabric:host-policy:v1`). Fabric replies synchronously once the policy is in force, so the host can refuse to expose `fabric_exec` when no acknowledgement arrives:
+
+```ts
+import { FABRIC_HOST_POLICY_EVENT, type FabricHostPolicyAckV1 } from "pi-fabric";
+
+let ack: FabricHostPolicyAckV1 | undefined;
+pi.events.emit(FABRIC_HOST_POLICY_EVENT, {
+  policy: { owner: "my-host", reason: "read-only worker", deniedTools: ["write", "edit"] },
+  reply: (value: FabricHostPolicyAckV1) => { ack = value; },
+});
+if (!ack?.accepted) {
+  // Fabric is absent or too old to enforce the policy: do not expose fabric_exec.
+}
+```
+
+A policy only narrows. Fabric checks every applied policy before any provider prepares or runs an action:
+
+- `deniedTools` refuses those names through `pi.*` and `extensions.*`.
+- `deniedProviders` refuses whole providers.
+- Every other provider is refused unless the action's risk is in `allowedUnhookedRisks` (default `["read"]`). These providers do not replay Pi `tool_call` hooks, so a host's own tool guards cannot see their calls. `pi.*` and `extensions.*` calls do replay those hooks and stay allowed.
+- Native executors (CPython, `node-process`, `bun-process`) are refused, because they run outside every tool hook.
+
+A malformed policy is rejected as a whole and receives no acknowledgement.
+
 ## Invocation costs and guarantees
 
 | Access pattern | Work and allocation | Guarantees |
