@@ -572,6 +572,9 @@ export class FabricExecutionService {
           : 0;
       return Math.max(orchestrationTimeoutMs, requestedTimeoutMs);
     };
+    const humanWaitRefs = new Set(this.config.executor.humanWaitRefs);
+    const isHumanWaitHostCall = (ref: string, args: Record<string, unknown>): boolean =>
+      humanWaitRefs.has(ref === "fabric.$call" && typeof args.ref === "string" ? args.ref : ref);
     const traceAttempt = async <T>(
       ref: string,
       args: Record<string, unknown>,
@@ -661,6 +664,7 @@ export class FabricExecutionService {
       memoryLimitBytes: this.config.executor.memoryLimitBytes,
       maxLogChars: this.config.executor.maxOutputChars,
       minimumTimeoutMsForHostCall,
+      ...(humanWaitRefs.size > 0 ? { isHumanWaitHostCall } : {}),
       ...(!python ? { piToolCanonicalFields } : {}),
       ...(options.tokenBudget !== undefined ? { tokenBudget: options.tokenBudget } : {}),
     };

@@ -4,6 +4,7 @@ import ts from "typescript";
 import { runAbortable, settleWithin } from "../async-settlement.js";
 import { piBashExitMetadata } from "../core/pi-bash-error.js";
 import { PI_ARGUMENT_NORMALIZATION_SOURCE } from "../core/pi-arguments.js";
+import { HumanWaitDeadlinePause } from "./deadline-pause.js";
 import { createGuestStackMap, remapGuestErrorText } from "./guest-stack-map.js";
 import { transpileFabricCodeWithSourceMap } from "./type-checker.js";
 
@@ -946,6 +947,7 @@ export class QuickJsRuntime {
     const scheduleDeadline = (): void => {
       if (!rejectDeadline || closing || cancelled || timedOut) return;
       clearTimeout(timeout);
+      if (!Number.isFinite(executionDeadlineAt)) return;
       timeout = setTimeout(expireDeadline, Math.min(2_147_483_647, Math.max(0, executionDeadlineAt - Date.now())));
     };
     const extendExecutionTimeout = (
@@ -960,6 +962,10 @@ export class QuickJsRuntime {
         return;
       }
       const requestedDurationMs = Math.max(1, Math.floor(requestedTimeoutMs));
+      if (humanWait.paused) {
+        humanWait.raise(requestedDurationMs);
+        return;
+      }
       const nextDeadlineAt = Date.now() + requestedDurationMs;
       const nextTimeoutMs = nextDeadlineAt - executionStartedAt;
       if (nextDeadlineAt <= executionDeadlineAt) return;
@@ -967,6 +973,18 @@ export class QuickJsRuntime {
       executionDeadlineAt = nextDeadlineAt;
       scheduleDeadline();
     };
+
+    const humanWait = new HumanWaitDeadlinePause({
+      remainingMs: () => executionDeadlineAt - Date.now(),
+      suspend: () => {
+        clearTimeout(timeout);
+        executionDeadlineAt = Infinity;
+      },
+      resume: (remainingMs) => {
+        executionDeadlineAt = Date.now() + remainingMs;
+        scheduleDeadline();
+      },
+    });
 
     try {
       const hostFunction = context.newFunction(
@@ -1000,9 +1018,14 @@ export class QuickJsRuntime {
             void promise.settled.then(() => pendingTimers.delete(timer));
             return promise.handle;
           }
+          const waitsForHuman = options.isHumanWaitHostCall?.(reference, args) === true;
+          if (waitsForHuman) humanWait.enter();
           const task = runAbortable(hostAbortController.signal, () =>
             hostCall(reference, args, hostAbortController.signal),
           )
+            .finally(() => {
+              if (waitsForHuman) humanWait.leave();
+            })
             .then((value) => {
               if (closing || promise.alive === false) return;
               cpuDeadlineAt = Date.now() + (options.maxCpuSliceMs ?? Infinity);
