@@ -80,6 +80,10 @@ interface FabricExecutorConfig {
   /** Exact-ref deadline floors (ms) for known long-running host calls, e.g.
    * "extensions.subagent". Keys are exact refs; no wildcard matching. */
   hostCallTimeouts: Record<string, number>;
+  /** Exact host-call refs that wait for a person, e.g. "extensions.ask".
+   * While such a call is in flight the program deadline is paused, so a
+   * foreground question can wait indefinitely. Cancellation still applies. */
+  humanWaitRefs: string[];
   /** Wait budget for nested pi.bash / pi.powershell (default 2m, max 10m).
    * 0 disables auto-spill. After this, the await settles successfully with a
    * live output path while the process keeps running. `background: true`
@@ -455,6 +459,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     timeoutMs: 120_000,
     maxTimeoutMs: 900_000,
     hostCallTimeouts: {},
+    humanWaitRefs: ["extensions.ask"],
     shellHangMs: DEFAULT_SHELL_HANG_MS,
     memoryLimitBytes: 64 * 1024 * 1024,
     maxOutputChars: 50_000,
@@ -733,6 +738,14 @@ const transportValue = (
 
 const thinkingValue = (value: unknown, fallback: FabricThinking): FabricThinking =>
   isFabricThinking(value) ? value : fallback;
+
+const humanWaitRefsValue = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? [...new Set(value
+        .filter((ref): ref is string => typeof ref === "string")
+        .map((ref) => ref.trim())
+        .filter((ref) => ref.length > 0 && ref.length <= 512))].slice(0, 256)
+    : [...DEFAULT_FABRIC_CONFIG.executor.humanWaitRefs];
 
 const objectValue = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
@@ -1017,6 +1030,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
           )
           .map(([ref, value]) => [ref, boundedInteger(value, 1_000, 1_000, executorMaxTimeoutMs)]),
       ),
+      humanWaitRefs: humanWaitRefsValue(executor.humanWaitRefs),
       timeoutMs: boundedInteger(
         executor.timeoutMs,
         DEFAULT_FABRIC_CONFIG.executor.timeoutMs,

@@ -53,6 +53,16 @@ Monty is always sandboxed, including under schema enforce, and does not require 
 
 Every raised deadline is capped by `executor.maxTimeoutMs` (default `900000`, i.e. 15 minutes: the former undocumented clamp, now explicit), which itself can be raised up to the hard implementation maximum of 24 hours. Values above a cap are visibly normalized down to the cap during config load and the effective values are shown in `/fabric` settings, never silently surprising. A per-invocation request or ref floor takes effect even when the ref is unknown to Fabric, so captured tools, MCP calls, and future host calls all run within an intentionally longer deadline without Fabric knowing their argument semantics. Existing `pi.bash` behavior (extending the deadline from an explicit `timeout` argument) is unchanged, and deadline expiry still cancels the active host call and any child process it owns.
 
+`executor.humanWaitRefs` (default `["extensions.ask"]`) lists exact host-call refs (no wildcards) that wait for a person. While at least one such call is in flight, the program deadline is **paused**: a foreground question can wait as long as the person needs. When the last one settles, the program continues with the budget it had left, so guest work before and after the wait still counts. A host-call floor that arrives during the pause raises that remaining budget. Cancelling `fabric_exec` (Esc or an aborted signal) still stops the program and the pending call at once, and CPU-slice and memory limits are unchanged. Set `[]` to bound human waits by the normal deadline again:
+
+```json
+{
+  "executor": {
+    "humanWaitRefs": ["extensions.ask"]
+  }
+}
+```
+
 `executor.shellHangMs` (default `120000` / 2 minutes, max `600000` / 10 minutes, `0` disables) is a nested-shell wait budget, not a program deadline. When a `pi.bash` / `pi.powershell` await exceeds it, Fabric **settles the await successfully** (`ok: true`) with a still-running notice, pid, and live output path while the process keeps writing that file. `background: true` (alias `run_in_background`) detaches immediately with the same envelope. Inspect with `pi.read(logPath)` and stop by running `kill <pid>` through `pi.bash`. Do not poll. An explicit shell `timeout` remains a hard cap. **ctrl+b twice** spills early (tmux-safe); **ctrl+k** kills the waiting command. Session shutdown aborts leftover processes, except `durable: true` tasks, which detach to their jev-fabric store. Captured shell overrides normally keep their own execution semantics; an extension can opt into [Fabric-owned bash execution with middleware](shell-middleware.md) to preserve its environment/output filters while gaining the same background handling.
 
 `executor.jevFabric` configures the optional jev-fabric backend for [durable tasks](background-tasks.md#durable-tasks-through-jev-fabric) and [interactive sessions](shell-composition.md). `binary` (default `""`, also `"auto"`) picks your compatible install outside the workspace, then the bundled package; an explicit executable name or trusted absolute path (no shell arguments) is used or the call fails, never falling back. See [which jev-fabric](shell-composition.md#which-jev-fabric). `home` empty uses `JEV_FABRIC_HOME`, else `<cwd>/.jev-fabric-native`: the store other harnesses in the same project share by default. `timeoutMs` (default one hour, up to 24 hours) is a durable job's lifetime when the call gives no explicit `timeout`. Nothing runs or loads until the first `durable: true` call.
@@ -66,7 +76,7 @@ effective timeout = min(
 )
 ```
 
-where absent values do not participate. Orchestration programs (`agents.run` / `agents.wait` / `agents.ask`, `workflow.agent`, ...) keep their separate `agents.timeoutMs` floor, which is unaffected by `executor.maxTimeoutMs`.
+where absent values do not participate, and time spent inside a `humanWaitRefs` call is not counted. Orchestration programs (`agents.run` / `agents.wait` / `agents.ask`, `workflow.agent`, ...) keep their separate `agents.timeoutMs` floor, which is unaffected by `executor.maxTimeoutMs`.
 
 ## Full reference
 
@@ -82,6 +92,7 @@ where absent values do not participate. Orchestration programs (`agents.run` / `
     "timeoutMs": 120000,
     "maxTimeoutMs": 900000,
     "hostCallTimeouts": {},
+    "humanWaitRefs": ["extensions.ask"],
     "shellHangMs": 120000,
     "memoryLimitBytes": 67108864,
     "maxOutputChars": 100000,

@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { runAbortable, settleWithin } from "../async-settlement.js";
 import { piBashExitMetadata } from "../core/pi-bash-error.js";
 import { isPiShellRef } from "../core/pi-tools.js";
+import { HumanWaitDeadlinePause } from "./deadline-pause.js";
 import { guestSetupSource } from "./quickjs-runtime.js";
 import type { FabricHostCall, FabricSandboxOptions, FabricSandboxResult } from "./kernel.js";
 import { NODE_PROCESS_CHILD_SOURCE } from "./node-process-child-source.js";
@@ -134,6 +135,7 @@ export class NodeProcessRuntime {
       };
       const scheduleDeadline = (): void => {
         clearTimeout(deadline);
+        if (settled || finishing || !Number.isFinite(deadlineAt)) return;
         deadline = setTimeout(() => {
           const error = `Execution timed out after ${effectiveTimeoutMs}ms`;
           finish({ value: undefined, logs: [], terminationReason: "timed_out", error });
@@ -143,12 +145,28 @@ export class NodeProcessRuntime {
       const extendDeadline = (ref: string, args: Record<string, unknown>): void => {
         const requested = options.minimumTimeoutMsForHostCall?.(ref, args);
         if (typeof requested !== "number" || !Number.isFinite(requested)) return;
+        if (humanWait.paused) {
+          humanWait.raise(requested);
+          return;
+        }
         const nextDeadlineAt = Date.now() + Math.max(1, Math.floor(requested));
         if (nextDeadlineAt <= deadlineAt) return;
         deadlineAt = nextDeadlineAt;
         effectiveTimeoutMs = deadlineAt - startedAt;
         scheduleDeadline();
       };
+
+      const humanWait = new HumanWaitDeadlinePause({
+        remainingMs: () => deadlineAt - Date.now(),
+        suspend: () => {
+          clearTimeout(deadline);
+          deadlineAt = Infinity;
+        },
+        resume: (remainingMs) => {
+          deadlineAt = Date.now() + remainingMs;
+          scheduleDeadline();
+        },
+      });
 
       abortHandler = () => {
         finish({
@@ -209,9 +227,13 @@ export class NodeProcessRuntime {
           });
           return;
         }
+        const waitsForHuman = options.isHumanWaitHostCall?.(message.ref, message.args) === true;
+        if (waitsForHuman) humanWait.enter();
         const task = runAbortable(hostAbortController.signal, () =>
           hostCall(message.ref, message.args, hostAbortController.signal),
-        ).then(
+        ).finally(() => {
+          if (waitsForHuman) humanWait.leave();
+        }).then(
           (value) => send(child, { type: "response", id: message.id, ok: true, value }),
           (error) =>
             send(child, {
