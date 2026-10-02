@@ -140,6 +140,15 @@ export const buildExecutorSection = (
           },
         ),
         setting(
+          "executor.humanWaitRefs",
+          "Human-wait refs",
+          config.executor.humanWaitRefs.length > 0 ? config.executor.humanWaitRefs.join(", ") : "none",
+          {
+            description:
+              "Exact host-call refs that wait for a person (configured in the Fabric config file). While one is in flight the program deadline is paused, so a question can wait indefinitely; cancellation still stops it.",
+          },
+        ),
+        setting(
           "executor.memoryLimitBytes",
           "Memory limit",
           formatBytes(config.executor.memoryLimitBytes),
