@@ -904,15 +904,53 @@ const main = async (): Promise<void> => {
     }
   };
 
+  let piAgentStarted = false;
+  let finalPiUsageRecorded = false;
+  let lastPiUsageKey: string | undefined;
+  const piUsageKey = (message: Record<string, unknown>): string =>
+    JSON.stringify({ timestamp: typeof message.timestamp === "number" ? message.timestamp : undefined,
+      usage: extractUsageDelta(message) });
+  // Shutdown can flush the in-flight assistant's final usage. Keep only finite,
+  // named numbers; no transcript, error, or arbitrary attribution crosses sinks.
+  const retainFinalPiUsage = (event: Record<string, unknown>): void => {
+    if (finalPiUsageRecorded || event.type !== "message_end") return;
+    const message = event.message;
+    if (typeof message !== "object" || message === null || Array.isArray(message)) return;
+    const values = message as Record<string, unknown>;
+    if (values.role !== "assistant") return;
+    const raw = extractUsageDelta(values);
+    if (!raw) return;
+    const tokens = (value: number): number => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+    const usage = { input: tokens(raw.input), output: tokens(raw.output),
+      cacheRead: tokens(raw.cacheRead), cacheWrite: tokens(raw.cacheWrite),
+      cost: Number.isFinite(raw.cost) && raw.cost >= 0 ? raw.cost : 0 };
+    if (!Object.values(usage).some(value => value > 0)) return;
+    finalPiUsageRecorded = true;
+    if (piUsageKey(values) === lastPiUsageKey) return;
+    applyUsage(record, { usage });
+    emitTokenUsage(usage);
+    update();
+  };
+  const discardPiStdout = (): boolean => options.runner === "pi" &&
+    terminalStatus !== undefined && terminalStatus !== "stopped" && terminalStatus !== "timed_out";
+
   const processEvent = (line: string): void => {
     if (process.env.PI_FABRIC_INJECT_CRASH === "stream") throw new Error("simulated stream crash");
-    if (!line.trim() || (options.runner === "pi" && terminalStatus)) return;
+    if (!line.trim() || discardPiStdout()) return;
     let event: Record<string, unknown>;
     try {
       const parsed: unknown = JSON.parse(line);
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return;
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        if (options.runner !== "pi" || !terminalStatus) { appendLog(`${line}\n`); sessionStream?.write(`${line}\n`); }
+        return;
+      }
       event = parsed as Record<string, unknown>;
     } catch {
+      if (options.runner !== "pi" || !terminalStatus) { appendLog(`${line}\n`); sessionStream?.write(`${line}\n`); }
+      return;
+    }
+    if (options.runner === "pi" && terminalStatus) {
+      retainFinalPiUsage(event);
       return;
     }
     // A handled input receipt can contain extension-owned details. Retain only
@@ -1005,6 +1043,7 @@ const main = async (): Promise<void> => {
           typeof delta.delta === "string" && delta.delta.length > 0) recoveryWatchdog.progress();
     }
     if (event.type === "agent_start") {
+      piAgentStarted = true;
       emitLifecycle("pi.agent_start");
       retryPending = false;
       // Starting a retry is not proof of recovery: preserve the error and timer
@@ -1026,9 +1065,12 @@ const main = async (): Promise<void> => {
       return;
     }
     if (event.type === "response" && event.command === "prompt" && event.success === false) {
-      sawAgentError = true;
-      if (!terminalStatus) terminalError = typeof event.error === "string" ? event.error : "Pi rejected the prompt";
-      closeChild();
+      // Older hosts can omit response IDs. Only a pre-turn uncorrelated
+      // rejection can belong to their initial task; later controls stay distinct.
+      if (event.id === "fabric-task" || (event.id === undefined && !piAgentStarted)) {
+        sawAgentError = true;
+        failStalledChild(typeof event.error === "string" ? event.error : "Pi rejected the prompt", "fabric_prompt_error");
+      }
       return;
     }
     if (event.type === "extension_ui_request") {
@@ -1097,6 +1139,7 @@ const main = async (): Promise<void> => {
         process.stdout.write(`\n${text}\n`);
       }
       const usageDelta = extractUsageDelta(messageRecord);
+      lastPiUsageKey = piUsageKey(messageRecord);
       applyUsage(record, messageRecord);
       emitTokenUsage(usageDelta, {
         model: stringField(messageRecord.model),
@@ -1303,23 +1346,25 @@ const main = async (): Promise<void> => {
   steerTimer?.unref?.();
 
   const failOversizedEvent = (line: string): void => {
+    outputBuffer = "";
+    if (terminalStatus) return;
+    // An oversized Pi receipt cannot be safely classified or sanitized. Never
+    // persist its raw prefix; retain the established artifact for other runners.
     const prefix = line.slice(0, MAX_EVENT_LINE_CHARS);
     let artifactPath: string | undefined;
-    try {
-      artifactPath = path.join(path.dirname(options.logFile), "oversized-event-prefix.txt");
-      fs.writeFileSync(artifactPath, prefix, { encoding: "utf8", mode: 0o600 });
-    } catch {
-      artifactPath = undefined;
+    if (options.runner !== "pi") {
+      try {
+        artifactPath = path.join(path.dirname(options.logFile), "oversized-event-prefix.txt");
+        fs.writeFileSync(artifactPath, prefix, { encoding: "utf8", mode: 0o600 });
+      } catch { artifactPath = undefined; }
     }
-    terminalStatus = "failed";
-    terminalError = artifactPath
+    failStalledChild(artifactPath
       ? `Agent emitted an oversized event line; first ${prefix.length} characters saved to: ${artifactPath}`
-      : "Agent emitted an oversized event line";
-    outputBuffer = "";
-    killChild();
+      : "Agent emitted an oversized event line", "fabric_protocol_error");
   };
 
   child.stdout?.on("data", (chunk: Buffer) => {
+    if (discardPiStdout()) { outputBuffer = ""; return; }
     const decoded = outputDecoder.write(chunk);
     if (options.runner === "veda") {
       vedaOutput += decoded;
@@ -1327,6 +1372,7 @@ const main = async (): Promise<void> => {
     }
     outputBuffer += eventProjection ? eventProjection.write(decoded) : decoded;
     while (true) {
+      if (discardPiStdout()) { outputBuffer = ""; return; }
       const newline = outputBuffer.indexOf("\n");
       if (newline < 0) {
         // Redundant Pi lifecycle history has already been elided while streaming.
@@ -1380,8 +1426,7 @@ const main = async (): Promise<void> => {
 
   const exitCode = await new Promise<number | null>((resolve) => {
     child.once("error", (error) => {
-      terminalStatus = "failed";
-      terminalError = error.message;
+      if (!terminalStatus) { terminalStatus = "failed"; terminalError = error.message; }
       resolve(null);
     });
     child.once("close", (code) => resolve(code));
@@ -1407,7 +1452,8 @@ const main = async (): Promise<void> => {
     vedaOutput += outputDecoder.end();
   } else {
     const tail = outputDecoder.end();
-    outputBuffer += eventProjection ? eventProjection.write(tail) + eventProjection.end() : tail;
+    if (discardPiStdout()) outputBuffer = "";
+    else outputBuffer += eventProjection ? eventProjection.write(tail) + eventProjection.end() : tail;
   }
   recordStderr(stderrDecoder.end());
   if (options.runner === "veda") {
