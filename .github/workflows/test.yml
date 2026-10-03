@@ -83,7 +83,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           PI_FABRIC_REQUIRE_RPC_ISOLATION: '1'
-        run: bunx vitest run tests/worker-prompt-rpc.test.ts
+        run: bunx vitest run tests/worker-prompt-rpc.test.ts tests/prompt-probe-isolation.test.ts
       - name: Platform smoke floor
         # Curated cross-platform surface (path and executable resolution, native
         # binaries, spawn, process and watcher fallbacks) so a Linux or Windows
