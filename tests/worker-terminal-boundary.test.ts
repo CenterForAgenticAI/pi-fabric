@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import { spawn } from "node:child_process";
+import { ProcessTransport } from "../src/agents/transports/process-transport.js";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,9 +12,10 @@ const managers: AgentManager[] = [];
 afterEach(async () => {
   await Promise.all(managers.splice(0).map(manager => manager.close()));
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
-async function run(scenario: string, runner: "pi" | "claude" = "pi") {
+async function run(scenario: string, runner: "pi" | "claude" = "pi", cooperative = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pr2-boundary-"));
   roots.push(root);
   fs.writeFileSync(path.join(root, "scenario"), scenario);
@@ -20,12 +23,29 @@ async function run(scenario: string, runner: "pi" | "claude" = "pi") {
   vi.stubEnv("PI_CODING_AGENT_DIR", path.join(root, "agent"));
   vi.stubEnv("TERMINAL_PROBE_ROOT", root);
   vi.stubEnv("PI_FABRIC_AGENT_DIR", path.join(root, "export"));
+  if (cooperative) {
+    vi.stubEnv("TERMINAL_PROBE_COOPERATIVE", "1");
+    // Public transport seam: real compiled worker and child, synthetic delivery
+    // only. Native POSIX signal coverage remains a separate platform test.
+    vi.spyOn(ProcessTransport.prototype, "launch").mockImplementation(async request => {
+      const child = spawn(process.execPath, [request.workerPath, ...request.workerArguments], {
+        cwd: request.cwd, stdio: ["ignore", "ignore", "ignore", "ipc"],
+      });
+      if (!child.pid) throw new Error("Failed to launch cooperative worker fixture");
+      let alive = true;
+      child.once("exit", () => { alive = false; });
+      return { kind: "process", sessionId: String(child.pid),
+        isAlive: async () => alive,
+        stop: async () => { if (alive && child.connected) child.send("stop"); },
+      };
+    });
+  }
   const completed = vi.fn();
   const lifecycle = vi.fn();
   const manager = new AgentManager(root, { ...DEFAULT_FABRIC_CONFIG.agents,
     timeoutMs: scenario.startsWith("timeout") ? 1500 : 10000,
     sessionExport: true, sessionExportDir: path.join(root, "export") }, {
-    workerPath: path.resolve("dist/worker.js"),
+    workerPath: path.resolve(cooperative ? "tests/fixtures/terminal-worker-cooperative.mjs" : "dist/worker.js"),
     piBinary: path.resolve("tests/fixtures/worker-terminal-boundary.mjs"),
     claudeBinary: path.resolve("tests/fixtures/worker-terminal-boundary.mjs"),
     runRoot: path.join(root, "runs"), onBackgroundComplete: completed, onLifecycle: lifecycle,
@@ -91,28 +111,32 @@ describe("compiled worker terminal boundaries (PR2-001/002/003/005)", () => {
     expect(page.events.some(event => event.raw === "null")).toBe(true);
     if (runner === "claude") expect(fs.readFileSync(sessionFile, "utf8")).toContain("REVIEW_DIAGNOSTIC_LINE");
   });
-  it.each(["cancelled-usage", "cancelled-usage-duplicate", "cancelled-usage-tail", "timeout-usage-tail", "cancelled-usage-already", "cancelled-usage-oversized"])("retains final completed-work accounting exactly once: %s", async scenario => {
-    const { result, root, exportText, retained, usageEvents } = await run(scenario);
-    // Prove the child flushed before checking accounting; no zero-work false pass.
-    expect(fs.existsSync(path.join(root, "usage-flushed"))).toBe(true);
-    expect(result.status).toBe(scenario.startsWith("timeout") ? "timed_out" : "stopped");
-    expect(result.error).toBe(scenario.startsWith("timeout") ? "Agent timed out after 1500ms" : "Agent stopped");
-    expect(result.text).toBe(scenario.includes("already") ? "completed work" : "");
-    expect(result.usage).toMatchObject({ input: 100, output: 40, cost: 0.7 });
-    expect(usageEvents).toHaveLength(1);
-    expect(usageEvents[0].data).toMatchObject({ input: 100, output: 40, cost: 0.7 });
-    const entries = exportText.trim().split("\n").map(line => JSON.parse(line)).filter(event => event.type === "message");
-    expect(entries).toHaveLength(1);
-    expect(entries[0].message.usage).toMatchObject({ input: 100, output: 40, cost: { total: 0.7 } });
-    if (!scenario.includes("already")) expect(retained).not.toContain("REVIEW_PRIVATE_MARKER_");
-  });
-  it("rejects malformed shutdown numbers and all untrusted attribution/content", async () => {
-    const { result, root, exportText, retained } = await run("cancelled-usage-invalid");
-    expect(fs.existsSync(path.join(root, "usage-flushed"))).toBe(true);
-    expect(result).toMatchObject({ status: "stopped", error: "Agent stopped", text: "",
-      usage: { input: 0, output: 40, cacheRead: 0, cacheWrite: 0, cost: 0 } });
-    expect(exportText).toContain('"output":40');
-    expect(retained).not.toContain("REVIEW_PRIVATE_MARKER_");
-    expect(retained).not.toContain('"input":900');
-  });
+  // Node process.kill cannot deliver a SIGTERM handler on Windows. Exercise
+  // every guard via an explicit protocol there, keeping native POSIX coverage.
+  for (const cooperative of [true, false]) {
+    it.skipIf(!cooperative && process.platform === "win32").each(["cancelled-usage", "cancelled-usage-duplicate", "cancelled-usage-tail", "timeout-usage-tail", "cancelled-usage-already", "cancelled-usage-oversized"])(`retains final completed-work accounting exactly once (${cooperative ? "cooperative protocol" : "POSIX signal"}): %s`, async scenario => {
+      const { result, root, exportText, retained, usageEvents } = await run(scenario, "pi", cooperative);
+      // Prove the child flushed before checking accounting; no zero-work false pass.
+      expect(fs.existsSync(path.join(root, "usage-flushed"))).toBe(true);
+      expect(result.status).toBe(scenario.startsWith("timeout") ? "timed_out" : "stopped");
+      expect(result.error).toBe(scenario.startsWith("timeout") ? "Agent timed out after 1500ms" : "Agent stopped");
+      expect(result.text).toBe(scenario.includes("already") ? "completed work" : "");
+      expect(result.usage).toMatchObject({ input: 100, output: 40, cost: 0.7 });
+      expect(usageEvents).toHaveLength(1);
+      expect(usageEvents[0].data).toMatchObject({ input: 100, output: 40, cost: 0.7 });
+      const entries = exportText.trim().split("\n").map(line => JSON.parse(line)).filter(event => event.type === "message");
+      expect(entries).toHaveLength(1);
+      expect(entries[0].message.usage).toMatchObject({ input: 100, output: 40, cost: { total: 0.7 } });
+      if (!scenario.includes("already")) expect(retained).not.toContain("REVIEW_PRIVATE_MARKER_");
+    });
+    it.skipIf(!cooperative && process.platform === "win32")(`rejects malformed shutdown numbers and all untrusted attribution/content (${cooperative ? "cooperative protocol" : "POSIX signal"})`, async () => {
+      const { result, root, exportText, retained } = await run("cancelled-usage-invalid", "pi", cooperative);
+      expect(fs.existsSync(path.join(root, "usage-flushed"))).toBe(true);
+      expect(result).toMatchObject({ status: "stopped", error: "Agent stopped", text: "",
+        usage: { input: 0, output: 40, cacheRead: 0, cacheWrite: 0, cost: 0 } });
+      expect(exportText).toContain('"output":40');
+      expect(retained).not.toContain("REVIEW_PRIVATE_MARKER_");
+      expect(retained).not.toContain('"input":900');
+    });
+  }
 });
