@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,9 +14,21 @@ afterEach(async () => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-// Process-level network denial is required for these actual installed Pi probes.
-// Other platforms still run the deterministic fake-RPC and timer regressions.
-describe.skipIf(process.platform !== "linux" || !fs.existsSync("/usr/bin/bwrap"))("installed Pi public RPC task boundary (network denied)", () => {
+// Probe the exact namespace combination, not just binary existence. A new user
+// namespace supplies CAP_NET_ADMIN inside the new network namespace so bwrap can
+// configure loopback on restricted Linux runners; external networking stays denied.
+const isolation = process.platform === "linux"
+  ? spawnSync("/usr/bin/bwrap", ["--unshare-user", "--unshare-net", "--ro-bind", "/", "/", "--", "/bin/true"],
+      { encoding: "utf8", timeout: 5000, env: { PATH: process.env.PATH } })
+  : undefined;
+const isolated = isolation?.status === 0;
+const required = process.env.PI_FABRIC_REQUIRE_RPC_ISOLATION === "1";
+it.skipIf(!required)("requires usable user+network namespaces for Linux CI public RPC proof", () => {
+  expect(isolated, isolation?.stderr || isolation?.error?.message || "Linux isolation unavailable").toBe(true);
+});
+// Unsupported local platforms select no real-RPC proof. The required Linux CI
+// capability assertion above fails instead of pretending these skipped tests ran.
+describe.skipIf(!isolated)("installed Pi public RPC task boundary (network denied)", () => {
   it.each(["handled", "continue", "throw"])("observes %s input disposition with no real accounts", async scenario => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-prompt-rpc-"));
     roots.push(root);
