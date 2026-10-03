@@ -43,6 +43,14 @@ const loadWorkerModelControl = async (): Promise<WorkerModelControlModule> => {
   return import(sourceModulePath) as Promise<WorkerModelControlModule>;
 };
 
+type WorkerPromptModule = typeof import("./worker/prompt-lifecycle.js");
+
+const loadWorkerPromptLifecycle = async (): Promise<WorkerPromptModule> => {
+  if (!import.meta.url.endsWith(".ts")) return import("./worker/prompt-lifecycle.js");
+  const sourceModulePath = "./worker/prompt-lifecycle.ts";
+  return import(sourceModulePath) as Promise<WorkerPromptModule>;
+};
+
 type WorkerRecoveryModule = typeof import("./worker/recovery-watchdog.js");
 
 const loadWorkerRecovery = async (): Promise<WorkerRecoveryModule> => {
@@ -218,7 +226,7 @@ process.on("unhandledRejection", (error) => {
 });
 
 const main = async (): Promise<void> => {
-  const [optionHelpers, loadedRunRecordHelpers, sessionExportHelpers, {parseStructuredValue, validateAgentResult}, { PiModelControl }, { PiEventProjection }, { PiRecoveryWatchdog }] = await Promise.all([
+  const [optionHelpers, loadedRunRecordHelpers, sessionExportHelpers, {parseStructuredValue, validateAgentResult}, { PiModelControl }, { PiEventProjection }, { PiRecoveryWatchdog }, { PiTaskPromptLifecycle }] = await Promise.all([
     loadWorkerOptions(),
     loadWorkerRunRecord(),
     loadWorkerSessionExport(),
@@ -226,6 +234,7 @@ const main = async (): Promise<void> => {
     loadWorkerModelControl(),
     loadWorkerEventProjection(),
     loadWorkerRecovery(),
+    loadWorkerPromptLifecycle(),
   ]);
   runRecordHelpers = loadedRunRecordHelpers;
   const {
@@ -434,7 +443,9 @@ const main = async (): Promise<void> => {
   let killTimer: NodeJS.Timeout | undefined;
   let closeTimer: NodeJS.Timeout | undefined;
   const recoveryWatchdog = new PiRecoveryWatchdog((error) => failStalledChild(error));
+  const taskPrompt = new PiTaskPromptLifecycle((error) => failStalledChild(error, "fabric_prompt_error"));
   const killChild = (): void => {
+    taskPrompt.dispose();
     recoveryWatchdog.dispose();
     if (closeTimer) clearTimeout(closeTimer);
     terminateChild(child, "SIGTERM");
@@ -442,17 +453,18 @@ const main = async (): Promise<void> => {
     killTimer.unref();
     child.stdin?.end();
   };
-  const failStalledChild = (error: string): void => {
+  const failStalledChild = (error: string, type = "fabric_recovery_error"): void => {
     if (terminalStatus) return;
     terminalStatus = "failed";
     terminalError = error;
     record.error = error;
     update();
-    appendLog(`${JSON.stringify({ type: "fabric_recovery_error", error })}\n`);
+    appendLog(`${JSON.stringify({ type, error })}\n`);
     killChild();
   };
   const closeChild = (): void => {
     child.stdin?.end();
+    taskPrompt.dispose();
     recoveryWatchdog.clear();
     if (closeTimer || killTimer) return;
     // RPC EOF requests disposal, but a stuck extension can prevent process exit.
@@ -481,7 +493,9 @@ const main = async (): Promise<void> => {
         record.thinking = effectiveThinking as NonNullable<AgentRunRecord["thinking"]>;
       }
       update();
-      child.stdin?.write(`${JSON.stringify({ type: "prompt", message: task, ...(images.length > 0 ? { images } : {}) })}\n`);
+      const id = "fabric-task";
+      taskPrompt.sent(id);
+      child.stdin?.write(`${JSON.stringify({ type: "prompt", id, message: task, ...(images.length > 0 ? { images } : {}) })}\n`);
     },
     fail(error) {
       if (terminalStatus) return;
@@ -867,9 +881,7 @@ const main = async (): Promise<void> => {
 
   const processEvent = (line: string): void => {
     if (process.env.PI_FABRIC_INJECT_CRASH === "stream") throw new Error("simulated stream crash");
-    if (!line.trim()) return;
-    appendLog(`${line}\n`);
-    sessionStream?.write(`${line}\n`);
+    if (!line.trim() || (options.runner === "pi" && terminalStatus)) return;
     let event: Record<string, unknown>;
     try {
       const parsed: unknown = JSON.parse(line);
@@ -878,12 +890,27 @@ const main = async (): Promise<void> => {
     } catch {
       return;
     }
+    // A handled input receipt can contain extension-owned details. Retain only
+    // the protocol disposition, never UI/error content or arbitrary metadata.
+    const data = event.data;
+    const handled = options.runner === "pi" && event.type === "response" &&
+      typeof event.command === "string" && ["prompt", "steer", "follow_up"].includes(event.command) && event.success === true &&
+      typeof data === "object" && data !== null && !Array.isArray(data) &&
+      (data as Record<string, unknown>).disposition === "handled";
+    const loggedLine = handled
+      ? JSON.stringify({ type: "response", command: event.command, success: true, data: { disposition: "handled" } })
+      : line;
+    appendLog(`${loggedLine}\n`);
+    sessionStream?.write(`${loggedLine}\n`);
     if (options.runner === "claude") {
       processClaudeEvent(event);
       return;
     }
+    if (terminalStatus) return;
     compactControl.observe(event);
     if (modelControl.observe(event)) return;
+    taskPrompt.observe(event);
+    if (terminalStatus) return;
     if (event.type === "message_start" || event.type === "message_update") {
       const message = event.message;
       if (typeof message === "object" && message !== null && !Array.isArray(message)) {
@@ -1270,8 +1297,6 @@ const main = async (): Promise<void> => {
   delete record.blockedOn;
   if (claudeCloseTimer) clearTimeout(claudeCloseTimer);
   clearTimeout(timeout);
-  if (killTimer) clearTimeout(killTimer);
-  if (closeTimer) clearTimeout(closeTimer);
   recoveryWatchdog.dispose();
   if (options.runner === "pi" && !modelControl.ready && !terminalStatus) {
     terminalStatus = "failed";
@@ -1341,6 +1366,10 @@ const main = async (): Promise<void> => {
   } else if (outputBuffer.trim()) {
     processEvent(outputBuffer);
   }
+  taskPrompt.dispose();
+  // Tail frames can request closure after the child has already exited.
+  if (killTimer) clearTimeout(killTimer);
+  if (closeTimer) clearTimeout(closeTimer);
   record.exitCode = exitCode;
   record.stderr = stderr.slice(-MAX_STDERR_CHARS);
   if (
