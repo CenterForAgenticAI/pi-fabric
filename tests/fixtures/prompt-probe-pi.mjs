@@ -9,7 +9,7 @@ const extension = fileURLToPath(new URL("./prompt-probe-extension.ts", import.me
 // No inherited credentials, account pins, extensions, NODE_OPTIONS or live HOME.
 // The fresh network namespace has no external interfaces or routes.
 const result = spawnSync("/usr/bin/bwrap", [
-  "--unshare-net", "--ro-bind", "/", "/", "--bind", root, root, "--",
+  "--unshare-user", "--unshare-net", "--ro-bind", "/", "/", "--bind", root, root, "--",
   process.execPath, cli, "--no-context-files", "--no-skills", "--no-prompt-templates",
   "-e", extension, ...process.argv.slice(2),
 ], {
