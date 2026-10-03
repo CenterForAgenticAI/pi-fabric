@@ -9,7 +9,7 @@ export default function (pi: ExtensionAPI) {
   const mode = fs.readFileSync(path.join(root, "scenario"), "utf8");
   const sends = path.join(root, "provider-sends");
   fs.writeFileSync(sends, "0");
-  fs.writeFileSync(path.join(root, "host-pid"), String(process.pid));
+  fs.writeFileSync(path.join(root, "namespace-pid"), String(process.pid));
   pi.registerProvider("prompt-probe", {
     baseUrl: "http://127.0.0.1:1", apiKey: "synthetic-offline", api: "prompt-probe-api",
     models: [{ id: "offline", name: "Offline", reasoning: false, input: ["text"],

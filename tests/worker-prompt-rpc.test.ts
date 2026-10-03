@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { spawnSync } from "node:child_process";
+import { isolatedSpawn } from "./fixtures/prompt-probe-sandbox.mjs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,16 +14,17 @@ afterEach(async () => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-// Probe the exact namespace combination, not just binary existence. A new user
-// namespace supplies CAP_NET_ADMIN inside the new network namespace so bwrap can
-// configure loopback on restricted Linux runners; external networking stays denied.
-const isolation = process.platform === "linux"
-  ? spawnSync("/usr/bin/bwrap", ["--unshare-user", "--unshare-net", "--ro-bind", "/", "/", "--", "/bin/true"],
-      { encoding: "utf8", timeout: 5000, env: { PATH: process.env.PATH } })
-  : undefined;
+// Probe the exact fail-closed sandbox used by the installed public Pi fixture.
+// Socket denial needs no loopback setup / CAP_NET_ADMIN on hosted Linux runners.
+const probeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-rpc-capability-"));
+let isolation: { status: number | null; stderr?: string; error?: Error } | undefined;
+try {
+  if (process.platform === "linux" && process.arch === "x64")
+    isolation = isolatedSpawn(probeRoot, "/bin/true", []);
+} finally { fs.rmSync(probeRoot, { recursive: true, force: true }); }
 const isolated = isolation?.status === 0;
 const required = process.env.PI_FABRIC_REQUIRE_RPC_ISOLATION === "1";
-it.skipIf(!required)("requires usable user+network namespaces for Linux CI public RPC proof", () => {
+it.skipIf(!required)("requires usable credential-isolated socket-denied sandbox for Linux CI public RPC proof", () => {
   expect(isolated, isolation?.stderr || isolation?.error?.message || "Linux isolation unavailable").toBe(true);
 });
 // Unsupported local platforms select no real-RPC proof. The required Linux CI
@@ -46,7 +47,10 @@ describe.skipIf(!isolated)("installed Pi public RPC task boundary (network denie
     managers.push(manager);
     const result = await manager.run({ task: "synthetic task", model: "prompt-probe/offline", extensions: false, transport: "process" });
     const log = fs.readFileSync(path.join(root, "runs", result.id, "events.jsonl"), "utf8");
-    expect(() => process.kill(Number(fs.readFileSync(path.join(root, "host-pid"), "utf8")), 0)).toThrow();
+    // bwrap reports the real host PID; Pi process.pid is namespace-local.
+    const sandboxPid = JSON.parse(fs.readFileSync(path.join(root, "sandbox-info.json"), "utf8"))["child-pid"];
+    expect(Number.isSafeInteger(sandboxPid) && sandboxPid > 0).toBe(true);
+    expect(() => process.kill(sandboxPid, 0)).toThrow();
     if (scenario === "handled") {
       expect(result, log).toMatchObject({ status: "failed", turns: 0,
         error: "Pi handled the task without starting a turn; terminating child" });

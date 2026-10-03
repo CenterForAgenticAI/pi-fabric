@@ -8,7 +8,10 @@ const usageFrame = { type: "message_end", message: { role: "assistant",
   stopReason: "aborted", provider: "REVIEW_PRIVATE_MARKER_provider", model: "REVIEW_PRIVATE_MARKER_model",
   timestamp: 123, usage: { input: 100, output: 40, cacheRead: 0, cacheWrite: 0, cost: { total: 0.7 },
     private: "REVIEW_PRIVATE_MARKER_usage" } } };
-process.on("SIGTERM", () => {
+let flushing = false;
+const flushUsage = () => {
+  if (flushing) return;
+  flushing = true;
   if (!scenario.includes("usage")) return;
   const flushed = scenario.includes("invalid")
     ? { ...usageFrame, message: { ...usageFrame.message, usage: { input: "900", output: 40, cacheRead: -8, cacheWrite: Number.MAX_SAFE_INTEGER + 1, cost: -1 } } }
@@ -21,7 +24,16 @@ process.on("SIGTERM", () => {
     fs.writeFileSync(`${root}/usage-flushed`, "true");
     setTimeout(() => process.exit(0), 20);
   });
-});
+};
+process.on("SIGTERM", flushUsage);
+// Explicit fixture-only protocol trigger; never claim OS graceful shutdown on Windows.
+if (process.env.TERMINAL_PROBE_COOPERATIVE === "1") {
+  const poll = setInterval(() => {
+    if (!fs.existsSync(`${root}/flush-request`)) return;
+    clearInterval(poll);
+    flushUsage();
+  }, 10);
+}
 const input = createInterface({ input: process.stdin });
 let emitted = false;
 input.on("line", line => {
