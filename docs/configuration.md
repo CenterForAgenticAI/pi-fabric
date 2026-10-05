@@ -57,12 +57,12 @@ Monty is always sandboxed, including under schema enforce, and does not require 
 
 Every raised deadline is capped by `executor.maxTimeoutMs` (default `900000`, i.e. 15 minutes: the former undocumented clamp, now explicit), which itself can be raised up to the hard implementation maximum of 24 hours. Values above a cap are visibly normalized down to the cap during config load and the effective values are shown in `/fabric` settings, never silently surprising. A per-invocation request or ref floor takes effect even when the ref is unknown to Fabric, so captured tools, MCP calls, and future host calls all run within an intentionally longer deadline without Fabric knowing their argument semantics. Existing `pi.bash` behavior (extending the deadline from an explicit `timeout` argument) is unchanged, and deadline expiry still cancels the active host call and any child process it owns.
 
-`executor.humanWaitRefs` (default `["extensions.ask"]`) lists exact host-call refs (no wildcards) that wait for a person. While at least one such call is in flight, the program deadline is **paused**: a foreground question can wait as long as the person needs. When the last one settles, the program continues with the budget it had left, so guest work before and after the wait still counts. A host-call floor that arrives during the pause raises that remaining budget. Cancelling `fabric_exec` (Esc or an aborted signal) still stops the program and the pending call at once, and CPU-slice and memory limits are unchanged. Set `[]` to bound human waits by the normal deadline again:
+`executor.humanWaitRefs` (default `["extensions.ask", "decisions.wait"]`) lists exact host-call refs (no wildcards) that wait for a person. [`decisions.wait`](decisions.md#guest-api) is included because a durable decision can stay open far longer than a program deadline; it still ends at the decision's own deadline or its `timeoutMs`. While at least one such call is in flight, the program deadline is **paused**: a foreground question can wait as long as the person needs. When the last one settles, the program continues with the budget it had left, so guest work before and after the wait still counts. A host-call floor that arrives during the pause raises that remaining budget. Cancelling `fabric_exec` (Esc or an aborted signal) still stops the program and the pending call at once, and CPU-slice and memory limits are unchanged. Set `[]` to bound human waits by the normal deadline again:
 
 ```json
 {
   "executor": {
-    "humanWaitRefs": ["extensions.ask"]
+    "humanWaitRefs": ["extensions.ask", "decisions.wait"]
   }
 }
 ```
@@ -96,7 +96,7 @@ where absent values do not participate, and time spent inside a `humanWaitRefs` 
     "timeoutMs": 120000,
     "maxTimeoutMs": 900000,
     "hostCallTimeouts": {},
-    "humanWaitRefs": ["extensions.ask"],
+    "humanWaitRefs": ["extensions.ask", "decisions.wait"],
     "shellHangMs": 120000,
     "memoryLimitBytes": 67108864,
     "maxOutputChars": 100000,
