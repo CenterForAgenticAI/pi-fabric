@@ -197,3 +197,121 @@ describe.each(runtimes)("%s human-wait deadline pause", (runtime) => {
     expect(await pending).toMatchObject({ success: true, value: [{ answer: "ask" }, { answer: "ask" }] });
   });
 });
+
+const approvalFixture = (configure: (config: FabricConfig) => void, headless: boolean) => {
+  const registry = new ActionRegistry();
+  registries.push(registry);
+  const aborted: string[] = [];
+  const prompts: Array<ReturnType<typeof deferred<(approve: boolean) => void>>> = [];
+  const slot = (index: number) => prompts[index] ??= deferred<(approve: boolean) => void>();
+  let asked = 0;
+  let observed = 0;
+  let ran = 0;
+  const descriptor = {
+    name: "act",
+    description: "write action stub",
+    inputSchema: { type: "object", properties: {}, additionalProperties: true },
+    risk: "write" as const,
+  };
+  registry.register({
+    name: "extensions",
+    description: "fake extensions",
+    async list() { return [descriptor]; },
+    async describe(name) { return name === "act" ? descriptor : undefined; },
+    async invoke() { ran++; return { done: true }; },
+  });
+  const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+  config.fullCodeMode = true;
+  config.approvals.read = "allow";
+  config.approvals.write = "ask";
+  if (headless) config.approvals.headless = "decision";
+  configure(config);
+  const ask = (signal: AbortSignal | undefined) => {
+    const answer = deferred<boolean>();
+    const onAbort = () => { aborted.push("approval"); answer.resolve(false); };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    slot(asked++).resolve((approve) => answer.resolve(approve));
+    return answer.promise.finally(() => signal?.removeEventListener("abort", onAbort));
+  };
+  const service = new FabricExecutionService(registry, config);
+  if (headless) service.setHeadlessApproval((_action, _reason, signal) => ask(signal));
+  const controller = new AbortController();
+  controllers.push(controller);
+  const ui = {
+    notify() {},
+    select: async () => (await ask(controller.signal)) ? "Allow once" : "Deny",
+  };
+  const run = (code: string, hardTimeoutMs?: number) => service.execute({
+    code, signal: controller.signal, parentToolCallId: "approval-wait",
+    ...(hardTimeoutMs === undefined ? {} : { hardTimeoutMs }),
+    context: { cwd: process.cwd(), hasUI: !headless, ...(headless ? {} : { ui }), sessionManager: {
+      getSessionId: () => "approval-wait-test", getSessionFile: () => undefined,
+    } } as unknown as ExtensionContext,
+    onPartial() {},
+  });
+  return { run, aborted, controller, ran: () => ran, nextPrompt: () => slot(observed++).promise };
+};
+
+describe.each(runtimes)("%s approval prompt deadline pause", (runtime) => {
+  const python = runtime === "monty" || runtime === "cpython";
+  const runTest = it.skipIf(python && !availablePythonBackends[runtime]);
+  const configure = (config: FabricConfig): void => {
+    config.executor = { ...normalizeFabricConfig({ executor: {
+      ...(python ? { kernel: "python", pythonRuntime: runtime } : { runtime }),
+      memoryLimitBytes: 256 * 1024 * 1024,
+    } }).executor, timeoutMs: 1_000 };
+  };
+  const act = python ? 'await tools.call(ref="extensions.act", args={})' : "await extensions.act({})";
+
+  runTest.each(["screen", "headless"] as const)("waits past the deadline for a %s approval", async (surface) => {
+    const { run, nextPrompt, aborted, ran } = approvalFixture(configure, surface === "headless");
+    const pending = run(`return ${act}`);
+    const approve = await nextPrompt();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(aborted).toEqual([]);
+    approve(true);
+    expect(await pending).toMatchObject({ success: true, value: { done: true } });
+    expect(ran()).toBe(1);
+  });
+
+  runTest("resumes the saved budget after the approval", async () => {
+    const { run, nextPrompt } = approvalFixture(configure, false);
+    const code = python
+      ? `${act}\nwhile True:\n    await asyncio.sleep(0.05)`
+      : `${act}; while (true) await new Promise(resolve => setTimeout(resolve, 50));`;
+    const pending = run(code);
+    const approve = await nextPrompt();
+    await vi.advanceTimersByTimeAsync(60_000);
+    approve(true);
+    await vi.advanceTimersByTimeAsync(1_100);
+    const result = await pending;
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("timed out");
+  });
+
+  runTest("keeps an explicit hard timeout during an approval", async () => {
+    const { run, nextPrompt, ran } = approvalFixture(configure, false);
+    const pending = run(`return ${act}`, 1_000);
+    const approve = await nextPrompt();
+    await vi.advanceTimersByTimeAsync(1_001);
+    const result = await pending;
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("timed out");
+    approve(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ran()).toBe(0);
+  });
+
+  runTest("cancels an open approval without waiting for a timer", async () => {
+    const { run, nextPrompt, controller, aborted, ran } = approvalFixture(configure, false);
+    const pending = run(`return ${act}`);
+    await nextPrompt();
+    controller.abort(new Error("user cancelled"));
+    const result = await pending;
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/cancelled|abort/i);
+    expect(aborted).toContain("approval");
+    expect(ran()).toBe(0);
+  });
+});
+

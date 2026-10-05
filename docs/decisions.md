@@ -111,7 +111,7 @@ Authority for the human surfaces is local file access to the mesh root. Until pr
 `approvals.headless` controls what happens when an action needs approval (`ask`, or an `auto` escalation) and the session has no interactive UI:
 
 - `"deny"` (default) fails the call, as before.
-- `"decision"` raises a `kind: "approval"` decision held by `"user"` with options `approve` and `deny`, and waits for it inside the calling program's abort signal. The deadline is `approvals.headlessTimeoutMs` (default 5 minutes) with `onExpire: "cancel"`. Only an `approve` answer runs the action, once. A deny, a cancellation, an expiry, or an aborted program denies it. Fabric never approves automatically.
+- `"decision"` raises a `kind: "approval"` decision held by `"user"` with options `approve` and `deny`, and waits for it inside the calling program's abort signal. The deadline is `approvals.headlessTimeoutMs` (default 5 minutes) with `onExpire: "cancel"`. Only an `approve` answer runs the action, once. A deny, a cancellation, an expiry, or an aborted program denies it. Fabric never approves automatically. The program deadline is paused while the decision is open, so `approvals.headlessTimeoutMs` is the only bound on the wait.
 
 The decision path covers actions called through `fabric_exec`. Direct native tool approvals in a headless session still fail closed. Session-wide grants ("Allow write access for this session") stay a UI-only choice.
 
