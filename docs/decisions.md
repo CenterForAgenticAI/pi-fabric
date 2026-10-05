@@ -67,7 +67,7 @@ Python uses the same calls, for example `await decisions.raise(title="Deploy?", 
 | `decisions.escalate({id, reason?})` | agent | the record, now held by the next holder in its chain |
 | `decisions.cancel({id})` | agent | the cancelled record |
 
-`wait` polls the mesh and stops when the calling program is aborted. `holder` defaults to `"user"`.
+`wait` polls the mesh and stops when the calling program is aborted. It is a default [human-wait ref](configuration.md#executor-timeouts-and-ceilings), so the program deadline is paused while it waits; the decision's own deadline and `timeoutMs` still apply. `holder` defaults to `"user"`.
 
 ## Who may answer
 

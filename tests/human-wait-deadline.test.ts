@@ -26,7 +26,7 @@ const deferred = <T>() => {
   return { promise, resolve, reject };
 };
 type PendingCall = { name: string; answer(): void; fail(): void };
-const fixture = (configure: (config: FabricConfig) => void) => {
+const fixture = (configure: (config: FabricConfig) => void, provider = "extensions") => {
   const registry = new ActionRegistry();
   registries.push(registry);
   const aborted: string[] = [];
@@ -41,10 +41,10 @@ const fixture = (configure: (config: FabricConfig) => void) => {
     risk: "read" as const,
   };
   registry.register({
-    name: "extensions",
-    description: "fake extensions",
-    async list() { return [descriptor, { ...descriptor, name: "slow" }]; },
-    async describe(name) { return name === "ask" || name === "slow" ? { ...descriptor, name } : undefined; },
+    name: provider,
+    description: `fake ${provider}`,
+    async list() { return ["ask", "slow", "wait"].map(name => ({ ...descriptor, name })); },
+    async describe(name) { return ["ask", "slow", "wait"].includes(name) ? { ...descriptor, name } : undefined; },
     async invoke(name, _args, context) {
       const response = deferred<unknown>();
       const abort = () => { aborted.push(name); response.reject(new Error("aborted")); };
@@ -105,14 +105,14 @@ describe("HumanWaitDeadlinePause", () => {
 });
 
 describe("executor.humanWaitRefs config", () => {
-  it("defaults to extensions.ask and normalizes exact refs", () => {
-    expect(normalizeFabricConfig({}).executor.humanWaitRefs).toEqual(["extensions.ask"]);
+  it("defaults to extensions.ask and decisions.wait and normalizes exact refs", () => {
+    expect(normalizeFabricConfig({}).executor.humanWaitRefs).toEqual(["extensions.ask", "decisions.wait"]);
     expect(normalizeFabricConfig({ executor: { humanWaitRefs: [] } }).executor.humanWaitRefs).toEqual([]);
     expect(normalizeFabricConfig({
       executor: { humanWaitRefs: [" extensions.ask ", "extensions.ask", "", 7, "mcp.q.ask"] },
     }).executor.humanWaitRefs).toEqual(["extensions.ask", "mcp.q.ask"]);
     expect(normalizeFabricConfig({ executor: { humanWaitRefs: "extensions.ask" } }).executor.humanWaitRefs)
-      .toEqual(["extensions.ask"]);
+      .toEqual(["extensions.ask", "decisions.wait"]);
   });
 });
 
@@ -138,6 +138,21 @@ describe.each(runtimes)("%s human-wait deadline pause", (runtime) => {
     expect(aborted).toEqual([]);
     question.answer();
     expect(await pending).toMatchObject({ success: true, value: { answer: "ask" } });
+  });
+
+  runTest.each([false, true])("pauses for a decisions.wait by default (generic=%s)", async (generic) => {
+    const { run, nextCall, aborted } = fixture(configure, "decisions");
+    const code = python
+      ? 'return await tools.call(ref="decisions.wait", args={"id": "dec_1"})'
+      : generic
+        ? 'return await tools.call({ ref: "decisions.wait", args: { id: "dec_1" } })'
+        : 'return await decisions.wait({ id: "dec_1" })';
+    const pending = run(code);
+    const decision = await nextCall();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(aborted).toEqual([]);
+    decision.answer();
+    expect(await pending).toMatchObject({ success: true, value: { answer: "wait" } });
   });
 
   runTest.each(["unlisted", "disabled"])("keeps the normal deadline when %s", async (mode) => {
