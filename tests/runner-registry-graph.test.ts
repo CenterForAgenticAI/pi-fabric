@@ -33,6 +33,7 @@ describe("runner registry stays off the startup graph", () => {
     expect(closure.size).toBeGreaterThan(40);
     for (const lazy of [
       "src/runners.ts",
+      "src/durable.ts",
       "src/agents/runner-registry.ts",
       "src/agents/runner-protocol.ts",
       "src/agents/hosted-run.ts",
@@ -48,6 +49,6 @@ describe("runner registry stays off the startup graph", () => {
     }
     const descriptor = source("src/providers/agents-actions.ts").match(/const RUNNER_ID_SOURCE = "([^"]+)";/);
     expect(descriptor?.[1]).toBe(RUNNER_ID_PATTERN.source);
-    expect([...BUILT_IN_RUNNER_IDS]).toEqual(["pi", "claude", "veda"]);
+    expect([...BUILT_IN_RUNNER_IDS]).toEqual(["pi", "pi-durable", "claude", "veda"]);
   });
 });

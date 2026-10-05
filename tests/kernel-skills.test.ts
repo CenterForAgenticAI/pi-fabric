@@ -91,9 +91,16 @@ describe("physical kernel skill trees", () => {
       const discovery = await handlers.get("resources_discover")![0]!({}, {});
       expect(discovery).toEqual({ skillPaths: [path.join(root, kernel)] });
       const event = { systemPrompt: "Base", prompt: "inspect", systemPromptOptions: { skills: bundled(kernel).skills } };
-      const prompt = await handlers.get("before_agent_start")![0]!(event, {});
+      const promptFor = async () => {
+        for (const handler of handlers.get("before_agent_start") ?? []) {
+          const result = await handler(event, {});
+          if (result?.systemPrompt !== undefined) return result;
+        }
+        throw new Error("No before_agent_start handler returned prompt guidance");
+      };
+      const prompt = await promptFor();
       expect(prompt.systemPrompt).toContain(path.join(root, kernel, "fabric-exec", "SKILL.md"));
-      expect((await handlers.get("before_agent_start")![0]!(event, {})).systemPrompt).toBe(prompt.systemPrompt);
+      expect((await promptFor()).systemPrompt).toBe(prompt.systemPrompt);
       expect(prompt.systemPrompt).not.toContain("fabric-exec-python");
     } finally { ready.mockRestore(); config.mockRestore(); }
   });

@@ -36,7 +36,7 @@ describe("fabric-exec skill provider contracts", () => {
 
   it("keeps detailed execution caveats in the progressive skill", () => {
     const skill = fs.readFileSync("skillsets/typescript/fabric-exec/SKILL.md", "utf8");
-    const extension = fs.readFileSync("src/index.ts", "utf8");
+    const extension = fs.readFileSync("src/extension.ts", "utf8");
 
     expect(skill).toContain("multiline or syntax-heavy payloads");
     expect(skill).toContain("Every `π.key` must exist in the same call's top-level `payloads` map");

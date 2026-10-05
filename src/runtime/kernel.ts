@@ -10,12 +10,15 @@ export type FabricSandboxTerminationReason =
 export interface FabricSandboxResult {
   value: unknown;
   logs: string[];
+  /** Explicit image() output, including partial output on errors. */
+  emitted?: unknown[];
   terminationReason: FabricSandboxTerminationReason;
   error?: string;
 }
 
 export interface FabricSandboxOptions {
   timeoutMs: number;
+  nativeStoreEnabled?: boolean;
   memoryLimitBytes: number;
   /** Optional uninterrupted guest CPU limit. Await host work/timers to yield. */
   maxCpuSliceMs?: number;

@@ -1,7 +1,7 @@
 # Shell composition
 
 Fabric's shell surfaces follow jev-fabric's
-[composition contract](https://github.com/monotykamary/jev-fabric/blob/main/docs/composition.md):
+[composition contract](https://github.com/fabric-runtime/jev-fabric/blob/main/docs/composition.md):
 two axes, one set of verbs, the same records. An agent that knows `jev-fabric
 -- start` / `follow` / `read` already knows `pi.bash({durable:true})` /
 `tasks.read` / `sessions.read`, and a command can move between Fabric and a

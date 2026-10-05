@@ -3,6 +3,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { FabricUiWidgetMode } from "../config.js";
 import { spinnerFrame } from "./spinner.js";
+import { FabricWidgetRetention, isRecentWidgetCompletion } from "./retention.js";
 import { FABRIC_CONVERSATION_HINT } from "./conversation-shortcut.js";
 import type {
   FabricActivityRun,
@@ -66,9 +67,6 @@ const totalCost = (
     .filter((agent) => (run ? agent.runId === run.id : isActiveStatus(agent.status)))
     .reduce((sum, agent) => sum + (agent.usage?.cost ?? 0), 0);
 
-const agentRecency = (agent: FabricUiAgent): number =>
-  agent.finishedAt ?? agent.updatedAt ?? agent.startedAt ?? 0;
-
 const agentLines = (
   theme: Theme,
   agent: FabricUiAgent,
@@ -102,11 +100,13 @@ const agentLines = (
 export const shouldShowFabricWidget = (
   snapshot: FabricDashboardSnapshot,
   mode: FabricUiWidgetMode,
+  retention = new FabricWidgetRetention(),
 ): boolean => {
   if (mode === "hidden") return false;
   if (mode === "always") return true;
-  if (snapshot.shells?.some(job => job.finishedAt === undefined || snapshot.now - job.finishedAt < 30000)) return true;
-  if (snapshot.agents.some((agent) => isActiveStatus(agent.status))) return true;
+  retention.sync(snapshot);
+  if (snapshot.shells?.some(job => job.finishedAt === undefined || isRecentWidgetCompletion(job.finishedAt, snapshot.now))) return true;
+  if (snapshot.agents.some((agent) => retention.visible(agent, snapshot))) return true;
   if (snapshot.actors.some((actor) => actor.status !== "stopped")) return true;
   const run = snapshot.runs[0];
   if (!run) return false;
@@ -142,6 +142,7 @@ export class FabricWidget implements Component {
     // Live terminal height. pi re-renders the widget on resize, so reading the
     // pane per render bounds the box without a resize subscription.
     readonly terminalRows?: () => number | undefined,
+    readonly retention = new FabricWidgetRetention(),
   ) {}
 
   #rowLimit(): number {
@@ -214,20 +215,19 @@ export class FabricWidget implements Component {
         candidateFinishedAt > (snapshot.widgetDismissedAt ?? 0))
         ? candidateRun
         : undefined;
+    this.retention.sync(snapshot);
     const orderedAgents = orderAgentsByCreation(snapshot.agents);
     const activeAgents = orderedAgents.filter((agent) => isActiveStatus(agent.status));
     const activeAgentIds = new Set(activeAgents.map((agent) => agent.id));
-    // Completed agents stay visible after their run ends: a new fabric_exec must
-    // not collapse the finished work back to the header. The newest completions
-    // sort first so the configured row budget keeps the most recent results, and
-    // an explicit dismissal watermark still retires everything it covers.
-    const dismissedAt = snapshot.widgetDismissedAt ?? 0;
+    // Keep settle-time rows stable, then retire each completion independently.
+    // Bound only current content: expiry must not leave a high-water blank row.
     const terminalAgents = orderedAgents
       .filter((agent) =>
         !activeAgentIds.has(agent.id) &&
         !isActiveStatus(agent.status) &&
-        agentRecency(agent) > dismissedAt)
-      .sort((left, right) => agentRecency(right) - agentRecency(left));
+        this.retention.visible(agent, snapshot))
+      .sort((left, right) =>
+        this.retention.finishedAt(right, snapshot.now) - this.retention.finishedAt(left, snapshot.now));
     const visibleActors = snapshot.actors.filter((actor) => actor.status !== "stopped");
     const activeActorWorkers = visibleActors
       .filter((actor) => actor.worker && isActiveStatus(actor.worker.status))
@@ -240,7 +240,7 @@ export class FabricWidget implements Component {
     const title = run?.name ?? "Fabric session";
     const shells = snapshot.shells ?? [];
     const liveShells = shells.filter(job => job.finishedAt === undefined);
-    const recentShells = shells.filter(job => job.finishedAt !== undefined && snapshot.now - job.finishedAt < 30000);
+    const recentShells = shells.filter(job => job.finishedAt !== undefined && isRecentWidgetCompletion(job.finishedAt, snapshot.now));
     const headerStatus =
       run?.status ??
       (activeAgents.length > 0 || activeActorWorkers.length > 0 || liveShells.length > 0 ? "running" : "idle");

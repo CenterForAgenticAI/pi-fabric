@@ -1,15 +1,39 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { availablePythonBackends } from "./fixtures/python-backends.js";
 import { DEFAULT_FABRIC_CONFIG, normalizeFabricConfig, type FabricConfig } from "../src/config.js";
 import { ActionRegistry } from "../src/core/action-registry.js";
 import { FabricExecutionService } from "../src/execution-service.js";
 import { HumanWaitDeadlinePause } from "../src/runtime/deadline-pause.js";
 
-/** Fake `extensions` provider: every action settles after `delayMs`, or rejects on abort. */
-const fixture = (configure: (config: FabricConfig) => void, delayMs = 400) => {
+const registries: ActionRegistry[] = [];
+const controllers: AbortController[] = [];
+beforeEach(() => {
+  // Only the parent's deadline clock is virtual. Child startup/IPC remain real;
+  // tests advance time after a host-call handshake, never after a guessed delay.
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+});
+afterEach(async () => {
+  for (const controller of controllers.splice(0)) controller.abort();
+  vi.useRealTimers();
+  await Promise.all(registries.splice(0).map(registry => registry.close()));
+});
+
+const deferred = <T>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+};
+type PendingCall = { name: string; answer(): void; fail(): void };
+const fixture = (configure: (config: FabricConfig) => void) => {
   const registry = new ActionRegistry();
+  registries.push(registry);
   const aborted: string[] = [];
+  const calls: Array<ReturnType<typeof deferred<PendingCall>>> = [];
+  const slot = (index: number) => calls[index] ??= deferred<PendingCall>();
+  let invoked = 0;
+  let observed = 0;
   const descriptor = {
     name: "ask",
     description: "human question stub",
@@ -20,18 +44,19 @@ const fixture = (configure: (config: FabricConfig) => void, delayMs = 400) => {
     name: "extensions",
     description: "fake extensions",
     async list() { return [descriptor, { ...descriptor, name: "slow" }]; },
-    async describe(name) {
-      return name === "ask" || name === "slow" ? { ...descriptor, name } : undefined;
-    },
+    async describe(name) { return name === "ask" || name === "slow" ? { ...descriptor, name } : undefined; },
     async invoke(name, _args, context) {
-      return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => resolve({ answer: name }), delayMs);
-        context.signal?.addEventListener("abort", () => {
-          clearTimeout(timer);
-          aborted.push(name);
-          reject(new Error("aborted"));
-        }, { once: true });
+      const response = deferred<unknown>();
+      const abort = () => { aborted.push(name); response.reject(new Error("aborted")); };
+      context.signal?.addEventListener("abort", abort, { once: true });
+      if (context.signal?.aborted) abort();
+      slot(invoked++).resolve({
+        name,
+        answer: () => response.resolve({ answer: name }),
+        fail: () => response.reject(new Error("question failed")),
       });
+      try { return await response.promise; }
+      finally { context.signal?.removeEventListener("abort", abort); }
     },
   });
   const config = structuredClone(DEFAULT_FABRIC_CONFIG);
@@ -39,17 +64,16 @@ const fixture = (configure: (config: FabricConfig) => void, delayMs = 400) => {
   config.approvals.read = "allow";
   configure(config);
   const service = new FabricExecutionService(registry, config);
-  let sequence = 0;
-  const run = (code: string, signal?: AbortSignal) => service.execute({
-    code,
-    signal,
-    parentToolCallId: `human-wait-${++sequence}`,
+  const controller = new AbortController();
+  controllers.push(controller);
+  const run = (code: string) => service.execute({
+    code, signal: controller.signal, parentToolCallId: "human-wait",
     context: { cwd: process.cwd(), hasUI: false, sessionManager: {
       getSessionId: () => "human-wait-test", getSessionFile: () => undefined,
     } } as unknown as ExtensionContext,
     onPartial() {},
   });
-  return { run, aborted };
+  return { run, aborted, controller, nextCall: () => slot(observed++).promise };
 };
 
 describe("HumanWaitDeadlinePause", () => {
@@ -92,82 +116,84 @@ describe("executor.humanWaitRefs config", () => {
   });
 });
 
-const typescriptRuntimes = ["quickjs", "node-process"] as const;
-
-describe.each(typescriptRuntimes)("%s runtime human-wait deadline pause", (runtime) => {
+const runtimes = ["quickjs", "node-process", "monty", "cpython"] as const;
+describe.each(runtimes)("%s human-wait deadline pause", (runtime) => {
+  const python = runtime === "monty" || runtime === "cpython";
+  const runTest = it.skipIf(python && !availablePythonBackends[runtime]);
   const configure = (config: FabricConfig): void => {
-    config.executor.runtime = runtime;
-    config.executor.timeoutMs = 150;
-    if (runtime === "node-process") config.executor.memoryLimitBytes = 128 * 1024 * 1024;
+    config.executor = { ...normalizeFabricConfig({ executor: {
+      ...(python ? { kernel: "python", pythonRuntime: runtime } : { runtime }),
+      memoryLimitBytes: 256 * 1024 * 1024,
+    } }).executor, timeoutMs: 1_000 };
   };
+  const call = (name: string, generic = false) => python
+    ? `await tools.call(ref="extensions.${name}", args={})`
+    : generic ? `await tools.call({ ref: "extensions.${name}", args: {} })` : `await extensions.${name}({})`;
 
-  it("waits past the program deadline for a human-wait ref", async () => {
-    const { run } = fixture(configure);
-    const direct = await run("return await extensions.ask({});");
-    expect(direct.success, direct.error).toBe(true);
-    expect(direct.value).toEqual({ answer: "ask" });
-    const generic = await run('return await tools.call({ ref: "extensions.ask", args: {} });');
-    expect(generic.success, generic.error).toBe(true);
+  runTest.each([false, true])("waits past the deadline (generic=%s)", async (generic) => {
+    const { run, nextCall, aborted } = fixture(configure);
+    const pending = run(`return ${call("ask", generic)}`);
+    const question = await nextCall();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(aborted).toEqual([]);
+    question.answer();
+    expect(await pending).toMatchObject({ success: true, value: { answer: "ask" } });
   });
 
-  it("keeps the normal deadline for refs that are not configured", async () => {
-    const { run } = fixture(configure);
-    const result = await run("return await extensions.slow({});");
+  runTest.each(["unlisted", "disabled"])("keeps the normal deadline when %s", async (mode) => {
+    const { run, nextCall, aborted } = fixture(config => {
+      configure(config);
+      if (mode === "disabled") config.executor.humanWaitRefs = [];
+    });
+    const name = mode === "disabled" ? "ask" : "slow";
+    const pending = run(`return ${call(name)}`);
+    await nextCall();
+    await vi.advanceTimersByTimeAsync(1_001);
+    const result = await pending;
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("timed out");
+    expect(aborted).toContain(name);
+  });
+
+  runTest.each(["answer", "fail"] as const)("resumes the saved budget after %s", async (settle) => {
+    const { run, nextCall } = fixture(configure);
+    const code = python
+      ? `try:\n    ${call("ask")}\nexcept Exception:\n    pass\nreturn ${call("slow")}`
+      : `try { ${call("ask")}; } catch {} return ${call("slow")};`;
+    const pending = run(code);
+    const question = await nextCall();
+    await vi.advanceTimersByTimeAsync(60_000);
+    question[settle]();
+    expect((await nextCall()).name).toBe("slow");
+    await vi.advanceTimersByTimeAsync(1_001);
+    const result = await pending;
     expect(result.success).toBe(false);
     expect(result.error).toContain("timed out");
   });
 
-  it("keeps the normal deadline when humanWaitRefs is empty", async () => {
-    const { run } = fixture((config) => { configure(config); config.executor.humanWaitRefs = []; });
-    const result = await run("return await extensions.ask({});");
+  runTest("cancels an entered human wait without waiting for a timer", async () => {
+    const { run, nextCall, controller, aborted } = fixture(configure);
+    const pending = run(`return ${call("ask")}`);
+    await nextCall();
+    controller.abort(new Error("user cancelled"));
+    const result = await pending;
     expect(result.success).toBe(false);
-    expect(result.error).toContain("timed out");
-  });
-
-  it("still counts guest work after the wait against the remaining budget", async () => {
-    const { run } = fixture(configure);
-    const result = await run("await extensions.ask({}); return await extensions.slow({});");
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("timed out");
-  });
-
-  it("cancels a pending human-wait call when the program is aborted", async () => {
-    const { run, aborted } = fixture(configure, 10_000);
-    const controller = new AbortController();
-    setTimeout(() => controller.abort(new Error("user cancelled")), 300);
-    const startedAt = Date.now();
-    const result = await run("return await extensions.ask({});", controller.signal);
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("cancelled");
-    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    expect(result.error).toMatch(/cancelled|abort/i);
     expect(aborted).toContain("ask");
   });
-});
 
-const pythonBackends = ["monty", "cpython"] as const;
-
-describe.each(pythonBackends)("%s Python kernel human-wait deadline pause", (pythonRuntime) => {
-  const runTest = it.skipIf(!availablePythonBackends[pythonRuntime]);
-  const configure = (config: FabricConfig): void => {
-    const python = normalizeFabricConfig({ executor: {
-      kernel: "python",
-      ...(pythonRuntime === "cpython" ? { pythonRuntime } : { cpython: { binary: "/nonexistent/python3" } }),
-      memoryLimitBytes: 256 * 1024 * 1024,
-    } }).executor;
-    config.executor = { ...python, timeoutMs: 1_000 };
-  };
-
-  runTest("waits past the program deadline for a human-wait ref", async () => {
-    const { run } = fixture(configure, 2_000);
-    const result = await run('return await tools.call(ref="extensions.ask", args={})');
-    expect(result.success, result.error).toBe(true);
-    expect(result.value).toEqual({ answer: "ask" });
-  });
-
-  runTest("keeps the normal deadline for refs that are not configured", async () => {
-    const { run } = fixture(configure, 2_000);
-    const result = await run('return await tools.call(ref="extensions.slow", args={})');
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("timed out");
+  runTest("remains paused until all overlapping questions settle", async () => {
+    const { run, nextCall, aborted } = fixture(configure);
+    const code = python
+      ? 'return await asyncio.gather(tools.call(ref="extensions.ask", args={}), tools.call(ref="extensions.ask", args={}))'
+      : 'return await Promise.all([extensions.ask({}), extensions.ask({})]);';
+    const pending = run(code);
+    const first = await nextCall();
+    const second = await nextCall();
+    first.answer();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(aborted).toEqual([]);
+    second.answer();
+    expect(await pending).toMatchObject({ success: true, value: [{ answer: "ask" }, { answer: "ask" }] });
   });
 });

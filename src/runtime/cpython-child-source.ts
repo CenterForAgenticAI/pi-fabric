@@ -193,8 +193,13 @@ def _error_text(error, source):
         if isinstance(original, SyntaxError) and original.filename == "fabric-exec.py":
             frames = []
         current.stack = traceback.StackSummary.from_list(frames)
-        if current.exc_type is _HostError:
-            current.exc_type = RuntimeError
+        if isinstance(original, _HostError):
+            # Python 3.13+ formats these attributes; exc_type is read-only in 3.14.
+            if hasattr(current, "exc_type_qualname"):
+                current.exc_type_qualname = "RuntimeError"
+                current.exc_type_module = "builtins"
+            else:
+                current.exc_type = RuntimeError
         if len(seen) >= 8:
             current.__cause__ = None
             current.__context__ = None

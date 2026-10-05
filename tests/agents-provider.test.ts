@@ -880,7 +880,7 @@ describe("AgentsProvider runner support", () => {
       status: "deferred",
       boundary: "fabric_exec_end",
     });
-    expect(deferredRequest).toEqual({ ...args, extensions: true, kernel: "typescript", pythonRuntime: "monty" });
+    expect(deferredRequest).toEqual({ ...args, runner: "pi-durable", extensions: true, kernel: "typescript", pythonRuntime: "monty" });
     expect(fs.existsSync(path.join(root, "runs"))).toBe(false);
 
     const outerToolResult = {
@@ -1189,7 +1189,7 @@ describe("AgentsProvider runner support", () => {
       status: "deferred",
       boundary: "fabric_exec_end",
     });
-    expect(deferredRequest).toEqual({ ...args, extensions: true, kernel: "typescript", pythonRuntime: "monty" });
+    expect(deferredRequest).toEqual({ ...args, runner: "pi-durable", extensions: true, kernel: "typescript", pythonRuntime: "monty" });
 
     const outerToolResult = {
       role: "toolResult" as const,
@@ -1261,7 +1261,7 @@ describe("AgentsProvider runner support", () => {
       kind: "fabric-agent-tools",
       name: "preview-agent",
       status: "completed",
-      runner: "pi",
+      runner: "pi-durable",
       owner: "agent",
       text: "fake worker complete",
       tools: expect.any(Array),

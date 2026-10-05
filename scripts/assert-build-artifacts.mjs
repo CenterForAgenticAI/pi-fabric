@@ -9,6 +9,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(root, "dist");
 const stable = [
   "index.js",
+  "extension-bootstrap.js",
   "memory.js",
   "mcp.js",
   "agents.js",
@@ -31,6 +32,8 @@ const stable = [
   "cli/index.js",
 ];
 const lazy = [
+  "native-discovery.js",
+  "memory/extractive-history.js",
   "cli/mesh.js",
   "cli/decisions.js",
   "agents/claude-cli.js",
@@ -55,6 +58,7 @@ const lazy = [
   "speculation/python-scanner.js",
   "ui/dashboard.js",
   "ui/shell-tasks.js",
+  "ui/image-overlays.js",
   "ui/languages/bend.js",
   "ui/conversation.js",
   "ui/conversation-host.js",
@@ -66,6 +70,7 @@ const lazy = [
   "worker/event-projection.js",
   "worker/options.js",
   "worker/recovery-watchdog.js",
+  "worker/result.js",
   "worker/run-record.js",
   "worker/session-export.js",
 ];
@@ -127,12 +132,25 @@ const staticClosure = (roots) => {
   return visited;
 };
 
-const startupFiles = staticClosure([join(dist, "index.js")]);
+// Bootstrap diagnostics must survive missing runtime dependencies.
+for (const file of staticClosure([join(dist, "worker.js")])) {
+  for (const match of readFileSync(file, "utf8").matchAll(staticImport)) {
+    if (!match[1].startsWith(".") && !match[1].startsWith("node:")) {
+      throw new Error(`Worker bootstrap imports an external package: ${match[1]}`);
+    }
+  }
+}
+const validator = readFileSync(join(dist, "worker/result.js"), "utf8");
+if ([...validator.matchAll(staticImport)].length || /\bimport\s*\(/.test(validator)) {
+  throw new Error("Worker validator must be self-contained");
+}
+// Measure the entry Pi actually loads, including every shared static chunk.
+const startupFiles = staticClosure(manifest.pi.extensions.map(file => resolve(root, file)));
 const startupBytes = [...startupFiles].reduce((sum, file) => sum + Buffer.byteLength(readFileSync(file)), 0);
-if (startupBytes > 1150 * 1024 || startupFiles.size > 44) {
+if (startupBytes > 1000 * 1024 || startupFiles.size > 41) {
   throw new Error(`Startup static graph grew beyond its budget: ${startupBytes} bytes in ${startupFiles.size} files`);
 }
-const optionalPackages = ["yaml", "@lezer/python", "shiki", "@shikijs/langs", "@shikijs/themes", "typescript", "mcporter", "jev-fabric"];
+const optionalPackages = ["yaml", "@lezer/python", "shiki", "@shikijs/langs", "@shikijs/themes", "typescript", "mcporter", "jev-fabric", "@earendil-works/pi-durable", "@earendil-works/chord"];
 for (const file of startupFiles) {
   for (const match of readFileSync(file, "utf8").matchAll(staticImport)) {
     if (optionalPackages.some(name => match[1] === name || match[1]?.startsWith(`${name}/`))) {
@@ -148,7 +166,7 @@ if ([...startupFiles].some(file => /class ProviderOperations|Fabric provider ope
 const initialSource = [...startupFiles]
   .map((file) => readFileSync(file, "utf8"))
   .join("\n");
-for (const forbidden of ["src/fabric-runtime-state.ts", "src/prewalk/handoff.ts", "src/jev/client.ts", "src/ui/languages/bend.ts", "src/ui/settings.ts", "src/ui/conversation.ts", "src/ui/conversation-chrome.ts", 'from "mcporter"']) {
+for (const forbidden of ["src/native-discovery.ts", "src/memory/extractive-history.ts", "src/memory/extractive-index.ts", "src/entropy/compiler.ts", "src/entropy/trial.ts", "src/fabric-runtime-state.ts", "src/prewalk/handoff.ts", "src/jev/client.ts", "src/ui/languages/bend.ts", "src/ui/settings.ts", "src/ui/conversation.ts", "src/ui/conversation-chrome.ts", "src/ui/image-overlays.ts", "src/ui/kitty-viewport.ts", 'from "mcporter"']) {
   if (initialSource.includes(forbidden)) {
     throw new Error(`Startup static graph contains lazy module marker: ${forbidden}`);
   }

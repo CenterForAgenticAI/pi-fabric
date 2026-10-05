@@ -1,14 +1,18 @@
 # Pi Fabric identity
 
-Approved flat-color artwork for [Pi Fabric on Open Collective](https://opencollective.com/pi-fabric).
+Approved Fabric Runtime artwork used by [Pi Fabric on Open Collective](https://opencollective.com/pi-fabric). The collective remains **Pi Fabric** and funds Pi Fabric, not automatically every project using the umbrella identity.
 
-- [`mark.svg`](mark.svg): transparent vector mark.
-- [`logo-dark.svg`](logo-dark.svg) / [`logo-dark.png`](logo-dark.png): warm-white mark on near-black; 1024 × 1024 PNG, used as the collective avatar.
-- [`logo-light.svg`](logo-light.svg) / [`logo-light.png`](logo-light.png): near-black mark on warm white; 1024 × 1024 PNG.
-- [`cover.svg`](cover.svg) / [`cover.png`](cover.png): text-free cover; 2400 × 800 PNG. Open Collective may crop it and apply its own profile overlay.
+## Current artwork
 
-## Usage
+- [`fabric-runtime/fa-avatar.png`](fabric-runtime/fa-avatar.png): approved upright serif **fa.** avatar, warm white on near-black with a cobalt dot; 1024 × 1024 PNG.
+- [`fabric-runtime/fa-avatar.svg`](fabric-runtime/fa-avatar.svg): vector avatar source.
+- [`fabric-runtime/fa-mark.svg`](fabric-runtime/fa-mark.svg): transparent vector wordmark source.
+- [`fabric-runtime/particle-cover.png`](fabric-runtime/particle-cover.png) / [`fabric-runtime/particle-cover.svg`](fabric-runtime/particle-cover.svg): approved dark, text-free particle field; 2400 × 800 PNG. The quiet left side accommodates Open Collective's curved profile overlay.
 
-Use near-black `#151515` and warm white `#F4F3EF`. Keep the mark's proportions and negative space intact. Do not add gradients, shadows, outlines, or accent colors. Prefer the SVG originals for resizing; the PNG files are ready for profile uploads.
+Use near-black `#151515`, warm white `#F4F3EF`, and cobalt `#356AF0`. Keep the clean avatar separate from the particle artwork. Preserve the artwork's proportions and appearance; do not add glows, shadows, or gradients. Use the PNGs for exact approved profile rendering; the SVG wordmark sources use Georgia/serif text and depend on available fonts.
+
+## Earlier artwork
+
+The root-level `mark.svg`, `logo-dark.*`, `logo-light.*`, and `cover.*` files are retained as earlier artwork, not the current profile identity.
 
 The exploratory `drafts/` directory is intentionally local and ignored. These assets are distributed under the repository's [MIT license](../../LICENSE).

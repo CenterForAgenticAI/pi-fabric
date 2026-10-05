@@ -24,35 +24,6 @@ import {
 } from "../protocol.js";
 import { awaitPeerSettle, buildPeerCards } from "../topology/peer-settle.js";
 import type { RepairStatus } from "../repairs/types.js";
-import { ENTROPY_METRIC_VERSION } from "../entropy/types.js";
-import {
-  entropySurfaceHash,
-  liveSurfaceSnapshot,
-  surfaceFreedomReport,
-} from "../entropy/surface.js";
-import {
-  machineSessionFilesAsync,
-  measureSessionCorpusAsync,
-  projectSessionFilesAsync,
-  sessionWindowEvidenceAsync,
-} from "../entropy/sessions.js";
-import { measureEntropyAsync } from "../entropy/meter.js";
-import { entropyRepairRows } from "../entropy/corpus.js";
-import { entropyReviewSignals, formatEntropyReviewSignal } from "../entropy/compiler.js";
-import { loadObservationPoolAsync } from "../entropy/pool-store.js";
-import { mergeObservationWindowAsync, poolToValueObservations } from "../entropy/pool.js";
-import { applyCompiledSurface } from "../entropy/compiled-surface.js";
-import { normalFormEvidenceSummary } from "../entropy/normal-form.js";
-import {
-  loadCompiledSurfaceAsync,
-  parseCompiledSurfaceArtifact,
-  saveCompiledSurfaceAsync,
-} from "../entropy/compiled-store.js";
-import {
-  formatEntropyCommandHints,
-  formatEntropyMetric,
-} from "../entropy/presentation.js";
-import { mergeCompiledSurfaces } from "../entropy/compiled-surface.js";
 import { setActiveCompiledSurface } from "../entropy/active.js";
 import { formatForeground } from "../core/foreground-tools.js";
 import fs from "node:fs";
@@ -973,6 +944,15 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         return;
       }
       if (command === "entropy") {
+        const {
+          ENTROPY_METRIC_VERSION, entropySurfaceHash, liveSurfaceSnapshot, surfaceFreedomReport,
+          machineSessionFilesAsync, measureSessionCorpusAsync, projectSessionFilesAsync,
+          sessionWindowEvidenceAsync, measureEntropyAsync, entropyRepairRows, entropyReviewSignals,
+          formatEntropyReviewSignal, loadObservationPoolAsync, mergeObservationWindowAsync,
+          poolToValueObservations, applyCompiledSurface, normalFormEvidenceSummary,
+          loadCompiledSurfaceAsync, parseCompiledSurfaceArtifact, saveCompiledSurfaceAsync,
+          formatEntropyCommandHints, formatEntropyMetric, mergeCompiledSurfaces,
+        } = await import("../entropy/index.js");
         const exportArtifactIndex = argumentsList.indexOf("export-artifact");
         if (exportArtifactIndex >= 0) {
           const target = argumentsList[exportArtifactIndex + 1];

@@ -1903,7 +1903,7 @@ describe("ActorManager", () => {
       responseMode: "text",
       triggerTurn: false,
       coalesce: true,
-      runner: "pi",
+      runner: "pi-durable",
       kernel: "typescript",
       pythonRuntime: "monty",
       model: "anthropic/sonnet",

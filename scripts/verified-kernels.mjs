@@ -9,7 +9,7 @@ import { build, transform } from "esbuild";
 import ts from "typescript";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const version = "2.0.34";
+const version = "2.0.35";
 const targets = [
   { stem: "storage-kernel", source: "proofs/storage-kernel.bend", abi: "proofs/storage-abi.json", types: "proofs/storage-types.d.ts" },
   { stem: "authority-kernel", source: "proofs/authority-kernel.bend", abi: "proofs/authority-abi.json", types: "proofs/authority-types.d.ts" },

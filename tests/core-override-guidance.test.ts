@@ -105,8 +105,13 @@ describe("core override prompt guidance", () => {
     try {
       const { default: piFabric } = await import("../src/index.js");
       await piFabric(pi);
-      const handler = handlers.get("before_agent_start")?.[0];
-      if (!handler) throw new Error("before_agent_start handler was not registered");
+      const handler = async (event: unknown, context: unknown) => {
+        for (const callback of handlers.get("before_agent_start") ?? []) {
+          const result = await callback(event, context);
+          if (result && typeof result === "object" && "systemPrompt" in result) return result;
+        }
+        throw new Error("No before_agent_start handler returned prompt guidance");
+      };
       const result = await handler({
         systemPrompt: "base system",
         prompt: "inspect source",

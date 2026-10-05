@@ -1,7 +1,7 @@
 <div align="center">
 
 <p>
-  <img src="https://raw.githubusercontent.com/monotykamary/pi-fabric/main/media/opencollective/logo-dark.svg" alt="Pi Fabric logo" width="96" height="96">
+  <img src="https://raw.githubusercontent.com/fabric-runtime/pi-fabric/main/media/opencollective/fabric-runtime/fa-avatar.png" alt="Pi Fabric logo" width="96" height="96">
 </p>
 
 # pi-fabric
@@ -11,12 +11,12 @@
 _One program for tools, MCP, agents, workflows, actors, mesh, councils, and recursion._
 
 <p>
-  <img src="https://raw.githubusercontent.com/monotykamary/pi-fabric/main/media/banner.svg" alt="Animated banner: one checked TypeScript program weaving pi core tools, MCP servers, agents, and mesh into a single result" width="100%">
+  <img src="https://raw.githubusercontent.com/fabric-runtime/pi-fabric/main/media/banner.svg" alt="Animated banner: one checked TypeScript program weaving pi core tools, MCP servers, agents, and mesh into a single result" width="100%">
 </p>
 
 [![npm version](https://img.shields.io/npm/v/pi-fabric?style=for-the-badge&logo=npm&color=cb3837)](https://www.npmjs.com/package/pi-fabric)
 [![ARC-AGI-3 scorecard](https://img.shields.io/badge/ARC--AGI--3-100%25%20across%2025%20envs-16a34a?style=for-the-badge)](https://arcprize.org/scorecards/d4c56c67-136b-4643-b648-62ae28fe2a54)
-[![checks](https://img.shields.io/github/actions/workflow/status/monotykamary/pi-fabric/test.yml?branch=main&style=for-the-badge&label=checks)](https://github.com/monotykamary/pi-fabric/actions/workflows/test.yml)
+[![checks](https://img.shields.io/github/actions/workflow/status/fabric-runtime/pi-fabric/test.yml?branch=main&style=for-the-badge&label=checks)](https://github.com/fabric-runtime/pi-fabric/actions/workflows/test.yml)
 [![pi extension](https://img.shields.io/badge/pi-extension-8b5cf6?style=for-the-badge)](https://github.com/earendil-works/pi-coding-agent)
 [![license](https://img.shields.io/badge/license-MIT-f4c430?style=for-the-badge)](LICENSE)
 [![Open Collective](https://img.shields.io/badge/Open_Collective-support-151515?style=for-the-badge&logo=opencollective&logoColor=white)](https://opencollective.com/pi-fabric)
@@ -96,14 +96,14 @@ pi install npm:pi-fabric
 From GitHub:
 
 ```bash
-pi install git:github.com/monotykamary/pi-fabric
+pi install git:github.com/fabric-runtime/pi-fabric
 ```
 
 From a local checkout:
 
 ```bash
-pnpm install
-pnpm build
+bun install
+bun run build
 pi install /absolute/path/to/pi-fabric
 ```
 
@@ -158,11 +158,14 @@ See the [interface & commands reference](docs/interface.md) for every view, keyb
 
 - [Configuration](docs/configuration.md): `fabric.json`, code modes, tool capture, approvals, and budgets.
 - [Execution kernels](docs/kernels.md): exclusive TypeScript/Python selection, Monty sandboxing, CPython escape hatch, agent inheritance, and examples.
+- [Native codemode APIs](docs/codemode-parity.md): the `models` namespace, native classifiers and images, branch-local script state, output helpers, and per-call limits.
 - [Prompt cache](docs/prompt-cache.md): honest cache observations and optional, time-bounded native warming leases.
 - [Thinking control](docs/thinking.md): scoped host-session reasoning effort with configured bounds that children inherit and never widen.
+- [Durable Pi runner](docs/durable-pi.md): the default isolated Pi/Fabric host, checkpoint recovery, replay boundaries, and the explicit legacy `pi` option.
 - [Durable decisions](docs/decisions.md): pending approvals and questions in the project mesh, headless approvals, routed child dialogs, `/fabric decisions`, and the `pi-fabric decisions` CLI.
 - [Saved programs](docs/programs.md): content-addressed programs, nested `programs.run` with the caller's capabilities, `/fabric programs`, and host runs through `/fabric run` or an event.
 - [Memory & recall](docs/memory-recall.md): compact ranked hits, uniform follow calls, lossless expansion, and guest-local `memory.walk` computation.
+- [Extractive history](docs/extractive-history.md): opt-in native-classifier salience, source-preserving selection, bounded context, and deterministic fallback; configure it through JSON or the TUI.
 - [Interface & commands](docs/interface.md): dashboard, settings, keybindings, slash commands, and headless runs.
 - [Agents, actors & mesh](docs/agents.md): model handoff, `/fabric prewalk`, runners, transports, actors, councils, recursive queries, and durable coordination.
 - [Durable residency through Pi](docs/residency-runtime.md): background host lifecycle and the Pi-runtime launcher boundary.
@@ -181,10 +184,10 @@ See the [interface & commands reference](docs/interface.md) for every view, keyb
 ## Development
 
 ```bash
-pnpm install
-pnpm typecheck
-pnpm test
-pnpm build
+bun install
+bun run check:fast
+bun run test:smoke
+bun run build
 ```
 
 The test suite covers:

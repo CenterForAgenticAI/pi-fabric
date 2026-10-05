@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 export interface ExecFileResult {
   stdout: string;
@@ -212,18 +213,35 @@ export const spawnDetached = async (
   workerPath: string,
   workerArguments: string[],
   cwd: string,
-): Promise<{ pid: number; stop(): Promise<void>; isAlive(): Promise<boolean> }> => {
+  options: { captureStderr?: boolean } = {},
+): Promise<{ pid: number; stop(): Promise<void>; isAlive(): Promise<boolean>; readStderr(): string }> => {
   const runtime = await resolveScriptRuntime(runtimeOptionsForWorker(workerPath));
   const child = spawn(runtime, [workerPath, ...workerArguments], {
     cwd,
     detached: process.platform !== "win32",
-    stdio: "ignore",
+    // Resident hosts must remain independent of the launching process's pipes.
+    stdio: ["ignore", "ignore", options.captureStderr ? "pipe" : "ignore"],
   });
-  if (!child.pid) throw new Error("Failed to launch Fabric worker process");
-  const pid = child.pid;
+  // Drain throughout the run, retaining only a bounded UTF-8 tail in memory.
+  // No disk log can grow without bound or keep secrets after run cleanup.
+  const decoder = new StringDecoder("utf8");
+  let stderr = "";
+  child.stderr?.on("data", (chunk: Buffer) => {
+    stderr = (stderr + decoder.write(chunk)).slice(-20_000);
+  });
+  child.stderr?.on("end", () => { stderr = (stderr + decoder.end()).slice(-20_000); });
+  child.stderr?.on("error", () => {});
+  await new Promise<void>((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
+  const pid = child.pid!;
   child.unref();
+  // A diagnostic pipe must not keep the owner process alive on its own.
+  (child.stderr as (NodeJS.ReadableStream & { unref?: () => void }) | null)?.unref?.();
   return {
     pid,
+    readStderr: () => stderr,
     async stop() {
       try {
         process.kill(process.platform === "win32" ? pid : -pid, "SIGTERM");

@@ -22,6 +22,9 @@ import type { CodePreviewSettings } from "./code-preview.js";
 import type { NativeConversationTranscript } from "./conversation-native-reader.js";
 import { defaultConversationTarget } from "./conversation-targets.js";
 import { ConversationTextSelection } from "./conversation-selection.js";
+import { ConversationScrollbar } from "./conversation-scrollbar.js";
+import { ConversationLatest } from "./conversation-latest.js";
+import { isKittyImageLine, KittyViewport, type KittyViewportFrame } from "./kitty-viewport.js";
 import { appendConversationPrompt, conversationPromptHistory } from "./conversation-history.js";
 import { conversationAssistantText, conversationCommandCompletion, CONVERSATION_COMMAND_HELP } from "./conversation-commands.js";
 import { ConversationQueueStore } from "./conversation-queue-store.js";
@@ -244,6 +247,9 @@ export class FabricConversationView implements Component, Focusable {
   private readonly options: FabricConversationOptions;
   private readonly state: FabricConversationState;
   private readonly renderer: FabricConversationTranscriptRenderer;
+  private readonly scrollbar: ConversationScrollbar;
+  private readonly latest = new ConversationLatest();
+  private readonly imageViewport = new KittyViewport();
   private editor: BorderStatusEditor | undefined;
   private suspendedEditor: BorderStatusEditor | undefined;
   private editorEpoch = -1;
@@ -259,7 +265,7 @@ export class FabricConversationView implements Component, Focusable {
   private stopConfirmId: string | undefined;
   private disposed = false;
   private lastBodyLength = 0;
-  private lastBody: string[] = [];
+  private lastBody: readonly string[] = [];
   private lastBodyBudget = 1;
   private editorTop = 0;
   private editorHeight = 0;
@@ -291,6 +297,7 @@ export class FabricConversationView implements Component, Focusable {
     this.theme = theme;
     this.options = options;
     this.state = options.state;
+    this.scrollbar = new ConversationScrollbar(theme, options.appearance?.scrollbar);
     this.updateTargets();
     this.renderer = new FabricConversationTranscriptRenderer(tui, theme, {
       ...options.rendererOptions,
@@ -331,6 +338,7 @@ export class FabricConversationView implements Component, Focusable {
     // including one rebuilt for a new epoch or a queue-row swap — inherits the
     // indicator that is live right now.
     editor.setWorkingStatusIndicator(this.working);
+    editor.topBorderBadge = (width) => this.targetBadge(width);
     editor.focused = this.focusState && this.mode === "conversation";
     if (!withHistory) return editor;
     editor.setAutocompleteProvider(conversationCommandCompletion(() =>
@@ -461,6 +469,24 @@ export class FabricConversationView implements Component, Focusable {
     if (this.disposed) return undefined;
     this.ensureEditorEpoch();
     this.updateTargets();
+    if (this.mode === "conversation" && !this.textSelection.dragging && this.latest.hit(event)) {
+      this.followLatest();
+      this.tui.requestRender();
+      return { handled: true };
+    }
+    if (this.mode === "conversation" && this.currentId && !this.textSelection.dragging &&
+      this.scrollbar.handleMouse(event, (position) => {
+        const entry = this.state.view(this.currentId!);
+        this.textSelection.clear();
+        entry.pageAnchor = undefined;
+        entry.anchorLength = undefined;
+        entry.scroll = position;
+        entry.following = position === Math.max(0, this.lastBodyLength - this.lastBodyBudget);
+      })) {
+      this.textSelection.clear();
+      this.tui.requestRender();
+      return { handled: true, capture: true };
+    }
     if (event.type === "wheel") {
       if (this.mode === "picker") {
         this.refreshPicker();
@@ -499,6 +525,7 @@ export class FabricConversationView implements Component, Focusable {
   }
 
   render(width: number): string[] {
+    this.latest.clear();
     if (this.disposed || width <= 0) return [];
     this.updateTargets();
     if (width !== this.selectionWidth) {
@@ -511,7 +538,8 @@ export class FabricConversationView implements Component, Focusable {
     const target = this.currentTarget();
     const queue = this.mode === "conversation" ? this.currentQueue() : undefined;
     this.observe();
-    const liveTranscriptLines = this.mode === "conversation" ? this.transcriptLines(width) : [];
+    const contentWidth = this.scrollbar.contentWidth(width);
+    const liveTranscriptLines = this.mode === "conversation" ? this.transcriptLines(contentWidth) : [];
     const transcriptLines = this.textSelection.source ?? liveTranscriptLines;
     let queueLines = queue?.render(width) ?? [];
     // Native components own their interior padding. Giving them the full width
@@ -533,7 +561,7 @@ export class FabricConversationView implements Component, Focusable {
       : [];
     remaining -= footer.length;
     const head: string[] = [];
-    if (remaining > 0) {
+    if (remaining > 0 && this.mode === "picker") {
       head.push(this.breadcrumbLine(width));
       remaining--;
     }
@@ -553,19 +581,31 @@ export class FabricConversationView implements Component, Focusable {
     remaining -= queueLines.length;
     this.editorTop = rows - editorLines.length - footer.length - hints.length;
     this.editorHeight = editorLines.length;
-    const body = remaining <= 0 ? [] : this.mode === "picker"
-      ? this.pickerLines(width, remaining)
-      : this.windowBody(transcriptLines, remaining, this.transcriptTail(width, remaining, editorShowsTopBorder));
+    const window = remaining > 0 && this.mode === "conversation"
+      ? this.windowBody(transcriptLines, remaining, this.transcriptTail(contentWidth, remaining, editorShowsTopBorder))
+      : undefined;
+    const body = window?.lines ?? (remaining > 0 ? this.pickerLines(width, remaining) : []);
     this.bodyTop = head.length;
     const scroll = this.currentId ? this.state.view(this.currentId).scroll : 0;
     this.bodyHeight = this.mode === "conversation" ? Math.max(0, Math.min(remaining, this.lastBody.length - scroll)) : 0;
+    const imageRows = window?.imageRows;
     if (this.textSelection.active) {
-      for (let row = 0; row < this.bodyHeight; row++) body[row] = this.textSelection.highlight(body[row]!, scroll + row, this.theme);
+      for (let row = 0; row < this.bodyHeight; row++) {
+        if (!imageRows?.has(row)) body[row] = this.textSelection.highlight(body[row]!, scroll + row, this.theme);
+      }
     }
     while (body.length < remaining) body.push("");
+    if (this.mode === "conversation" && remaining > 0) {
+      const entry = this.currentId ? this.state.view(this.currentId) : undefined;
+      this.scrollbar.sync(width, this.bodyTop, remaining, this.lastBodyLength, scroll, entry?.following ?? true,
+        () => { if (!this.disposed) this.tui.requestRender(); });
+      this.scrollbar.paint(body, imageRows);
+      this.latest.paint(body, width, this.bodyTop, !imageRows?.has(body.length - 1) && !!entry && (!entry.following || !!this.observedTranscript?.hasNewer),
+        this.scrollbar.visible, this.theme);
+    } else this.scrollbar.reset();
     return [...head, ...body.slice(0, remaining), ...queueLines, ...editorLines, ...footer, ...hints]
       .slice(0, rows)
-      .map((line) => visibleWidth(line) <= width ? line : truncateToWidth(line, width, ""));
+      .map((line) => isKittyImageLine(line) || visibleWidth(line) <= width ? line : truncateToWidth(line, width, ""));
   }
 
   /** Observe files without rendering native history; true means a visible change
@@ -649,6 +689,8 @@ export class FabricConversationView implements Component, Focusable {
   dispose(): void {
     if (this.currentId) this.state.queues.detach(this.currentId);
     this.disposed = true;
+    this.latest.clear();
+    this.scrollbar.reset();
     this.clearCommandNotification();
     this.copyVersion++;
     this.textSelection.clear();
@@ -661,6 +703,7 @@ export class FabricConversationView implements Component, Focusable {
     this.observedTranscript = undefined;
     this.lastBody = [];
     this.renderer.dispose();
+    this.imageViewport.clear();
     if (this.ownsMouseMode) {
       this.ownsMouseMode = false;
       this.tui.terminal.write("\x1b[?1002l\x1b[?1000l\x1b[?1006l");
@@ -696,6 +739,8 @@ export class FabricConversationView implements Component, Focusable {
     }
     const changed = this.currentId !== id;
     if (changed) {
+      this.latest.clear();
+      this.scrollbar.reset();
       this.clearCommandNotification();
       this.copyVersion++;
       this.textSelection.clear();
@@ -1224,6 +1269,7 @@ export class FabricConversationView implements Component, Focusable {
   }
 
   private followLatest(): void {
+    this.latest.clear();
     this.textSelection.clear();
     if (!this.currentId) return;
     this.options.loadLatest(this.currentId);
@@ -1234,6 +1280,8 @@ export class FabricConversationView implements Component, Focusable {
   }
 
   private openPicker(): void {
+    this.latest.clear();
+    this.scrollbar.reset();
     this.clearCommandNotification();
     this.copyVersion++;
     this.textSelection.clear();
@@ -1347,6 +1395,22 @@ export class FabricConversationView implements Component, Focusable {
     return target.updatedAt > seen;
   }
 
+  private targetBadge(width: number): string {
+    const target = this.currentTarget();
+    const labelWidth = Math.max(0, width - 2);
+    const access = target?.readOnlyReason ? " · read-only" : "";
+    const name = target ? (isMainTarget(target) ? "Main" : safeText(target.name) || safeText(target.id)) : "Fabric";
+    // Drop ancestors before truncating the active target. Keep the access label
+    // when it fits alongside at least one cell of the target name.
+    const suffix = visibleWidth(access) + 1 <= labelWidth ? access : "";
+    const chain = this.breadcrumbLine(Number.MAX_SAFE_INTEGER);
+    const label = visibleWidth(chain) + visibleWidth(access) <= labelWidth
+      ? chain + this.theme.fg("warning", access)
+      : this.theme.fg("accent", truncateToWidth(name, Math.max(0, labelWidth - visibleWidth(suffix)), "…")) +
+        this.theme.fg("warning", suffix);
+    return this.theme.bg("selectedBg", ` ${label} `);
+  }
+
   private breadcrumbLine(width: number): string {
     const chain: FabricConversationTarget[] = [];
     let cursor = this.currentTarget();
@@ -1438,7 +1502,7 @@ export class FabricConversationView implements Component, Focusable {
     });
   }
 
-  private transcriptLines(innerWidth: number): string[] {
+  private transcriptLines(innerWidth: number): readonly string[] {
     const target = this.currentTarget();
     if (!target || !this.currentId) return [this.theme.fg("dim", "No target selected.")];
     const entry = this.state.view(this.currentId);
@@ -1451,7 +1515,7 @@ export class FabricConversationView implements Component, Focusable {
       outputPad: this.options.appearance?.outputPad ?? 1,
       ...(this.options.appearance?.codeBlockIndent !== undefined ? { codeBlockIndent: this.options.appearance.codeBlockIndent } : {}),
       codePreviewSettings: this.options.codePreviewSettings,
-    });
+    }, "borrow");
   }
 
   private transcriptTail(width: number, budget: number, editorVisible: boolean): string[] {
@@ -1472,7 +1536,7 @@ export class FabricConversationView implements Component, Focusable {
     return tail;
   }
 
-  private windowBody(body: string[], budget: number, tail: string[]): string[] {
+  private windowBody(body: readonly string[], budget: number, tail: string[]): KittyViewportFrame {
     this.lastBodyLength = body.length + tail.length;
     this.lastBody = body;
     this.lastBodyBudget = budget;
@@ -1493,9 +1557,9 @@ export class FabricConversationView implements Component, Focusable {
     // Slice the virtual body + tail without copying retained history per frame.
     const start = entry?.scroll ?? 0;
     const end = start + budget;
-    const lines = body.slice(start, end);
-    if (end > body.length) lines.push(...tail.slice(Math.max(0, start - body.length), end - body.length));
-    return lines;
+    const frame = this.imageViewport.slice(body, start, end);
+    if (end > body.length) frame.lines.push(...tail.slice(Math.max(0, start - body.length), end - body.length));
+    return frame;
   }
 
   private pickerLines(innerWidth: number, budget: number): string[] {

@@ -70,8 +70,10 @@ const quickJsModule = (): Promise<QuickJsModule> => {
   return quickJsModulePromise;
 };
 
-export const guestSetupSource = (fields?: Record<string, string[]>): string =>
-  `const __piCanonicalFields = ${JSON.stringify(fields ?? {})};\n${GUEST_SETUP}`;
+export const guestSetupSource = (fields?: Record<string, string[]>, nativeStoreEnabled = false): string =>
+  `const __piCanonicalFields = ${JSON.stringify(fields ?? {})}; const __nativeStoreEnabled = ${nativeStoreEnabled};\n${GUEST_SETUP}`;
+
+import { NATIVE_CODEMODE_GUEST } from "./native-codemode-guest.js";
 
 export const GUEST_SETUP = `
 (() => {
@@ -112,6 +114,7 @@ const __toolsBase = {
   progress: (args) => __call("fabric.$progress", args),
   models: () => __call("fabric.$models", {}),
 };
+${NATIVE_CODEMODE_GUEST}
 // tools is discovery + generic calls only. The proxy keeps the seven discovery
 // methods and turns a core-tool name (read/bash/edit/...) into an actionable
 // error pointing at pi.<name>, so a model that writes tools.read(...) learns
@@ -705,10 +708,10 @@ globalThis.log = workflow.log;
 globalThis.budget = workflow.budget;
 globalThis.rlm = Object.freeze({
   query: (args) => {
-    if (args && args.runner && args.runner !== "pi") {
-      throw new Error("rlm.query requires the Pi runner because recursive Fabric is unavailable in Claude Code");
+    if (args && args.runner && args.runner !== "pi" && args.runner !== "pi-durable") {
+      throw new Error("rlm.query requires a Pi runner (pi-durable or pi) for recursive Fabric");
     }
-    return __budgetedRun({ ...args, runner: "pi", recursive: true });
+    return __budgetedRun({ ...args, runner: args?.runner ?? "pi-durable", recursive: true });
   },
 });
 globalThis.council = Object.freeze({
@@ -727,7 +730,7 @@ globalThis.council = Object.freeze({
     });
   },
 });
-globalThis.console = Object.freeze({ log: print, info: print, warn: print, error: print });
+globalThis.console = Object.freeze({ log: print, info: print, warn: print, error: print, debug: print });
 const __timerCallbacks = new Map();
 let __nextTimerId = 1;
 globalThis.setTimeout = (callback, ms = 0) => {
@@ -901,6 +904,13 @@ export class QuickJsRuntime {
       interruptedByDeadline = true;
       return true;
     });
+    const emittedSnapshot = (): unknown[] => {
+      try {
+        const handle = context.getProp(context.global, "__fabricEmitted");
+        try { const value = context.dump(handle); return Array.isArray(value) ? value : []; }
+        finally { handle.dispose(); }
+      } catch { return []; }
+    };
     const logs: string[] = [];
     const maxLogChars = options.maxLogChars ?? 100_000;
     let logChars = 0;
@@ -1084,7 +1094,7 @@ export class QuickJsRuntime {
       tokenBudget.dispose();
 
       cpuDeadlineAt = Date.now() + (options.maxCpuSliceMs ?? Infinity);
-      const setupResult = context.evalCode(guestSetupSource(options.piToolCanonicalFields), "pi-fabric-setup.js");
+      const setupResult = context.evalCode(guestSetupSource(options.piToolCanonicalFields, options.nativeStoreEnabled), "pi-fabric-setup.js");
       if (setupResult.error) {
         const deadlineExceeded = interruptedByDeadline || interruptedByCpu || Date.now() > executionDeadlineAt;
         if (deadlineExceeded) timedOut = true;
@@ -1115,7 +1125,7 @@ export class QuickJsRuntime {
         : { code: options.transpiledCode, sourceMap: options.transpiledSourceMap };
       const guestStackMap = createGuestStackMap(guestBundle.sourceMap);
       const guestLineCount = guestBundle.code.split("\n").length;
-      const wrappedCode = `${guestBundle.code}\nPromise.race([__piFabricMain(), globalThis.__fabricExecutionGate])`;
+      const wrappedCode = `${guestBundle.code}\nPromise.race([globalThis.__fabricRun(__piFabricMain), globalThis.__fabricExecutionGate])`;
       cpuDeadlineAt = Date.now() + (options.maxCpuSliceMs ?? Infinity);
       const evaluation = context.evalCode(wrappedCode, "pi-fabric-guest.js");
       pumpJobs();
@@ -1172,10 +1182,14 @@ export class QuickJsRuntime {
             ? timeoutMessage()
             : remapGuestErrorText(formatValue(context.dump(resolution.error)), guestStackMap, guestLineCount);
         resolution.error.dispose();
+        const emittedHandle = context.getProp(context.global, "__fabricEmitted");
+        const emitted = context.dump(emittedHandle) as unknown[];
+        emittedHandle.dispose();
         abortHostCalls(error);
         return {
           value: undefined,
           logs,
+          emitted,
           terminationReason: options.signal?.aborted
             ? "aborted"
             : deadlineExceeded
@@ -1186,7 +1200,10 @@ export class QuickJsRuntime {
       }
       const value = context.dump(resolution.value);
       resolution.value.dispose();
-      return { value, logs, terminationReason: "completed" };
+      const emittedHandle = context.getProp(context.global, "__fabricEmitted");
+      const emitted = context.dump(emittedHandle) as unknown[];
+      emittedHandle.dispose();
+      return { value, logs, emitted, terminationReason: "completed" };
     } catch (error) {
       const deadlineExceeded = timedOut || interruptedByDeadline || interruptedByCpu || Date.now() > executionDeadlineAt;
       if (deadlineExceeded) timedOut = true;
@@ -1194,6 +1211,7 @@ export class QuickJsRuntime {
       return {
         value: undefined,
         logs,
+        emitted: emittedSnapshot(),
         terminationReason: cancelled ? "aborted" : deadlineExceeded ? "timed_out" : "runtime_error",
         error: cancelled
           ? "Execution cancelled"
@@ -1208,6 +1226,7 @@ export class QuickJsRuntime {
       for (const timer of pendingTimers) clearTimeout(timer);
       if (abortHandler) options.signal?.removeEventListener("abort", abortHandler);
       if (hostTasks.size > 0) {
+        abortHostCalls("Fabric guest execution ended before its host calls settled");
         const settled = await settleWithin(hostTasks, HOST_TASK_SETTLE_GRACE_MS);
         if (!settled) {
           abortHostCalls("Fabric guest execution ended before its host calls settled");

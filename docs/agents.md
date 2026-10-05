@@ -86,7 +86,7 @@ TypeScript caller example:
 ```ts
 return agents.run({
   task: "Analyze the dataset and report a compact result.",
-  runner: "pi",
+  runner: "pi-durable",
   kernel: "python",
 });
 ```
@@ -96,12 +96,12 @@ Python caller example:
 ```python
 return await agents.run({
     "task": "Inspect TypeScript API compatibility and report concrete findings.",
-    "runner": "pi",
+    "runner": "pi-durable",
     "kernel": "typescript",
 })
 ```
 
-Concrete kernels require the Pi runner with Fabric extensions enabled. Claude, Veda, and `extensions: false` reject concrete choices before launch; omitted/`inherit` keeps those runners native and their status has no Fabric kernel. Invalid kernel values reject without guessing. A supported run's handle, result, and status record expose the resolved `kernel`, never `inherit`. Explicit kernels and inherited Python load the Fabric extension/tool even when the parent is outside full-code mode.
+Concrete kernels require a Pi runner (`pi-durable` or `pi`) with Fabric extensions enabled. Claude, Veda, and `extensions: false` reject concrete choices before launch; omitted/`inherit` keeps those runners native and their status has no Fabric kernel. Invalid kernel values reject without guessing. A supported run's handle, result, and status record expose the resolved `kernel`, never `inherit`. Explicit kernels and inherited Python load the Fabric extension/tool even when the parent is outside full-code mode.
 
 Language and configured Python backend policy (`executor.pythonRuntime`, default `monty`) are frozen before launch and forwarded to workers, recursive children, alternate-cwd children, and resident handoffs. There is no public per-request backend selector. Monty is the sandboxed default and fails closed if its optional dependency is unavailable; it never falls back to CPython. CPython is an explicitly configured native escape hatch, trusted outside schema enforce; selecting Python does not promise the same isolation or library support across backends. See [execution kernels](kernels.md).
 
@@ -316,6 +316,8 @@ Each run gets an isolated `fabric-<run-id>` Veda session through `-S` and `--no-
 Veda children do not have recursive Fabric capabilities. Fabric rejects `recursive: true`. Veda does not support steering, so steer and follow-up calls throw when called. It also cannot run persistent actors because each invocation executes one headless prompt. Use `runner: "pi"` when you need recursive Fabric or persistent coordination.
 
 ### Custom runners
+
+The default `pi-durable` runner uses the full isolated Pi/Fabric worker host; explicit `pi` selects the legacy CLI. See [Durable Pi runner](durable-pi.md) for recovery boundaries and the separate `pi-durable-leaf` hosted factory. Neither restores arbitrary `fabric_exec` continuations.
 
 A Pi extension can add a runner through the `pi-fabric/runners` subpath. The subpath is never loaded by the Fabric extension at startup.
 
@@ -772,7 +774,7 @@ return rlm.query({
 });
 ```
 
-`rlm.query()` calls `agents.run({ runner: "pi", recursive: true })` with Fabric enabled in the child; it accepts `cwd?: string` and `worktree?: boolean`, just like one-shot agent runs. Recursive spawning means Fabric agent composition, not recursive filesystem traversal. Fabric rejects Claude runners for recursive use. It also rejects recursion at `agents.maxDepth`. This setting accepts any non-negative safe integer, and `0` disables child spawning. Approval for the initial recursive call delegates only the `agent` risk capability to recursive children. It does not delegate approvals for network access, execution, or writes. Each Fabric process applies its own configured concurrency and timeout limits. When `agents.budgetUsd` is set, a shared append-only cost ledger limits total spending across the recursion tree. Each node writes the cost of its children to one ledger file that it receives through the environment. A node rejects a new child when accumulated spending reaches the budget. This check is best effort. Concurrent children can pass the check before another child records cost, so the tree can exceed the limit slightly. Use `agents.maxPerExecution` as the race-free ceiling. Results and live status for each recursive child include a `budget` summary with `limit`, `spent`, `remaining`, and `tokens`. Fabric keeps the latest bounded nested-agent status tree in memory. Completed recursive leaves remain visible in **Topology · Run** after the child process deletes its temporary nested run directories. Fabric releases the snapshot when the parent run is cleaned up or the Fabric session shuts down.
+`rlm.query()` calls `agents.run({ runner: "pi-durable", recursive: true })` by default (an explicit `runner: "pi"` uses the legacy worker) with Fabric enabled in the child; it accepts `cwd?: string` and `worktree?: boolean`, just like one-shot agent runs. Recursive spawning means Fabric agent composition, not recursive filesystem traversal. Fabric rejects Claude runners for recursive use. It also rejects recursion at `agents.maxDepth`. This setting accepts any non-negative safe integer, and `0` disables child spawning. Approval for the initial recursive call delegates only the `agent` risk capability to recursive children. It does not delegate approvals for network access, execution, or writes. Each Fabric process applies its own configured concurrency and timeout limits. When `agents.budgetUsd` is set, a shared append-only cost ledger limits total spending across the recursion tree. Each node writes the cost of its children to one ledger file that it receives through the environment. A node rejects a new child when accumulated spending reaches the budget. This check is best effort. Concurrent children can pass the check before another child records cost, so the tree can exceed the limit slightly. Use `agents.maxPerExecution` as the race-free ceiling. Results and live status for each recursive child include a `budget` summary with `limit`, `spent`, `remaining`, and `tokens`. Fabric keeps the latest bounded nested-agent status tree in memory. Session-owned nested agents stop when their owning Pi child exits; a detached spawn does not outlive that owner. The child manager leaves nested status and transcript files with the enclosing run so completed leaves remain inspectable in **Topology · Run** and `/fabric chat`. The enclosing run's cleanup, retention, or root-session shutdown removes those artifacts. Every terminal path refreshes the nested tree. A descendant without a retained terminal result is shown as failed with an owner-ended diagnostic, not indefinitely running; Fabric does not invent a successful result or rewrite the worker's status file. Independently durable descendants retain their own lifecycle. Fabric releases the snapshot when the parent run is cleaned up or the Fabric session shuts down.
 
 `agents.maxTokensPerChild` limits cumulative token use for each child. Its default value, `0`, disables the limit. The wall-clock `timeoutMs` limits time, and `budgetUsd` limits cost. This limit caps the context of one runaway child before the host session compacts. Fabric stops the child with the same `timed_out` status and a `token limit` error. See [`/skill:fabric-rlm`](../skillsets/typescript/fabric-rlm/SKILL.md).
 

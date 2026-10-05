@@ -364,6 +364,28 @@ const compactUiRecord = (record: AgentRunRecord): AgentRunRecord => {
   };
 };
 
+// A terminal owner no longer hosts its session children. Preserve genuine final
+// results, but do not present its last running snapshot as live execution. Durable
+// descendants have independent owners and must not inherit this terminal state.
+const reconcileNestedAgents = (records: AgentRunRecord[], owner: AgentRunRecord): AgentRunRecord[] =>
+  records.map((record) => {
+    let next = record;
+    if (terminalStatuses.has(owner.status) && !terminalStatuses.has(record.status) && record.residency !== "durable") {
+      const { currentTool: _currentTool, blockedOn: _blockedOn, ...rest } = record;
+      const finishedAt = owner.finishedAt ?? owner.updatedAt;
+      next = {
+        ...rest,
+        status: "failed",
+        error: `Nested agent owner ${owner.id} finished (${owner.status}) before a terminal result was retained`,
+        finishedAt,
+        updatedAt: Math.max(record.updatedAt, finishedAt),
+      };
+    }
+    return next.nestedAgents
+      ? { ...next, nestedAgents: reconcileNestedAgents(next.nestedAgents, next) }
+      : next;
+  });
+
 const readNestedAgents = (runDirectory: string, depth = 0): AgentRunRecord[] => {
   if (depth >= 8) return [];
   const nestedRoot = path.join(runDirectory, "nested");
@@ -467,6 +489,7 @@ export class AgentManager {
   readonly #worktrees = new WorktreeManager();
   readonly #runRoot: string;
   readonly #managedTempRoot: boolean;
+  readonly #parentOwnedRunRoot: boolean;
   readonly #retention: FabricRetentionConfig;
   readonly #workerPath: string;
   readonly #fabricExtensionPath: string;
@@ -565,6 +588,12 @@ export class AgentManager {
     this.#managedTempRoot = options.runRoot === undefined && process.env.PI_FABRIC_RUN_ROOT === undefined;
     this.#runRoot =
       options.runRoot ?? process.env.PI_FABRIC_RUN_ROOT ?? fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-runs-"));
+    // Nested run artifacts belong to the enclosing run, not the short-lived Pi
+    // child. Its owner removes them on cleanup/retention/root shutdown.
+    this.#parentOwnedRunRoot = options.runRoot === undefined &&
+      this.#parentLineage?.worker === true && this.#parentLineage.depth > 0 &&
+      path.basename(this.#runRoot) === "nested" &&
+      path.basename(path.dirname(this.#runRoot)) === this.#parentLineage.runId;
     this.#retention = options.retention ?? DEFAULT_FABRIC_CONFIG.retention;
     this.#workerPath =
       options.workerPath ?? fileURLToPath(new URL("../worker.js", import.meta.url));
@@ -816,7 +845,7 @@ export class AgentManager {
         ? this.config.claude.model
         : runner === "veda"
           ? this.config.veda.model
-          : runner === "pi"
+          : (runner === "pi" || runner === "pi-durable")
             ? this.config.model
             : runnerAdapter.defaultModel?.());
     if (runner === "claude" && model) normalizeClaudeModel(model);
@@ -842,7 +871,7 @@ export class AgentManager {
     const admissionSignal = signal ? AbortSignal.any([signal, this.#closeAbort.signal]) : this.#closeAbort.signal;
     const release = await this.#semaphore.acquire("native", admissionSignal);
     try {
-      if (runner === "pi") model = await this.#prepareModel(model);
+      if (runner === "pi" || runner === "pi-durable") model = await this.#prepareModel(model);
       if (this.#closing) throw new Error("Fabric agent manager is closing");
       this.#semaphore.admit(this.#currentDepth + 1);
     } catch (error) {
@@ -937,7 +966,7 @@ export class AgentManager {
       const serializedThinkingBounds = serializeThinkingBounds(thinkingBounds);
       const recursive = capabilities.recursiveFabric && request.recursive === true;
       const extensions = recursive ? true : (request.extensions ?? this.config.extensions);
-      const inheritedSessionPins = runner === "pi" && extensions
+      const inheritedSessionPins = (runner === "pi" || runner === "pi-durable") && extensions
         ? this.#inheritedSessionPins(request)
         : undefined;
       // In a full-code parent every extension-enabled Pi child runs Fabric
@@ -1746,7 +1775,7 @@ export class AgentManager {
       this.#unregisteredTransports.clear();
       const storageSafe = !this.#managedTempRoot || canRemoveManagedRunRoot(this.#runRoot);
       if (!this.config.retainRuns) {
-        if (storageSafe) {
+        if (storageSafe && !this.#parentOwnedRunRoot) {
           await removeTree(this.#runRoot).catch(() => undefined);
         }
       } else if (this.#managedTempRoot) {
@@ -1839,7 +1868,7 @@ export class AgentManager {
       managed.abortSignal?.aborted ||
       record.status !== "failed" ||
       !(
-        (managed.runner === "pi" && retryablePiStartupError(record.error)) ||
+        ((managed.runner === "pi" || managed.runner === "pi-durable") && retryablePiStartupError(record.error)) ||
         transportExitedWithoutResult(record.error)
       ) ||
       record.turns !== 0 ||
@@ -1896,7 +1925,11 @@ export class AgentManager {
     managed.resumeAttempts += 1;
     const { turns, toolCalls, usage } = managed.observedProgress;
     return this.#relaunch(managed, record, {
-      task: resumeTask(managed.task, record, { turns, toolCalls }, managed.runDirectory),
+      // Durable recovery reopens the same journal, not a fresh conversation.
+      // Changing its prompt breaks recorded-result identity after completion.
+      task: managed.runner === "pi-durable"
+        ? managed.task
+        : resumeTask(managed.task, record, { turns, toolCalls }, managed.runDirectory),
       carryOver: { turns, toolCalls, usage: { ...usage } },
     });
   }
@@ -1913,7 +1946,7 @@ export class AgentManager {
     resume?: { task: string; carryOver: AgentRunCarryOver },
   ): Promise<boolean> {
     try {
-      if (managed.runner === "pi") {
+      if (managed.runner === "pi" || managed.runner === "pi-durable") {
         const model = await this.#prepareModel(managed.model);
         const modelIndex = managed.launch.workerArguments.indexOf("--model");
         if (model) {
@@ -2077,11 +2110,14 @@ export class AgentManager {
               return;
             }
             const logSummary = summarizeRunLog(managed.runDirectory, 8);
+            const stderr = managed.transport.readStderr?.().trim();
+            const diagnostic = [logSummary ? `last run log: ${logSummary}` : undefined, stderr ? `worker stderr: ${stderr}` : undefined]
+              .filter(Boolean).join("; ");
             const failed = failedRecord(
               managed,
               "failed",
-              logSummary
-                ? `Agent transport exited without a result; last run log: ${logSummary}`
+              diagnostic
+                ? `Agent transport exited without a result; ${diagnostic}`
                 : "Agent transport exited without a result",
             );
             if (await this.#resumeStopped(managed, failed, deadline)) continue;
@@ -2113,6 +2149,10 @@ export class AgentManager {
   #settle(managed: ManagedAgent, result: AgentRunResult): void {
     if (managed.settled) return;
     if (managed.worktreeResult) result.worktreeResult = managed.worktreeResult;
+    // Every terminal path (including explicit stop and lost transport) gets a
+    // final unthrottled read before freezing the nested status tree.
+    const nested = this.#nestedAgents(managed, true);
+    if (nested.length > 0) result.nestedAgents = reconcileNestedAgents(nested, result);
     this.#drainLifecycle(managed);
     if (!beginAgentSettlement(managed)) return;
     managed.questions?.abort(new Error("Agent run settled"));
@@ -2133,10 +2173,8 @@ export class AgentManager {
     const compactResult = compactUiRecord(result);
     managed.latestRecord = compactResult;
     managed.latestUiRecord = compactResult;
-    if (managed.nestedSnapshot) {
-      managed.nestedSnapshot = managed.nestedSnapshot.map((record) =>
-        compactUiRecord(record),
-      );
+    if (result.nestedAgents) {
+      managed.nestedSnapshot = result.nestedAgents.map((record) => compactUiRecord(record));
     }
     this.#pruneRetainedUiRecords();
     this.#invalidateUiList();
@@ -2450,9 +2488,8 @@ export class AgentManager {
     };
   }
 
-  // Recursive child processes remove their nested run directories on shutdown.
-  // Preserve the last bounded status tree so completed leaves remain visible
-  // in the parent run until that parent is explicitly cleaned up.
+  // Retain a bounded tree even when legacy workers removed their nested run
+  // directories. Terminal-owner reconciliation prevents cached active ghosts.
   #nestedAgents(managed: ManagedAgent, force = false): AgentRunRecord[] {
     const now = Date.now();
     const needsInitialDiscovery =
@@ -2476,10 +2513,10 @@ export class AgentManager {
   }
 
   #withTransportMetadata(record: AgentRunRecord, managed: ManagedAgent): AgentRunRecord {
-    const nestedAgents = this.#nestedAgents(
+    const nestedAgents = reconcileNestedAgents(this.#nestedAgents(
       managed,
       terminalStatuses.has(record.status) && !managed.settled,
-    );
+    ), record);
     const budget = this.#budgetSummary();
     const { logFile: _logFile, nestedAgents: _nestedAgents, ...safeRecord } = record;
     const model = record.model ?? managed.model;

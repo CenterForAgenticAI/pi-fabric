@@ -141,7 +141,7 @@ describe("provider kernel forwarding", () => {
     const { provider, residency, root, spawn } = setup();
     await provider.invoke("spawn", { task: "task", residency: "durable", cwd: root, ...(kernel ? { kernel } : {}) }, context);
     expect(residency.spawnAgent).toHaveBeenCalledWith(expect.objectContaining({
-      kernel: kernel === "typescript" ? "typescript" : "python", pythonRuntime: "monty", runner: "pi", extensions: true, cwd: fs.realpathSync(root),
+      kernel: kernel === "typescript" ? "typescript" : "python", pythonRuntime: "monty", runner: "pi-durable", extensions: true, cwd: fs.realpathSync(root),
     }), undefined);
     expect(spawn).not.toHaveBeenCalled();
   });
@@ -165,7 +165,7 @@ describe("provider kernel forwarding", () => {
   it.each(["session", "durable"])("freezes actor language at %s creation before routing", async (residency) => {
     const { provider, actors } = setup();
     await provider.invoke("create", { name: "actor", instructions: "task", residency, kernel: "inherit" }, context);
-    expect(actors.create).toHaveBeenCalledWith(expect.objectContaining({ kernel: "python", runner: "pi", extensions: true }));
+    expect(actors.create).toHaveBeenCalledWith(expect.objectContaining({ kernel: "python", runner: "pi-durable", extensions: true }));
   });
 
   it("freezes actor requests before the child-side resident client handoff", async () => {

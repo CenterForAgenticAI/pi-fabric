@@ -156,7 +156,7 @@ where absent values do not participate, and time spent inside a `humanWaitRefs` 
   },
   "agents": {
     "enabled": true,
-    "runner": "pi",
+    "runner": "pi-durable",
     "transport": "process",
     "claude": {
       "binary": "claude"
@@ -507,7 +507,7 @@ Authentication uses `/login jev`/`TYPESAFE_API_KEY` on the TypeSafe route, the e
 Fabric clears inactive run artifacts by age. It never truncates active JSONL files. The defaults are:
 
 - `retention.orphanedTempRunMs`: reclaim a managed temporary run root six hours after a sweep **first notices** its owner is dead, provided its contents and descendant liveness can be verified. Live owners/descendants are preserved. Closed, shutdown-confirmed incomplete runs use the same grace from close.
-- `retention.oneShotRunMs`: retain terminal one-shot agent run artifacts for 24 hours. An explicit `agents.cleanup()` may remove them sooner. Graceful shutdown with `agents.retainRuns: true` marks managed roots closed; empty roots are removed immediately. `retainRuns: false` requests deletion after child transports stop, including for managed temporary roots.
+- `retention.oneShotRunMs`: retain terminal one-shot agent run artifacts for 24 hours. An explicit `agents.cleanup()` may remove them sooner. Graceful shutdown with `agents.retainRuns: true` marks managed roots closed; empty roots are removed immediately. `retainRuns: false` requests deletion after child transports stop, including for managed temporary roots. Inherited nested roots belong to the enclosing agent run: a child manager stops its session children but leaves their terminal status and transcripts for that run's cleanup/retention or the root-session shutdown.
 - `retention.actorRunArchiveMs`: retain terminal actor run archives for seven days. Fabric always preserves the latest run for each actor.
 
 Run housekeeping begins on actual agent storage use (not manager startup), continues during use, and runs best-effort on close. It never applies cache pressure to agent runs or truncates their JSONL/actor `session.jsonl` files. Caller-owned run roots retain their existing explicit-cleanup semantics. Symlink roots/markers, wrong-uid files, malformed ownership, unknown contents, and unverifiable incomplete descendants are preserved. `/fabric settings` exposes all three values under **Retention**. Changing them requires `/fabric reload`.
@@ -524,11 +524,13 @@ Reader checkpoints are lossless live state: they are **never pressure-evicted**.
 
 ## Agents
 
-`agents.runner` selects the default harness: `"pi"`, `"claude"`, `"veda"`, or the id of a runner registered through `pi-fabric/runners` ([custom runners](agents.md#custom-runners)). A well-formed id that no extension registers is kept, and launches fail closed until the runner is registered. Before the first turn of each session, Fabric warns once when the configured runner is still unregistered, suggests a close built-in or registered id for likely typos, and lists the registered runners. Malformed ids fall back to `"pi"`. `agents.model` is the optional Pi `provider/id` override. `agents.claude.model` is the optional canonical Claude runtime key. `agents.claude.binary` defaults to `claude`. You can supply an absolute path or a wrapper. `PI_FABRIC_CLAUDE_BINARY` overrides it for the current process. `/fabric settings` enumerates Claude models from that binary in the background and stores the two runner defaults independently. `agents.modelAdmission` defaults to `strict`: a Pi child run fails when the model it reports after selection differs from the requested key. Set it to `permissive` when a virtual provider key (for example a `pi-multiprovider` entry) resolves to a concrete backend at stream time; Fabric then records the reported attribution and continues, including when a later assistant frame names that backend. Permissive admission still fails a child that reports no model or starts work before admission.
+`agents.runner` selects the default harness: `"pi-durable"` (default, [isolated durable Pi host](durable-pi.md)), `"pi"` (legacy Pi CLI), `"claude"`, `"veda"`, or the id of a runner registered through `pi-fabric/runners` ([custom runners](agents.md#custom-runners)). A well-formed id that no extension registers is kept, and launches fail closed until the runner is registered. Before the first turn of each session, Fabric warns once when the configured runner is still unregistered, suggests a close built-in or registered id for likely typos, and lists the registered runners. Malformed ids fall back to `"pi-durable"`. Explicit existing runner settings are preserved. `agents.model` is the optional Pi `provider/id` override. `agents.claude.model` is the optional canonical Claude runtime key. `agents.claude.binary` defaults to `claude`. You can supply an absolute path or a wrapper. `PI_FABRIC_CLAUDE_BINARY` overrides it for the current process. `/fabric settings` enumerates Claude models from that binary in the background and stores the two runner defaults independently. `agents.modelAdmission` defaults to `strict`: a Pi child run fails when the model it reports after selection differs from the requested key. Set it to `permissive` when a virtual provider key (for example a `pi-multiprovider` entry) resolves to a concrete backend at stream time; Fabric then records the reported attribution and continues, including when a later assistant frame names that backend. Permissive admission still fails a child that reports no model or starts work before admission.
 
 The `veda` runner drives the [Veda CLI](https://github.com/kennyfrc/veda) as the child harness. `agents.veda.binary` defaults to `veda`. An absolute path or wrapper works, and `PI_FABRIC_VEDA_BINARY` overrides it for the current process. `agents.veda.backend` selects which backend Veda wraps: `agy` (Antigravity CLI, the default), `codex`, `claude-code`, `droid`, `pi`, or another backend registered by the installed Veda build. Fabric passes this value through unchanged and never hardcodes AGY. `agents.veda.model` is an optional backend-specific model or Veda alias. When you omit it, Veda selects its own backend default. `agents.veda.persona` picks the global Veda persona: `navigator-plan`, `navigator-chat` (default), `reviewer`, `worker`, or a custom persona under `~/.config/veda/personas/<name>/AGENTS.md`. Per-run selection overrides it through `agents.run({ persona })`. You can also edit the Veda backend, persona, and model in the Fabric settings panel under Agents. Each child runs one headless `veda --json` prompt with an isolated `fabric-<run-id>` session, so parallel children never share Veda selection or conversation state. Veda sessions lack persistence, and steering is unsupported. Veda children are **not** recursively Fabric-equipped (`recursive: true` is rejected), and they cannot back persistent actors.
 
 A JS runtime launches each Fabric worker module. Fabric reuses the current runtime when `process.execPath` names `node` or `bun`. For a Bun-compiled Pi binary, `process.execPath` names the `pi` executable. Fabric then uses `PI_FABRIC_NODE_BINARY` or the first `node` or `bun` on `PATH`. The resolved runtime launches the workers. `PI_FABRIC_NODE_BINARY` overrides this choice for the current process. The Node-process executor (`executor.runtime: "node-process"`) requires Node.js because it uses `--eval` and `--input-type=module`; the Bun-process executor (`executor.runtime: "bun-process"`) requires Bun because it uses `--eval`.
+
+Workers require Node.js 24+ (or Bun) and report an explicit startup failure on older Node versions. Pi-managed installs intentionally omit physical host peers such as `typebox`; do not repair this by installing all Pi peers. Fabric ships a private, self-contained worker validator while keeping the extension's TypeBox host-mapped. Missing worker dependencies or bootstrap modules are reported in the run status before any model call. The process transport also retains a bounded stderr tail for failures that cannot write a status record.
 
 Other agent settings:
 
@@ -659,6 +661,31 @@ Each entry has three keys:
 - `root`: absolute path the `fs` adapter walks recursively for `*.jsonl` files. Native agent trees (`sessions/<encoded-cwd>/*.jsonl`) and flat archive directories both work; keys are root-relative paths, and traversal outside `root` is refused.
 
 The `fs` adapter derives each session's `revision` from the SHA-256 of the file bytes, so mtime-only touches keep follow pointers valid while content changes invalidate them. Enumeration is bounded by `memory.maxSessions` and reported through coverage reasons (`fs_source_max_sessions`, `fs_source_scan_capped`); a capped archive is never presented as complete. Ranking, branches, and expansion follow the normal engine paths described in [memory recall](memory-recall.md#portable-host-sources).
+
+## Extractive history (opt-in)
+
+In `/fabric settings`, open **Classifier-assisted extractive history (Jev supported)**. Choose **Consent / mode** and a **Native classifier** from Pi core's registry. Model selection alone does not enable inference. This uses Pi core's `classify()` API, not Fabric's Jev connector.
+
+```json
+{
+  "memory": {
+    "extractive": {
+      "enabled": false,
+      "provider": "typesafe",
+      "model": "jev-latest",
+      "maxViewBytes": 8192,
+      "maxCandidates": 128,
+      "maxSourceChars": 24000,
+      "maxEvaluationsPerTurn": 1,
+      "timeoutMs": 3000
+    }
+  }
+}
+```
+
+Set `enabled: true` to opt in. With `maxEvaluationsPerTurn: 1`, bounded active-branch user/assistant text is sent to the selected classifier and may incur API charges; there is no secret scanner. Set the budget to `0` for local deterministic extraction with no classifier calls. `memory.enabled: false` disables the feature too.
+
+The bounded view preserves complete source quotes, attribution and omission notices. Scores indicate salience, **not truth**. Missing credentials, invalid answers and timeouts fall back deterministically; stale branch/session responses are discarded. It supplements request context without deleting history or replacing Pi compaction, and introduces no generative summarizer. See [Extractive history](extractive-history.md) for bounds and source navigation.
 
 ## Principal and scope
 

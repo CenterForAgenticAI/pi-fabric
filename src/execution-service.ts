@@ -1,3 +1,5 @@
+import { NativeCodemodeProvider } from "./native-codemode.js";
+import { nativeMcpIdentity } from "./core/native-mcp-identity.js";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -193,6 +195,8 @@ export interface FabricExecutionOptions {
    * Raises (never lowers) the configured executor.timeoutMs, subject to
    * executor.maxTimeoutMs. */
   requestedTimeoutMs?: number;
+  /** Hard whole-script deadline; unlike timeoutMs this cannot be raised or paused. */
+  hardTimeoutMs?: number;
   signal: AbortSignal | undefined;
   parentToolCallId: string;
   context: ExtensionContext;
@@ -204,6 +208,8 @@ export interface FabricExecutionOptions {
   onPartial(snapshot: FabricExecutionPartial): void;
 }
 
+const nativeProviders = new WeakMap<ActionRegistry, NativeCodemodeProvider>();
+
 export class FabricExecutionService {
   #runtime: FabricKernelRuntime | undefined;
   #runtimeKind: string | undefined;
@@ -211,6 +217,7 @@ export class FabricExecutionService {
   #emitEvent: ((channel: string, data: unknown) => void) | undefined;
   #headlessApproval: FabricHeadlessApproval | undefined;
   #participants: ProviderParticipantRegistry | undefined;
+  readonly nativeCodemode: NativeCodemodeProvider;
   readonly #nestedRunners = new Map<string, FabricNestedProgramRunner>();
   constructor(
     readonly registry: ActionRegistry,
@@ -221,7 +228,16 @@ export class FabricExecutionService {
     readonly sessionApprovals = new FabricSessionApprovals(),
     readonly capturedTools?: CapturedToolCatalog,
     readonly brokeredNetwork?: (provider: string) => boolean,
-  ) {}
+  ) {
+    const mounted = nativeProviders.get(registry);
+    if (mounted) this.nativeCodemode = mounted;
+    else {
+      if (this.registry.has("native")) throw new Error("Fabric provider name native is reserved for Pi codemode compatibility");
+      this.nativeCodemode = new NativeCodemodeProvider();
+      this.registry.register(this.nativeCodemode);
+      nativeProviders.set(registry, this.nativeCodemode);
+    }
+  }
 
   setCapabilityView(view: FabricCommittedCapabilityView | undefined): void {
     this.#capabilityView = view;
@@ -652,19 +668,23 @@ export class FabricExecutionService {
           await approval.approve(action, preparedArgs);
         },
         audits,
-        maxResultChars: this.config.executor.maxNestedResultChars,
+        // Native images/state must stay intact; final output has its own bounds.
+        maxResultChars: ref.startsWith("native.") ? 16_777_216 : this.config.executor.maxNestedResultChars,
         traceOperation,
         observeInvocation,
       });
     };
+    const nativeTransaction = this.nativeCodemode.begin(options.parentToolCallId, options.context);
+    let nativeFinished = false;
     let sandboxResult: FabricSandboxResult;
     let hostCall: FabricHostCall | undefined;
     const sandboxBase = {
       cwd: options.context.cwd,
+      nativeStoreEnabled: this.nativeCodemode.persistenceAvailable,
       memoryLimitBytes: this.config.executor.memoryLimitBytes,
       maxLogChars: this.config.executor.maxOutputChars,
-      minimumTimeoutMsForHostCall,
-      ...(humanWaitRefs.size > 0 ? { isHumanWaitHostCall } : {}),
+      ...(options.hardTimeoutMs === undefined ? { minimumTimeoutMsForHostCall } : {}),
+      ...(options.hardTimeoutMs === undefined && humanWaitRefs.size > 0 ? { isHumanWaitHostCall } : {}),
       ...(!python ? { piToolCanonicalFields } : {}),
       ...(options.tokenBudget !== undefined ? { tokenBudget: options.tokenBudget } : {}),
     };
@@ -765,6 +785,30 @@ export class FabricExecutionService {
         hostCall = async (ref, args, runtimeSignal) => {
           const callContext = { ...baseContext, signal: runtimeSignal };
           switch (ref) {
+            case "fabric.$allTools":
+            case "fabric.$nativeSearch":
+            case "fabric.$nativeDescribe":
+            case "fabric.$describeNamespace":
+              return traceAttempt("fabric.discovery.compatibility", args, runtimeSignal, async () => {
+                const actions = (await this.registry.list({ limit: 1_000 }, callContext)).filter(action => effectiveFullCodeMode || !fullCodeProvider(action.provider));
+                if (ref === "fabric.$describeNamespace") {
+                  const { describeNativeNamespace } = await import("./native-discovery.js");
+                  return describeNativeNamespace(String(args.name ?? ""), actions, this.capturedTools, nativeMcpIdentity);
+                }
+                if (ref === "fabric.$nativeDescribe") {
+                  const matches = actions.filter(action => action.ref === args.name || action.name === args.name);
+                  if (matches.length !== 1) return undefined;
+                  const action = matches[0]!;
+                  const { describeFabricActionDeclaration } = await import("./runtime/dynamic-guest-types.js");
+                  return { name: action.ref, description: action.description, declaration: describeFabricActionDeclaration(action.ref, action.inputSchema) };
+                }
+                if (ref === "fabric.$nativeSearch") {
+                  const candidates = await this.registry.search(String(args.query ?? ""), callContext, 1_000);
+                  const visible = new Set(actions.filter(action => args.namespace === undefined || action.namespace === args.namespace || action.provider === args.namespace).map(action => action.ref));
+                  return candidates.filter(action => visible.has(action.ref)).slice(0, Math.max(1, Math.min(typeof args.limit === "number" ? args.limit : 8, 1_000))).map(action => ({ name: action.ref, description: action.description }));
+                }
+                return actions.map(action => ({ name: action.ref, description: action.description }));
+              });
             case "fabric.$providers":
               return traceAttempt(
                 "fabric.discovery.providers",
@@ -1100,13 +1144,20 @@ export class FabricExecutionService {
         },
         {
           ...sandboxBase,
-          timeoutMs: effectiveTimeoutMs,
+          timeoutMs: options.hardTimeoutMs === undefined ? effectiveTimeoutMs : Math.min(options.hardTimeoutMs, this.config.executor.maxTimeoutMs),
           ...(checked.javascript ? { transpiledCode: checked.javascript } : {}),
           ...(checked.sourceMap ? { transpiledSourceMap: checked.sourceMap } : {}),
           ...(options.strings ? { strings: options.strings } : {}),
           ...(options.signal ? { signal: options.signal } : {}),
         },
       );
+      try {
+        classifierUsages.push(...nativeTransaction.finish(sandboxResult.terminationReason === "completed" && !options.signal?.aborted));
+        nativeFinished = true;
+      } catch (error) {
+        sandboxResult.terminationReason = "runtime_error";
+        sandboxResult.error = error instanceof Error ? error.message : String(error);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.activity?.finish(options.parentToolCallId, false, message);
@@ -1116,6 +1167,7 @@ export class FabricExecutionService {
       }
       throw error;
     } finally {
+      if (!nativeFinished) classifierUsages.push(...nativeTransaction.finish(false));
       this.#nestedRunners.delete(options.parentToolCallId);
       await this.registry.endInvocation(options.parentToolCallId);
       flushEmit();
@@ -1141,11 +1193,11 @@ export class FabricExecutionService {
     // Logs, results, and error text reach the model, the event stream, and
     // persisted traces. Raw media must not: images are hoisted out of band and
     // base64 payloads collapse to a descriptor (see core/media-sanitize.ts).
-    const sanitizedValue = sanitizeFabricMediaValue(sandboxResult.value);
+    const sanitizedValue = sanitizeFabricMediaValue({ value: sandboxResult.value, emitted: sandboxResult.emitted ?? [] });
     return {
       success: succeeded,
       kernel: python ? "python" : "typescript",
-      value: sanitizedValue.value,
+      value: (sanitizedValue.value as { value: unknown }).value,
       logs: [...sandboxResult.logs, ...nestedLogs].map(sanitizeFabricMediaText),
       ...(sanitizedValue.images.length > 0 ? { media: sanitizedValue.images } : {}),
       audits,

@@ -204,7 +204,7 @@ author-defined observational equivalence are not claimed as Bend theorems.
 
 ## Reproducible bridge
 
-The contributor toolchain pins **Bend 2.0.34**. Installed Fabric needs neither
+The contributor toolchain pins **Bend 2.0.35**. Installed Fabric needs neither
 Bend nor a Bend loader. Linux CI downloads that exact release archive and checks
 its SHA-256 before running proofs. Windows tests execute the checked-in generated
 JS and ABI; native Bend currently requires Linux, macOS, or WSL.

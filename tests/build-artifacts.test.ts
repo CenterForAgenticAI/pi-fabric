@@ -45,10 +45,47 @@ describe("published build artifact guards", () => {
     fs.writeFileSync(file, JSON.stringify(manifest));
     rejected(dir, "Missing or unpackaged public entrypoint: ./dist/missing.js");
   });
+  it("checks optional dependencies in the manifest's actual extension entry", () => {
+    const dir = fixture();
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+    expect(manifest.pi.extensions).toEqual(["./dist/extension-bootstrap.js"]);
+    fs.appendFileSync(path.join(dir, manifest.pi.extensions[0]), '\nimport "yaml";\n');
+    rejected(dir, "Startup eagerly imports optional dependency yaml");
+  });
+  it("rejects a missing standalone worker validator", () => {
+    const dir = fixture();
+    fs.rmSync(path.join(dir, "dist/worker/result.js"));
+    rejected(dir, "worker/result.js");
+  });
+  it("rejects external dependencies in the worker bootstrap", () => {
+    const dir = fixture();
+    fs.appendFileSync(path.join(dir, "dist/worker.js"), '\nimport "typebox/value";\n');
+    rejected(dir, "Worker bootstrap imports an external package: typebox/value");
+  });
+  it("rejects a validator that relies on host modules", () => {
+    const dir = fixture();
+    fs.appendFileSync(path.join(dir, "dist/worker/result.js"), '\nimport "typebox/value";\n');
+    rejected(dir, "Worker validator must be self-contained");
+  });
   it("rejects a missing lazy Bend grammar entry", () => {
     const dir = fixture();
     fs.rmSync(path.join(dir, "dist/ui/languages/bend.js"));
     rejected(dir, "ui/languages/bend.js");
+  });
+  it("rejects a missing stable image-overlay entry", () => {
+    const dir = fixture();
+    fs.rmSync(path.join(dir, "dist/ui/image-overlays.js"));
+    rejected(dir, "ui/image-overlays.js");
+  });
+  it.each(["native-discovery.js", "memory/extractive-history.js"])("requires stable optional entry %s", (entry) => {
+    const dir = fixture();
+    fs.rmSync(path.join(dir, "dist", entry));
+    rejected(dir, entry);
+  });
+  it("rejects an eager extractive engine implementation", () => {
+    const dir = fixture();
+    fs.appendFileSync(path.join(dir, "dist/extension-bootstrap.js"), "\n// src/memory/extractive-index.ts\n");
+    rejected(dir, "Startup static graph contains lazy module marker: src/memory/extractive-index.ts");
   });
   it("rejects a missing generated ABI declaration", () => {
     const dir = fixture();

@@ -193,5 +193,5 @@ export async function resolveJevFabric(options: {
   }
   const tried = skipped.length ? ` Tried: ${skipped.map(s => `${s.path} (${s.reason})`).join("; ")}.` : "";
   setJevFabricStatus(`unavailable for ${options.requirement}${tried}`);
-  throw new Error(`No suitable jev-fabric for ${options.requirement}.${tried} Ask the user before installing or updating it (curl -fsSL https://raw.githubusercontent.com/monotykamary/jev-fabric/main/install.sh | sh, or jev-fabric -- update), or set executor.jevFabric.binary.`);
+  throw new Error(`No suitable jev-fabric for ${options.requirement}.${tried} Ask the user before installing or updating it (curl -fsSL https://raw.githubusercontent.com/fabric-runtime/jev-fabric/main/install.sh | sh, or jev-fabric -- update), or set executor.jevFabric.binary.`);
 }

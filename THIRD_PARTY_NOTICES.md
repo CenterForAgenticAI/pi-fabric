@@ -1,9 +1,17 @@
 # Third-party notices
 
-## Bend 2.0.34
+## TypeBox 1.3.27
+
+The standalone worker's `dist/worker/result.js` includes the stateless validator
+from [TypeBox](https://github.com/sinclairzx81/typebox), Copyright (c) 2017-2026
+Haydn Paterson, licensed under MIT. This private artifact is not loaded by the
+Pi extension, which continues to use Pi's host-provided TypeBox. The complete
+license is distributed at [docs/licenses/typebox-mit.txt](docs/licenses/typebox-mit.txt).
+
+## Bend 2.0.35
 
 The generated policy kernel includes Bend's emitted JavaScript trampoline and
-compiled Base primitives from [Bend 2.0.34](https://github.com/bendlang/bend/tree/v2.0.34),
+compiled Base primitives from [Bend 2.0.35](https://github.com/bendlang/bend/tree/v2.0.35),
 Copyright 2026 HigherOrderCO, licensed under Apache-2.0. Pi Fabric selects the
 ABI library exports, adapts constructor tags at the boundary, and tree-shakes
 unused runtime code.

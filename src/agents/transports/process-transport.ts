@@ -17,12 +17,14 @@ export class ProcessTransport implements AgentTransportAdapter {
       request.workerPath,
       request.workerArguments,
       request.cwd,
+      { captureStderr: true },
     );
     return {
       kind: this.kind,
       sessionId: String(processHandle.pid),
       isAlive: processHandle.isAlive,
       stop: processHandle.stop,
+      readStderr: processHandle.readStderr,
     };
   }
 }

@@ -323,6 +323,8 @@ export interface AgentTransportHandle {
   sessionId?: string;
   attachCommand?: string;
   livenessPollIntervalMs?: number;
+  /** Bounded diagnostic tail for workers that fail before writing a status record. */
+  readStderr?(): string;
   isAlive(): Promise<boolean>;
   stop(): Promise<void>;
 }

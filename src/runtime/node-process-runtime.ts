@@ -25,7 +25,7 @@ interface ChildResultMessage {
   result: FabricSandboxResult;
 }
 
-type ChildMessage = ChildCallMessage | ChildResultMessage;
+type ChildMessage = ChildCallMessage | ChildResultMessage | { type: "output"; text?: string; image?: unknown };
 
 const HOST_TASK_SETTLE_GRACE_MS = 250;
 
@@ -112,6 +112,9 @@ export class NodeProcessRuntime {
     let settled = false;
     let finishing = false;
     const hostTasks = new Set<Promise<void>>();
+    const partialLogs: string[] = [];
+    const partialImages: unknown[] = [];
+    let partialChars = 0;
 
     const guestBundle = options.transpiledCode === undefined
       ? transpileFabricCodeWithSourceMap(code)
@@ -131,7 +134,7 @@ export class NodeProcessRuntime {
         child.removeAllListeners();
         if (child.connected) child.disconnect();
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-        resolve(result);
+        resolve(result.terminationReason === "completed" ? result : { ...result, logs: result.logs.length ? result.logs : partialLogs, emitted: result.emitted?.length ? result.emitted : partialImages });
       };
       const scheduleDeadline = (): void => {
         clearTimeout(deadline);
@@ -181,10 +184,19 @@ export class NodeProcessRuntime {
       child.on("message", (raw: unknown) => {
         if (settled || finishing || typeof raw !== "object" || raw === null) return;
         const message = raw as ChildMessage;
+        if (message.type === "output") {
+          const chars = typeof message.text === "string" ? message.text.length : JSON.stringify(message.image ?? null).length;
+          partialChars += chars;
+          if (partialChars <= 16_777_216) {
+            if (typeof message.text === "string") partialLogs.push(message.text);
+            else if (message.image !== undefined) partialImages.push(message.image);
+          }
+          return;
+        }
         if (message.type === "result") {
           finishing = true;
           if (deadline) clearTimeout(deadline);
-          if (message.result.terminationReason !== "completed" && !hostAbortController.signal.aborted) {
+          if (hostTasks.size > 0 && !hostAbortController.signal.aborted) {
             hostAbortController.abort(new Error(message.result.error ?? "Process execution stopped"));
           }
           void (async () => {
@@ -269,7 +281,7 @@ export class NodeProcessRuntime {
       scheduleDeadline();
       send(child, {
         type: "execute",
-        setup: guestSetupSource(options.piToolCanonicalFields),
+        setup: guestSetupSource(options.piToolCanonicalFields, options.nativeStoreEnabled),
         code: guestBundle.code,
         strings: options.strings ?? {},
         tokenBudget: options.tokenBudget,

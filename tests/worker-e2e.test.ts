@@ -29,7 +29,7 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
   const run = async (task = "do it", timeoutMs = 2_000): Promise<AgentRunResult> => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
     roots.push(root);
-    const config = { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs, maxConcurrent: 1 };
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi" as const, timeoutMs, maxConcurrent: 1 };
     const manager = new AgentManager(process.cwd(), config, {
       workerPath,
       piBinary,
@@ -76,7 +76,7 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
       `await import(${JSON.stringify(pathToFileURL(piBinary).href)});`,
     ].join("\n"), { mode: 0o755 });
     const before = process.env[key];
-    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, { workerPath, piBinary: shim, runRoot: root });
+    const manager = new AgentManager(process.cwd(), { ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi" }, { workerPath, piBinary: shim, runRoot: root });
     managers.push(manager);
     const result = await manager.run({ task: "probe shim execution", transport: "process" });
     expect(result.status).toBe("completed");
@@ -88,7 +88,7 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     process.env.FAKE_PI_BEHAVIOR = "fabric-session-env";
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
     roots.push(root);
-    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+    const manager = new AgentManager(process.cwd(), { ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi" }, {
       workerPath,
       piBinary,
       runRoot: root,
@@ -275,7 +275,7 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     process.env.FAKE_PI_BEHAVIOR = "large-lifecycle";
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-source-worker-"));
     roots.push(root);
-    const manager = new AgentManager(process.cwd(), { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 10_000 }, {
+    const manager = new AgentManager(process.cwd(), { ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi" as const, timeoutMs: 10_000 }, {
       workerPath: path.resolve("src/worker.ts"), piBinary, runRoot: root,
     });
     managers.push(manager);
@@ -323,7 +323,7 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
       roots.push(root);
       const config = {
-        ...DEFAULT_FABRIC_CONFIG.agents,
+        ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi" as const,
         timeoutMs: 4_000,
         maxConcurrent: 1,
         sessionExport,
@@ -406,7 +406,7 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     process.env.FAKE_VEDA_BEHAVIOR = behavior;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
     roots.push(root);
-    const config = { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs, maxConcurrent: 1 };
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi" as const, timeoutMs, maxConcurrent: 1 };
     const manager = new AgentManager(process.cwd(), config, {
       workerPath,
       piBinary,
@@ -474,7 +474,7 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     roots.push(root);
     const manager = new AgentManager(
       process.cwd(),
-      { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 2_000, maxConcurrent: 1 },
+      { ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi" as const, timeoutMs: 2_000, maxConcurrent: 1 },
       { workerPath, piBinary, runRoot: root },
     );
     managers.push(manager);
@@ -489,7 +489,7 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     roots.push(root);
     const manager = new AgentManager(
       process.cwd(),
-      { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 10_000, maxConcurrent: 1 },
+      { ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi" as const, timeoutMs: 10_000, maxConcurrent: 1 },
       { workerPath, piBinary, vedaBinary: path.resolve("tests/fixtures/fake-veda.mjs"), runRoot: root },
     );
     managers.push(manager);
@@ -502,7 +502,7 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
   it("rejects persona for non-Veda runners", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
     roots.push(root);
-    const manager = new AgentManager(process.cwd(), { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 2_000, maxConcurrent: 1 }, {
+    const manager = new AgentManager(process.cwd(), { ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi" as const, timeoutMs: 2_000, maxConcurrent: 1 }, {
       workerPath,
       piBinary,
       runRoot: root,
@@ -520,7 +520,7 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     process.env.FAKE_PI_BEHAVIOR = behavior;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
     roots.push(root);
-    const config = { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 4_000, maxConcurrent: 1 };
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi" as const, timeoutMs: 4_000, maxConcurrent: 1 };
     const manager = new AgentManager(process.cwd(), config, {
       workerPath,
       piBinary,
@@ -560,7 +560,7 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     process.env.FAKE_PI_BEHAVIOR = "hang";
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
     roots.push(root);
-    const config = { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 30_000, maxConcurrent: 1 };
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi" as const, timeoutMs: 30_000, maxConcurrent: 1 };
     const manager = new AgentManager(process.cwd(), config, {
       workerPath,
       piBinary,
@@ -603,7 +603,7 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     process.env.FAKE_PI_BEHAVIOR = "usage-flow";
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
     roots.push(root);
-    const config = { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 5_000, maxConcurrent: 1 };
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi" as const, timeoutMs: 5_000, maxConcurrent: 1 };
     const ledger = initBudgetLedger(1);
     roots.push(path.dirname(ledger.file));
     const lifecycleEvents: Array<{ event: string; data?: unknown }> = [];

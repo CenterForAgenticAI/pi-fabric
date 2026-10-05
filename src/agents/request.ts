@@ -43,7 +43,7 @@ export const normalizeAgentRunRequest = (
   }
   const runner = args.runner ?? defaults.runner;
   const inheritedModel =
-    runner === "pi" && !defaults.model && defaults.inheritedModel
+    (runner === "pi" || runner === "pi-durable") && !defaults.model && defaults.inheritedModel
       ? `${defaults.inheritedModel.provider}/${defaults.inheritedModel.id}`
       : undefined;
   const kernel = checkedKernel(args.kernel);

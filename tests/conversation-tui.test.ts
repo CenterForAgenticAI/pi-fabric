@@ -249,7 +249,7 @@ describe("conversation through the real Pi TUI", () => {
         await vi.waitFor(() => expect(terminal.output).toContain("Working"));
         const before = view.render(terminal.columns).map(stripTerminalSequences);
         // The dock's top border carries the streaming status; the transcript ends above it.
-        const editorTop = before.findIndex((line) => /^── [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Working ─+$/.test(line));
+        const editorTop = before.findIndex((line) => /^── [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Working ─+ .+ ──$/.test(line));
         expect(editorTop).toBeGreaterThan(1);
         expect(before[editorTop - 1]).toBe("");
         const start = state.view("child").scroll;
@@ -258,7 +258,10 @@ describe("conversation through the real Pi TUI", () => {
         const delta = start - state.view("child").scroll;
         expect(delta).toBeGreaterThan(0);
         expect(state.view("child").following).toBe(false);
-        expect(after.slice(1 + delta, editorTop)).toEqual(before.slice(1, editorTop - delta));
+        const history = (line: string) => line.slice(0, terminal.columns - 1).trimEnd();
+        expect(after.slice(delta, editorTop - 1).map(history)).toEqual(before.slice(0, editorTop - delta - 1).map(history));
+        expect(after[editorTop - 1]).toContain("Jump to latest message");
+        expect(after.slice(0, editorTop).some((line) => line.endsWith("┃"))).toBe(true);
       } finally {
         view.dispose();
         handle.hide();

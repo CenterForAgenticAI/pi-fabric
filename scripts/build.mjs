@@ -4,17 +4,22 @@ import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
 
 const primaryEntryPoints = [
   "src/index.ts",
+  "src/extension-bootstrap.ts",
   "src/memory.ts",
   "src/mcp.ts",
   "src/agents.ts",
   // Runner adapter registration; never reachable from the extension entry.
   "src/runners.ts",
+  // Opt-in durable Pi adapter; never reachable from the extension entry.
+  "src/durable.ts",
   "src/jev.ts",
   "src/assessment.ts",
   // Public `pi-fabric/scope`; also the extension's first-use scope parser.
   "src/scope.ts",
   "src/protocol.ts",
   "src/worker.ts",
+  // Full Pi-compatible durable process host; never in extension registration.
+  "src/durable/worker.ts",
   "src/residency/host.ts",
   "src/residency/launcher.ts",
   "src/residency/pi-entry.ts",
@@ -37,7 +42,10 @@ const primaryEntryPoints = [
 // path lets a session that loaded the previous index resolve delayed modules
 // after the installed package is replaced, while preserving lazy evaluation.
 const lazyEntryPoints = [
+  "src/durable/worker-host.ts",
   "src/type-error-guidance.ts",
+  "src/native-discovery.ts",
+  "src/memory/extractive-history.ts",
   "src/cli/mesh.ts",
   "src/cli/decisions.ts",
   "src/thinking-control.ts",
@@ -75,6 +83,7 @@ const lazyEntryPoints = [
   "src/speculation/python-scanner.ts",
   "src/ui/dashboard.ts",
   "src/ui/shell-tasks.ts",
+  "src/ui/image-overlays.ts",
   "src/ui/languages/bend.ts",
   "src/ui/conversation.ts",
   "src/ui/conversation-host.ts",
@@ -88,6 +97,7 @@ const lazyEntryPoints = [
   "src/worker/options.ts",
   "src/worker/questions.ts",
   "src/worker/recovery-watchdog.ts",
+  "src/worker/result.ts",
   "src/worker/run-record.ts",
   "src/worker/session-export.ts",
 ];
@@ -126,6 +136,29 @@ const bundledPackages = Object.keys(result.metafile.inputs).filter((input) =>
 );
 if (bundledPackages.length > 0) {
   throw new Error(`Package code was bundled unexpectedly:\n${bundledPackages.join("\n")}`);
+}
+
+// Only the standalone worker gets a private, stateless TypeBox validator.
+// Pi deliberately omits physical host peers; the extension graph above must
+// continue to use Pi's mapped TypeBox, never this isolated artifact.
+const workerResult = await build({
+  entryPoints: ["src/worker/result.ts"],
+  outfile: "dist/worker/result.js",
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node24",
+  sourcemap: true,
+  metafile: true,
+  banner: { js: "// Worker-only TypeBox validator. MIT (c) 2017-2026 Haydn Paterson; see THIRD_PARTY_NOTICES.md." },
+});
+for (const input of Object.keys(workerResult.metafile.inputs)) {
+  if (input.includes("node_modules/") && !input.includes("node_modules/typebox/")) {
+    throw new Error(`Unexpected worker validator dependency: ${input}`);
+  }
+}
+if (Object.values(workerResult.metafile.outputs).some(output => output.imports.length > 0)) {
+  throw new Error("Worker validator must be self-contained");
 }
 
 const unstableLazyImports = Object.entries(result.metafile.outputs).flatMap(

@@ -128,7 +128,7 @@ export class JevFabricCli {
       child.stderr.on("data", (chunk: Buffer) => { if (stderr.length < 4096) stderr += chunk.toString("utf8"); });
       child.once("error", (error: NodeJS.ErrnoException) => {
         finish(error.code === "ENOENT"
-          ? new JevFabricError(`jev-fabric executable not found: ${this.binary}. Ask the user before installing it (curl -fsSL https://raw.githubusercontent.com/monotykamary/jev-fabric/main/install.sh | sh), or set executor.jevFabric.binary.`, null)
+          ? new JevFabricError(`jev-fabric executable not found: ${this.binary}. Ask the user before installing it (curl -fsSL https://raw.githubusercontent.com/fabric-runtime/jev-fabric/main/install.sh | sh), or set executor.jevFabric.binary.`, null)
           : error);
       });
       child.once("close", (code) => {
