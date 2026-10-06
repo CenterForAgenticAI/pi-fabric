@@ -126,6 +126,15 @@ By default a child Pi run cancels every dialog (`select`, `confirm`, `input`, `e
 
 The deadline is the dialog's own timeout, or `agents.childQuestionTimeoutMs` (default 10 minutes). The worker owns that deadline and answers `cancelled` when it passes, so a child never waits on a parent that has gone away. A settled run cancels its open question decision. Only the `pi` runner routes dialogs.
 
+## Extension questions
+
+Another extension in the same session can hand a question to a person through two host-local, versioned events on `pi.events`. A question tool uses them when it has no screen to ask on.
+
+- `pi-fabric:decisions:capability:v1` claims and resolves with `{ ok: true, available: true, inputs, maxOptions, maxTitleChars, maxBodyChars, maxTextChars, minTimeoutMs, maxTimeoutMs }`, or `{ ok: true, available: false, reason }` when the mesh is disabled or the host is managed. An unclaimed request means no compatible Fabric runtime is loaded.
+- `pi-fabric:decisions:request:v1` takes `question: { title, body?, input?, options?, timeoutMs? }`, an optional `AbortSignal`, and an optional `onRaised(id)` callback. It raises a `kind: "question"` decision and resolves once it settles: `{ ok: true, id, status: "answered", answer }`, `{ ok: true, id, status: "cancelled" | "expired" }`, or `{ ok: false, error, id? }`.
+
+Fabric copies only those question fields. The decision is always held by `"user"` with `onExpire: "cancel"`, so a caller cannot route it to a program, add an escalation chain, or set a default that settles without a person. Only `answered` carries an answer. Omit `timeoutMs` to wait until a person answers or cancels; aborting the signal cancels the stored decision.
+
 ## Human surfaces
 
 - `/fabric decisions [id]` lists open decisions, then answers the picked one through native dialogs (`select` for options, with a "Cancel this decision" entry, and `input` or `editor` for text). Answers record `via: "tui"`.
