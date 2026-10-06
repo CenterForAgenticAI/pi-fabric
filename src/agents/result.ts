@@ -58,6 +58,21 @@ export function validateAgentResult<T extends { status: string; text: string; va
     }
     record.value = value;
   } catch (error) {
+    // Directive-mode actors (schema's action enum contains "silent") prefer
+    // silence over chatter, so a model that ignored the JSON contract and
+    // answered in prose produced advice, not a protocol failure. Coerce the
+    // prose into the nearest valid action instead of failing the whole run.
+    // The coerced value must itself validate against the schema, so schemas
+    // that do not actually accept a message action still fail loudly.
+    const actionSchema = (schema as { properties?: { action?: { enum?: unknown[] } } }).properties?.action;
+    if (Array.isArray(actionSchema?.enum) && actionSchema.enum.includes("silent")) {
+      const prose = record.text.trim();
+      const coerced = prose ? { action: "message", message: prose.slice(0, 2400) } : { action: "silent" };
+      if (Value.Check(schema, coerced)) {
+        record.value = coerced;
+        return record;
+      }
+    }
     record.status = "failed";
     const reason = error instanceof Error ? error.message : String(error);
     const output = record.text.trim();
