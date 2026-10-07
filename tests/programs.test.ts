@@ -11,7 +11,7 @@ import piFabric from "../src/index.js";
 import { handleFabricProgramRunEvent, runHostProgram, PROGRAM_RUN_MESSAGE_TYPE, runFabricProgramsCommand, type ProgramHostDeps } from "../src/programs/host.js";
 import { hostProgramRunSource, programSourceWithInput, pythonLiteral } from "../src/programs/source.js";
 import { canonicalProgramJson, programDigest, ProgramStore, programsDirectory } from "../src/programs/store.js";
-import { claimFabricProgramRunRequestV1, FABRIC_PROGRAM_RUN_EVENT, snapshotFabricProgramRunRequestV1, type FabricActionDescriptor, type FabricProgramRunReplyV1 } from "../src/protocol.js";
+import { FABRIC_PROGRAM_RUN_EVENT, snapshotFabricProgramRunRequestV1, type FabricActionDescriptor, type FabricProgramRunReplyV1 } from "../src/protocol.js";
 import { ProgramsProvider } from "../src/providers/programs-provider.js";
 import { availablePythonBackends } from "./fixtures/python-backends.js";
 import { rmTempSync } from "./fixtures/temp-cleanup.js";
@@ -558,13 +558,53 @@ describe("host program runs", () => {
       expect(sendMessage).toHaveBeenCalledOnce();
     });
 
-    it("never lets a model reach caller code: the ref resolves only inside a host run that supplied it", async () => {
+    it("never lets a model reach caller code: the ref resolves only inside the host run that supplied it", async () => {
       const f = fixture();
       const ref = `caller-code@${sha(CODE)}`;
-      const model = await f.run(`return await programs.run({ ref: ${JSON.stringify(ref)}, input: { who: "m" } });`);
-      expect(model.success).toBe(false);
-      expect(model.error).toMatch(/Unknown program|not found|No saved program/i);
-      expect(f.demo).not.toHaveBeenCalled();
+      const replay = `return await programs.run({ ref: ${JSON.stringify(ref)}, input: { who: "m" } });`;
+      // A model execution of its own: its parentToolCallId is not the host run's.
+      const modelReplay = async (when: string, id: string) => {
+        const model = await f.service.execute({ code: replay, signal: undefined, parentToolCallId: id, context: f.context, onPartial() {} });
+        expect(model.success, when).toBe(false);
+        expect(model.error, when).toMatch(/Unknown program|not found|No saved program/i);
+      };
+      // A host run of the caller code that stays active until the test releases it.
+      const heldHostRun = (id: string, signal?: AbortSignal) => {
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        let enter!: () => void;
+        const entered = new Promise<void>((resolve) => { enter = resolve; });
+        f.demo.mockImplementationOnce(async () => { enter(); await gate; return { called: "allowed", args: {} }; });
+        const done = f.service.execute({
+          code: hostProgramRunSource("typescript", { ref, input: { who: "h" } }),
+          callerProgram: { code: CODE, sha256: sha(CODE) },
+          signal, parentToolCallId: id, context: f.context, invokedBy: "host", onPartial() {},
+        }).then((result) => result, (error: unknown) => ({ success: false as const, error: String(error) }));
+        return { release, entered, done };
+      };
+
+      // 1. While the host run is active the binding exists, and it still does not reach a model.
+      const active = heldHostRun("host-active");
+      await active.entered;
+      expect(f.demo).toHaveBeenCalledOnce();
+      await modelReplay("during the host run", "model-during");
+      expect(f.demo).toHaveBeenCalledOnce();
+      active.release();
+      expect(await active.done).toMatchObject({ success: true });
+      // 2. After it completed, the binding is gone.
+      await modelReplay("after completion", "model-after");
+      expect(f.demo).toHaveBeenCalledOnce();
+
+      // 3. An aborted host run leaves no binding behind either.
+      const controller = new AbortController();
+      const aborted = heldHostRun("host-aborted", controller.signal);
+      await aborted.entered;
+      await modelReplay("during the second host run", "model-during-aborted");
+      controller.abort();
+      aborted.release();
+      expect(await aborted.done).toMatchObject({ success: false });
+      await modelReplay("after an abort", "model-after-aborted");
+      expect(f.demo).toHaveBeenCalledTimes(2);
     });
 
     it("re-checks the hash at the run, so code that does not match its sha256 never runs", async () => {
@@ -807,15 +847,191 @@ describe("host program runs", () => {
       expect(await answered.done).toMatchObject({ ok: true, value: { who: "original" } });
       expect(answered.calls()).toBe(1);
     });
+
+    describe("a named field whose getter throws", () => {
+      const code = "return 1;";
+      const boom = (): never => { throw new Error("getter boom"); };
+      // Adds (or replaces) an own, enumerable accessor that throws when read.
+      const unreadable = (request: Record<string, unknown>, ...fields: string[]): Record<string, unknown> => {
+        for (const field of fields) Object.defineProperty(request, field, { get: boom, enumerable: true, configurable: true });
+        return request;
+      };
+      const refused = (field: string) => `Invalid program run request: ${field} could not be read`;
+      const refError = "Invalid program run request: ref must be a non-empty string";
+      const sessionless = "No active Pi session to run the program in";
+      const named = ["ref", "code", "kernel", "sha256", "input", "requirePromoted", "signal", "claim"] as const;
+
+      const everyField: Array<[string, string]> = [
+        ["ref", refused("ref")],
+        ["code", refused("code")],
+        ["kernel", refused("kernel")],
+        ["sha256", refused("sha256")],
+        ["signal", refused("signal")],
+        // These three are checked after the session, as origin/main read input: no session is reported first.
+        ["input", sessionless],
+        ["requirePromoted", sessionless],
+        ["claim", sessionless],
+      ];
+      it.each(everyField)("%s: nothing escapes the listener and the request is answered exactly once", async (field, error) => {
+        const { listener, shutdown } = await boot();
+        try {
+          const claim = vi.fn();
+          const answered = nextReply();
+          const request = unreadable({ code, sha256: sha(code), claim, reply: answered.reply }, field);
+          expect(() => listener(request)).not.toThrow();
+          // Claimed before any await whenever the claim can be read; a throwing claim getter cannot be.
+          expect(claim).toHaveBeenCalledTimes(field === "claim" ? 0 : 1);
+          expect(await answered.done).toEqual({ ok: false, error });
+          await drained();
+          expect(answered.calls()).toBe(1);
+        } finally {
+          await shutdown();
+        }
+      });
+
+      it("names the unreadable field and runs nothing, for every field, on both kinds of request", async () => {
+        const f = fixture();
+        await f.store.save({ name: "hello", code: "return 1;" }, "typescript");
+        const { deps, sendMessage } = hostDeps(f);
+        const executed = vi.spyOn(f.service, "execute");
+        const bases: Array<[string, () => Record<string, unknown>]> = [
+          ["code request", () => ({ code, sha256: sha(code) })],
+          ["ref request", () => ({ ref: "hello" })],
+        ];
+        for (const [kind, base] of bases) {
+          for (const field of named) {
+            const replies: FabricProgramRunReplyV1[] = [];
+            const request = unreadable({ ...base(), reply: (result: FabricProgramRunReplyV1) => replies.push(result) }, field);
+            await handle(request, { ...deps, context: f.context });
+            expect(replies, `${kind} / ${field}`).toEqual([{ ok: false, error: refused(field) }]);
+          }
+        }
+        expect(executed).not.toHaveBeenCalled();
+        expect(f.demo).not.toHaveBeenCalled();
+        expect(sendMessage).not.toHaveBeenCalled();
+      });
+
+      it("gives the reviewer's probe, a numeric ref with a throwing input, exactly origin/main's one reply", async () => {
+        const { listener, shutdown } = await boot();
+        try {
+          const answered = nextReply();
+          const request = { ref: 7, get input(): never { throw new Error("x"); }, reply: answered.reply };
+          expect(() => listener(request)).not.toThrow();
+          expect(await answered.done).toEqual({ ok: false, error: "Invalid program run request: ref must be a non-empty string" });
+          await drained();
+          expect(answered.calls()).toBe(1);
+        } finally {
+          await shutdown();
+        }
+      });
+
+      describe("keeps origin/main's error where origin/main gave one", () => {
+        // Strings and order copied from origin/main's handler. A ref request judged by it never read
+        // code, kernel, sha256, claim or input before these checks, so none of them can pre-empt it.
+        const cases: Array<[string, Record<string, unknown>, string[], string]> = [
+          ...(["code", "kernel", "sha256", "input", "requirePromoted", "signal", "claim"] as const).map(
+            (field): [string, Record<string, unknown>, string[], string] => [`numeric ref, then ${field}`, { ref: 7 }, [field], refError]),
+          ["empty ref, then input", { ref: "" }, ["input"], refError],
+          ["oversized ref, then signal", { ref: "r".repeat(130) }, ["signal"], refError],
+          ["invalid requirePromoted before an unreadable signal", { ref: "hello", requirePromoted: "yes" }, ["signal"], "Invalid program run request: requirePromoted must be a boolean"],
+          ["valid ref and no session, but an unreadable requirePromoted: reached first, as origin/main read it", { ref: "hello" }, ["requirePromoted"], refused("requirePromoted")],
+          ["unreadable requirePromoted before an invalid signal", { ref: "hello", signal: {} }, ["requirePromoted"], refused("requirePromoted")],
+          ["invalid signal before an unreadable input", { ref: "hello", signal: {} }, ["input"], "Invalid program run request: signal must be an AbortSignal"],
+          ...(["code", "kernel", "sha256", "input", "claim"] as const).map(
+            (field): [string, Record<string, unknown>, string[], string] => [`valid ref and no session, then ${field}`, { ref: "hello" }, [field], sessionless]),
+          ["code error before an unreadable sha256", { code: "" }, ["sha256"], "Invalid program run request: code must be a non-empty string"],
+          ["kernel error before an unreadable sha256", { code, kernel: "python" }, ["sha256"], 'Invalid program run request: kernel must be "typescript"'],
+          ["sha256 error before an unreadable signal", { code, sha256: "bad" }, ["signal"], "Invalid program run request: sha256 must be 64 lowercase hex characters"],
+          ["hash mismatch before an unreadable signal", { code, sha256: sha("other") }, ["signal"], "Invalid program run request: sha256 does not match code"],
+          ["unreadable signal before an unreadable input", { code, sha256: sha(code) }, ["signal", "input"], refused("signal")],
+          ["ref and code before an unreadable claim", { ref: "hello", code, sha256: sha(code) }, ["claim"], "Invalid program run request: ref and code are mutually exclusive"],
+        ];
+        it.each(cases)("%s", async (_name, fields, broken, error) => {
+          const { listener, shutdown } = await boot();
+          try {
+            const answered = nextReply();
+            expect(() => listener(unreadable({ ...fields, reply: answered.reply }, ...broken))).not.toThrow();
+            expect(await answered.done).toEqual({ ok: false, error });
+            await drained();
+            expect(answered.calls()).toBe(1);
+          } finally {
+            await shutdown();
+          }
+        });
+      });
+
+      it("refuses, rather than runs, a request whose claim getter throws; a claim that throws when called still runs", async () => {
+        const f = fixture();
+        await f.store.save({ name: "hello", code: "return 1;" }, "typescript");
+        const { deps } = hostDeps(f);
+        const executed = vi.spyOn(f.service, "execute");
+        const refusedReplies: FabricProgramRunReplyV1[] = [];
+        await handle(unreadable({ ref: "hello", reply: (result: FabricProgramRunReplyV1) => refusedReplies.push(result) }, "claim"), { ...deps, context: f.context });
+        expect(refusedReplies).toEqual([{ ok: false, error: refused("claim") }]);
+        expect(executed).not.toHaveBeenCalled();
+        const ranReplies: FabricProgramRunReplyV1[] = [];
+        await handle({ ref: "hello", claim: boom, reply: (result: FabricProgramRunReplyV1) => ranReplies.push(result) }, { ...deps, context: f.context });
+        expect(ranReplies).toMatchObject([{ ok: true }]);
+        expect(executed).toHaveBeenCalledOnce();
+      });
+
+      it("stays silent, claiming nothing and throwing nothing, when reply cannot be read; a reply that is no function still throws", async () => {
+        const { listener, shutdown } = await boot();
+        try {
+          const claim = vi.fn();
+          expect(() => listener(unreadable({ ref: "hello", claim }, "reply"))).not.toThrow();
+          expect(claim).not.toHaveBeenCalled();
+          // The documented synchronous throw for a payload without a reply function is unchanged.
+          expect(() => listener({ ref: "hello", claim, reply: 5 })).toThrow("Invalid Pi Fabric program run request");
+          expect(claim).not.toHaveBeenCalled();
+          // The listener is still alive and answers the next request.
+          const barrier = nextReply();
+          listener({ ref: "hello", reply: barrier.reply });
+          expect(await barrier.done).toMatchObject({ ok: false });
+        } finally {
+          await shutdown();
+        }
+      });
+
+      it("reads reply and every named field exactly once, a throwing one included", async () => {
+        const f = fixture();
+        const reads: Record<string, number> = {};
+        const answered = nextReply();
+        const request: Record<string, unknown> = {};
+        const values: Record<string, unknown> = { reply: answered.reply, ref: "hello" };
+        for (const field of ["reply", ...named]) {
+          Object.defineProperty(request, field, {
+            enumerable: true,
+            get() {
+              reads[field] = (reads[field] ?? 0) + 1;
+              if (field === "input") throw new Error("getter boom");
+              return values[field];
+            },
+          });
+        }
+        const snapshot = snapshotFabricProgramRunRequestV1(request)!;
+        snapshot.claim();
+        await handleFabricProgramRunEvent(snapshot, { ...hostDeps(f).deps, context: f.context });
+        expect(await answered.done).toEqual({ ok: false, error: refused("input") });
+        expect(reads).toEqual({ reply: 1, ref: 1, code: 1, kernel: 1, sha256: 1, input: 1, requirePromoted: 1, signal: 1, claim: 1 });
+      });
+    });
   });
 
-  it("claimFabricProgramRunRequestV1 declines only on an explicit false", () => {
-    expect(claimFabricProgramRunRequestV1({})).toBe(true);
-    expect(claimFabricProgramRunRequestV1({ claim: () => undefined })).toBe(true);
-    expect(claimFabricProgramRunRequestV1({ claim: () => true })).toBe(true);
-    expect(claimFabricProgramRunRequestV1({ claim: () => false })).toBe(false);
-    expect(claimFabricProgramRunRequestV1({ claim: () => { throw new Error("x"); } })).toBe(true);
-    expect(claimFabricProgramRunRequestV1(null)).toBe(true);
+  it("the snapshot's claim declines only on an explicit false, and calls the caller's claim on the request", () => {
+    const claimOf = (request: Record<string, unknown>): boolean =>
+      snapshotFabricProgramRunRequestV1({ reply: () => undefined, ...request })!.claim();
+    expect(claimOf({})).toBe(true);
+    expect(claimOf({ claim: 5 })).toBe(true);
+    expect(claimOf({ claim: () => undefined })).toBe(true);
+    expect(claimOf({ claim: () => true })).toBe(true);
+    expect(claimOf({ claim: () => false })).toBe(false);
+    expect(claimOf({ claim: () => { throw new Error("x"); } })).toBe(true);
+    const request: Record<string, unknown> = { reply: () => undefined };
+    let self: unknown;
+    request.claim = function (this: unknown) { self = this; };
+    snapshotFabricProgramRunRequestV1(request)!.claim();
+    expect(self).toBe(request);
   });
 
   it("lists, promotes, retires and runs through the slash command", async () => {

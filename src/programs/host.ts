@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { FabricState } from "../fabric-state.js";
-import type { FabricProgramRunReplyV1, FabricProgramRunSnapshotV1 } from "../protocol.js";
+import type { FabricProgramRunFieldV1, FabricProgramRunReplyV1, FabricProgramRunSnapshotV1 } from "../protocol.js";
 import { callerCodeLabel, callerCodeProgram, hostProgramRunSource, sha256Hex } from "./source.js";
 import {
   MAX_PROGRAM_CODE_CHARS,
@@ -166,19 +166,33 @@ export const handleFabricProgramRunEvent = async (
   request: FabricProgramRunSnapshotV1,
   deps: ProgramHostDeps & { context: ExtensionContext | undefined },
 ): Promise<void> => {
-  const { ref, code, kernel, sha256, input, requirePromoted, signal, respond } = request;
+  const { ref, code, kernel, sha256, input, requirePromoted, signal, unreadable, respond } = request;
   const refuse = (reason: string): void => respond({ ok: false, error: `Invalid program run request: ${reason}` });
+  // A named field whose getter threw is refused by name, at the point its check
+  // would have run. origin/main never read most of them, so these texts are new.
+  const refuseUnreadable = (...fields: FabricProgramRunFieldV1[]): boolean => {
+    const field = fields.find((name) => unreadable.has(name));
+    if (field === undefined) return false;
+    refuse(`${field} could not be read`);
+    return true;
+  };
   try {
+    if (refuseUnreadable("ref")) return;
+    // Without a ref, an unreadable `code` is the only request this can be.
+    if (ref === undefined && refuseUnreadable("code")) return;
     if (ref !== undefined && code !== undefined) return refuse("ref and code are mutually exclusive");
     let run: HostProgramRunRequest;
     if (code === undefined) {
       // The saved-program checks, texts and order are the ones this event has always had.
+      // A ref with an unreadable `code` stays here; the final check refuses it.
       if (typeof ref !== "string" || !ref || ref.length > MAX_PROGRAM_REF_CHARS) {
         return refuse("ref must be a non-empty string");
       }
+      if (refuseUnreadable("requirePromoted")) return;
       if (requirePromoted !== undefined && typeof requirePromoted !== "boolean") {
         return refuse("requirePromoted must be a boolean");
       }
+      if (refuseUnreadable("signal")) return;
       if (signal !== undefined && !isAbortSignal(signal)) return refuse("signal must be an AbortSignal");
       run = {
         ref,
@@ -189,11 +203,14 @@ export const handleFabricProgramRunEvent = async (
     } else {
       if (typeof code !== "string" || !code.trim()) return refuse("code must be a non-empty string");
       if (code.length > MAX_PROGRAM_CODE_CHARS) return refuse(`code exceeds ${MAX_PROGRAM_CODE_CHARS} characters`);
+      if (refuseUnreadable("kernel")) return;
       if (kernel !== undefined && kernel !== "typescript") return refuse('kernel must be "typescript"');
+      if (refuseUnreadable("sha256")) return;
       if (typeof sha256 !== "string" || !SHA256_PATTERN.test(sha256)) {
         return refuse("sha256 must be 64 lowercase hex characters");
       }
       if (sha256Hex(code) !== sha256) return refuse("sha256 does not match code");
+      if (refuseUnreadable("signal")) return;
       if (signal !== undefined && !isAbortSignal(signal)) return refuse("signal must be an AbortSignal");
       run = { code, sha256, ...(input !== undefined ? { input } : {}), ...(signal ? { signal } : {}) };
     }
@@ -201,6 +218,8 @@ export const handleFabricProgramRunEvent = async (
       respond({ ok: false, error: "No active Pi session to run the program in" });
       return;
     }
+    // Last, as origin/main read `input` last: nothing runs on a request that could not be read in full.
+    if (refuseUnreadable("code", "kernel", "sha256", "requirePromoted", "input", "claim")) return;
     respond(await runHostProgram(deps, deps.context, run));
   } catch (error) {
     respond({ ok: false, error: errorText(error) });

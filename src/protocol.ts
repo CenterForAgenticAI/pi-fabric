@@ -74,6 +74,7 @@ interface FabricProgramRunRequestBaseV1 {
    * it will answer. A caller that sees no call knows pi-fabric is absent or too
    * old. Returning `false` means another responder already holds the request;
    * pi-fabric then stays silent. Any other return value, or a throw, is ignored.
+   * A `claim` getter that throws cannot be called; Fabric refuses the request.
    */
   claim?: () => void | boolean;
   /** Called exactly once. */
@@ -106,24 +107,16 @@ export interface FabricProgramRunByCodeRequestV1 extends FabricProgramRunRequest
 
 export type FabricProgramRunRequestV1 = FabricProgramRunByRefRequestV1 | FabricProgramRunByCodeRequestV1;
 
-/**
- * Acknowledges a program run request synchronously. Returns false only when the
- * caller's `claim` reports that another responder already holds the request.
- */
-export const claimFabricProgramRunRequestV1 = (value: unknown): boolean => {
-  let claim: unknown;
-  try {
-    claim = (value as { claim?: unknown } | null)?.claim;
-  } catch {
-    return true;
-  }
-  if (typeof claim !== "function") return true;
-  try {
-    return Reflect.apply(claim, value, []) !== false;
-  } catch {
-    return true;
-  }
-};
+/** The request fields Fabric reads, once, when a program run event arrives. */
+export type FabricProgramRunFieldV1 =
+  | "ref"
+  | "code"
+  | "kernel"
+  | "sha256"
+  | "input"
+  | "requirePromoted"
+  | "signal"
+  | "claim";
 
 /**
  * Everything a program run listener keeps of a request. Read once, at the event
@@ -138,15 +131,54 @@ export interface FabricProgramRunSnapshotV1 {
   readonly input: unknown;
   readonly requirePromoted: unknown;
   readonly signal: unknown;
+  /**
+   * Fields whose getter threw when read. Each is `undefined` above; the handler
+   * refuses the request by name instead of letting the throw escape.
+   */
+  readonly unreadable: ReadonlySet<FabricProgramRunFieldV1>;
+  /**
+   * Acknowledges the request synchronously with the caller's `claim`. Returns
+   * false only when `claim` reports that another responder already holds the
+   * request. A missing, unreadable or throwing `claim` returns true.
+   */
+  readonly claim: () => boolean;
   /** Calls the caller's `reply` at most once, directly, and never throws. */
   readonly respond: (result: FabricProgramRunReplyV1) => void;
 }
 
-/** Undefined when the request has no `reply` function, so nobody can answer it. */
+/**
+ * Reads `reply` and each named field once, and never lets a getter's throw out.
+ * Returns undefined when `reply` cannot be read, because nobody can be told.
+ * Throws when `reply` reads as something other than a function, as the event
+ * has always done for a payload without a `reply` function.
+ */
 export const snapshotFabricProgramRunRequestV1 = (value: unknown): FabricProgramRunSnapshotV1 | undefined => {
   const request = value as Record<string, unknown> | null | undefined;
-  const reply = request?.reply;
-  if (typeof reply !== "function") return undefined;
+  let reply: unknown;
+  try {
+    reply = request?.reply;
+  } catch {
+    return undefined;
+  }
+  if (typeof reply !== "function") throw new Error("Invalid Pi Fabric program run request");
+  const unreadable = new Set<FabricProgramRunFieldV1>();
+  const read = (field: FabricProgramRunFieldV1): unknown => {
+    try {
+      return request![field];
+    } catch {
+      unreadable.add(field);
+      return undefined;
+    }
+  };
+  const claimFunction = read("claim");
+  const claim = (): boolean => {
+    if (typeof claimFunction !== "function") return true;
+    try {
+      return Reflect.apply(claimFunction, value, []) !== false;
+    } catch {
+      return true;
+    }
+  };
   let replied = false;
   const respond = (result: FabricProgramRunReplyV1): void => {
     if (replied) return;
@@ -158,13 +190,15 @@ export const snapshotFabricProgramRunRequestV1 = (value: unknown): FabricProgram
     }
   };
   return Object.freeze({
-    ref: request!.ref,
-    code: request!.code,
-    kernel: request!.kernel,
-    sha256: request!.sha256,
-    input: request!.input,
-    requirePromoted: request!.requirePromoted,
-    signal: request!.signal,
+    ref: read("ref"),
+    code: read("code"),
+    kernel: read("kernel"),
+    sha256: read("sha256"),
+    input: read("input"),
+    requirePromoted: read("requirePromoted"),
+    signal: read("signal"),
+    unreadable,
+    claim,
     respond,
   });
 };
