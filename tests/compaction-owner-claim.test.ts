@@ -207,6 +207,41 @@ describe("compaction owner protocol", () => {
     if (!read.ok) expect(read.reply).toBe(reply);
   });
 
+  // A getter answers the first read with `first` and every later read with `later`.
+  const answers = (first: unknown, later: unknown) => {
+    let reads = 0;
+    return () => (reads++ === 0 ? first : later);
+  };
+
+  it("stores the owner name and version it checked, even when a getter changes its answer", () => {
+    const name = answers("pi-context-aware", { toString: () => "injected" });
+    const version = answers("1.4.0", ["1", "4"]);
+    const read = readFabricCompactionOwnerMessageV1({
+      version: 1,
+      type: "claim",
+      owner: { get name() { return name(); }, get version() { return version(); } },
+      actions: {},
+      reply: () => undefined,
+    });
+    if (!read.ok || read.message.type !== "claim") throw new Error(`expected a claim: ${JSON.stringify(read)}`);
+    expect(read.message.owner).toEqual({ name: "pi-context-aware", version: "1.4.0" });
+  });
+
+  it("stores the signal it checked, even when a getter changes its answer", () => {
+    const signal = new AbortController().signal;
+    const signalRead = answers(signal, { aborted: false });
+    const read = readFabricCompactionOwnerMessageV1({
+      version: 1,
+      type: "claim",
+      owner,
+      actions: {},
+      get signal() { return signalRead(); },
+      reply: () => undefined,
+    });
+    if (!read.ok || read.message.type !== "claim") throw new Error(`expected a claim: ${JSON.stringify(read)}`);
+    expect(read.message.signal).toBe(signal);
+  });
+
   it("rejects a claim without a reply callback", () => {
     expect(readFabricCompactionOwnerMessageV1({ version: 1, type: "claim", owner, actions: {} })).toMatchObject({ ok: false });
   });
