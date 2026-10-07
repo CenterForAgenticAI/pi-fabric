@@ -29,9 +29,11 @@ import {
 } from "../core/compact-controller.js";
 import {
   FABRIC_COMPACTION_OWNER_CARRY_FIELDS,
+  FABRIC_COMPACTION_OWNER_HANDLER_TIMEOUT_MS,
   FABRIC_COMPACTION_OWNER_REQUEST_FIELDS,
   type FabricActionDescriptor,
   type FabricCompactionOwnerActionNameV1,
+  type FabricCompactionOwnerCallV1,
   type FabricCompactionOwnerCarryUpdateV1,
   type FabricCompactionOwnerPressureV1,
   type FabricCompactionOwnerRequestV1,
@@ -379,11 +381,45 @@ export class CompactProvider implements FabricProvider {
   ): Promise<unknown> {
     const owner = ownerRef(claim);
     const hostContext = context.extensionContext;
-    const call = async <T>(action: FabricCompactionOwnerActionNameV1, run: () => T): Promise<Awaited<T>> => {
+    // Each handler call gets its own signal. It aborts when the program call
+    // is cancelled or the handler outlives the timeout, and the program call
+    // then fails at once instead of waiting for the owner.
+    const call = async <T>(
+      action: FabricCompactionOwnerActionNameV1,
+      run: (ownerCall: FabricCompactionOwnerCallV1) => T,
+    ): Promise<Awaited<T>> => {
+      const programSignal = context.signal;
+      if (programSignal?.aborted) {
+        throw ownerError(claim, `compact.${action} was not called: the calling program was cancelled`);
+      }
+      const controller = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let onProgramAbort: (() => void) | undefined;
+      const stopped = new Promise<never>((_resolve, reject) => {
+        const stop = (why: string): void => {
+          const error = ownerError(claim, `compact.${action} ${why}`);
+          controller.abort(error);
+          reject(error);
+        };
+        timer = setTimeout(
+          () => stop(`did not finish within ${FABRIC_COMPACTION_OWNER_HANDLER_TIMEOUT_MS / 1000} s`),
+          FABRIC_COMPACTION_OWNER_HANDLER_TIMEOUT_MS,
+        );
+        onProgramAbort = () => stop("was cancelled by the calling program");
+        programSignal?.addEventListener("abort", onProgramAbort, { once: true });
+      });
+      const handled = (async () => {
+        try {
+          return await run({ context: hostContext, signal: controller.signal });
+        } catch (error) {
+          throw ownerError(claim, `compact.${action} failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      })();
       try {
-        return await run();
-      } catch (error) {
-        throw ownerError(claim, `compact.${action} failed: ${error instanceof Error ? error.message : String(error)}`);
+        return await Promise.race([handled, stopped]);
+      } finally {
+        clearTimeout(timer);
+        if (onProgramAbort) programSignal?.removeEventListener("abort", onProgramAbort);
       }
     };
     const unsupported = (action: string, field?: string): Error => ownerError(
@@ -405,7 +441,7 @@ export class CompactProvider implements FabricProvider {
           if (field === "preserve") request.preserve = [...value as string[]];
           else request[field] = value as string;
         }
-        const result = ownerJson(claim, "request", await call("request", () => action.handler(request, hostContext)));
+        const result = ownerJson(claim, "request", await call("request", (ownerCall) => action.handler(request, ownerCall)));
         context.activity?.({
           type: "progress",
           message: `Compaction requested from owner ${compactionOwnerLabel(owner)}`,
@@ -435,7 +471,7 @@ export class CompactProvider implements FabricProvider {
         };
         const action = claim.actions.status;
         if (!action) return status;
-        const ownerStatus = ownerJson(claim, "status", await call("status", () => action.handler(hostContext)));
+        const ownerStatus = ownerJson(claim, "status", await call("status", (ownerCall) => action.handler(ownerCall)));
         return { ...status, ...(ownerStatus !== undefined ? { ownerStatus } : {}) };
       }
       case "pressure": {
@@ -448,7 +484,7 @@ export class CompactProvider implements FabricProvider {
         } = compactionPressure(hostContext, this.#config());
         const action = claim.actions.pressure;
         if (!action) return { ...pressure, claim: owner };
-        const reported = ownerPressure(claim, ownerJson(claim, "pressure", await call("pressure", () => action.handler(hostContext))));
+        const reported = ownerPressure(claim, ownerJson(claim, "pressure", await call("pressure", (ownerCall) => action.handler(ownerCall))));
         return { ...pressure, claim: owner, ownerPressure: reported };
       }
       case "carry": {
@@ -463,7 +499,7 @@ export class CompactProvider implements FabricProvider {
           if (field === "clear") update.clear = value as boolean;
           else update[field] = [...value as string[]];
         }
-        const items = ownerCarryItems(claim, ownerJson(claim, "carry", await call("carry", () => action.handler(update, hostContext))));
+        const items = ownerCarryItems(claim, ownerJson(claim, "carry", await call("carry", (ownerCall) => action.handler(update, ownerCall))));
         return { items, claim: owner };
       }
       case "cancel": {
@@ -482,7 +518,7 @@ export class CompactProvider implements FabricProvider {
         }
         let result: unknown;
         try {
-          result = ownerJson(claim, "cancel", await call("cancel", () => action.handler(hostContext)));
+          result = ownerJson(claim, "cancel", await call("cancel", (ownerCall) => action.handler(ownerCall)));
         } catch (error) {
           if (!fabricIntentCleared) throw error;
           throw new Error(`${error instanceof Error ? error.message : String(error)}; Fabric's own pending compaction request was cleared`);
