@@ -1088,7 +1088,9 @@ export class AgentManager {
         "--persist-session",
         String(request.persistSession === true),
         "--model-admission",
-        this.config.modelAdmission ?? "strict",
+        // An exact request is always strict: permissive admission accepts another model.
+        request.modelMatch === "exact" ? "strict" : this.config.modelAdmission ?? "strict",
+        ...(request.modelMatch === "exact" ? ["--model-match", "exact"] : []),
         ...(sessionFile ? ["--session-file", sessionFile] : []),
         ...(sessionExportFile ? ["--session-export-file", sessionExportFile] : []),
         ...(inheritedSessionPins && inheritedSessionPins.length > 0

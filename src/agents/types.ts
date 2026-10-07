@@ -271,6 +271,8 @@ export interface AgentWorkerOptions {
   systemPrompt?: string;
   persistSession?: boolean;
   modelAdmission?: "strict" | "permissive";
+  /** "exact": the child is pinned to `model`; the worker forces strict admission and loads the pin guard. */
+  modelMatch?: FabricModelMatch;
   sessionFile?: string;
   sessionExportFile?: string;
   actorId?: string;
