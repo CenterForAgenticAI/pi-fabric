@@ -35,7 +35,7 @@
         "vitest": "^4.1.10",
       },
       "optionalDependencies": {
-        "jev-fabric": "0.5.0",
+        "jev-fabric": "0.5.1",
       },
       "peerDependencies": {
         "@earendil-works/pi-agent-core": "*",
@@ -621,13 +621,13 @@
 
     "isexe": ["isexe@2.0.0", "", {}, "sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw=="],
 
-    "jev-fabric": ["jev-fabric@0.5.0", "", { "optionalDependencies": { "jev-fabric-darwin": "0.5.0", "jev-fabric-linux-arm64": "0.5.0", "jev-fabric-linux-x64": "0.5.0" }, "bin": { "jev-fabric": "bin/jev-fabric.js" } }, "sha512-Ocqdob3bGdLT2R7iaWg7eViHCrIkaBqxf2sSX9pCBHG3q04E8fIR4pYTxcUmalme4qWQkCKXAPbzpNWAXOlLBw=="],
+    "jev-fabric": ["jev-fabric@0.5.1", "", { "optionalDependencies": { "jev-fabric-darwin": "0.5.1", "jev-fabric-linux-arm64": "0.5.1", "jev-fabric-linux-x64": "0.5.1" }, "bin": { "jev-fabric": "bin/jev-fabric.js" } }, "sha512-cDN+Ig9gCtAqf+fIu1RR5OIvyz9yvimdCNnjBr0mybFp4HWUyKHW9KHH7aPRU/9Xq5jd7CFOc4aXvK6OoiywOQ=="],
 
-    "jev-fabric-darwin": ["jev-fabric-darwin@0.5.0", "", { "os": "darwin", "cpu": [ "x64", "arm64", ] }, "sha512-Aukd8WXJXiuSUYuv/dNNjOKI8y+mRtJFqTzh7TWyt0f7C/UbqjR9Orby6mMZef+Z5Qo9fZCQ+vbctl0thyekWg=="],
+    "jev-fabric-darwin": ["jev-fabric-darwin@0.5.1", "", { "os": "darwin", "cpu": [ "x64", "arm64", ] }, "sha512-slM2pd8Pq6Ea3WVrTZzhb20a7nCLtdxR33zIWP7tfpD/+PVPGNVKckJKwN/IZXc2yYBX2M1DaJEG9B5EfaeDMg=="],
 
-    "jev-fabric-linux-arm64": ["jev-fabric-linux-arm64@0.5.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-g9mOsSVj+Yo4MCLdQVco+n0unWbkwENSu0HF/X81CpnGfihA2b4/2VAq2A7oZGomAz5pwUIZsp6NHgoGG3G0GQ=="],
+    "jev-fabric-linux-arm64": ["jev-fabric-linux-arm64@0.5.1", "", { "os": "linux", "cpu": "arm64" }, "sha512-7DMXdWVBXzvWEiYj8BrSF/XJJ8X88JQ0/KH7YtQ4X/CKDsaJDpxTtCDQaloki5l8y1BdedDXMhxqijcXCtbT1g=="],
 
-    "jev-fabric-linux-x64": ["jev-fabric-linux-x64@0.5.0", "", { "os": "linux", "cpu": "x64" }, "sha512-TFnzlE+3eWAIjhBH8CstVf5NLdnbSC5MZPugrqXui9eNdzEMH4YVe734Rl+gOcJ6/6Wkhc//JhRzekzh+icbDQ=="],
+    "jev-fabric-linux-x64": ["jev-fabric-linux-x64@0.5.1", "", { "os": "linux", "cpu": "x64" }, "sha512-7JPTkCyWoZ5shMlaYv2ARkCZi8tZb9873/VSj7Rx3tAf/qKioNXH4X7Pv+FZrfaWtdUTS2/jQWDXGF2i7/TtNw=="],
 
     "jiti": ["jiti@2.7.0", "", { "bin": { "jiti": "lib/jiti-cli.mjs" } }, "sha512-AC/7JofJvZGrrneWNaEnJeOLUx+JlGt7tNa0wZiRPT4MY1wmfKjt2+6O2p2uz2+skll8OZZmJMNqeke7kKbNgQ=="],
 
