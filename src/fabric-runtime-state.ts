@@ -54,7 +54,12 @@ import {
   type FabricCapabilityViewLease,
 } from "./core/action-registry.js";
 import { FabricSessionApprovals } from "./core/approval-controller.js";
-import { CompactController, type CompactLastCommit, type CompactPendingIntent } from "./core/compact-controller.js";
+import {
+  COMPACTION_SEED_DELIVERY,
+  CompactController,
+  type CompactLastCommit,
+  type CompactPendingIntent,
+} from "./core/compact-controller.js";
 import type { ActiveCompactionOwner } from "./compaction/claim.js";
 import { FabricToolResultProxy } from "./core/tool-result-proxy.js";
 import { FabricExecutionService, type FabricExecutionResult } from "./execution-service.js";
@@ -626,8 +631,9 @@ export class FabricRuntimeState {
     this.#compact = new CompactController({
       onRequest: (intent) => void this.#publishCompactEvent("requested", intent),
       onCommit: (info) => void this.#publishCompactEvent(info.status, info),
-      // Plain text only: no slash-command or template expansion of a seed.
-      sendSeed: (seed) => this.pi.sendUserMessage(seed, { deliverAs: "followUp" }),
+      // A labelled Fabric message, never a user prompt: the model reads who
+      // asked for it, and no slash command or template expands.
+      sendSeed: (message) => this.pi.sendMessage(message, COMPACTION_SEED_DELIVERY),
     });
     await builtins.install(createProviderComponent({
       provider: "compact",
