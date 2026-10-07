@@ -467,14 +467,34 @@ export class CompactProvider implements FabricProvider {
         return { items, claim: owner };
       }
       case "cancel": {
-        const action = claim.actions.cancel;
-        if (!action) throw unsupported("cancel");
-        const result = ownerJson(claim, "cancel", await call("cancel", () => action.handler(hostContext)));
-        // An intent recorded before the claim would still commit through the
-        // owner at the next boundary; a cancel clears it too.
+        // An intent Fabric recorded before the claim would still commit
+        // through the owner at the next boundary, with Fabric-encoded
+        // instructions and Fabric's seed. Clear it first, owner or not.
+        const fabricIntentCleared = this.controller.status().pending !== undefined;
         this.controller.cancel();
+        const action = claim.actions.cancel;
+        if (!action) {
+          if (!fabricIntentCleared) {
+            throw ownerError(claim, "does not support compact.cancel, and Fabric had no pending compaction request; nothing was cancelled");
+          }
+          context.activity?.({ type: "progress", message: "Fabric's pending compaction request cancelled" });
+          return { cancelled: true, claim: owner, fabricIntentCleared, ownerCancelled: false };
+        }
+        let result: unknown;
+        try {
+          result = ownerJson(claim, "cancel", await call("cancel", () => action.handler(hostContext)));
+        } catch (error) {
+          if (!fabricIntentCleared) throw error;
+          throw new Error(`${error instanceof Error ? error.message : String(error)}; Fabric's own pending compaction request was cleared`);
+        }
         context.activity?.({ type: "progress", message: `Compaction request cancelled by owner ${compactionOwnerLabel(owner)}` });
-        return { cancelled: true, claim: owner, ...(result !== undefined ? { result } : {}) };
+        return {
+          cancelled: true,
+          claim: owner,
+          fabricIntentCleared,
+          ownerCancelled: true,
+          ...(result !== undefined ? { result } : {}),
+        };
       }
       default:
         throw new Error(`Unknown compact action: ${actionName}`);
