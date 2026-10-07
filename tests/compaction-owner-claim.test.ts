@@ -392,11 +392,16 @@ describe("compaction owner claim", () => {
     const withCarry = handle.fallback(event, context, { carry: ["Auth regression is still open"] });
     const invalidCarry = handle.fallback(event, context, { carry: [""] });
     handle.withdraw();
-    const fabricOwn = fabric.compact(compactEvent(session), context) as { compaction: unknown };
+    const fabricOwn = fabric.compact(compactEvent(session), context) as { compaction: { details: object } };
 
     // Exactly what Fabric's own engine produces for the same event, budgeted
-    // at the default compaction.targetContextRatio of 0.65.
-    expect(fallback).toEqual({ ok: true, compaction: fabricOwn.compaction });
+    // at the default compaction.targetContextRatio of 0.65, and marked as
+    // made for the owner. Fabric's own entry carries no such mark.
+    expect(fallback).toEqual({
+      ok: true,
+      compaction: { ...fabricOwn.compaction, details: { ...fabricOwn.compaction.details, claimOwner: "pi-context-aware" } },
+    });
+    expect(fabricOwn.compaction.details).not.toHaveProperty("claimOwner");
     expect(fallback).toMatchObject({
       ok: true,
       compaction: { details: { compactor: "fabric", budget: { contextWindow: 150_000, targetContextRatio: 0.65 } } },
