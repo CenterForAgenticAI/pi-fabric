@@ -23,6 +23,7 @@ import { ownerFromContext } from "../compaction/owner.js";
 import { compactionPressure } from "../compaction/pressure.js";
 import { DEFAULT_FABRIC_CONFIG, type FabricConfig } from "../config.js";
 import {
+  checkedSeed,
   CompactController,
   MAX_COMPACTION_SEED_CHARS,
   type CompactPendingIntent,
@@ -98,6 +99,13 @@ const checkedRequestArguments = (args: Record<string, unknown>): CompactRequestA
     ...(input.preserve !== undefined ? { preserve: input.preserve } : {}),
   });
   if (boundsError) throw new Error(`Invalid compact.request arguments: ${boundsError.message}`);
+  // The same seed check as Fabric's controller, so an owner never receives a
+  // seed Fabric itself would refuse.
+  try {
+    checkedSeed(input.seed);
+  } catch (error) {
+    throw new Error(`Invalid compact.request arguments: ${error instanceof Error ? error.message : String(error)}`);
+  }
   if (input.preserve !== undefined) {
     encodeCompactionRequest({
       ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
