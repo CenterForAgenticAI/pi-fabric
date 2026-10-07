@@ -31,6 +31,7 @@ import {
   FABRIC_COMPACTION_OWNER_EVENT,
   readFabricCompactionOwnerMessageV1,
   type FabricCompactionOwnerActionsV1,
+  type FabricCompactionOwnerCallV1,
   type FabricCompactionOwnerClaimResultV1,
   type FabricCompactionOwnerHandleV1,
   type FabricCompactionOwnerWithdrawResultV1,
@@ -418,6 +419,45 @@ describe("compact.* under a claim", () => {
     });
     expect(controller.status().pending).toBeUndefined();
     expect(cancel).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails a handler still running after 30 s, naming the owner and action, and aborts its signal", async () => {
+    vi.useFakeTimers();
+    cleanups.push(() => { vi.useRealTimers(); });
+    let received: FabricCompactionOwnerCallV1 | undefined;
+    const host = { cwd: "/session" } as unknown as ExtensionContext;
+    const { provider } = setup({
+      status: { handler: (ownerCall) => { received = ownerCall; return new Promise(() => undefined); } },
+    });
+    const outcome = vi.fn();
+    provider.invoke("status", {}, invocation(host))
+      .then((value) => outcome("resolved", value), (error: Error) => outcome("rejected", error.message));
+
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(outcome).not.toHaveBeenCalled();
+    expect(received?.context).toBe(host);
+    expect(received?.signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(outcome).toHaveBeenCalledWith("rejected", "compaction owner pi-context-aware@1.4.0: compact.status did not finish within 30 s");
+    expect(received?.signal.aborted).toBe(true);
+  });
+
+  it("aborts the owner's handler when the calling program is cancelled", async () => {
+    const program = new AbortController();
+    let received: FabricCompactionOwnerCallV1 | undefined;
+    const { provider } = setup({
+      request: { fields: ["reason"], handler: (_request, ownerCall) => { received = ownerCall; return new Promise(() => undefined); } },
+    });
+    const outcome = vi.fn();
+    provider.invoke("request", { reason: "pressure" }, { ...invocation(), signal: program.signal })
+      .then((value) => outcome("resolved", value), (error: Error) => outcome("rejected", error.message));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(received?.signal.aborted).toBe(false);
+
+    program.abort();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(outcome).toHaveBeenCalledWith("rejected", "compaction owner pi-context-aware@1.4.0: compact.request was cancelled by the calling program");
+    expect(received?.signal.aborted).toBe(true);
   });
 
   it("routes request and carry to the owner with only declared fields", async () => {
