@@ -116,6 +116,32 @@ pi.events.emit(FABRIC_PROGRAM_RUN_EVENT, {
 
 The reply arrives exactly once. A payload without a `reply` function throws synchronously. Other invalid fields, a missing session, an unknown ref, and a failed run all reply `{ ok: false, error }`. The event runs in the live session that Fabric saw at `session_start`.
 
+### Running caller-supplied code
+
+A host extension that builds program text itself, such as a program that ships in a package or a small runner it generates per run, can pass the text as `code`, with no `ref`. Extensions already run with the user's full permissions, so this adds no new power. The hash makes the record honest about exactly what ran.
+
+```ts
+import { createHash } from "node:crypto";
+import { FABRIC_PROGRAM_RUN_EVENT, type FabricProgramRunReplyV1 } from "pi-fabric/protocol";
+
+const code = "return { who: input.who };";
+let fabricPresent = false;
+pi.events.emit(FABRIC_PROGRAM_RUN_EVENT, {
+  code,
+  kernel: "typescript",                                    // optional; the only value today
+  sha256: createHash("sha256").update(code, "utf8").digest("hex"),
+  input: { who: "pi-stack" },                              // optional, as for a ref run
+  claim: () => { fabricPresent = true; },                  // optional
+  reply: (result: FabricProgramRunReplyV1) => {},
+});
+if (!fabricPresent) { /* pi-fabric is absent or too old: fall back now */ }
+```
+
+- A request has exactly one of `ref` or `code`. `code` needs `sha256`: the lowercase hex SHA-256 of the code's UTF-8 bytes. `requirePromoted` applies only to `ref`.
+- `claim` is called synchronously, before the listener's first `await`, for every request it will answer, including one it will refuse. A caller that sees no call knows pi-fabric is absent or too old. A `claim` that returns `false` means another responder already holds the request, and Fabric stays silent. Any other return value, or a throw, is ignored. A request without `claim` behaves as before.
+- Fabric refuses before running anything, with one `{ ok: false, error }` reply, when: both or neither of `ref` and `code` are present; `code` is empty or longer than 65 536 characters (the saved-program limit); `kernel` is not `"typescript"`; `sha256` is missing or not 64 lowercase hex characters; the hash does not match the code; or there is no active session. A session whose kernel is Python also refuses, because the code is TypeScript. Fabric copies the named fields out of the request and ignores every other field.
+- The run is the session's own program: root capability view, the configured approval policy, `invokedBy: "host"`, and a `pi-fabric-program-run` message labelled `caller-code@<first 12 hex of the hash>`. The message details carry `source: "caller-code"` and the full `sha256`, never the code. The reply's `program` is the same label. Nothing is written to the program store.
+
 ## Mesh-triggered runs
 
 Fabric never runs a program because a mesh event arrived. To run one on a schedule or on ingress, give the event `data.fabricProgram = { ref, input? }` and subscribe a durable actor to its topic. The actor's own program calls `programs.run` with that ref, so the run carries the actor's capabilities and approvals:

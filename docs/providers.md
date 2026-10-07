@@ -174,6 +174,8 @@ pi.events.emit(FABRIC_PROGRAM_RUN_EVENT, {
 });
 ```
 
+To run program text the caller built, pass `code` and its `sha256`, with no `ref`; see [Running caller-supplied code](programs.md#running-caller-supplied-code).
+
 The run has the same semantics as `/fabric run`: the session's root capability view, the configured approval policy, a `pi-fabric-program-run` transcript message, and `invokedBy: "host"` in the trace. `reply` is called exactly once with `{ ok: true, program, value, logs }` or `{ ok: false, error, program? }`.
 
 ## Managed embedded hosts

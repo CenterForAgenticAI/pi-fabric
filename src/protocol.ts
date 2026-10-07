@@ -65,15 +65,65 @@ export type FabricProgramRunReplyV1 =
   | { ok: true; program: string; value: unknown; logs: string[] }
   | { ok: false; error: string; program?: string };
 
-export interface FabricProgramRunRequestV1 {
-  /** name, name@<digest prefix >= 12>, or a full digest. */
-  ref: string;
+interface FabricProgramRunRequestBaseV1 {
+  /** JSON, at most 64 KiB; reaches the program as `input`. */
   input?: unknown;
-  requirePromoted?: boolean;
   signal?: AbortSignal;
+  /**
+   * Called synchronously, before the listener's first await, for every request
+   * it will answer. A caller that sees no call knows pi-fabric is absent or too
+   * old. Returning `false` means another responder already holds the request;
+   * pi-fabric then stays silent. Any other return value, or a throw, is ignored.
+   */
+  claim?: () => void | boolean;
   /** Called exactly once. */
   reply: (result: FabricProgramRunReplyV1) => void;
 }
+
+/** Runs a saved program. Exactly one of `ref` or `code` is allowed. */
+export interface FabricProgramRunByRefRequestV1 extends FabricProgramRunRequestBaseV1 {
+  /** name, name@<digest prefix >= 12>, or a full digest. */
+  ref: string;
+  requirePromoted?: boolean;
+  code?: never;
+  kernel?: never;
+  sha256?: never;
+}
+
+/**
+ * Runs program text the caller built, without saving it anywhere. `sha256` is
+ * the lowercase hex SHA-256 of the code's UTF-8 bytes; a mismatch runs nothing.
+ */
+export interface FabricProgramRunByCodeRequestV1 extends FabricProgramRunRequestBaseV1 {
+  /** Non-empty, at most 65 536 characters. */
+  code: string;
+  /** Only `"typescript"` today; the default. */
+  kernel?: "typescript";
+  sha256: string;
+  ref?: never;
+  requirePromoted?: never;
+}
+
+export type FabricProgramRunRequestV1 = FabricProgramRunByRefRequestV1 | FabricProgramRunByCodeRequestV1;
+
+/**
+ * Acknowledges a program run request synchronously. Returns false only when the
+ * caller's `claim` reports that another responder already holds the request.
+ */
+export const claimFabricProgramRunRequestV1 = (value: unknown): boolean => {
+  let claim: unknown;
+  try {
+    claim = (value as { claim?: unknown } | null)?.claim;
+  } catch {
+    return true;
+  }
+  if (typeof claim !== "function") return true;
+  try {
+    return Reflect.apply(claim, value, []) !== false;
+  } catch {
+    return true;
+  }
+};
 
 export const FABRIC_PROVIDER_REGISTER_EVENT = "pi-fabric:provider:register:v1";
 export const FABRIC_PROVIDER_DISCOVER_EVENT = "pi-fabric:provider:discover:v1";

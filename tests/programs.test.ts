@@ -1,15 +1,17 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { normalizeFabricConfig, type FabricConfig } from "../src/config.js";
 import { ActionRegistry } from "../src/core/action-registry.js";
 import { FabricExecutionService } from "../src/execution-service.js";
-import { handleFabricProgramRunEvent, PROGRAM_RUN_MESSAGE_TYPE, runFabricProgramsCommand, type ProgramHostDeps } from "../src/programs/host.js";
+import piFabric from "../src/index.js";
+import { handleFabricProgramRunEvent, runHostProgram, PROGRAM_RUN_MESSAGE_TYPE, runFabricProgramsCommand, type ProgramHostDeps } from "../src/programs/host.js";
 import { hostProgramRunSource, programSourceWithInput, pythonLiteral } from "../src/programs/source.js";
 import { canonicalProgramJson, programDigest, ProgramStore, programsDirectory } from "../src/programs/store.js";
-import type { FabricActionDescriptor, FabricProgramRunReplyV1 } from "../src/protocol.js";
+import { claimFabricProgramRunRequestV1, FABRIC_PROGRAM_RUN_EVENT, type FabricActionDescriptor, type FabricProgramRunReplyV1 } from "../src/protocol.js";
 import { ProgramsProvider } from "../src/providers/programs-provider.js";
 import { availablePythonBackends } from "./fixtures/python-backends.js";
 import { rmTempSync } from "./fixtures/temp-cleanup.js";
@@ -332,6 +334,288 @@ describe("host program runs", () => {
       await handleFabricProgramRunEvent({ ref: "hello", input: { who: "x" }, signal: aborted.signal, reply: (result: FabricProgramRunReplyV1) => replies.push(result) }, { ...deps, context: f.context });
       expect(replies[4]).toMatchObject({ ok: false });
     }
+  });
+
+  describe("caller-supplied code", () => {
+    const sha = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
+    const CODE = "const r = await tools.call({ ref: 'demo.allowed', args: { who: input.who } }); return { r, who: input.who };";
+    const collect = () => {
+      const replies: FabricProgramRunReplyV1[] = [];
+      return { replies, reply: (result: FabricProgramRunReplyV1) => replies.push(result) };
+    };
+
+    it("runs matching code once, passes input, labels the run and saves nothing", async () => {
+      const f = fixture();
+      const { deps, sendMessage } = hostDeps(f);
+      const { replies, reply } = collect();
+      await handleFabricProgramRunEvent({ code: CODE, kernel: "typescript", sha256: sha(CODE), input: { who: "pi-stack" }, reply }, { ...deps, context: f.context });
+      const label = `caller-code@${sha(CODE).slice(0, 12)}`;
+      expect(replies).toEqual([{ ok: true, program: label, value: { r: { called: "allowed", args: { who: "pi-stack" } }, who: "pi-stack" }, logs: [] }]);
+      expect(f.demo).toHaveBeenCalledTimes(1);
+      expect(sendMessage).toHaveBeenCalledOnce();
+      const [message, options] = sendMessage.mock.calls[0]!;
+      expect(options).toEqual({ triggerTurn: false });
+      expect(message).toMatchObject({
+        customType: PROGRAM_RUN_MESSAGE_TYPE,
+        display: true,
+        details: { invokedBy: "host", success: true, program: label, source: "caller-code", sha256: sha(CODE) },
+      });
+      expect(message.content).toContain(label);
+      expect(message.details.trace.operations.map((entry: { ref: string }) => entry.ref)).toContain("demo.allowed");
+      // REQ-F.5: no program store was created or written.
+      expect(fs.existsSync(path.join(f.cwd, ".pi"))).toBe(false);
+      expect(await f.store.list()).toEqual([]);
+    });
+
+    it("exposes null as input when the request has none", async () => {
+      const f = fixture();
+      const code = "return { input };";
+      const { replies, reply } = collect();
+      await handleFabricProgramRunEvent({ code, sha256: sha(code), reply }, { ...hostDeps(f).deps, context: f.context });
+      expect(replies).toMatchObject([{ ok: true, value: { input: null } }]);
+    });
+
+    it("refuses a mismatching hash and runs nothing, not even a prefix", async () => {
+      const f = fixture();
+      const { deps, sendMessage } = hostDeps(f);
+      const { replies, reply } = collect();
+      const executed = vi.spyOn(f.service, "execute");
+      await handleFabricProgramRunEvent({ code: CODE, sha256: sha(`${CODE} `), input: { who: "x" }, reply }, { ...deps, context: f.context });
+      expect(replies).toEqual([{ ok: false, error: "Invalid program run request: sha256 does not match code" }]);
+      expect(f.demo).not.toHaveBeenCalled();
+      expect(executed).not.toHaveBeenCalled();
+      expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it("refuses each malformed request with one reply and runs nothing", async () => {
+      const f = fixture();
+      const { deps, sendMessage } = hostDeps(f);
+      const executed = vi.spyOn(f.service, "execute");
+      const good = { code: CODE, sha256: sha(CODE) };
+      const big = `return 1;${" ".repeat(65_536)}`;
+      const cases: Array<[string, Record<string, unknown>, string]> = [
+        ["ref and code", { ...good, ref: "hello" }, "ref and code are mutually exclusive"],
+        ["neither", {}, "ref must be a non-empty string (or code with sha256)"],
+        ["empty code", { code: "", sha256: sha("") }, "code must be a non-empty string"],
+        ["blank code", { code: "  \n", sha256: sha("  \n") }, "code must be a non-empty string"],
+        ["non-string code", { code: 7, sha256: sha("7") }, "code must be a non-empty string"],
+        ["oversized code", { code: big, sha256: sha(big) }, "code exceeds 65536 characters"],
+        ["python kernel", { ...good, kernel: "python" }, 'kernel must be "typescript"'],
+        ["missing sha256", { code: CODE }, "sha256 must be 64 lowercase hex characters"],
+        ["uppercase sha256", { code: CODE, sha256: sha(CODE).toUpperCase() }, "sha256 must be 64 lowercase hex characters"],
+        ["short sha256", { code: CODE, sha256: sha(CODE).slice(0, 12) }, "sha256 must be 64 lowercase hex characters"],
+        ["non-string sha256", { code: CODE, sha256: 1 }, "sha256 must be 64 lowercase hex characters"],
+        ["bad signal", { ...good, signal: {} }, "signal must be an AbortSignal"],
+      ];
+      for (const [name, request, error] of cases) {
+        const { replies, reply } = collect();
+        await handleFabricProgramRunEvent({ ...request, reply }, { ...deps, context: f.context });
+        expect(replies, name).toEqual([{ ok: false, error: `Invalid program run request: ${error}` }]);
+      }
+      const { replies, reply } = collect();
+      await handleFabricProgramRunEvent({ ...good, reply }, { ...deps, context: undefined });
+      expect(replies).toEqual([{ ok: false, error: "No active Pi session to run the program in" }]);
+      expect(f.demo).not.toHaveBeenCalled();
+      expect(executed).not.toHaveBeenCalled();
+      expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it("accepts code of exactly the size limit", async () => {
+      const f = fixture();
+      const code = `return 1;${" ".repeat(65_536 - "return 1;".length)}`;
+      expect(code.length).toBe(65_536);
+      const { replies, reply } = collect();
+      await handleFabricProgramRunEvent({ code, sha256: sha(code), reply }, { ...hostDeps(f).deps, context: f.context });
+      expect(replies).toMatchObject([{ ok: true, value: 1 }]);
+    });
+
+    it("reports a failing program as one ok:false reply and still posts the transcript message", async () => {
+      const f = fixture();
+      const { deps, sendMessage } = hostDeps(f);
+      const code = "throw new Error('boom');";
+      const { replies, reply } = collect();
+      await handleFabricProgramRunEvent({ code, sha256: sha(code), reply }, { ...deps, context: f.context });
+      expect(replies).toHaveLength(1);
+      expect(replies[0]).toMatchObject({ ok: false, program: `caller-code@${sha(code).slice(0, 12)}`, error: expect.stringContaining("boom") });
+      expect(sendMessage.mock.calls[0]![0].details).toMatchObject({ invokedBy: "host", success: false });
+    });
+
+    it("copies only the named fields into the run", async () => {
+      const f = fixture();
+      const { deps, sendMessage } = hostDeps(f);
+      const executed = vi.spyOn(f.service, "execute");
+      const hostile = {
+        invokedBy: "model", parentToolCallId: "attacker-call", tokenBudget: 1, maxAgentCalls: 99, hardTimeoutMs: 1,
+        requestedTimeoutMs: 1, display: { name: "EVIL-DISPLAY" }, context: { cwd: "/EVIL" }, kernel2: "EVIL", EVIL: "EVIL-FIELD",
+      };
+      for (const request of [
+        { code: CODE, sha256: sha(CODE), input: { who: "x" }, requirePromoted: true, ...hostile },
+        { ref: "hello", ...hostile },
+      ]) {
+        if ("ref" in request) await f.store.save({ name: "hello", code: "return 1;" }, "typescript");
+        const { replies, reply } = collect();
+        await handleFabricProgramRunEvent({ ...request, reply }, { ...deps, context: f.context });
+        expect(replies, JSON.stringify(replies)).toMatchObject([{ ok: true }]);
+        const options = executed.mock.calls.at(-1)![0];
+        expect(options).toMatchObject({ invokedBy: "host", context: f.context });
+        expect(options.parentToolCallId).toMatch(/^fabric_program_[0-9a-f-]{36}$/);
+        for (const key of ["tokenBudget", "maxAgentCalls", "hardTimeoutMs", "requestedTimeoutMs"] as const) {
+          expect(options[key], key).toBeUndefined();
+        }
+        expect(options.display?.name).not.toContain("EVIL");
+        expect(options.code).not.toContain("EVIL");
+        expect(JSON.stringify(sendMessage.mock.calls.at(-1)![0])).not.toContain("EVIL");
+      }
+      expect(sendMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it("faces the approval policy a model call faces", async () => {
+      const f = fixture();
+      const { deps } = hostDeps(f);
+      const code = "return await tools.call({ ref: 'jev.run', args: { input: 1 } });";
+      // Control: with execute allowed, the same code reaches the action.
+      const allowed = collect();
+      await handleFabricProgramRunEvent({ code, sha256: sha(code), reply: allowed.reply }, { ...deps, context: f.context });
+      expect(allowed.replies).toMatchObject([{ ok: true }]);
+      expect(f.jevRun).toHaveBeenCalledTimes(1);
+      f.jevRun.mockClear();
+      f.config.approvals.execute = "deny";
+      const model = await f.run(code);
+      expect(model.success).toBe(false);
+      const { replies, reply } = collect();
+      await handleFabricProgramRunEvent({ code, sha256: sha(code), reply }, { ...deps, context: f.context });
+      expect(replies).toHaveLength(1);
+      expect(replies[0]).toMatchObject({ ok: false, error: model.error });
+      expect(f.jevRun).not.toHaveBeenCalled();
+    });
+
+    it("refuses caller code in a python session without executing it", async () => {
+      const execute = vi.fn();
+      const sendMessage = vi.fn();
+      const deps = {
+        state: { ensure: async () => undefined, config: { executor: { kernel: "python" } }, execution: { execute }, registry: { has: () => true } },
+        pi: { sendMessage },
+      } as unknown as ProgramHostDeps;
+      const code = "return 1;";
+      const reply = await runHostProgram(deps, {} as ExtensionContext, { code, sha256: sha(code) });
+      expect(reply).toMatchObject({ ok: false, error: expect.stringContaining("kernel is python") });
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it("keeps ref runs unchanged when the request carries a claim", async () => {
+      const f = fixture();
+      await f.store.save({ name: "hello", code: "return { greeting: 'hi ' + input.who };" }, "typescript");
+      const { deps } = hostDeps(f);
+      for (const claim of [undefined, vi.fn()]) {
+        const { replies, reply } = collect();
+        await handleFabricProgramRunEvent({ ref: "hello", input: { who: "host" }, ...(claim ? { claim } : {}), reply }, { ...deps, context: f.context });
+        expect(replies).toMatchObject([{ ok: true, program: expect.stringMatching(/^hello@[0-9a-f]{64}$/), value: { greeting: "hi host" } }]);
+      }
+    });
+  });
+
+  describe("program run event listener", () => {
+    const sha = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
+    const boot = async () => {
+      const listeners = new Map<string, (value: unknown) => unknown>();
+      const handlers = new Map<string, Array<(...args: never[]) => unknown>>();
+      const pi = {
+        events: {
+          emit: vi.fn(),
+          on: vi.fn((channel: string, handler: (value: unknown) => unknown) => {
+            listeners.set(channel, handler);
+            return () => listeners.delete(channel);
+          }),
+        },
+        getActiveTools: vi.fn(() => ["fabric_exec"]),
+        getAllTools: vi.fn(() => [{ name: "fabric_exec" }]),
+        on: vi.fn((event: string, handler: (...args: never[]) => unknown) => {
+          handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+        }),
+        registerCommand: vi.fn(),
+        registerMessageRenderer: vi.fn(),
+        registerTool: vi.fn(),
+        setActiveTools: vi.fn(),
+      } as unknown as ExtensionAPI;
+      await piFabric(pi);
+      const listener = listeners.get(FABRIC_PROGRAM_RUN_EVENT)!;
+      const shutdown = async () => { for (const handler of handlers.get("session_shutdown") ?? []) await handler(); };
+      return { listener, shutdown };
+    };
+    const settled = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 50));
+
+    it("claims synchronously, before any reply, for every request it will answer", async () => {
+      const { listener, shutdown } = await boot();
+      try {
+        const code = "return 1;";
+        const requests: Array<[string, Record<string, unknown>]> = [
+          ["valid code", { code, sha256: sha(code) }],
+          ["mismatching hash", { code, sha256: sha("other") }],
+          ["bad kernel", { code, sha256: sha(code), kernel: "python" }],
+          ["ref", { ref: "hello" }],
+          ["neither", {}],
+        ];
+        for (const [name, fields] of requests) {
+          const events: string[] = [];
+          listener({ ...fields, claim: () => { events.push("claim"); }, reply: () => { events.push("reply"); } });
+          // Still inside the emit call: the claim has happened and no reply has.
+          expect(events, `${name} after emit`).toEqual(["claim"]);
+          await settled();
+          expect(events, `${name} after settle`).toEqual(["claim", "reply"]);
+        }
+      } finally {
+        await shutdown();
+      }
+    });
+
+    it("stays silent when the caller's claim reports another responder", async () => {
+      const { listener, shutdown } = await boot();
+      try {
+        const reply = vi.fn();
+        listener({ ref: "hello", claim: () => false, reply });
+        await settled();
+        expect(reply).not.toHaveBeenCalled();
+      } finally {
+        await shutdown();
+      }
+    });
+
+    it("does not claim a request it cannot answer, and a request without claim is answered as before", async () => {
+      const { listener, shutdown } = await boot();
+      try {
+        const claim = vi.fn();
+        expect(() => listener({ ref: "hello", claim })).toThrow("Invalid Pi Fabric program run request");
+        expect(claim).not.toHaveBeenCalled();
+        const reply = vi.fn();
+        listener({ ref: "hello", reply });
+        await settled();
+        expect(reply).toHaveBeenCalledOnce();
+        expect(reply.mock.calls[0]![0]).toMatchObject({ ok: false, error: expect.stringMatching(/No active Pi session/) });
+      } finally {
+        await shutdown();
+      }
+    });
+
+    it("answers even when the claim throws", async () => {
+      const { listener, shutdown } = await boot();
+      try {
+        const reply = vi.fn();
+        listener({ ref: "hello", claim: () => { throw new Error("nope"); }, reply });
+        await settled();
+        expect(reply).toHaveBeenCalledOnce();
+      } finally {
+        await shutdown();
+      }
+    });
+  });
+
+  it("claimFabricProgramRunRequestV1 declines only on an explicit false", () => {
+    expect(claimFabricProgramRunRequestV1({})).toBe(true);
+    expect(claimFabricProgramRunRequestV1({ claim: () => undefined })).toBe(true);
+    expect(claimFabricProgramRunRequestV1({ claim: () => true })).toBe(true);
+    expect(claimFabricProgramRunRequestV1({ claim: () => false })).toBe(false);
+    expect(claimFabricProgramRunRequestV1({ claim: () => { throw new Error("x"); } })).toBe(true);
+    expect(claimFabricProgramRunRequestV1(null)).toBe(true);
   });
 
   it("lists, promotes, retires and runs through the slash command", async () => {

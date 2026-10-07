@@ -85,6 +85,7 @@ import { piHostCompatibilityWarning } from "./host-compatibility.js";
 import {
   FABRIC_COMPONENT_REGISTER_EVENT,
   FABRIC_PROGRAM_RUN_EVENT,
+  claimFabricProgramRunRequestV1,
   FABRIC_PROVIDER_REGISTER_EVENT,
   FABRIC_PROVIDER_WITHDRAW_EVENT,
   FABRIC_TOOL_PLACEMENT_EVENT,
@@ -325,6 +326,8 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
   const unsubscribeProgramRun = pi.events.on(FABRIC_PROGRAM_RUN_EVENT, (value: unknown) => {
     const reply = (value as { reply?: unknown } | null)?.reply;
     if (typeof reply !== "function") throw new Error("Invalid Pi Fabric program run request");
+    // Synchronous: a caller must see the claim before this listener's first await.
+    if (!claimFabricProgramRunRequestV1(value)) return;
     void import("./programs/host.js").then(
       ({ handleFabricProgramRunEvent }) => handleFabricProgramRunEvent(value, { state, pi, context: programRunContext }),
       (error: unknown) => reply({ ok: false, error: `Fabric program host unavailable: ${String(error)}` }),
