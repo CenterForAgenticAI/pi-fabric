@@ -666,11 +666,19 @@ export class FabricRuntimeState {
         available: state.available,
         lastUsed: loadModelUsage(),
       }, modelMatch);
+      // The resolver returns the registry's own spelling. Match it case-sensitively
+      // first so entries that differ only by case cannot swap places: the model
+      // authenticated must be the entry the resolver chose, not an earlier twin.
+      // An exact request never falls back to the case-insensitive lookup.
       const model = models.find(
-        (candidate) =>
-          String(candidate.provider).toLowerCase() === resolved.provider.toLowerCase() &&
-          String(candidate.id).toLowerCase() === resolved.id.toLowerCase(),
-      );
+        (candidate) => String(candidate.provider) === resolved.provider && String(candidate.id) === resolved.id,
+      ) ?? (modelMatch === "exact"
+        ? undefined
+        : models.find(
+            (candidate) =>
+              String(candidate.provider).toLowerCase() === resolved.provider.toLowerCase() &&
+              String(candidate.id).toLowerCase() === resolved.id.toLowerCase(),
+          ));
       if (!model) {
         throw new Error(
           `Model ${JSON.stringify(query)} is not available to this Pi session. ` +
