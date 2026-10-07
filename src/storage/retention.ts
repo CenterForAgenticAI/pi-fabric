@@ -92,6 +92,28 @@ const childAlive = (owner: RunRootOwner | undefined, pid: number): boolean => {
 const recordAgeReference = (record: RunRecordSummary, fallback: number): number =>
   time(record.finishedAt) ? record.finishedAt : time(record.updatedAt) ? record.updatedAt : fallback;
 const runFiles = new Set(["task.txt", "status.json", "events.jsonl", "lifecycle.jsonl", "steer.jsonl", "schema.json", "images.json"]);
+// The durable runner's store: durable/<session key>/{lease.sqlite*, store/<journal>.jsonl},
+// exactly as openDurableWorkerStorage (src/durable/storage.ts) lays it out.
+const durableSessionKey = /^(?:initial|[0-9a-f]{64})$/;
+const durableLeaseFiles = new Set(["lease.sqlite", "lease.sqlite-journal", "lease.sqlite-wal", "lease.sqlite-shm"]);
+const durableStoreFile = /^(?:main|(?:doc|task)-(?:0|[1-9]\d*))\.jsonl(?:\.reclaim)?$/;
+const safeDurableTree = (durable: string): boolean => {
+  try {
+    for (const key of fs.readdirSync(durable)) {
+      const session = path.join(durable, key);
+      if (!durableSessionKey.test(key) || !ownedStat(session)?.isDirectory()) return false;
+      for (const name of fs.readdirSync(session)) {
+        const file = path.join(session, name);
+        const stat = ownedStat(file);
+        if (stat?.isFile() && durableLeaseFiles.has(name)) continue;
+        if (stat?.isDirectory() && name === "store" &&
+          fs.readdirSync(file).every((child) => durableStoreFile.test(child) && !!ownedStat(path.join(file, child))?.isFile())) continue;
+        return false;
+      }
+    }
+    return true;
+  } catch { return false; }
+};
 /** Unknown transports/contents and live descendants veto removal, even under a dead host. */
 const safeRunTree = (root: string, childrenStopped: boolean, owner?: RunRootOwner, depth = 0): boolean => {
   if (depth > 32 || !ownedStat(root)?.isDirectory()) return false;
@@ -112,6 +134,10 @@ const safeRunTree = (root: string, childrenStopped: boolean, owner?: RunRootOwne
       if (stat.isDirectory() && name === "handoff-session") {
         // This directory is exclusively populated by Fabric's session fork writer.
         if (fs.readdirSync(file).some((child) => !child.endsWith(".jsonl") || !ownedStat(path.join(file, child))?.isFile())) return false;
+        continue;
+      }
+      if (stat.isDirectory() && name === "durable") {
+        if (!safeDurableTree(file)) return false;
         continue;
       }
       if (stat.isDirectory() && name === "nested") {
