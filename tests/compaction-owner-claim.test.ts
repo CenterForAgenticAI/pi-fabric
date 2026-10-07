@@ -278,6 +278,19 @@ describe("compaction owner claim", () => {
     expect(first.active).toBe(true);
   });
 
+  it("withdraws a claim whose reply throws, so Fabric keeps compaction", async () => {
+    const fabric = await loadFabric();
+    const session = longSession();
+
+    expect(() => fabric.send({
+      version: 1, type: "claim", owner, actions: {},
+      reply: () => { throw new Error("owner crashed in reply"); },
+    })).toThrow("owner crashed in reply");
+
+    expect(fabric.compact(compactEvent(session))).toMatchObject({ compaction: { summary: expect.any(String) } });
+    expect(claimed(fabric.send, { owner: { name: "next-owner", version: "1.0.0" } }).active).toBe(true);
+  });
+
   it("refuses a withdrawal from anyone but the holder", async () => {
     const fabric = await loadFabric();
     const session = longSession();
