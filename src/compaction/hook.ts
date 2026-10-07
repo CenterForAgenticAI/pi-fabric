@@ -869,7 +869,7 @@ export interface CompactionHookOptions {
   getThresholdTokens?: (modelKey: string) => number | undefined;
   /** `compaction.outputReserveTokens`; a breached reserve never defers Pi's threshold compaction. */
   getOutputReserveTokens?: () => number;
-  /** Fabric deliberately left this compaction to another owner (pi-vcc sentinel/override or claim). */
+  /** Fabric deliberately left this compaction to another owner (pi-vcc sentinel/override). */
   onYield?: () => void;
   enrichers?: readonly CompactionEnricher[];
   /**
@@ -961,11 +961,10 @@ export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHook
       return;
     }
     // A claimed owner decides alone: no Fabric summary and no threshold
-    // deferral that could block the owner's own compaction.
-    if (options.getOwnerClaim?.()) {
-      options.onYield?.();
-      return;
-    }
+    // deferral that could block the owner's own compaction. This is not a
+    // yield to note: under a claim Fabric expects the owner's result, and a
+    // noted yield left unconsumed would hide a later foreign compaction.
+    if (options.getOwnerClaim?.()) return;
     const { preparation } = event;
     const contextWindow = context?.model?.contextWindow;
     const modelKey = modelCompactionKey(context?.model);

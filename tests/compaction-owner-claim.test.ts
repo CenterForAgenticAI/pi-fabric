@@ -283,6 +283,41 @@ describe("compaction owner claim", () => {
     expect(handler!(event, context)).toBeUndefined();
   });
 
+  it("does not note a deliberate yield under a claim", () => {
+    let handler: Handler | undefined;
+    const onYield = vi.fn();
+    registerCompactionHook({
+      on(name: string, candidate: unknown) {
+        if (name === "session_before_compact") handler = candidate as Handler;
+      },
+    } as unknown as ExtensionAPI, {
+      getEngine: () => "fabric",
+      onYield,
+      getOwnerClaim: () => ({ branchSummary: false }),
+    });
+
+    expect(handler!({ reason: "manual", preparation: { tokensBefore: 40_000 }, branchEntries: [] }, {} as ExtensionContext)).toBeUndefined();
+    expect(onYield).not.toHaveBeenCalled();
+  });
+
+  it("forgets an unconsumed yield when the claim ends, so the next foreign compaction still warns", async () => {
+    const fabric = await loadFabric();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const session = longSession();
+    const handle = claimed(fabric.send);
+    // A pi-vcc sentinel compaction notes a deliberate yield, then is
+    // cancelled: no session_compact consumes it.
+    expect(fabric.compact({ ...compactEvent(session), customInstructions: "__pi_vcc__" } as SessionBeforeCompactEvent)).toBeUndefined();
+    handle.withdraw();
+
+    // Pi's own summarizer then wins a compaction under Fabric's engine.
+    await fabric.emit("session_compact", {
+      type: "session_compact",
+      compactionEntry: { type: "compaction", summary: "Pi summary", fromHook: false },
+    }, { hasUI: false, sessionManager: { getSessionId: () => "after-claim" } } as unknown as ExtensionContext);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("the committed compaction came from Pi's own summarizer"));
+  });
+
   it("keeps /tree summaries with Fabric unless the owner declares branchSummary", async () => {
     const fabric = await loadFabric();
     const session = longSession();
