@@ -25,7 +25,9 @@ describe("extractive settings", () => {
 
   it("requires explicit charged-text opt-in and offers all native classifiers rather than chat picks", () => {
     const item = buildExtractiveSection({ config: DEFAULT_FABRIC_CONFIG, theme, persist: vi.fn(), options: { classifierModels: ["local/custom", "remote/org/classifier"], availableClassifierModels: ["local/custom"] } });
-    expect(item.label).toContain("Classifier-assisted extractive history");
+    expect(item.label).toBe("Extractive history");
+    expect(item.description).toContain("selected native classifier");
+    expect(item.description).toContain("API charges");
     expect(item.description).toContain("No secret scanning");
     const section = item.submenu!("", () => {}) as SectionSubmenu;
     const mode = section.items.find((row) => row.id === "memory.extractive.mode")!;

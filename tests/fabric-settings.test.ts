@@ -192,7 +192,7 @@ describe("FabricSettingsComponent", () => {
       "Capture",
       "UI",
       "Compaction",
-      "Classifier-assisted extractive history (Jev supported)",
+      "Extractive history",
       "Retention",
       "Mesh",
       "Code previews",

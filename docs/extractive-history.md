@@ -7,7 +7,7 @@ The session remains authoritative; this disposable view is not a facts database.
 
 ## Opt in
 
-Open `/fabric settings` → **Classifier-assisted extractive history (Jev supported)**.
+Open `/fabric settings` → **Extractive history**.
 **Consent / mode** offers:
 
 - **Off**: no extractive module load or classifier calls at startup/idle/turns.

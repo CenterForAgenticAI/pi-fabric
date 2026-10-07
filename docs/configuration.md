@@ -668,7 +668,7 @@ The `fs` adapter derives each session's `revision` from the SHA-256 of the file 
 
 ## Extractive history (opt-in)
 
-In `/fabric settings`, open **Classifier-assisted extractive history (Jev supported)**. Choose **Consent / mode** and a **Native classifier** from Pi core's registry. Model selection alone does not enable inference. This uses Pi core's `classify()` API, not Fabric's Jev connector.
+In `/fabric settings`, open **Extractive history**. Choose **Consent / mode** and a **Native classifier** from Pi core's registry. Model selection alone does not enable inference. This uses Pi core's `classify()` API, not Fabric's Jev connector.
 
 ```json
 {

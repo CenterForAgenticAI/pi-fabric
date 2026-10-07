@@ -70,7 +70,7 @@ export const buildExtractiveSection = (
   const extractive = config.memory.extractive ?? DEFAULT_EXTRACTIVE_CONFIG;
   const mode = !extractive.enabled ? EXTRACTIVE_OFF : extractive.maxEvaluationsPerTurn === 0 ? EXTRACTIVE_LOCAL : EXTRACTIVE_CONSENT;
   const disclosure = "Opt-in: sends bounded current-session active-branch user/assistant text to the selected native classifier (API charges). No thinking/tool output. No secret scanning. Scores are salience, not truth. Raw history and compaction are unchanged.";
-  return setting("memory", "Classifier-assisted extractive history (Jev supported)", summaryFor("memory", config), {
+  return setting("memory", "Extractive history", summaryFor("memory", config), {
     description: disclosure,
     submenu: sectionSubmenu(theme, "Extractive history", disclosure, [
       setting("memory.extractive.mode", "Consent / mode", mode, {
