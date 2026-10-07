@@ -125,6 +125,50 @@ export const claimFabricProgramRunRequestV1 = (value: unknown): boolean => {
   }
 };
 
+/**
+ * Everything a program run listener keeps of a request. Read once, at the event
+ * boundary and before the listener's first await, so a caller that deletes or
+ * replaces a field afterwards cannot change what runs or lose its reply.
+ */
+export interface FabricProgramRunSnapshotV1 {
+  readonly ref: unknown;
+  readonly code: unknown;
+  readonly kernel: unknown;
+  readonly sha256: unknown;
+  readonly input: unknown;
+  readonly requirePromoted: unknown;
+  readonly signal: unknown;
+  /** Calls the caller's `reply` at most once, directly, and never throws. */
+  readonly respond: (result: FabricProgramRunReplyV1) => void;
+}
+
+/** Undefined when the request has no `reply` function, so nobody can answer it. */
+export const snapshotFabricProgramRunRequestV1 = (value: unknown): FabricProgramRunSnapshotV1 | undefined => {
+  const request = value as Record<string, unknown> | null | undefined;
+  const reply = request?.reply;
+  if (typeof reply !== "function") return undefined;
+  let replied = false;
+  const respond = (result: FabricProgramRunReplyV1): void => {
+    if (replied) return;
+    replied = true;
+    try {
+      reply(result);
+    } catch {
+      // A throwing listener must not turn into an unhandled rejection.
+    }
+  };
+  return Object.freeze({
+    ref: request!.ref,
+    code: request!.code,
+    kernel: request!.kernel,
+    sha256: request!.sha256,
+    input: request!.input,
+    requirePromoted: request!.requirePromoted,
+    signal: request!.signal,
+    respond,
+  });
+};
+
 export const FABRIC_PROVIDER_REGISTER_EVENT = "pi-fabric:provider:register:v1";
 export const FABRIC_PROVIDER_DISCOVER_EVENT = "pi-fabric:provider:discover:v1";
 export const FABRIC_PROVIDER_WITHDRAW_EVENT = "pi-fabric:provider:withdraw:v1";
