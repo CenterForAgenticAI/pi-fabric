@@ -86,6 +86,11 @@ export const parseWorkerOptions = (
   const modelAdmission = modelAdmissionSource === "strict" || modelAdmissionSource === "permissive"
     ? modelAdmissionSource
     : undefined;
+  const modelMatchSource = optional(args, "model-match");
+  if (modelMatchSource !== undefined && modelMatchSource !== "exact") {
+    throw new Error("Invalid worker model-match flag");
+  }
+  const modelMatch = modelMatchSource === "exact" ? modelMatchSource : undefined;
   const sessionExportFile = optional(args, "session-export-file");
   const actorId = optional(args, "actor-id");
   const actorName = optional(args, "actor-name");
@@ -199,6 +204,7 @@ export const parseWorkerOptions = (
     ...(systemPrompt ? { systemPrompt } : {}),
     ...(persistSession ? { persistSession: true } : {}),
     ...(modelAdmission ? { modelAdmission } : {}),
+    ...(modelMatch ? { modelMatch } : {}),
     ...(sessionFile ? { sessionFile } : {}),
     ...(sessionExportFile ? { sessionExportFile } : {}),
     ...(actorId ? { actorId } : {}),

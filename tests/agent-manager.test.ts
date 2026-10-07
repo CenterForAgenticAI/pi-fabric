@@ -4,6 +4,7 @@ import path from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
+import { AGENTS_ACTION_DESCRIPTORS } from "../src/providers/agents-actions.js";
 import { EXACT_MODEL_FORM_ERROR, EXACT_MODEL_RUNNER_ERROR } from "../src/core/model-resolution.js";
 import type { FabricLifecyclePublishRequest } from "../src/lifecycle/types.js";
 import { snapshotHandoffSession } from "../src/agents/handoff.js";
@@ -437,6 +438,76 @@ describe("AgentManager", () => {
     expect(preparePiModel.mock.calls.map(([, options]) => options?.modelMatch)).toEqual(
       preparePiModel.mock.calls.map(() => "exact"),
     );
+  });
+
+  const workerAttempts = (root: string): string[][] => {
+    const files = fs.readdirSync(root).map((entry) => path.join(root, entry, "worker-args.jsonl")).filter((file) => fs.existsSync(file));
+    expect(files).toHaveLength(1);
+    return fs.readFileSync(files[0]!, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
+  };
+  const flag = (args: string[], name: string): string | undefined => args[args.indexOf(name) + 1];
+
+  it("forces strict model admission and the pin flag for an exact request, on the first launch and on every retry, whatever agents.modelAdmission says", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), { ...DEFAULT_FABRIC_CONFIG.agents, modelAdmission: "permissive" }, {
+      workerPath: path.resolve("tests/fixtures/fake-worker-startup-retry.mjs"),
+      runRoot: root,
+      preparePiModel: async (model) => model,
+    });
+    managers.push(manager);
+
+    const result = await manager.run({
+      task: "Recover startup", model: "provider/model-a", modelMatch: "exact", transport: "process",
+    });
+
+    expect(result.status).toBe("completed");
+    const attempts = workerAttempts(root);
+    expect(attempts.length).toBeGreaterThanOrEqual(2);
+    for (const args of attempts) {
+      expect(flag(args, "--model-admission")).toBe("strict");
+      expect(flag(args, "--model-match")).toBe("exact");
+      expect(flag(args, "--model")).toBe("provider/model-a");
+    }
+  });
+
+  it("keeps the configured admission and sends no pin flag for a default request", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), { ...DEFAULT_FABRIC_CONFIG.agents, modelAdmission: "permissive" }, {
+      workerPath: path.resolve("tests/fixtures/fake-worker-startup-retry.mjs"),
+      runRoot: root,
+      preparePiModel: async (model) => model,
+    });
+    managers.push(manager);
+
+    await manager.run({ task: "Recover startup", model: "provider/model-a", transport: "process" });
+
+    for (const args of workerAttempts(root)) {
+      expect(flag(args, "--model-admission")).toBe("permissive");
+      expect(args).not.toContain("--model-match");
+    }
+  });
+
+  it("describes systemPrompt in the order the worker uses: the caller's text ahead of component guidance", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker-startup-retry.mjs"),
+      runRoot: root,
+      resolveParticipantGuidance: () => "COMPONENT GUIDANCE",
+    });
+    managers.push(manager);
+
+    await manager.run({ task: "Recover startup", model: "provider/model-a", systemPrompt: "CALLER PROMPT", transport: "process" });
+
+    const prompt = flag(workerAttempts(root)[0]!, "--system-prompt")!;
+    expect(prompt.indexOf("CALLER PROMPT")).toBeGreaterThanOrEqual(0);
+    expect(prompt.indexOf("CALLER PROMPT")).toBeLessThan(prompt.indexOf("COMPONENT GUIDANCE"));
+    const run = AGENTS_ACTION_DESCRIPTORS.find((entry) => entry.name === "run")!;
+    const help = (run.inputSchema as { properties: { systemPrompt: { description: string } } }).properties.systemPrompt.description;
+    expect(help).toMatch(/ahead of any component guidance/);
+    expect(help).not.toMatch(/below component guidance/);
   });
 
   it("validates the configured Pi model default before launching", async () => {
