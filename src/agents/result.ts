@@ -50,8 +50,10 @@ export const parseStructuredValue = (text: string): unknown => {
 
 export function validateAgentResult<T extends { status: string; text: string; value?: unknown; error?: string }>(record: T, schema?: Record<string, unknown>): T {
   if (record.status !== "completed" || !schema) return record;
+  let parsed = false;
   try {
     const value = record.value ?? parseStructuredValue(record.text);
+    parsed = true;
     if (!Value.Check(schema, value)) {
       const errors = [...Value.Errors(schema, value)].slice(0, 5).map((error) => error.message).join("; ");
       throw new Error(errors || "value does not match schema");
@@ -65,8 +67,12 @@ export function validateAgentResult<T extends { status: string; text: string; va
     // The coerced value must itself validate against the schema, so schemas
     // that do not actually accept a message action still fail loudly.
     const actionSchema = (schema as { properties?: { action?: { enum?: unknown[] } } }).properties?.action;
-    if (Array.isArray(actionSchema?.enum) && actionSchema.enum.includes("silent")) {
-      const prose = record.text.trim();
+    const prose = record.text.trim();
+    // Invalid JSON/schema values are protocol failures, not advice. Only plain
+    // unstructured prose (or silence) is eligible for the directive fallback.
+    const plainProse = !/^[{[\"]|```/.test(prose);
+    if (!parsed && error instanceof SyntaxError && plainProse &&
+        Array.isArray(actionSchema?.enum) && actionSchema.enum.includes("silent")) {
       const coerced = prose ? { action: "message", message: prose.slice(0, 2400) } : { action: "silent" };
       if (Value.Check(schema, coerced)) {
         record.value = coerced;

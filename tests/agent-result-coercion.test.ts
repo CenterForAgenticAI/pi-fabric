@@ -59,6 +59,37 @@ describe("validateAgentResult directive prose coercion", () => {
     expect(record.status).toBe("failed");
   });
 
+  it.each([
+    '{"action":"unsupported"}',
+    '{"action":"message","message":42}',
+    '42',
+    '{"action":',
+    '```json\n{"action":\n```',
+  ])("does not turn invalid structured output into a message: %s", text => {
+    const record = validateAgentResult(rec(text), directive);
+    expect(record.status).toBe("failed");
+    expect(record.error).toContain("Structured agent output was invalid");
+  });
+
+  it("does not replace an invalid pre-parsed value with prose", () => {
+    const record = validateAgentResult({ ...rec("useful advice"), value: { action: "unsupported" } }, directive);
+    expect(record.status).toBe("failed");
+    expect(record.value).toEqual({ action: "unsupported" });
+  });
+
+  it("keeps required fields and message limits authoritative", () => {
+    const strict = { ...directive, required: ["action", "message"], properties: {
+      ...directive.properties, message: { type: "string", maxLength: 3 },
+    } };
+    expect(validateAgentResult(rec("too long"), strict).status).toBe("failed");
+    expect(validateAgentResult(rec(""), strict).status).toBe("failed");
+  });
+
+  it("does not recover an already failed run", () => {
+    expect(validateAgentResult({ ...rec("advice"), status: "failed", error: "provider failed" }, directive))
+      .toEqual({ status: "failed", text: "advice", error: "provider failed" });
+  });
+
   it("leaves valid structured output untouched", () => {
     const record = validateAgentResult(
       rec('{"action":"silent"}'),
