@@ -21,12 +21,50 @@ import {
 /** Upper bound for a seed prompt (same as compaction instructions). */
 export const MAX_COMPACTION_SEED_CHARS = 8192;
 
+/** Pi custom-message type of the seed Fabric sends after a committed compaction. */
+export const COMPACTION_SEED_MESSAGE_TYPE = "fabric-compaction-seed";
+
+/**
+ * Pi delivery for a seed: a message that starts a turn, queued as a
+ * follow-up. Pi defers a turn-starting message sent during `agent_settled`
+ * until the settle finishes, so the seed is queued after the compaction
+ * commits; a prompt submitted during the compaction runs first.
+ */
+export const COMPACTION_SEED_DELIVERY = { triggerTurn: true, deliverAs: "followUp" } as const;
+
+export interface CompactionSeedMessage {
+  customType: typeof COMPACTION_SEED_MESSAGE_TYPE;
+  content: string;
+  display: true;
+  details: { version: 1 };
+}
+
+const COMPACTION_SEED_LABEL =
+  "A Fabric program requested this continuation when it compacted the context. It is not a message from the user.";
+
+const escapeXmlText = (value: string): string =>
+  value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+
+// A seed is program-written text, and the compaction removes the context
+// that showed who wrote it. Pi hands a custom message to the model as
+// user-role text without its type or details, so the origin travels in the
+// text itself, ahead of the escaped seed, which cannot close the wrapper.
+export const compactionSeedMessage = (seed: string): CompactionSeedMessage => ({
+  customType: COMPACTION_SEED_MESSAGE_TYPE,
+  content: `${COMPACTION_SEED_LABEL}\n<fabric-compaction-seed>\n${escapeXmlText(seed)}\n</fabric-compaction-seed>`,
+  display: true,
+  details: { version: 1 },
+});
+
 export interface CompactRequestIntent {
   reason?: string;
   instructions?: string;
   preserve?: string[];
   requestedBy?: string;
-  /** Sent as the next user prompt once the compaction commits. */
+  /**
+   * Queued after the compaction commits as a labelled Fabric message that
+   * starts a turn; a prompt submitted during the compaction runs first.
+   */
   seed?: string;
 }
 
@@ -50,7 +88,7 @@ export interface CompactLastCommit {
   tokensBefore?: number;
   estimatedTokensAfter?: number;
   error?: string;
-  /** The intent's seed was handed to Pi as the next prompt. */
+  /** The intent's seed was handed to Pi as a labelled Fabric message. */
   seeded?: true;
 }
 
@@ -77,10 +115,10 @@ export interface CompactControllerHooks {
   // small)" (the intent is still cleared; the raw pi message is kept in
   // `error`), and "failed" for any other error.
   onCommit?: (info: CompactLastCommit) => void;
-  // Sends a committed intent's seed as the next user prompt. Called only
-  // after Pi reports the compaction complete; never for cancelled or failed
-  // commits.
-  sendSeed?: (seed: string) => void;
+  // Delivers a committed intent's seed, already labelled as Fabric's (see
+  // compactionSeedMessage), never as a user prompt. Called only after Pi
+  // reports the compaction complete; never for cancelled or failed commits.
+  sendSeed?: (message: CompactionSeedMessage) => void;
 }
 
 const DEFAULT_REQUESTED_BY = "model";
@@ -235,11 +273,13 @@ export class CompactController {
                 : {}),
             };
             clearCommittedIntent();
-            // The seed follows the committed compaction; Pi defers a prompt
-            // sent during agent_settled until the settle completes.
+            // The seed follows the committed compaction. Pi defers a
+            // turn-starting message sent during agent_settled until the
+            // settle finishes, so it is queued after the commit; a prompt
+            // submitted during the compaction runs first.
             if (committing.seed !== undefined && this.#hooks.sendSeed) {
               try {
-                this.#hooks.sendSeed(committing.seed);
+                this.#hooks.sendSeed(compactionSeedMessage(committing.seed));
                 this.#last = { ...this.#last, seeded: true };
               } catch {
                 // A failed hand-off leaves `seeded` unset; the commit stands.
