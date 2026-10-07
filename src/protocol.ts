@@ -371,19 +371,23 @@ const readOwnerActions = (value: unknown): FabricCompactionOwnerActionsV1 | stri
   for (const name of names) {
     const entry = value[name];
     if (entry === undefined) continue;
-    if (!isPlainRecord(entry) || typeof entry.handler !== "function") {
+    // Each caller field is read once: a getter cannot pass the check with
+    // one value and be stored with another.
+    const handler = isPlainRecord(entry) ? entry.handler : undefined;
+    if (!isPlainRecord(entry) || typeof handler !== "function") {
       return `actions.${name} must be an object with a handler function`;
     }
     const extra = unknownKey(entry, name === "request" || name === "carry" ? ["fields", "handler"] : ["handler"]);
     if (extra !== undefined) return `actions.${name} has an unknown key: ${extra.slice(0, 64)}`;
     if (name === "request" || name === "carry") {
+      const declared = entry.fields;
       const fields = name === "request"
-        ? readOwnerFields(entry.fields, FABRIC_COMPACTION_OWNER_REQUEST_FIELDS, name)
-        : readOwnerFields(entry.fields, FABRIC_COMPACTION_OWNER_CARRY_FIELDS, name);
+        ? readOwnerFields(declared, FABRIC_COMPACTION_OWNER_REQUEST_FIELDS, name)
+        : readOwnerFields(declared, FABRIC_COMPACTION_OWNER_CARRY_FIELDS, name);
       if (typeof fields === "string") return fields;
-      (actions as Record<string, unknown>)[name] = { fields, handler: entry.handler };
+      (actions as Record<string, unknown>)[name] = { fields, handler };
     } else {
-      (actions as Record<string, unknown>)[name] = { handler: entry.handler };
+      (actions as Record<string, unknown>)[name] = { handler };
     }
   }
   return actions;
@@ -402,49 +406,58 @@ const isAbortSignalLike = (value: unknown): value is AbortSignal =>
  */
 export const readFabricCompactionOwnerMessageV1 = (value: unknown): FabricCompactionOwnerReadResultV1 => {
   if (!isPlainRecord(value)) return { ok: false, error: "message must be an object" };
-  const reply = typeof value.reply === "function"
-    ? value.reply as (result: { ok: false; error: string }) => void
+  const rawReply = value.reply;
+  const reply = typeof rawReply === "function"
+    ? rawReply as (result: { ok: false; error: string }) => void
     : undefined;
   const fail = (error: string): FabricCompactionOwnerReadResultV1 => ({ ok: false, error, ...(reply ? { reply } : {}) });
   if (value.version !== 1) return fail("version must be 1");
-  if (value.type === "withdraw") {
+  // Each caller field is read once into a local: a getter cannot pass a check
+  // with one value and be stored with another.
+  const type = value.type;
+  if (type === "withdraw") {
     const extra = unknownKey(value, ["version", "type", "token", "reply"]);
     if (extra !== undefined) return fail(`withdraw has an unknown key: ${extra.slice(0, 64)}`);
-    if (value.reply !== undefined && !reply) return fail("reply must be a function");
-    if (!ownerText(value.token, 128)) return fail("token must be the claim handle's token");
+    if (rawReply !== undefined && !reply) return fail("reply must be a function");
+    const token = value.token;
+    if (!ownerText(token, 128)) return fail("token must be the claim handle's token");
     return {
       ok: true,
       message: {
         version: 1,
         type: "withdraw",
-        token: value.token,
+        token,
         ...(reply ? { reply: reply as NonNullable<FabricCompactionOwnerWithdrawV1["reply"]> } : {}),
       },
     };
   }
-  if (value.type !== "claim") return fail('type must be "claim" or "withdraw"');
+  if (type !== "claim") return fail('type must be "claim" or "withdraw"');
   const extra = unknownKey(value, ["version", "type", "owner", "actions", "branchSummary", "signal", "reply"]);
   if (extra !== undefined) return fail(`claim has an unknown key: ${extra.slice(0, 64)}`);
   if (!reply) return fail("reply must be a function");
   const owner = value.owner;
-  if (!isPlainRecord(owner) || !ownerText(owner.name, 128) || !ownerText(owner.version, 64)) {
+  const name = isPlainRecord(owner) ? owner.name : undefined;
+  const ownerVersion = isPlainRecord(owner) ? owner.version : undefined;
+  if (!ownerText(name, 128) || !ownerText(ownerVersion, 64)) {
     return fail("owner must be { name, version } with non-empty printable text");
   }
   const actions = readOwnerActions(value.actions);
   if (typeof actions === "string") return fail(actions);
-  if (value.branchSummary !== undefined && typeof value.branchSummary !== "boolean") {
+  const branchSummary = value.branchSummary;
+  if (branchSummary !== undefined && typeof branchSummary !== "boolean") {
     return fail("branchSummary must be a boolean");
   }
-  if (value.signal !== undefined && !isAbortSignalLike(value.signal)) return fail("signal must be an AbortSignal");
+  const signal = value.signal;
+  if (signal !== undefined && !isAbortSignalLike(signal)) return fail("signal must be an AbortSignal");
   return {
     ok: true,
     message: {
       version: 1,
       type: "claim",
-      owner: { name: owner.name, version: owner.version },
+      owner: { name, version: ownerVersion },
       actions,
-      ...(value.branchSummary === true ? { branchSummary: true } : {}),
-      ...(value.signal !== undefined ? { signal: value.signal } : {}),
+      ...(branchSummary === true ? { branchSummary: true } : {}),
+      ...(signal !== undefined ? { signal } : {}),
       reply: reply as FabricCompactionOwnerClaimV1["reply"],
     },
   };
