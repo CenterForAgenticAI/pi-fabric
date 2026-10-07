@@ -393,6 +393,33 @@ describe("compact.* under a claim", () => {
     expect(appendEntry).not.toHaveBeenCalled();
   });
 
+  it("cancels Fabric's own pending request when the owner has no cancel, and says so", async () => {
+    const { controller, provider } = setup({});
+    controller.request({ reason: "recorded before the claim", instructions: "Keep the plan", seed: "Continue" });
+
+    await expect(provider.invoke("cancel", {}, invocation())).resolves.toEqual({
+      cancelled: true, claim: owner, fabricIntentCleared: true, ownerCancelled: false,
+    });
+    expect(controller.status().pending).toBeUndefined();
+    // Nothing left to cancel and no owner cancel: the call fails.
+    await expect(provider.invoke("cancel", {}, invocation())).rejects.toThrow(/pi-context-aware@1\.4\.0.*compact\.cancel/);
+  });
+
+  it("reports whether Fabric's own request was cleared beside the owner's cancel", async () => {
+    const cancel = vi.fn(() => ({ dropped: "fold" }));
+    const { controller, provider } = setup({ cancel: { handler: cancel } });
+    controller.request({ reason: "recorded before the claim" });
+
+    await expect(provider.invoke("cancel", {}, invocation())).resolves.toEqual({
+      cancelled: true, claim: owner, fabricIntentCleared: true, ownerCancelled: true, result: { dropped: "fold" },
+    });
+    await expect(provider.invoke("cancel", {}, invocation())).resolves.toMatchObject({
+      fabricIntentCleared: false, ownerCancelled: true,
+    });
+    expect(controller.status().pending).toBeUndefined();
+    expect(cancel).toHaveBeenCalledTimes(2);
+  });
+
   it("routes request and carry to the owner with only declared fields", async () => {
     const request = vi.fn(() => ({ accepted: true }));
     const carry = vi.fn(() => ({ items: ["Auth regression is still open"] }));

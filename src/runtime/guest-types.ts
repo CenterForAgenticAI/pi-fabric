@@ -1513,7 +1513,14 @@ interface FabricCompactApi {
   }>;
   /** Persistent carry-forward focus rendered in every Fabric summary until cleared; no args reads. Under a claim the owner keeps it. */
   carry(args?: { items?: string[]; add?: string[]; remove?: string[]; clear?: boolean }): Promise<{ items: string[]; claim?: FabricCompactionClaimRef }>;
-  cancel(): Promise<{ cancelled: true; claim?: FabricCompactionClaimRef; result?: unknown }>;
+  /** Under a claim, says which was cancelled: Fabric's own pending request, the owner's, or both. */
+  cancel(): Promise<{
+    cancelled: true;
+    claim?: FabricCompactionClaimRef;
+    fabricIntentCleared?: boolean;
+    ownerCancelled?: boolean;
+    result?: unknown;
+  }>;
 }
 
 interface FabricPrewalkFileIdentityStatus {
