@@ -379,21 +379,28 @@ describe("compaction owner claim", () => {
     expect(handle.active).toBe(false);
   });
 
-  it("offers Fabric's deterministic summary as the owner's fallback", async () => {
+  it("offers Fabric's deterministic summary, with the same budget, as the owner's fallback", async () => {
     const fabric = await loadFabric();
     const session = longSession();
     const event = compactEvent(session);
+    // A model window brings Fabric's continuity budget, and with it the
+    // target context ratio, into the result.
+    const context = { model: { provider: "anthropic", id: "sonnet", contextWindow: 150_000 } } as unknown as ExtensionContext;
     const handle = claimed(fabric.send);
 
-    const fallback = handle.fallback(event, {} as ExtensionContext);
-    const withCarry = handle.fallback(event, {} as ExtensionContext, { carry: ["Auth regression is still open"] });
-    const invalidCarry = handle.fallback(event, {} as ExtensionContext, { carry: [""] });
+    const fallback = handle.fallback(event, context);
+    const withCarry = handle.fallback(event, context, { carry: ["Auth regression is still open"] });
+    const invalidCarry = handle.fallback(event, context, { carry: [""] });
     handle.withdraw();
-    const fabricOwn = fabric.compact(compactEvent(session)) as { compaction: unknown };
+    const fabricOwn = fabric.compact(compactEvent(session), context) as { compaction: unknown };
 
-    // Exactly what Fabric's own engine produces for the same event.
+    // Exactly what Fabric's own engine produces for the same event, budgeted
+    // at the default compaction.targetContextRatio of 0.65.
     expect(fallback).toEqual({ ok: true, compaction: fabricOwn.compaction });
-    expect(fallback).toMatchObject({ ok: true, compaction: { details: { compactor: "fabric" } } });
+    expect(fallback).toMatchObject({
+      ok: true,
+      compaction: { details: { compactor: "fabric", budget: { contextWindow: 150_000, targetContextRatio: 0.65 } } },
+    });
     expect(withCarry).toMatchObject({ ok: true, compaction: { summary: expect.stringContaining("Auth regression is still open") } });
     expect(invalidCarry).toMatchObject({ ok: false });
     expect(handle.fallback(event, {} as ExtensionContext)).toMatchObject({ ok: false, reason: expect.stringContaining("no longer held") });
