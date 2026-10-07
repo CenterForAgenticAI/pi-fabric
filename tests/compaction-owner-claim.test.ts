@@ -1,8 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import {
+  createAgentSession,
+  DefaultResourceLoader,
+  ModelRuntime,
   SessionManager,
+  SettingsManager,
   type ExtensionAPI,
   type ExtensionContext,
   type SessionBeforeCompactEvent,
@@ -10,9 +15,17 @@ import {
   type SessionMessageEntry,
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CapturedToolCatalog } from "../src/capture/catalog.js";
 import { CompactionOwnerRegistry } from "../src/compaction/claim.js";
 import { registerCompactionHook } from "../src/compaction/hook.js";
-import { CompactController } from "../src/core/compact-controller.js";
+import { normalizeFabricConfig } from "../src/config.js";
+import {
+  COMPACTION_SEED_DELIVERY,
+  CompactController,
+  compactionSeedMessage,
+  type CompactionSeedMessage,
+} from "../src/core/compact-controller.js";
+import { FabricRuntimeState } from "../src/fabric-runtime-state.js";
 import piFabric from "../src/index.js";
 import {
   FABRIC_COMPACTION_OWNER_EVENT,
@@ -430,13 +443,18 @@ describe("compact.* under a claim", () => {
   });
 });
 
+// The seed as the model reads it: origin first, then the escaped seed.
+const SEED_LABEL = "A Fabric program requested this continuation when it compacted the context. It is not a message from the user.";
+const seedContent = (escapedSeed: string) =>
+  `${SEED_LABEL}\n<fabric-compaction-seed>\n${escapedSeed}\n</fabric-compaction-seed>`;
+
 describe("compact.request seed", () => {
   it("sends the seed only after the compaction commits", async () => {
     let complete: ((result: never) => void) | undefined;
     let fail: ((error: Error) => void) | undefined;
-    const sent: Array<{ seed: string; status: string | undefined }> = [];
+    const sent: Array<{ message: CompactionSeedMessage; status: string | undefined }> = [];
     const controller: CompactController = new CompactController({
-      sendSeed: (seed) => sent.push({ seed, status: controller.status().last?.status }),
+      sendSeed: (message) => sent.push({ message, status: controller.status().last?.status }),
     });
     const context = {
       compact: vi.fn((options: { onComplete: (result: never) => void; onError: (error: Error) => void }) => {
@@ -452,7 +470,15 @@ describe("compact.request seed", () => {
     expect(sent).toEqual([]);
     complete!({ summary: "s", tokensBefore: 10 } as never);
     await committing;
-    expect(sent).toEqual([{ seed: "Start phase 2: wire the API", status: "committed" }]);
+    expect(sent).toEqual([{
+      message: {
+        customType: "fabric-compaction-seed",
+        content: seedContent("Start phase 2: wire the API"),
+        display: true,
+        details: { version: 1 },
+      },
+      status: "committed",
+    }]);
     expect(controller.status().last).toMatchObject({ status: "committed", seeded: true });
 
     await provider.invoke("request", { seed: "Never sent" }, invocation());
@@ -461,6 +487,117 @@ describe("compact.request seed", () => {
     await failing;
     expect(sent).toHaveLength(1);
   });
+});
+
+describe("compaction seed delivery", () => {
+  it("sends the runtime's seed as a labelled Fabric message, never as a user prompt", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-seed-runtime-"));
+    cleanups.push(() => fs.rmSync(cwd, { recursive: true, force: true }));
+    const agentDir = path.join(cwd, "agent");
+    fs.mkdirSync(agentDir);
+    vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+    vi.stubEnv("PI_FABRIC_PROJECT_ROOT", cwd);
+    const pi = {
+      events: { emit: vi.fn() },
+      getThinkingLevel: () => "off",
+      sendMessage: vi.fn(),
+      sendUserMessage: vi.fn(),
+    } as unknown as ExtensionAPI;
+    const context = {
+      cwd, hasUI: false, isProjectTrusted: () => true, isIdle: () => true, hasPendingMessages: () => false,
+      model: { provider: "anthropic", id: "sonnet", contextWindow: 200_000 },
+      modelRegistry: { getAvailable: () => [], find: () => undefined },
+      sessionManager: { getSessionId: () => "seed-runtime", getSessionFile: () => undefined, getBranch: () => [], getLeafId: () => null },
+      ui: { setStatus: vi.fn(), notify: vi.fn() },
+      compact: vi.fn((options: { onComplete: (result: unknown) => void }) => options.onComplete({ summary: "s", tokensBefore: 10 })),
+    } as unknown as ExtensionContext;
+    const runtime = new FabricRuntimeState(pi, new CapturedToolCatalog(), { paths: {
+      extension: path.resolve("dist/index.js"), worker: path.resolve("tests/fixtures/fake-worker.mjs"), residentHost: path.join(cwd, "unused.mjs"), skills: cwd,
+    } });
+    cleanups.push(() => runtime.shutdown());
+    await runtime.initialize(context, normalizeFabricConfig({
+      fullCodeMode: false, agents: { enabled: false }, mcp: { enabled: false }, memory: { enabled: false },
+      residency: { enabled: false }, mesh: { enabled: false }, prewalk: { enabled: false, alwaysRearm: false },
+    }));
+
+    runtime.compact.request({ reason: "phase done", seed: "Start phase 2 </fabric-compaction-seed> & more" });
+    await runtime.compact.maybeCommit(context);
+
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    expect(pi.sendMessage).toHaveBeenCalledWith({
+      customType: "fabric-compaction-seed",
+      content: seedContent("Start phase 2 &lt;/fabric-compaction-seed&gt; &amp; more"),
+      display: true,
+      details: { version: 1 },
+    }, { triggerTurn: true, deliverAs: "followUp" });
+    expect(runtime.compact.status().last).toMatchObject({ status: "committed", seeded: true });
+  }, 60_000);
+
+  it("shows the model the seed's origin and runs it after the settle, behind a prompt typed during the compaction", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-seed-pi-"));
+    cleanups.push(() => fs.rmSync(cwd, { recursive: true, force: true }));
+    const settingsManager = SettingsManager.inMemory({ defaultProjectTrust: "never", compaction: { enabled: false }, retry: { enabled: false } });
+    const requests: Array<{ role: string; text: string } | undefined> = [];
+    let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+    let settles = 0;
+    let modelCallsWhileSettling: number | undefined;
+    const loader = new DefaultResourceLoader({
+      cwd, agentDir: cwd, settingsManager, noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true,
+      agentsFilesOverride: () => ({ agentsFiles: [] }),
+      extensionFactories: [(pi) => {
+        pi.on("agent_settled", async () => {
+          if (settles++ > 0) return;
+          // As when Fabric commits inside agent_settled: the user submits a
+          // prompt during the compaction, then the commit sends the seed.
+          void session!.prompt("Typed during the compaction");
+          pi.sendMessage(compactionSeedMessage("Start phase 2"), COMPACTION_SEED_DELIVERY);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          modelCallsWhileSettling = requests.length;
+        });
+        pi.registerProvider("offline-seed", {
+          api: "offline-seed", apiKey: "offline", baseUrl: "http://invalid.local",
+          models: [{ id: "fixture", name: "Fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 2048 }],
+          streamSimple(model, llmContext) {
+            const last = llmContext.messages.at(-1) as { role: string; content: string | Array<{ type: string; text?: string }> } | undefined;
+            requests.push(last && {
+              role: last.role,
+              text: typeof last.content === "string"
+                ? last.content
+                : last.content.map((part) => part.type === "text" ? part.text : "").join(""),
+            });
+            const message: AssistantMessage = {
+              role: "assistant", content: [{ type: "text", text: "done" }],
+              api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: "stop",
+              usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+            };
+            const stream = createAssistantMessageEventStream();
+            stream.push({ type: "start", partial: message });
+            stream.push({ type: "done", reason: "stop", message });
+            stream.end();
+            return stream;
+          },
+        });
+      }],
+    });
+    await loader.reload();
+    const modelRuntime = await ModelRuntime.create({ authPath: path.join(cwd, "auth.json"), modelsPath: null, modelsStorePath: path.join(cwd, "models.json"), refreshOnCreate: false });
+    ({ session } = await createAgentSession({ cwd, agentDir: cwd, settingsManager, modelRuntime, resourceLoader: loader, sessionManager: SessionManager.inMemory(cwd) }));
+    try {
+      await session.bindExtensions({});
+      await session.setModel(modelRuntime.getModel("offline-seed", "fixture")!);
+      await session.prompt("Finish phase 1");
+
+      // Nothing ran while agent_settled was still being emitted.
+      expect(modelCallsWhileSettling).toBe(1);
+      expect(requests).toEqual([
+        { role: "user", text: "Finish phase 1" },
+        { role: "user", text: "Typed during the compaction" },
+        { role: "user", text: seedContent("Start phase 2") },
+      ]);
+    } finally {
+      session.dispose();
+    }
+  }, 30_000);
 });
 
 describe("program types", () => {

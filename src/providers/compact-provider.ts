@@ -70,7 +70,7 @@ const requestSchema = Type.Object({
   seed: Type.Optional(Type.String({
     minLength: 1,
     maxLength: MAX_COMPACTION_SEED_CHARS,
-    description: "Prompt sent as the next user message after the compaction commits, to start the next phase",
+    description: "Text to start the next phase, queued after the compaction commits as a labelled Fabric message that starts a turn; a prompt submitted during the compaction runs first",
   })),
 }, { additionalProperties: false });
 
@@ -140,7 +140,7 @@ const descriptors: FabricActionDescriptor[] = [
   {
     name: "request",
     description:
-      "Request an advisory compaction of the host session's context at the next safe boundary (agent_settled). The host commits it only between turns, never mid-turn. A new request replaces any pending one. An optional seed is sent as the next prompt after the compaction commits. Under a compaction owner claim the request goes to that owner.",
+      "Request an advisory compaction of the host session's context at the next safe boundary (agent_settled). The host commits it only between turns, never mid-turn. A new request replaces any pending one. An optional seed is queued after the compaction commits as a labelled Fabric message that starts a turn. Under a compaction owner claim the request goes to that owner.",
     inputSchema: requestSchema as unknown as Record<string, unknown>,
     risk: "write",
   },
