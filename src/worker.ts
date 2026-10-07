@@ -320,8 +320,9 @@ const main = async (): Promise<void> => {
     piArguments.push("-e", fileURLToPath(new URL(guard, import.meta.url)));
   }
   if (options.modelMatch === "exact") {
-    // Exact means only this model does work. The guard ends the child before any
-    // model call whose current model differs; it loads even with --no-extensions.
+    // Exact pins the run's own model. The guard ends the child when the session's
+    // model changes or a request is about to go out on another model; it loads even
+    // with --no-extensions. Model calls that extension code makes itself are not covered.
     if (!isPi) throw new Error(`modelMatch "exact" requires the Pi runner, not ${options.runner}`);
     if (!options.model || options.model.indexOf("/") < 1) throw new Error('modelMatch "exact" requires a provider/id model');
     const guard = import.meta.url.endsWith(".ts") ? "./agents/model-pin-guard.ts" : "./agents/model-pin-guard.js";
