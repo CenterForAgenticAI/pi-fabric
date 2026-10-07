@@ -9,6 +9,7 @@ import {
   type CreateAgentSessionRuntimeFactory, type LoadExtensionsResult,
   type ProjectTrustContext, type ProjectTrustHandler,
 } from "@earendil-works/pi-coding-agent";
+import { durableExtensionLoadError } from "./extension-load-error.js";
 import { createDurableAgentSession } from "./session.js";
 import { openDurableWorkerStorage } from "./storage.js";
 import type { DurableWorkerOptions } from "./worker-options.js";
@@ -79,7 +80,7 @@ export async function createDurableWorkerRuntime(options: DurableWorkerOptions):
       },
     });
     const extensionErrors = services.resourceLoader.getExtensions().errors;
-    if (extensionErrors.length) throw new Error(`Durable worker extension loading failed: ${JSON.stringify(extensionErrors)}`);
+    if (extensionErrors.length) throw durableExtensionLoadError(extensionErrors);
     for (const diagnostic of services.diagnostics) {
       process.stderr.write(`${diagnostic.type}: ${diagnostic.message}\n`);
     }
