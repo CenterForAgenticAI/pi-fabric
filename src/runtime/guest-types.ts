@@ -1266,7 +1266,7 @@ interface FabricCompactPendingIntent {
   reason?: string;
   instructions?: string;
   preserve?: string[];
-  /** Sent as the next prompt after the compaction commits. */
+  /** Queued after the compaction commits as a labelled Fabric message. */
   seed?: string;
   requestedBy: string;
   requestedAt: number;
@@ -1476,7 +1476,7 @@ interface FabricCompactApi {
     instructions?: string;
     preserve?: string[];
     requestedBy?: string;
-    /** Prompt sent as the next user message after the compaction commits. */
+    /** Queued after the compaction commits as a labelled Fabric message that starts a turn; a prompt submitted during the compaction runs first. */
     seed?: string;
     instruction?: string;
     requested_by?: string;
