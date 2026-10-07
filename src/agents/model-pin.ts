@@ -7,13 +7,25 @@ export const MODEL_PIN_MARKER = "[pi-fabric] model-pin-violation ";
 
 export interface ModelPinViolation {
   pinned: string;
-  /** `provider/id` of the model that was about to run, or "none". */
+  /** `provider/id` of the model that was about to run, `payload model "<id>"` for a rewritten request, or "none". */
   actual: string;
 }
 
+/** Every pin failure starts with this text; the worker builds it, never a model id. */
+export const MODEL_PIN_FAILURE_PREFIX = "Fabric exact model pin violated: ";
+
+/**
+ * Whether a run ended on a pin violation. Such a run is never retried or resumed,
+ * whatever else its error text says: a model id can spell `missing credentials`.
+ * Decided from the child's exit status and the fixed prefix, not from free text.
+ */
+export const isModelPinFailure = (record: { exitCode?: number | null; error?: string }): boolean =>
+  record.exitCode === MODEL_PIN_EXIT_CODE ||
+  (typeof record.error === "string" && record.error.startsWith(MODEL_PIN_FAILURE_PREFIX));
+
 /** Fixed run error; the worker builds it from the stderr marker. */
 export const modelPinFailure = (violation: ModelPinViolation): string =>
-  `Fabric exact model pin violated: only ${violation.pinned} may run, but ${violation.actual} was about to run. ` +
+  `${MODEL_PIN_FAILURE_PREFIX}only ${violation.pinned} may run, but ${violation.actual} was about to run. ` +
   "The provider call was stopped before any request was sent.";
 
 /** Parse the marker line out of a child's stderr; undefined when absent or malformed. */
