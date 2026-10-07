@@ -1,3 +1,6 @@
+import { execFile, spawnSync } from "node:child_process";
+import { promisify } from "node:util";
+import type { AgentRunRecord } from "../src/agents/types.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -56,7 +59,34 @@ function installation() {
   return { root, manager };
 }
 
+const bunAvailable = spawnSync("bun", ["--version"], { timeout: 5000 }).status === 0;
+
 describe("installed durable worker without host peers", () => {
+  it.skipIf(!bunAvailable)("runs the parent and durable SDK worker under Bun without host peers", async () => {
+    const { root } = installation();
+    const taskFile = path.join(root, "task.txt");
+    const statusFile = path.join(root, "bun-status.json");
+    fs.writeFileSync(taskFile, "read fixture");
+    const flags = {
+      id: "bun-probe", name: "bun-probe", runner: "pi-durable", cwd: root,
+      "task-file": taskFile, "status-file": statusFile,
+      "lifecycle-file": path.join(root, "bun-lifecycle.jsonl"), "log-file": path.join(root, "bun-events.jsonl"),
+      "pi-binary": "forbidden-legacy-fallback", "claude-binary": "unused", "veda-binary": "unused",
+      "veda-backend": "agy", "veda-persona": "unused", "timeout-ms": "20000", depth: "1",
+      "full-code-mode": "false", extensions: "true", tools: '["read"]', "granted-risks": "[]", transport: "process",
+    };
+    const child = await promisify(execFile)("bun", [path.join(root, "dist/worker.js"),
+      ...Object.entries(flags).flatMap(([key, value]) => [`--${key}`, value])],
+    { cwd: root, timeout: 25000, maxBuffer: 100000 }).then(
+      output => ({ ...output, exitCode: 0 }), error => ({ stderr: String(error.stderr), exitCode: error.code }),
+    );
+    expect(child, child.stderr).toMatchObject({ exitCode: 0 });
+    const record = JSON.parse(fs.readFileSync(statusFile, "utf8")) as AgentRunRecord;
+    expect(record.status, record.error).toBe("completed");
+    expect(record.text).toContain("installed durable worker works");
+    expect(record.toolCalls).toBe(1);
+  }, 30000);
+
   it("runs SDK RPC, a discovered extension, and a real tool outside the checkout", async () => {
     const { manager } = installation();
     const result = await manager.run({ task: "read fixture", tools: ["read"] });
