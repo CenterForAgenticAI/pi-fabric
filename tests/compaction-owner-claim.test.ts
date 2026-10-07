@@ -14,6 +14,7 @@ import {
   type SessionBeforeTreeEvent,
   type SessionMessageEntry,
 } from "@earendil-works/pi-coding-agent";
+import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CapturedToolCatalog } from "../src/capture/catalog.js";
 import { CompactionOwnerRegistry } from "../src/compaction/claim.js";
@@ -789,6 +790,39 @@ describe("compaction seed delivery", () => {
       session.dispose();
     }
   }, 30_000);
+});
+
+describe("owner docs", () => {
+  it("type-checks the documented claim example against the protocol types", () => {
+    const markdown = fs.readFileSync("docs/programmatic-compaction.md", "utf8");
+    const section = markdown.slice(markdown.indexOf("### Compaction owner claim"));
+    const example = /```ts\n([\s\S]*?)\n```/.exec(section)?.[1];
+    expect(example).toContain("FABRIC_COMPACTION_OWNER_EVENT");
+    // The example's own helpers, declared; everything else must resolve.
+    const file = path.resolve("tests/__compaction-owner-docs-example__.ts");
+    const source = [
+      'import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";',
+      "declare const pi: ExtensionAPI;",
+      "declare function focus(request: unknown, signal?: AbortSignal): unknown;",
+      "declare function carry(update: unknown): string[];",
+      "declare const ladder: { stage: string };",
+      "declare function cancelPending(): unknown;",
+      "declare function adoptCarry(items: readonly string[]): void;",
+      example!.replace('"pi-fabric/protocol"', '"../src/protocol.js"'),
+    ].join("\n");
+    const configFile = ts.readConfigFile(path.resolve("tsconfig.json"), ts.sys.readFile);
+    const options = ts.parseJsonConfigFileContent(configFile.config, ts.sys, process.cwd()).options;
+    const host = ts.createCompilerHost(options);
+    const getSourceFile = host.getSourceFile.bind(host);
+    const fileExists = host.fileExists.bind(host);
+    host.getSourceFile = (name, language, ...rest) =>
+      path.resolve(name) === file ? ts.createSourceFile(name, source, language) : getSourceFile(name, language, ...rest);
+    host.fileExists = (name) => path.resolve(name) === file || fileExists(name);
+    const program = ts.createProgram([file], { ...options, noEmit: true }, host);
+    const diagnostics = ts.getPreEmitDiagnostics(program, program.getSourceFile(file))
+      .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"));
+    expect(diagnostics).toEqual([]);
+  }, 60_000);
 });
 
 describe("program types", () => {
