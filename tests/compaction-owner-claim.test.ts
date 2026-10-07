@@ -831,8 +831,12 @@ describe("program types", () => {
 const requested = await compact.request({ reason: "phase done", seed: "Start phase 2" });
 const status = await compact.status();
 const pressure = await compact.pressure();
-return { seed: requested.intent.seed, owner: requested.claim?.name, actions: status.claim?.actions, stage: pressure.ownerPressure?.stage };
-`, GUEST_TYPE_DECLARATIONS);
+const cancelled = await compact.cancel();
+return {
+  seed: requested.intent.seed, owner: requested.claim?.name, actions: status.claim?.actions, stage: pressure.ownerPressure?.stage,
+  fabric: cancelled.fabricIntentCleared, byOwner: cancelled.ownerCancelled,
+};
+`, GUEST_TYPE_DECLARATIONS, true);
     expect(result.errors).toEqual([]);
   });
 });
