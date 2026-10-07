@@ -123,6 +123,10 @@ The reply is `{ version: 1, mode, tools }`. `mode` is `"full-code"`, `"enforce"`
 
 `model` wins when both apply; optional `programCallable` lists the reported `model` tools that a program can also call, such as foreground tools, and is omitted when empty. Omitting `tools` reports every tool registered with Pi; at most 1,024 names of up to 256 characters each are accepted. An invalid query gets no reply. Placement describes state at the time of the query. A later mode change, reload, or tool refresh can change it, so query when you need the answer and do not cache it.
 
+## Compaction owner claim
+
+An extension that writes its own compaction summaries claims compaction from Fabric with `FABRIC_COMPACTION_OWNER_EVENT` (`pi-fabric:compaction-owner:v1`). Fabric's compactor and thresholds stand down, `compact.*` program calls route to the owner, and the reply carries a handle with `withdraw()` and Fabric's deterministic `fallback()`. One claim is held at a time; withdrawal, the claim's abort signal, or Fabric's `session_shutdown` ends it. See [compaction owner claim](programmatic-compaction.md#compaction-owner-claim).
+
 ## Invocation costs and guarantees
 
 | Access pattern | Work and allocation | Guarantees |
