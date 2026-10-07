@@ -577,6 +577,11 @@ export interface FabricCompactionDetailsV2 {
   /** Carry-forward focus rendered into this summary (absent when the list is empty). */
   carry?: { count: number; renderedOmittedBytes: number };
   timestamp: string;
+  /**
+   * Set only on a claim owner's fallback summary: the owner's name. Fabric's
+   * own engine never writes it.
+   */
+  claimOwner?: string;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
