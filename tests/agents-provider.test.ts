@@ -30,6 +30,13 @@ import type { FabricInvocationContext } from "../src/protocol.js";
 import { FabricControlPlane } from "../src/topology/control-plane.js";
 import { AgentsProvider, collectAgentToolPreviewNodes } from "../src/providers/agents-provider.js";
 import type { ResidencyClient } from "../src/residency/client.js";
+import { Value } from "typebox/value";
+import {
+  EXACT_MODEL_FORM_ERROR,
+  EXACT_MODEL_RUNNER_ERROR,
+  normalizeModelAliases,
+  resolvePiModelSelector,
+} from "../src/core/model-resolution.js";
 import { snapshotHandoffSession } from "../src/agents/handoff.js";
 import { AgentManager } from "../src/agents/manager.js";
 import type { AgentRunRecord } from "../src/agents/types.js";
@@ -83,6 +90,10 @@ const setup = (
     switchModel?: FabricMainAgentTarget["switchModel"];
     modelsConfig?: FabricModelsConfig;
     agentsConfig?: Partial<FabricAgentConfig>;
+    preparePiModel?: (
+      model: string | undefined,
+      options?: { modelMatch?: "exact" },
+    ) => Promise<string | void>;
   },
 ) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-agents-provider-"));
@@ -96,6 +107,7 @@ const setup = (
       claudeBinary: path.resolve("tests/fixtures/fake-claude.mjs"),
       vedaBinary: path.resolve("tests/fixtures/fake-veda.mjs"),
       runRoot: path.join(root, "runs"),
+      ...(options?.preparePiModel ? { preparePiModel: options.preparePiModel } : {}),
     },
   );
   agentManagers.push(agents);
@@ -2562,6 +2574,117 @@ describe("AgentsProvider switchModel", () => {
       expect(spawn).not.toHaveBeenCalled();
     },
   );
+
+  it.each(["run", "spawn"] as const)(
+    "starts the listed model for agents.%s with modelMatch exact, not an alias with the same name",
+    async (action) => {
+      const aliases = normalizeModelAliases({
+        "provider/model-a": { model: "provider/model-b", thinking: "high" },
+      });
+      const prepared: Array<[string | undefined, unknown]> = [];
+      const { provider, agents } = setup([], [], undefined, {
+        modelsConfig: { aliases },
+        agentsConfig: { thinking: "medium" },
+        // Mirrors the host's launch-boundary re-resolution of the already resolved key.
+        preparePiModel: async (model, options) => {
+          prepared.push([model, options]);
+          const resolved = resolvePiModelSelector(
+            model ?? "",
+            { aliases, available: visiblePiModels },
+            options?.modelMatch,
+          );
+          return `${resolved.provider}/${resolved.id}`;
+        },
+      });
+      const spawn = vi.spyOn(agents, "spawn");
+      const started = async (args: Record<string, unknown>) => {
+        const result = await provider.invoke(action, { task: `exact ${action}`, ...args }, context);
+        return action === "run"
+          ? (result as { model: string; thinking?: string })
+          : agents.wait((result as { id: string }).id);
+      };
+
+      // Control: without modelMatch the alias wins, with its thinking level.
+      await expect(started({ model: "provider/model-a" })).resolves.toMatchObject({
+        model: "provider/model-b",
+        thinking: "high",
+      });
+      expect(spawn).toHaveBeenLastCalledWith(
+        expect.objectContaining({ model: "provider/model-b", thinking: "high" }),
+        undefined,
+      );
+
+      await expect(started({ model: "provider/model-a", modelMatch: "exact" })).resolves.toMatchObject({
+        model: "provider/model-a",
+        thinking: "medium",
+      });
+      expect(spawn).toHaveBeenLastCalledWith(
+        expect.objectContaining({ model: "provider/model-a", modelMatch: "exact" }),
+        undefined,
+      );
+      expect(spawn.mock.calls.at(-1)?.[0]).not.toHaveProperty("thinking");
+      expect(prepared.at(-1)).toEqual(["provider/model-a", { modelMatch: "exact" }]);
+    },
+  );
+
+  it.each(["run", "spawn"] as const)(
+    "starts no child for agents.%s when the exact model is not listed",
+    async (action) => {
+      const { provider, agents } = setup();
+      const spawn = vi.spyOn(agents, "spawn");
+
+      await expect(
+        provider.invoke(action, { task: "do not launch", model: "provider/model-z", modelMatch: "exact" }, context),
+      ).rejects.toThrow(
+        'Model "provider/model-z" is not available to this Pi session. ' +
+          'Use agents.models({ runner: "pi" }) to list the models visible to this session.',
+      );
+      expect(spawn).not.toHaveBeenCalled();
+
+      // Control: the same selector without modelMatch resolves to the closest listed model.
+      await provider.invoke(action, { task: "closest", model: "provider/model-z" }, context);
+      expect(spawn).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    ["a bare selector", { model: "model-a" }, EXACT_MODEL_FORM_ERROR],
+    ["no model", {}, EXACT_MODEL_FORM_ERROR],
+    ["the Claude runner", { runner: "claude", model: "claude/sonnet" }, EXACT_MODEL_RUNNER_ERROR],
+    ["the Veda runner", { runner: "veda", model: "provider/model-a" }, EXACT_MODEL_RUNNER_ERROR],
+    ["an unknown mode", { model: "provider/model-a", modelMatch: "fuzzy" }, "Invalid Fabric agent modelMatch"],
+  ] as const)("refuses modelMatch exact with %s before any child starts", async (_label, args, message) => {
+    const { provider, agents } = setup();
+    const spawn = vi.spyOn(agents, "spawn");
+    for (const action of ["run", "spawn"] as const) {
+      await expect(
+        provider.invoke(action, { task: "do not launch", modelMatch: "exact", ...args }, context),
+      ).rejects.toThrow(message);
+    }
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("offers modelMatch only on run and spawn, restricted to exact", async () => {
+    const { provider } = setup();
+    for (const action of ["run", "spawn"]) {
+      const schema = (await provider.describe(action, context))?.inputSchema as {
+        properties: Record<string, unknown>;
+      };
+      expect(schema.properties.modelMatch).toMatchObject({ type: "string", enum: ["exact"] });
+      expect(Value.Check(schema, { task: "t", model: "provider/model-a", modelMatch: "exact" })).toBe(true);
+      expect(Value.Check(schema, { task: "t", model: "provider/model-a", modelMatch: "fuzzy" })).toBe(false);
+    }
+    // These actions would resolve the model with aliases, so their schemas must refuse the field.
+    for (const action of ["handoff", "create", "ask", "tell", "import"]) {
+      const schema = (await provider.describe(action, context))?.inputSchema as {
+        properties: Record<string, unknown>;
+      };
+      expect(schema.properties).not.toHaveProperty("modelMatch");
+    }
+    const handoff = (await provider.describe("handoff", context))?.inputSchema as Parameters<typeof Value.Check>[0];
+    expect(Value.Check(handoff, { model: "provider/model-a" })).toBe(true);
+    expect(Value.Check(handoff, { model: "provider/model-a", modelMatch: "exact" })).toBe(false);
+  });
 
   it("launches near-miss models canonically while isolating unrelated batch failures", async () => {
     const { provider, agents } = setup();

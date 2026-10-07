@@ -3,8 +3,9 @@ import { resolveAgentDir } from "./core/agent-dir.js";
 import { loadHostSdk } from "./core/host-sdk.js";
 import { requestChildTraceContext } from "./agents/trace-context-request.js";
 import {
-  resolveAvailablePiModel,
+  resolvePiModelSelector,
   type FabricModelCandidate,
+  type FabricModelMatch,
 } from "./core/model-resolution.js";
 import { loadModelUsage } from "./core/model-usage.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -660,15 +661,15 @@ export class FabricRuntimeState {
         ...(defaultModel ? { defaultModel } : {}),
       };
     };
-    const resolveParticipantPiModel = (selector?: string) => {
+    const resolveParticipantPiModel = (selector?: string, modelMatch?: FabricModelMatch) => {
       const models = visiblePiModels();
       const state = piModelState(models);
       const query = selector?.trim() || state.defaultModel || "";
-      const resolved = resolveAvailablePiModel(query, {
+      const resolved = resolvePiModelSelector(query, {
         aliases: state.aliases,
         available: state.available,
         lastUsed: loadModelUsage(),
-      });
+      }, modelMatch);
       const model = models.find(
         (candidate) =>
           String(candidate.provider).toLowerCase() === resolved.provider.toLowerCase() &&
@@ -732,8 +733,8 @@ export class FabricRuntimeState {
           keepRecentTokens: settings.keepRecentTokens,
         };
       },
-      preparePiModel: async (modelKey) => {
-        const resolved = resolveParticipantPiModel(modelKey);
+      preparePiModel: async (modelKey, options) => {
+        const resolved = resolveParticipantPiModel(modelKey, options?.modelMatch);
         const auth = await context.modelRegistry.getApiKeyAndHeaders(resolved.model);
         if (!auth.ok) throw new Error(auth.error);
         return resolved.key;
