@@ -1266,10 +1266,17 @@ interface FabricCompactPendingIntent {
   reason?: string;
   instructions?: string;
   preserve?: string[];
+  /** Sent as the next prompt after the compaction commits. */
+  seed?: string;
   requestedBy: string;
   requestedAt: number;
 }
 type FabricCompactionOwner = "fabric" | "pi" | "external" | "none";
+/** The extension holding the compaction owner claim; compact.* routes to it. */
+interface FabricCompactionClaimRef {
+  name: string;
+  version: string;
+}
 interface FabricCompactLastCommit {
   at: number;
   requestedBy: string;
@@ -1278,6 +1285,7 @@ interface FabricCompactLastCommit {
   tokensBefore?: number;
   estimatedTokensAfter?: number;
   error?: string;
+  seeded?: true;
 }
 type FabricComponentState = "waiting" | "loading" | "active" | "unloading" | "failed" | "quarantined" | "disposed";
 interface FabricComponentEffectInfo {
@@ -1468,15 +1476,25 @@ interface FabricCompactApi {
     instructions?: string;
     preserve?: string[];
     requestedBy?: string;
+    /** Prompt sent as the next user message after the compaction commits. */
+    seed?: string;
     instruction?: string;
     requested_by?: string;
-  }): Promise<{ requested: true; intent: FabricCompactPendingIntent }>;
+  }): Promise<{
+    requested: true;
+    intent: FabricCompactPendingIntent;
+    /** Present under a compaction owner claim: the request went to this owner. */
+    claim?: FabricCompactionClaimRef;
+    result?: unknown;
+  }>;
   status(): Promise<{
     pending?: FabricCompactPendingIntent;
     last?: FabricCompactLastCommit;
     lastAuto?: { at: number; trigger: "headroom" | "tokens" | "ratio"; committed: boolean };
     owner: FabricCompactionOwner;
     outputReserveTokens: number;
+    claim?: FabricCompactionClaimRef & { branchSummary: boolean; actions: string[] };
+    ownerStatus?: unknown;
   }>;
   /** Read-only context pressure; never compacts. */
   pressure(): Promise<{
@@ -1489,10 +1507,13 @@ interface FabricCompactApi {
     thresholdFraction?: number;
     thresholdTokens?: number;
     owner: FabricCompactionOwner;
+    claim?: FabricCompactionClaimRef;
+    /** The claimed owner's own stage and thresholds. */
+    ownerPressure?: { stage: string; thresholds?: Record<string, number> };
   }>;
-  /** Persistent carry-forward focus rendered in every Fabric summary until cleared; no args reads. */
-  carry(args?: { items?: string[]; add?: string[]; remove?: string[]; clear?: boolean }): Promise<{ items: string[] }>;
-  cancel(): Promise<{ cancelled: true }>;
+  /** Persistent carry-forward focus rendered in every Fabric summary until cleared; no args reads. Under a claim the owner keeps it. */
+  carry(args?: { items?: string[]; add?: string[]; remove?: string[]; clear?: boolean }): Promise<{ items: string[]; claim?: FabricCompactionClaimRef }>;
+  cancel(): Promise<{ cancelled: true; claim?: FabricCompactionClaimRef; result?: unknown }>;
 }
 
 interface FabricPrewalkFileIdentityStatus {

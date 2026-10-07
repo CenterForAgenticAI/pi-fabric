@@ -18,17 +18,23 @@ import {
 // decides when it is safe. The model cannot compact the running context
 // directly; it can only ask, and the ask is a single replaceable slot.
 
+/** Upper bound for a seed prompt (same as compaction instructions). */
+export const MAX_COMPACTION_SEED_CHARS = 8192;
+
 export interface CompactRequestIntent {
   reason?: string;
   instructions?: string;
   preserve?: string[];
   requestedBy?: string;
+  /** Sent as the next user prompt once the compaction commits. */
+  seed?: string;
 }
 
 export interface CompactPendingIntent {
   reason?: string;
   instructions?: string;
   preserve?: string[];
+  seed?: string;
   requestedBy: string;
   requestedAt: number;
 }
@@ -44,6 +50,8 @@ export interface CompactLastCommit {
   tokensBefore?: number;
   estimatedTokensAfter?: number;
   error?: string;
+  /** The intent's seed was handed to Pi as the next prompt. */
+  seeded?: true;
 }
 
 // Host-initiated compaction at a settled boundary: the output-reserve
@@ -69,6 +77,10 @@ export interface CompactControllerHooks {
   // small)" (the intent is still cleared; the raw pi message is kept in
   // `error`), and "failed" for any other error.
   onCommit?: (info: CompactLastCommit) => void;
+  // Sends a committed intent's seed as the next user prompt. Called only
+  // after Pi reports the compaction complete; never for cancelled or failed
+  // commits.
+  sendSeed?: (seed: string) => void;
 }
 
 const DEFAULT_REQUESTED_BY = "model";
@@ -88,6 +100,14 @@ const BENIGN_COMPACT_MESSAGES = new Set([
 
 const isString = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0;
+
+const checkedSeed = (value: unknown): string | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim() === "" || value.length > MAX_COMPACTION_SEED_CHARS) {
+    throw new Error(`compact seed must be a non-empty string of at most ${MAX_COMPACTION_SEED_CHARS} characters`);
+  }
+  return value;
+};
 
 const checkedPreserve = (value: unknown): string[] | undefined => {
   if (value === undefined) return undefined;
@@ -112,6 +132,7 @@ export class CompactController {
   // any pending one, keeping the latest instructions.
   request(intent: CompactRequestIntent): CompactPendingIntent {
     const preserve = checkedPreserve(intent.preserve);
+    const seed = checkedSeed(intent.seed);
     const request = {
       ...(intent.instructions !== undefined ? { instructions: intent.instructions } : {}),
       ...(preserve !== undefined ? { preserve } : {}),
@@ -125,6 +146,7 @@ export class CompactController {
       ...(isString(intent.reason) ? { reason: intent.reason } : {}),
       ...(isString(intent.instructions) ? { instructions: intent.instructions } : {}),
       ...(preserve !== undefined ? { preserve } : {}),
+      ...(seed !== undefined ? { seed } : {}),
     };
     this.#pending = pending;
     this.#hooks.onRequest?.(pending);
@@ -213,6 +235,16 @@ export class CompactController {
                 : {}),
             };
             clearCommittedIntent();
+            // The seed follows the committed compaction; Pi defers a prompt
+            // sent during agent_settled until the settle completes.
+            if (committing.seed !== undefined && this.#hooks.sendSeed) {
+              try {
+                this.#hooks.sendSeed(committing.seed);
+                this.#last = { ...this.#last, seeded: true };
+              } catch {
+                // A failed hand-off leaves `seeded` unset; the commit stands.
+              }
+            }
             this.#hooks.onCommit?.(this.#last);
           }),
           onError: (error) => finish(() => {
