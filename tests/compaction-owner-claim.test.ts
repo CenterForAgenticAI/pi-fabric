@@ -407,6 +407,17 @@ describe("compaction owner claim", () => {
     expect(fabric.listeners.has(FABRIC_COMPACTION_OWNER_EVENT)).toBe(false);
   });
 
+  it("clears the claim before Fabric's shutdown awaits anything", async () => {
+    const fabric = await loadFabric();
+    const handle = claimed(fabric.send);
+    // Start every shutdown handler without awaiting: only work done before
+    // each handler's first await has run.
+    const shutdowns = (fabric.handlers.get("session_shutdown") ?? []).map((handler) => handler({}, {} as ExtensionContext));
+    expect(handle.active).toBe(false);
+    expect(fabric.listeners.has(FABRIC_COMPACTION_OWNER_EVENT)).toBe(false);
+    await Promise.all(shutdowns);
+  });
+
   it("clears the claim when the owner's signal aborts", async () => {
     const fabric = await loadFabric();
     const session = longSession();
