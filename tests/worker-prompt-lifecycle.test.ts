@@ -24,7 +24,7 @@ const setup = (scenario = "handled", accelerated = false, timeoutMs = 5_000) => 
   let wake!: () => void;
   const awakened = new Promise<void>(resolve => { wake = resolve; });
   const completed = vi.fn(() => wake());
-  const manager = new AgentManager(root, { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs, maxConcurrent: 1 }, {
+  const manager = new AgentManager(root, { ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi", timeoutMs, maxConcurrent: 1 }, {
     workerPath: path.resolve(accelerated ? "tests/fixtures/prompt-worker-clock.mjs" : "dist/worker.js"),
     piBinary: path.resolve("tests/fixtures/fake-pi-prompt.mjs"),
     runRoot: path.join(root, "runs"), onBackgroundComplete: completed,

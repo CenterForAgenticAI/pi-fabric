@@ -40,7 +40,7 @@ describe.skipIf(!isolated)("installed Pi public RPC task boundary (network denie
     vi.stubEnv("HOME", root);
     vi.stubEnv("PI_CODING_AGENT_DIR", path.join(root, "agent"));
     vi.stubEnv("PROMPT_PROBE_ROOT", root);
-    const manager = new AgentManager(root, { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 15_000 }, {
+    const manager = new AgentManager(root, { ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi", timeoutMs: 15_000 }, {
       workerPath: path.resolve("dist/worker.js"), piBinary: path.resolve("tests/fixtures/prompt-probe-pi.mjs"),
       runRoot: path.join(root, "runs"),
     });
