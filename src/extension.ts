@@ -33,6 +33,7 @@ import {
   effectiveToolCaptureConfig,
 } from "./config.js";
 import { registerCompactionHook } from "./compaction/hook.js";
+import { latestCarryItems } from "./compaction/carry.js";
 import { CompactionOwnerRegistry, deterministicCompactionFallback } from "./compaction/claim.js";
 import { compactAtConfiguredThreshold, type AutoCompactionTrigger } from "./compaction/threshold.js";
 import type { CompactionOwnerObserver } from "./compaction/owner.js";
@@ -223,6 +224,16 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     // must not hide the next foreign compaction once Fabric is back.
     onRelease: () => {
       compactionYieldPending = false;
+    },
+    // Read from the session Fabric last started; unknown before Fabric's own
+    // session_start has run.
+    carry: () => {
+      if (!programRunContext) return undefined;
+      try {
+        return latestCarryItems(programRunContext.sessionManager.getBranch());
+      } catch {
+        return undefined;
+      }
     },
   });
   const state = new FabricState(pi, capturedTools, {
