@@ -125,7 +125,7 @@ The reply is `{ version: 1, mode, tools }`. `mode` is `"full-code"`, `"enforce"`
 
 ## Compaction owner claim
 
-An extension that writes its own compaction summaries claims compaction from Fabric with `FABRIC_COMPACTION_OWNER_EVENT` (`pi-fabric:compaction-owner:v1`). Fabric's compactor and thresholds stand down, `compact.*` program calls route to the owner, and the reply carries a handle with `withdraw()` and Fabric's deterministic `fallback()`. One claim is held at a time; withdrawal, the claim's abort signal, or Fabric's `session_shutdown` ends it. See [compaction owner claim](programmatic-compaction.md#compaction-owner-claim).
+An extension that writes its own compaction summaries claims compaction from Fabric with `FABRIC_COMPACTION_OWNER_EVENT` (`pi-fabric:compaction-owner:v1`). Fabric's compactor and thresholds stand down, `compact.*` program calls route to the owner, and the reply carries a handle with `withdraw()` and Fabric's deterministic `fallback()`, plus Fabric's carry list at cut-over. Owner handlers receive `{ context, signal }` and are bounded at 30 seconds. One claim is held at a time; withdrawal, the claim's abort signal, or Fabric's `session_shutdown` ends it. See [compaction owner claim](programmatic-compaction.md#compaction-owner-claim).
 
 ## Invocation costs and guarantees
 
