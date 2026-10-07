@@ -1,0 +1,168 @@
+import { randomUUID } from "node:crypto";
+import type { ExtensionContext, SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
+import { applyCarryUpdate } from "./carry.js";
+import type { CompactionEnricher } from "./enrichers.js";
+import { compileFabricCompactionForEvent } from "./hook.js";
+import type {
+  FabricCompactionFallbackOptionsV1,
+  FabricCompactionFallbackResultV1,
+  FabricCompactionOwnerActionsV1,
+  FabricCompactionOwnerClaimResultV1,
+  FabricCompactionOwnerClaimV1,
+  FabricCompactionOwnerHandleV1,
+  FabricCompactionOwnerIdentityV1,
+  FabricCompactionOwnerMessageV1,
+  FabricCompactionOwnerWithdrawResultV1,
+} from "../protocol.js";
+
+// One extension at a time may claim compaction from Fabric through
+// `pi-fabric:compaction-owner:v1` (see protocol.ts). The registry holds only
+// the validated copy the protocol reader built; the claimant's own object is
+// never stored. The claim lives no longer than the owner asks: withdrawal by
+// token, the owner's abort signal, or Fabric's session_shutdown clears it.
+
+export interface ActiveCompactionOwner {
+  readonly owner: Readonly<FabricCompactionOwnerIdentityV1>;
+  readonly actions: Readonly<FabricCompactionOwnerActionsV1>;
+  readonly branchSummary: boolean;
+}
+
+export const compactionOwnerLabel = (owner: FabricCompactionOwnerIdentityV1): string =>
+  `${owner.name}@${owner.version}`;
+
+export type CompactionFallback = (
+  event: SessionBeforeCompactEvent,
+  context: ExtensionContext | undefined,
+  options: FabricCompactionFallbackOptionsV1 | undefined,
+) => FabricCompactionFallbackResultV1;
+
+export interface CompactionOwnerRegistryOptions {
+  /** Shown when a claim is refused because another owner holds it. */
+  warn: (message: string) => void;
+  /** Fabric's deterministic summary, offered to the holder only. */
+  fallback: CompactionFallback;
+}
+
+/**
+ * The owner's fallback: Fabric's deterministic summary for the event, with
+ * the same budget and enrichers as Fabric's own hook. Owner-supplied carry
+ * items must fit the `compact.carry` limits and replace the stored list.
+ */
+export const deterministicCompactionFallback = (
+  targetContextRatio: () => number | undefined,
+  enrichers?: readonly CompactionEnricher[],
+): CompactionFallback => (event, context, options) => {
+  let carryItems: string[] | undefined;
+  if (options?.carry !== undefined) {
+    const carry: unknown = options.carry;
+    if (!Array.isArray(carry) || !carry.every((item) => typeof item === "string")) {
+      return { ok: false, reason: "fabric: fallback carry must be an array of strings" };
+    }
+    try {
+      carryItems = applyCarryUpdate([], { items: [...carry as string[]] });
+    } catch (error) {
+      return { ok: false, reason: `fabric: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+  const ratio = targetContextRatio();
+  const result = compileFabricCompactionForEvent(event, context, {
+    ...(ratio !== undefined ? { targetContextRatio: ratio } : {}),
+    ...(enrichers ? { enrichers } : {}),
+    ...(carryItems !== undefined ? { carryItems } : {}),
+  });
+  return "cancel" in result
+    ? { ok: false, reason: result.reason }
+    : { ok: true, compaction: result.compaction };
+};
+
+interface HeldClaim {
+  token: string;
+  claim: ActiveCompactionOwner;
+  release: () => void;
+}
+
+const NOT_HELD = "fabric: the compaction owner claim is no longer held";
+
+export class CompactionOwnerRegistry {
+  #held: HeldClaim | undefined;
+
+  constructor(private readonly options: CompactionOwnerRegistryOptions) {}
+
+  get active(): ActiveCompactionOwner | undefined {
+    return this.#held?.claim;
+  }
+
+  /** Answers one validated protocol message. */
+  handle(message: FabricCompactionOwnerMessageV1): void {
+    if (message.type === "withdraw") {
+      const result: FabricCompactionOwnerWithdrawResultV1 = this.withdraw(message.token)
+        ? { ok: true }
+        : { ok: false, error: "Fabric refused the compaction owner withdrawal: the token does not hold the claim" };
+      message.reply?.(result);
+      return;
+    }
+    message.reply(this.claim(message));
+  }
+
+  claim(message: FabricCompactionOwnerClaimV1): FabricCompactionOwnerClaimResultV1 {
+    const owner = { name: message.owner.name, version: message.owner.version };
+    const held = this.#held;
+    if (held) {
+      const error = `Fabric refused the compaction owner claim from ${compactionOwnerLabel(owner)}: ${
+        compactionOwnerLabel(held.claim.owner)
+      } already owns compaction. Only one extension can own it; the holder must withdraw first.`;
+      this.options.warn(error);
+      return { ok: false, error, holder: { name: held.claim.owner.name, version: held.claim.owner.version } };
+    }
+    if (message.signal?.aborted) {
+      return { ok: false, error: `Fabric refused the compaction owner claim from ${compactionOwnerLabel(owner)}: its signal is already aborted` };
+    }
+    const token = randomUUID();
+    const signal = message.signal;
+    const onAbort = (): void => {
+      this.withdraw(token);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    this.#held = {
+      token,
+      claim: Object.freeze({
+        owner: Object.freeze(owner),
+        actions: Object.freeze({ ...message.actions }),
+        branchSummary: message.branchSummary === true,
+      }),
+      release: () => signal?.removeEventListener("abort", onAbort),
+    };
+    return { ok: true, handle: this.#handle(token) };
+  }
+
+  /** Only the holder's token releases the claim. */
+  withdraw(token: string): boolean {
+    if (this.#held?.token !== token) return false;
+    this.clear();
+    return true;
+  }
+
+  /** Drops any claim; Fabric's engine is back in charge. */
+  clear(): void {
+    const held = this.#held;
+    this.#held = undefined;
+    held?.release();
+  }
+
+  #handle(token: string): FabricCompactionOwnerHandleV1 {
+    const holds = (): boolean => this.#held?.token === token;
+    return Object.freeze({
+      token,
+      get active() {
+        return holds();
+      },
+      withdraw: () => this.withdraw(token),
+      fallback: (
+        event: SessionBeforeCompactEvent,
+        context?: ExtensionContext,
+        options?: FabricCompactionFallbackOptionsV1,
+      ): FabricCompactionFallbackResultV1 =>
+        holds() ? this.options.fallback(event, context, options) : { ok: false, reason: NOT_HELD },
+    });
+  }
+}
