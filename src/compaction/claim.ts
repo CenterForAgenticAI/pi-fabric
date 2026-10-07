@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { ExtensionContext, SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
+import type { CompactionResult, ExtensionContext, SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
 import { applyCarryUpdate } from "./carry.js";
 import type { CompactionEnricher } from "./enrichers.js";
-import { compileFabricCompactionForEvent } from "./hook.js";
+import { compileFabricCompactionForEvent, type FabricCompactionDetailsV2 } from "./hook.js";
 import type {
   FabricCompactionFallbackOptionsV1,
   FabricCompactionFallbackResultV1,
@@ -34,7 +34,7 @@ export type CompactionFallback = (
   event: SessionBeforeCompactEvent,
   context: ExtensionContext | undefined,
   options: FabricCompactionFallbackOptionsV1 | undefined,
-) => FabricCompactionFallbackResultV1;
+) => { ok: true; compaction: CompactionResult<FabricCompactionDetailsV2> } | { ok: false; reason: string };
 
 export interface CompactionOwnerRegistryOptions {
   /** Shown when a claim is refused because another owner holds it. */
@@ -141,7 +141,7 @@ export class CompactionOwnerRegistry {
       }),
       release: () => signal?.removeEventListener("abort", onAbort),
     };
-    return { ok: true, handle: this.#handle(token) };
+    return { ok: true, handle: this.#handle(token, owner.name) };
   }
 
   /** Only the holder's token releases the claim. */
@@ -160,7 +160,7 @@ export class CompactionOwnerRegistry {
     this.options.onRelease?.();
   }
 
-  #handle(token: string): FabricCompactionOwnerHandleV1 {
+  #handle(token: string, ownerName: string): FabricCompactionOwnerHandleV1 {
     const holds = (): boolean => this.#held?.token === token;
     return Object.freeze({
       token,
@@ -172,8 +172,23 @@ export class CompactionOwnerRegistry {
         event: SessionBeforeCompactEvent,
         context?: ExtensionContext,
         options?: FabricCompactionFallbackOptionsV1,
-      ): FabricCompactionFallbackResultV1 =>
-        holds() ? this.options.fallback(event, context, options) : { ok: false, reason: NOT_HELD },
+      ): FabricCompactionFallbackResultV1 => {
+        if (!holds()) return { ok: false, reason: NOT_HELD };
+        const result = this.options.fallback(event, context, options);
+        if (!result.ok) return result;
+        // Marks the entry as made for the claim owner, so a provenance check
+        // can tell it from Fabric's own engine. Fabric's own entries never
+        // carry the field.
+        return {
+          ok: true,
+          compaction: {
+            ...result.compaction,
+            ...(result.compaction.details
+              ? { details: { ...result.compaction.details, claimOwner: ownerName } }
+              : {}),
+          },
+        };
+      },
     });
   }
 }
