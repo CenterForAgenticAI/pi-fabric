@@ -54,16 +54,25 @@ Use `agents.models({ runner: "pi" })` and copy the returned `key` verbatim, or u
 
 ### Exact model match
 
-Set `modelMatch: "exact"` on `agents.run` or `agents.spawn` when a program must run one named model or none. `model` is then required and must be a `provider/id` that `agents.models({ runner: "pi" })` lists. Fabric skips the `models.aliases` step (an alias named like the model is ignored), the closest-match step, and the fuzzy step, and it applies no alias `thinking` level. Matching ignores case, as it does for other exact lookups, and the handle reports the registry's own spelling. Without `modelMatch`, resolution is unchanged.
+Set `modelMatch: "exact"` on `agents.run` or `agents.spawn` when a program must run one named model or none. `model` is then required and must be a `provider/id` that `agents.models({ runner: "pi" })` lists. Fabric skips the `models.aliases` step (an alias named like the model is ignored), the closest-match step, and the fuzzy step, and it applies no alias `thinking` level. Matching ignores case, as it does for other exact lookups, and the handle reports the registry's own spelling. When two registry entries differ only by case, the identical spelling wins, and Fabric authenticates that same entry. Without `modelMatch`, resolution is unchanged.
 
 Fabric refuses these requests before any child starts:
 
 - `model` is missing or not in `provider/id` form: `modelMatch "exact" requires model in provider/id form, as listed by agents.models({ runner: "pi" }).`
 - The model is not in the visible registry: the usual `Model "<selector>" is not available to this Pi session.` error, which names `agents.models({ runner: "pi" })`.
-- The runner is not `pi` or `pi-durable`: `modelMatch "exact" is supported only by the pi and pi-durable runners.` Claude, Veda, and registered runners forward `model` to a backend that can apply its own aliases, so Fabric cannot promise that model and refuses instead of passing it through.
+- The runner is not `pi` or `pi-durable`: `modelMatch "exact" is supported only by the pi and pi-durable runners.` Claude, Veda, and registered runners forward `model` to a backend that can apply its own aliases, so Fabric cannot promise that model and refuses the request.
 - The value is not `"exact"`: the input schema rejects it, and a direct request fails with `Invalid Fabric agent modelMatch`.
 
 The mode holds on every launch path, including a retry or resume of the same run and `residency: "durable"`, where the resident host resolves the model again with the same mode. It is not accepted by `agents.handoff`, `agents.create`, actor activations, or the hosted `AgentService`; their schemas reject it.
+
+An exact request means that only the named model does model work for the run. Two controls in the child enforce this:
+
+- **Strict admission.** An exact request always uses strict model admission, whatever `agents.modelAdmission` says. This covers the first launch, a startup retry, a resume, and the resident host. Permissive admission accepts a child that reports a different model after selection, and an exact run never does.
+- **Pin guard.** The worker loads the `model-pin-guard` Pi extension into the child with `-e`, the same way it loads the write guard, and it loads even with `extensions: false`. The guard knows the pinned `provider/id`. It compares Pi's current model with the pin before each model call (the `context` and `context_with_system` events) and again inside the provider stream before the HTTP request (`before_provider_request`). On a mismatch it writes one `[pi-fabric] model-pin-violation` line to stderr and ends the child process with status 71 before the call is made. Pi ignores an exception thrown by an extension handler. `ctx.abort()` also stopped the call in Pi 1.0.4 probes, because credential lookup ahead of the provider honours the aborted signal, but the run would then fail as a plain abort with no fixed reason. Ending the process depends on neither behaviour. The run then fails with `Fabric exact model pin violated: only <pin> may run, but <actual> was about to run. The provider call was stopped before any request was sent.`
+
+A project extension that switches the model at `before_agent_start`, between turns, or inside a `context` handler therefore ends the run with no request to the other model. A model switch during startup is undone before the task is sent, as for every Pi run. The strict attribution check on assistant messages stays as a second line of defence: it fails a run after the fact if a reply names another model.
+
+The guard reads Pi's current model. It stops the run whenever that model differs from the pin, including a case where Pi would still have called the pinned model. It does not see an extension that re-registers the pinned provider so that it forwards calls to a different model.
 
 ### Child system prompt
 
