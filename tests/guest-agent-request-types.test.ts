@@ -16,4 +16,10 @@ describe("FabricAgentRequest guest declaration", () => {
   it("rejects a systemPrompt that is not a string", () => {
     expect(check('await agents.run({ task: "t", systemPrompt: 7 }); return 1;').errors.length).toBeGreaterThan(0);
   });
+
+  it.each(["run", "spawn"])("accepts modelMatch exact on agents.%s and nothing else", (action) => {
+    expect(check(`await agents.${action}({ task: "t", model: "provider/id", modelMatch: "exact" }); return 1;`).errors).toEqual([]);
+    expect(check(`await agents.${action}({ task: "t", model: "provider/id", modelMatch: "fuzzy" }); return 1;`).errors.length)
+      .toBeGreaterThan(0);
+  });
 });

@@ -4,6 +4,7 @@ import type {
   SessionMessageEntry,
 } from "@earendil-works/pi-coding-agent";
 import type { FabricAgentRunner, FabricAgentTransport, FabricPythonRuntime } from "../config.js";
+import type { FabricModelMatch } from "../core/model-resolution.js";
 import type { FabricKernel } from "../runtime/kernel.js";
 import type { FabricScope, FabricScopeGrant } from "../protocol.js";
 import type { ThinkingTransferInput } from "./thinking-transfer.js";
@@ -63,6 +64,8 @@ export interface AgentRunRequest {
   pythonRuntime?: FabricPythonRuntime;
   transport?: FabricAgentTransport;
   model?: string;
+  /** "exact": Pi only; model must be a visible provider/id, with no alias, closest-match or fuzzy step. */
+  modelMatch?: FabricModelMatch;
   /** Veda persona name; only used when runner is "veda". */
   persona?: string;
   thinking?: FabricThinking;

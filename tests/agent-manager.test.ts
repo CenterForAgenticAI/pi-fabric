@@ -4,6 +4,7 @@ import path from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
+import { EXACT_MODEL_FORM_ERROR, EXACT_MODEL_RUNNER_ERROR } from "../src/core/model-resolution.js";
 import type { FabricLifecyclePublishRequest } from "../src/lifecycle/types.js";
 import { snapshotHandoffSession } from "../src/agents/handoff.js";
 import {
@@ -366,6 +367,76 @@ describe("AgentManager", () => {
       "openai-codex/gpt-hidden",
       "openai-codex/gpt-visible",
     ]);
+  });
+
+  it("prepares an exact-match model under the same mode and keeps it apart from a default preparation", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const preparePiModel = vi.fn(async (model: string | undefined, options?: { modelMatch?: "exact" }) => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return options?.modelMatch === "exact" ? model : "provider/alias-target";
+    });
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+      preparePiModel,
+    });
+    managers.push(manager);
+
+    // Concurrent launches of one selector under different modes must not share a preparation.
+    const [exact, loose] = await Promise.all([
+      manager.run({ task: "Exact child", model: "provider/model-a", modelMatch: "exact", transport: "process" }),
+      manager.run({ task: "Default child", model: "provider/model-a", transport: "process" }),
+    ]);
+
+    expect(exact).toMatchObject({ status: "completed", model: "provider/model-a" });
+    expect(loose).toMatchObject({ status: "completed", model: "provider/alias-target" });
+    expect(preparePiModel).toHaveBeenCalledTimes(2);
+    expect(preparePiModel.mock.calls.map(([, options]) => options?.modelMatch).sort())
+      .toEqual(["exact", undefined]);
+  });
+
+  it("refuses modelMatch exact before preparation or any run directory when the request cannot be exact", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const preparePiModel = vi.fn(async (model: string | undefined) => model);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+      preparePiModel,
+    });
+    managers.push(manager);
+
+    await expect(manager.spawn({ task: "t", modelMatch: "exact" })).rejects.toThrow(EXACT_MODEL_FORM_ERROR);
+    await expect(manager.spawn({ task: "t", modelMatch: "exact", model: "fast" })).rejects.toThrow(EXACT_MODEL_FORM_ERROR);
+    await expect(manager.spawn({ task: "t", modelMatch: "exact", runner: "claude", model: "claude/sonnet" }))
+      .rejects.toThrow(EXACT_MODEL_RUNNER_ERROR);
+    await expect(manager.spawn({ task: "t", model: "provider/model-a", modelMatch: "fuzzy" } as never))
+      .rejects.toThrow(/Invalid Fabric agent modelMatch/);
+    expect(preparePiModel).not.toHaveBeenCalled();
+    expect(fs.readdirSync(root)).toEqual([]);
+  });
+
+  it("re-prepares an exact-match model under the same mode when a startup retry relaunches it", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const preparePiModel = vi.fn(async (model: string | undefined, _options?: { modelMatch?: "exact" }) => model);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker-startup-retry.mjs"),
+      runRoot: root,
+      preparePiModel,
+    });
+    managers.push(manager);
+
+    const result = await manager.run({
+      task: "Recover startup", model: "provider/model-a", modelMatch: "exact", transport: "process",
+    });
+
+    expect(result.status).toBe("completed");
+    expect(preparePiModel.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(preparePiModel.mock.calls.map(([, options]) => options?.modelMatch)).toEqual(
+      preparePiModel.mock.calls.map(() => "exact"),
+    );
   });
 
   it("validates the configured Pi model default before launching", async () => {

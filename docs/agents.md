@@ -50,7 +50,20 @@ The 4,194,304-character guard still applies to other event data, including a sin
 
 Use `agents.models({ runner: "pi" })` and copy the returned `key` verbatim, or use an explicitly configured `models.aliases` name. Reuse the `model` returned by a successful spawn. Do not reconstruct it from an agent's display name. For example, an agent named “Sol” need not share the version number of one named “Astra”. Prior success with one key does not validate a different key.
 
-`provider/model` selectors prefer an exact visible match. A near-miss ID resolves to the closest available model on the **same provider**, using Fabric's existing similarity ranking; ties prefer recent usage, then canonical key order. For example, `openai-codex/gpt-6-sol` resolves to `openai-codex/gpt-5.6-sol` when that is the closest visible model. The returned handle's `model` and the worker's `requestedModel` contain the canonical selection. Unknown providers and names without sufficient resemblance still fail before launch. Model IDs containing `/` stay provider-scoped. Configured aliases keep their ordered, exact-target fallback chains.
+`provider/model` selectors prefer an exact visible match. A near-miss ID resolves to the closest available model on the **same provider**, using Fabric's existing similarity ranking; ties prefer recent usage, then canonical key order. For example, `openai-codex/gpt-6-sol` resolves to `openai-codex/gpt-5.6-sol` when that is the closest visible model. The returned handle's `model` and the worker's `requestedModel` contain the canonical selection. Unknown providers and names without sufficient resemblance still fail before launch. Model IDs containing `/` stay provider-scoped. Configured aliases keep their ordered, exact-target fallback chains. To turn the alias and near-miss steps off, see [exact model match](#exact-model-match).
+
+### Exact model match
+
+Set `modelMatch: "exact"` on `agents.run` or `agents.spawn` when a program must run one named model or none. `model` is then required and must be a `provider/id` that `agents.models({ runner: "pi" })` lists. Fabric skips the `models.aliases` step (an alias named like the model is ignored), the closest-match step, and the fuzzy step, and it applies no alias `thinking` level. Matching ignores case, as it does for other exact lookups, and the handle reports the registry's own spelling. Without `modelMatch`, resolution is unchanged.
+
+Fabric refuses these requests before any child starts:
+
+- `model` is missing or not in `provider/id` form: `modelMatch "exact" requires model in provider/id form, as listed by agents.models({ runner: "pi" }).`
+- The model is not in the visible registry: the usual `Model "<selector>" is not available to this Pi session.` error, which names `agents.models({ runner: "pi" })`.
+- The runner is not `pi` or `pi-durable`: `modelMatch "exact" is supported only by the pi and pi-durable runners.` Claude, Veda, and registered runners forward `model` to a backend that can apply its own aliases, so Fabric cannot promise that model and refuses instead of passing it through.
+- The value is not `"exact"`: the input schema rejects it, and a direct request fails with `Invalid Fabric agent modelMatch`.
+
+The mode holds on every launch path, including a retry or resume of the same run and `residency: "durable"`, where the resident host resolves the model again with the same mode. It is not accepted by `agents.handoff`, `agents.create`, actor activations, or the hosted `AgentService`; their schemas reject it.
 
 ### Child system prompt
 
