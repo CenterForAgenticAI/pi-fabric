@@ -31,7 +31,7 @@ const result = await tools.bash({ command: "git status --short" });
 return result.output;
 ```
 
-Native calls use Pi identifiers: `tools.read`, `tools.write`, `tools.mcp__server__tool`, and sanitized registered extension names. Real Pi registration names (including hashed MCP identifiers) are authoritative. `nativeDiscovery.ALL_TOOLS` enumerates the visible names. Sanitization collisions fail explicitly rather than selecting an arbitrary tool. Recursive `codemode` / `fabric_exec` calls are excluded.
+Native calls use Pi identifiers: `tools.read`, `tools.write`, `tools.mcp__server__tool`, and sanitized registered extension names. Real Pi registration names (including hashed MCP identifiers) are authoritative. `nativeDiscovery.ALL_TOOLS` enumerates the visible names. Sanitization collisions fail explicitly; they never select an arbitrary tool. Recursive `codemode` / `fabric_exec` calls are excluded.
 
 Native results are projected from the final middleware-filtered tool result:
 

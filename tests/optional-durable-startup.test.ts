@@ -28,7 +28,7 @@ describe("lazy durable Pi startup", () => {
         import { registerHooks } from "node:module";
         // The real Pi host is already present before an extension is imported.
         await import("@earendil-works/pi-coding-agent");
-        const optional = ["@earendil-works/pi-durable", "@earendil-works/chord"];
+        const optional = ["@earendil-works/pi-durable", "@earendil-works/chord", "pi-fabric-worker-sdk"];
         registerHooks({ resolve(specifier, context, next) {
           if (optional.some(name => specifier === name || specifier.startsWith(name + "/"))) {
             throw new Error("Optional durable dependency was resolved: " + specifier);

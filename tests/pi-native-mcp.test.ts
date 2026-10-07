@@ -57,7 +57,7 @@ function fixture(names = ["find.item"], servers = ["docs-api"]) {
   };
   const registry = new ActionRegistry();
   registry.register(provider);
-  return { catalog, native, config, provider, context, registry, executeTool, direct, registered, replace,
+  return { catalog, native, config, provider, context, registry, executeTool, direct, registered, replace, runner,
     setActive: (names: string[]) => { active = names; } };
 }
 
@@ -313,5 +313,71 @@ describe("Pi-owned MCP tools inside Fabric", () => {
     f.replace([{ ...f.registered[0]!, definition: { ...f.registered[0]!.definition, label: "unknown" } }]);
     expect(() => f.native.list()).toThrow("refusing to guess");
     expect(ambient.createRuntime).not.toHaveBeenCalled();
+  });
+});
+
+describe("Pi-native live registration polling", () => {
+  function lateFixture() {
+    const f = fixture(["find.item"], ["docs-api", "late-api"]);
+    const late: RegisteredTool[] = [{
+      definition: defineTool({
+        name: "mcp__hashed_late", label: "late-api/late.item", description: "Late arrival",
+        namespace: { name: "mcp__late-api", description: "Late server instructions" }, exposure: "codemode",
+        parameters: inputSchema, outputSchema: Type.Object({ content: Type.Array(Type.Any()), structuredContent: outputSchema }),
+        annotations: { readOnlyHint: true, destructiveHint: false }, execute: f.direct,
+      }),
+      sourceInfo: createSyntheticSourceInfo("/builtin/mcp.ts", { source: "builtin:mcp" }),
+    }];
+    let connected = false;
+    const live = (): RegisteredTool[] => (connected ? [...f.registered, ...late] : [...f.registered]);
+    // Mirrors the capture interceptor: calling getAllRegisteredTools() feeds the
+    // catalog through the same replace path the hub listener uses.
+    (f.runner as unknown as { getAllRegisteredTools: () => RegisteredTool[] }).getAllRegisteredTools = () => {
+      const fresh = live();
+      f.catalog.replace(fresh, f.runner, { ...DEFAULT_FABRIC_CONFIG.capture, enabled: true }, "/fabric/index.ts");
+      return fresh;
+    };
+    return { ...f, setConnected: (value: boolean) => {
+      connected = value;
+      // Pi's execution context sees newly registered tools live; mirror that.
+      (f.context.extensionContext as unknown as { tools: unknown }).tools = live().map(tool => tool.definition);
+    } };
+  }
+
+  it("resolves a server that registered after the startup snapshot", async () => {
+    const f = lateFixture();
+    await expect(f.provider.describe("late-api.late_item", f.context)).rejects.toThrow(
+      "Unknown or ambiguous Pi MCP tool: late-api.late_item",
+    );
+    f.setConnected(true);
+    expect(await f.provider.describe("late-api.late_item", f.context)).toMatchObject({ description: "Late arrival" });
+    await expect(f.provider.invoke("late-api.late_item", { value: "x" }, f.context)).resolves.toMatchObject({
+      structuredContent: { value: "answer" },
+    });
+  });
+
+  it("heals stale serverInfo once the late server registers", () => {
+    const f = lateFixture();
+    expect(f.native.serverInfo().find(server => server.name === "late-api")).toMatchObject({ stale: true, tools: 0 });
+    f.setConnected(true);
+    expect(f.native.serverInfo().find(server => server.name === "late-api")).toMatchObject({ stale: false, tools: 1 });
+  });
+
+  it("does not poll the live registry while lookups already match", async () => {
+    const f = lateFixture();
+    const poll = vi.fn((): RegisteredTool[] => [...f.registered]);
+    (f.runner as unknown as { getAllRegisteredTools: () => RegisteredTool[] }).getAllRegisteredTools = poll;
+    await f.provider.describe("docs-api.find_item", f.context);
+    expect(poll).not.toHaveBeenCalled();
+  });
+
+  it("survives a failing live poll with the descriptive error", async () => {
+    const f = fixture(["find.item"], ["late-api"]);
+    (f.runner as unknown as { getAllRegisteredTools: () => RegisteredTool[] }).getAllRegisteredTools = () => {
+      throw new Error("registry boom");
+    };
+    await expect(f.provider.describe("late-api.late_item", f.context)).rejects.toThrow(
+      "Unknown or ambiguous Pi MCP tool: late-api.late_item",
+    );
   });
 });

@@ -4,6 +4,7 @@ import ts from "typescript";
 import { runAbortable, settleWithin } from "../async-settlement.js";
 import { piBashExitMetadata } from "../core/pi-bash-error.js";
 import { PI_ARGUMENT_NORMALIZATION_SOURCE } from "../core/pi-arguments.js";
+import { PI_CORE_TOOL_NAMES } from "../core/pi-tools.js";
 import { HumanWaitDeadlinePause } from "./deadline-pause.js";
 import { createGuestStackMap, remapGuestErrorText } from "./guest-stack-map.js";
 import { transpileFabricCodeWithSourceMap } from "./type-checker.js";
@@ -262,6 +263,7 @@ globalThis.pi = new Proxy({}, {
     };
   },
 });
+const __piToolNames = ${JSON.stringify(PI_CORE_TOOL_NAMES)};
 const __piStrings = (typeof globalThis["π"] === "object" && globalThis["π"] !== null) ? globalThis["π"] : {};
 globalThis["π"] = new Proxy(__piStrings, {
   get(target, property) {

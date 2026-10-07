@@ -29,6 +29,7 @@ const rejected = (dir: string, reason: string): void => {
 describe("published build artifact guards", () => {
   it("uses host-only wildcard peers and exact Pi 1.0 development dependencies", () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+    expect(manifest.dependencies["pi-fabric-worker-sdk"]).toBe(`npm:@earendil-works/pi-coding-agent@${manifest.devDependencies["@earendil-works/pi-coding-agent"]}`);
     for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
       expect(manifest.dependencies[name]).toBeUndefined();
       expect(manifest.peerDependencies[name]).toBe("*");
@@ -45,21 +46,21 @@ describe("published build artifact guards", () => {
     fs.writeFileSync(file, JSON.stringify(manifest));
     rejected(dir, "Missing or unpackaged public entrypoint: ./dist/missing.js");
   });
-  it("checks optional dependencies in the manifest's actual extension entry", () => {
+  it.each(["yaml", "pi-fabric-worker-sdk"])("rejects eager %s in the actual extension entry", (dependency) => {
     const dir = fixture();
     const manifest = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
     expect(manifest.pi.extensions).toEqual(["./dist/extension-bootstrap.js"]);
-    fs.appendFileSync(path.join(dir, manifest.pi.extensions[0]), '\nimport "yaml";\n');
-    rejected(dir, "Startup eagerly imports optional dependency yaml");
+    fs.appendFileSync(path.join(dir, manifest.pi.extensions[0]), `\nimport "${dependency}";\n`);
+    rejected(dir, `Startup eagerly imports optional dependency ${dependency}`);
   });
   it("rejects a missing standalone worker validator", () => {
     const dir = fixture();
     fs.rmSync(path.join(dir, "dist/worker/result.js"));
     rejected(dir, "worker/result.js");
   });
-  it("rejects external dependencies in the worker bootstrap", () => {
+  it.each(["worker.js", "durable/worker.js"])("rejects external dependencies in %s bootstrap", (entry) => {
     const dir = fixture();
-    fs.appendFileSync(path.join(dir, "dist/worker.js"), '\nimport "typebox/value";\n');
+    fs.appendFileSync(path.join(dir, "dist", entry), '\nimport "typebox/value";\n');
     rejected(dir, "Worker bootstrap imports an external package: typebox/value");
   });
   it("rejects a validator that relies on host modules", () => {
@@ -77,7 +78,7 @@ describe("published build artifact guards", () => {
     fs.rmSync(path.join(dir, "dist/ui/image-overlays.js"));
     rejected(dir, "ui/image-overlays.js");
   });
-  it.each(["native-discovery.js", "memory/extractive-history.js"])("requires stable optional entry %s", (entry) => {
+  it.each(["native-discovery.js", "memory/extractive-history.js", "durable/worker.js", "durable/worker-host.js"])("requires stable optional entry %s", (entry) => {
     const dir = fixture();
     fs.rmSync(path.join(dir, "dist", entry));
     rejected(dir, entry);

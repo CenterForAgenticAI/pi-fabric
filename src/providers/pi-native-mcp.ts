@@ -140,7 +140,13 @@ export class PiNativeMcpTools {
   }
 
   serverInfo(): Array<{ name: string; description: string | null; transport: string; tools: number; stale: boolean }> {
-    const tools = this.#tools();
+    let tools = this.#tools();
+    const indexed = new Set(tools.map(tool => tool.server));
+    // Discovery heals too: a server that connected after the snapshot must not
+    // read as stale for the rest of the session.
+    if (this.servers.some(name => !indexed.has(name)) && this.#pollLiveRegistrations()) {
+      tools = this.#tools();
+    }
     return this.servers.map(name => {
       const selected = tools.filter(tool => tool.server === name);
       return { name, description: selected[0]?.registered.definition.namespace?.description ?? null,
@@ -149,17 +155,42 @@ export class PiNativeMcpTools {
   }
 
   #resolve(server: string, requested: string): NativeTool {
-    this.#refreshIndex();
-    const visible = this.#visibility();
-    const index = this.#indexes.get(server);
-    if (index) this.#checkMetadata(index, visible);
-    // A withdrawn exact name must not silently become another tool's alias.
-    const candidates = index?.exact.get(requested) ?? index?.aliases.get(requested) ?? [];
-    const matches = candidates.filter(entry => visible(entry.registered));
+    const attempt = (): NativeTool[] => {
+      this.#refreshIndex();
+      const visible = this.#visibility();
+      const index = this.#indexes.get(server);
+      if (index) this.#checkMetadata(index, visible);
+      // A withdrawn exact name must not silently become another tool's alias.
+      const candidates = index?.exact.get(requested) ?? index?.aliases.get(requested) ?? [];
+      return candidates.filter(entry => visible(entry.registered));
+    };
+    let matches = attempt();
+    // Pi keeps its registry live, but the capture catalog only refreshes when
+    // something calls runner.getAllRegisteredTools(). A miss is exactly the
+    // moment a late-connected server is in flight, so re-poll once: a session
+    // must not pin its startup registration snapshot for native lookups.
+    if (matches.length !== 1 && this.#pollLiveRegistrations()) matches = attempt();
     if (matches.length !== 1) {
       throw new Error(`Unknown or ambiguous Pi MCP tool: ${server}.${requested}. Check /mcp and the tool exposure; no mcporter fallback was attempted.`);
     }
     return matches[0]!;
+  }
+
+  // Mirrors Pi's "waits for the servers it names" semantics inside the borrow
+  // layer: never polls on a timer, only once per failed lookup, and reports
+  // change only when the capture catalog actually moved.
+  #pollLiveRegistrations(): boolean {
+    const runner = this.catalog.runner as
+      | { getAllRegisteredTools?: () => readonly RegisteredTool[] }
+      | undefined;
+    if (typeof runner?.getAllRegisteredTools !== "function") return false;
+    const before = this.catalog.registeredTools();
+    try {
+      runner.getAllRegisteredTools();
+    } catch {
+      return false;
+    }
+    return this.catalog.registeredTools() !== before;
   }
 
   describe(server: string, tool: string): FabricActionDescriptor {

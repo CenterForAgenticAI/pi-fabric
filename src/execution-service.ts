@@ -689,9 +689,11 @@ export class FabricExecutionService {
         ?? []) as import("@earendil-works/pi-coding-agent").ToolDefinition[];
       // A native host already supplies its callable catalog. Do not initialize
       // an independent MCP transport just to alias those registered tools.
-      const actions = definitions.length
-        ? (await Promise.all(["pi", "extensions"].filter(provider => this.registry.has(provider)).map(provider => this.registry.list({provider, limit: 1_000}, context)))).flat()
-        : await this.registry.list({limit: 1_000}, context);
+      // Only Pi-native providers contribute aliases. An unrelated provider's
+      // discovery failure or pending connection must not block every program.
+      const providers = definitions.length ? ["pi", "extensions"] : ["pi", "extensions", "mcp"];
+      const actions = (await Promise.all(providers.filter(provider => this.registry.has(provider))
+        .map(provider => this.registry.list({provider, limit: 1_000}, context)))).flat();
       const refs = new Set(actions.map(action => action.ref));
       // Host registrations beyond the Fabric discovery page remain reachable.
       for (const definition of definitions) {
