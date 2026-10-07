@@ -139,7 +139,8 @@ const BENIGN_COMPACT_MESSAGES = new Set([
 const isString = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0;
 
-const checkedSeed = (value: unknown): string | undefined => {
+/** Rejects a blank, non-string or oversized seed; shared by every path that accepts one. */
+export const checkedSeed = (value: unknown): string | undefined => {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || value.trim() === "" || value.length > MAX_COMPACTION_SEED_CHARS) {
     throw new Error(`compact seed must be a non-empty string of at most ${MAX_COMPACTION_SEED_CHARS} characters`);
