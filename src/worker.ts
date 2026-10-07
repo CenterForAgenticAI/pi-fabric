@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { assertWorkerRuntime, writeWorkerStartupFailure } from "./worker/startup.js";
+import { MODEL_PIN_ENV, MODEL_PIN_EXIT_CODE, modelPinFailure, parseModelPinViolation } from "./agents/model-pin.js";
 
 import { StringDecoder } from "node:string_decoder";
 import type { ImageContent } from "@earendil-works/pi-ai";
@@ -318,6 +319,14 @@ const main = async (): Promise<void> => {
     const guard = import.meta.url.endsWith(".ts") ? "./agents/write-guard.ts" : "./agents/write-guard.js";
     piArguments.push("-e", fileURLToPath(new URL(guard, import.meta.url)));
   }
+  if (options.modelMatch === "exact") {
+    // Exact means only this model does work. The guard ends the child before any
+    // model call whose current model differs; it loads even with --no-extensions.
+    if (!isPi) throw new Error(`modelMatch "exact" requires the Pi runner, not ${options.runner}`);
+    if (!options.model || options.model.indexOf("/") < 1) throw new Error('modelMatch "exact" requires a provider/id model');
+    const guard = import.meta.url.endsWith(".ts") ? "./agents/model-pin-guard.ts" : "./agents/model-pin-guard.js";
+    piArguments.push("-e", fileURLToPath(new URL(guard, import.meta.url)));
+  }
   if (options.tools.length > 0) piArguments.push("--tools", options.tools.join(","));
   else piArguments.push("--no-tools"); // explicit empty allowlist => no tools, not Pi defaults
   if (options.model) piArguments.push("--model", options.model);
@@ -418,6 +427,8 @@ const main = async (): Promise<void> => {
       // Supported child contract (docs/agents.md "Child environment contract").
       ...(options.lineage ? { PI_FABRIC_LINEAGE: options.lineage } : {}),
       ...(options.writePolicy ? { PI_FABRIC_WRITE_POLICY: options.writePolicy } : {}),
+      // Undefined drops an inherited pin: only an exact run's own child carries one.
+      [MODEL_PIN_ENV]: options.modelMatch === "exact" ? options.model : undefined,
       // Exactly the manager's derived scope; undefined drops an inherited value.
       PI_FABRIC_SCOPE: options.scope,
       PI_FABRIC_SCOPE_FILE: undefined,
@@ -517,7 +528,8 @@ const main = async (): Promise<void> => {
       appendLog(`${JSON.stringify({ type: "fabric_model_error", requestedModel: options.model, model: record.model, error })}\n`);
       killChild();
     },
-  }, options.modelAdmission);
+  // Exact is always strict, whatever the caller or a stale launch passed.
+  }, options.modelMatch === "exact" ? "strict" : options.modelAdmission);
 
   // Attributed token telemetry. Every usage-bearing child event emits one
   // tokens.usage lifecycle entry identified by this run/actor/runner/depth.
@@ -1373,6 +1385,14 @@ const main = async (): Promise<void> => {
   if (killTimer) clearTimeout(killTimer);
   if (closeTimer) clearTimeout(closeTimer);
   recoveryWatchdog.dispose();
+  if (options.modelMatch === "exact" && exitCode === MODEL_PIN_EXIT_CODE && !terminalStatus) {
+    const violation = parseModelPinViolation(stderr);
+    if (violation) {
+      terminalStatus = "failed";
+      terminalError = modelPinFailure(violation);
+      appendLog(`${JSON.stringify({ type: "fabric_model_error", requestedModel: options.model, model: record.model, error: terminalError })}\n`);
+    }
+  }
   if (isPi && !modelControl.ready && !terminalStatus) {
     terminalStatus = "failed";
     terminalError = `Child Pi exited before requested model admission completed; task was not sent${stderr.trim() ? `: ${stderr.trim()}` : ""}`;

@@ -12,6 +12,8 @@ const task = fs.readFileSync(taskFile, "utf8");
 const marker = path.join(path.dirname(statusFile), "startup-attempts");
 const attempts = fs.existsSync(marker) ? Number(fs.readFileSync(marker, "utf8")) + 1 : 1;
 fs.writeFileSync(marker, String(attempts));
+// One line per launch attempt: the argv the manager (re)built for this worker.
+fs.appendFileSync(path.join(path.dirname(statusFile), "worker-args.jsonl"), JSON.stringify(process.argv.slice(2)) + "\n");
 const now = Date.now();
 const retryable = task !== "Reject startup";
 const failed = retryable ? attempts === 1 : true;
