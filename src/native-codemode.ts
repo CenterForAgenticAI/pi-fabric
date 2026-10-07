@@ -13,11 +13,12 @@ const question = { oneOf: [
   object({ type: { const: "score" }, instructions: string, criteria: { type: "array", items: string, minItems: 1, maxItems: 1_000 } }),
   object({ type: { const: "bool" }, instructions: string, criteria: object({ true: string, false: string }) }),
 ] };
-const block = { oneOf: [object({ type: { const: "text" }, text: string }), object({ type: { const: "image" }, data: { type: "string", maxLength: 16_777_216 }, mimeType: string })] };
+const imageBlock = object({ type: { const: "image" }, data: { type: "string", maxLength: 16_777_216 }, mimeType: string });
+const block = { oneOf: [object({ type: { const: "text" }, text: string }), imageBlock] };
 const descriptors: FabricActionDescriptor[] = [
   ...["getModelsOfType", "getAvailableOfType"].map(name => ({ name, description: "Native Pi model catalog (credentials remain host-side).", inputSchema: catalog, risk: "read" as const })),
   { name: "getModelOfType", description: "Find a native Pi model.", inputSchema: object({ type, provider: string, id: string }), risk: "read" },
-  { name: "classify", description: "Answer typed questions using the native Pi classifier registry.", inputSchema: object({ model, context: object({ state: { type: "object", additionalProperties: true }, questions: { type: "object", additionalProperties: question, minProperties: 1, maxProperties: 1_000 } }) }), risk: "network" },
+  { name: "classify", description: "Answer typed questions using the native Pi classifier registry.", inputSchema: object({ model, context: object({ state: { type: "object", additionalProperties: true }, questions: { type: "object", additionalProperties: question, minProperties: 1, maxProperties: 1_000 }, images: { type: "array", items: imageBlock, maxItems: 1_000 } }, ["state", "questions"]) }), risk: "network" },
   { name: "generateImages", description: "Generate images using the native Pi image registry.", inputSchema: object({ model, context: object({ input: { type: "array", items: block, maxItems: 1_000 } }) }), risk: "network" },
   { name: "load", description: "Read the branch-local JSON script store.", inputSchema: object({}), risk: "read" },
   { name: "store", description: "Stage branch-local JSON state; committed only after successful execution.", inputSchema: object({ values: { type: "object", additionalProperties: true } }), risk: "write" },

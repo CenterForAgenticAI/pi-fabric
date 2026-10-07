@@ -10,7 +10,7 @@ type NativeClassifierAnswer =
  | { type: "choice"; choice: string; probabilities: Record<string, number>; confidence: number }
  | { type: "score"; score: number; confidence: number }
  | { type: "bool"; probability: number };
-interface NativeClassifierContext { state: Record<string, unknown>; questions: Record<string, NativeClassifierQuestion> }
+interface NativeClassifierContext { state: Record<string, unknown>; questions: Record<string, NativeClassifierQuestion>; images?: NativeImageBlock[] }
 interface NativeModelUsage { input: number; output: number; totalTokens: number; cost: { total: number } }
 interface NativeClassifierResult { provider: string; model: string; answers: Record<string, NativeClassifierAnswer>; usage?: NativeModelUsage; stopReason: "stop" | "error" | "aborted"; errorMessage?: string }
 type NativeImageBlock = { type: "image"; data: string; mimeType: string };

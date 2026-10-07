@@ -64,10 +64,12 @@ Fabric's catalog page remains bounded to 1000 actions. Host-registered callable 
 - `getModelsOfType(type, provider?)`
 - `getAvailableOfType(type, provider?)`
 - `getModelOfType(type, provider, id)`
-- `classify({provider, id}, {state, questions})`
+- `classify({provider, id}, {state, questions, images?})`
 - `generateImages({provider, id}, {input})`
 
 Types are `chat`, `classifier`, and `image`; chat execution is not exposed. Classifiers accept native `choice`, `score`, and `bool` questions; bool answers contain `probability`. Full catalog entries work as selectors. Registry lookups resolve the authoritative model; guest configuration, headers and credentials are never used. Authentication and cancellation use public host registry APIs. At most four classifier/image calls run concurrently per invocation, including mixed calls; waiting calls cancel with the script.
+
+Classifier `images` uses Pi's inline `{type:"image", data:"<base64>", mimeType:"image/png"}` blocks, passed unchanged to `modelRegistry.classify`. Fabric does not read paths, fetch image URLs, or supply provider adapters. For example, when the host (or pi-better-openai's compatibility provider) registers OpenAI Decisions, select `openai/gpt-6-luna` with `models.getAvailableOfType("classifier", "openai")`, then call `models.classify` with text state and optional images. OpenAI Decisions requires an API key, not ChatGPT/Codex OAuth; the provider enforces its own modality and request limits. No Jev or chat fallback is chosen.
 
 These remain registered `native.*` actions. Scoped hosts require `native:models` read/execute or `native:store` read/write grants as appropriate; pinned views must include the required actions. Native `stopReason` and `errorMessage` are retained, and reported usage is included even on provider errors. Direct `jev.evaluate` accounting is unchanged. Classifier strings are capped at 262144 characters, question/criteria/input collections at 1000, and serialized model requests/responses at 16777216 characters. Provider limits may be lower. Missing registry APIs produce explicit compatibility errors.
 

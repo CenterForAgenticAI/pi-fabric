@@ -49,6 +49,34 @@ describe("native Pi codemode bridge", () => {
     expect(result.usage).toEqual({ ...usage, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
     expect(f.registry.classify.mock.calls[0]?.[2]).toMatchObject({ signal: expect.any(AbortSignal) });
   });
+  it.each(["quickjs", "node-process", "bun-process"] as const)("%s passes OpenAI Decisions text/images and all question types through the Pi registry", async runtime => {
+    const f = fixture(runtime);
+    const openai = { ...classifier, provider: "openai", id: "gpt-6-luna", api: "openai-decisions", input: ["text", "image"] };
+    f.registry.getAvailableOfType.mockResolvedValue([openai]);
+    f.registry.getModelOfType.mockReturnValue(openai);
+    const answers = { approved: { type: "bool", probability: 0.95 }, route: { type: "choice", choice: "yes", probabilities: { yes: 0.9, no: 0.1 }, confidence: 0.8 }, severity: { type: "score", score: 1.2, confidence: 0.7 } };
+    f.registry.classify.mockResolvedValue({ provider: "openai", model: "gpt-6-luna", stopReason: "stop", answers, usage } as any);
+    const input = { state: { message: "Inspect the photo" }, images: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }], questions: {
+      approved: { type: "bool", instructions: "Is it approved?", criteria: { true: "yes", false: "no" } },
+      route: { type: "choice", instructions: "Choose a route", criteria: { yes: "accepted", no: "rejected" } },
+      severity: { type: "score", instructions: "Rate severity", criteria: ["low", "medium", "high"] },
+    } };
+    const result = await f.run(`const available = await models.getAvailableOfType("classifier", "openai"); return await models.classify(available[0], ${JSON.stringify(input)});`);
+    expect(result.success, result.error ?? JSON.stringify(result.typeErrors)).toBe(true);
+    expect(result.value).toMatchObject({ provider: "openai", model: "gpt-6-luna", answers, stopReason: "stop" });
+    expect(f.registry.getModelOfType).toHaveBeenCalledWith("classifier", "openai", "gpt-6-luna");
+    expect(f.registry.classify).toHaveBeenCalledExactlyOnceWith(openai, input, { signal: expect.any(AbortSignal) });
+    expect(result.usage?.cost.total).toBe(usage.cost.total);
+    expect(JSON.stringify(result.value)).not.toContain("secret");
+  });
+  it("rejects malformed classifier image blocks before dispatch", async () => {
+    const f = fixture();
+    for (const images of ["photo.png", [{ type: "text", text: "wrong modality" }], [{ type: "image", image_url: "https://example.test/a.png" }]]) {
+      const result = await f.run(`return await tools.call({ref:"native.classify",args:{model:{provider:"test",id:"bool"},context:{...${question},images:${JSON.stringify(images)}}}});`);
+      expect(result.success).toBe(false);
+    }
+    expect(f.registry.classify).not.toHaveBeenCalled();
+  });
   it("preserves native error stopReason without throwing it away", async () => {
     const f = fixture();
     f.registry.classify.mockImplementation(async () => ({ provider: "test", model: "bool", stopReason: "error", answers: {}, usage, errorMessage: "native refusal" }) as any);
