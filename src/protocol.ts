@@ -65,15 +65,143 @@ export type FabricProgramRunReplyV1 =
   | { ok: true; program: string; value: unknown; logs: string[] }
   | { ok: false; error: string; program?: string };
 
-export interface FabricProgramRunRequestV1 {
-  /** name, name@<digest prefix >= 12>, or a full digest. */
-  ref: string;
+interface FabricProgramRunRequestBaseV1 {
+  /** JSON, at most 64 KiB; reaches the program as `input`. */
   input?: unknown;
-  requirePromoted?: boolean;
   signal?: AbortSignal;
+  /**
+   * Called synchronously, before the listener's first await, for every request
+   * it will answer. A caller that sees no call knows pi-fabric is absent or too
+   * old. Returning `false` means another responder already holds the request;
+   * pi-fabric then stays silent. Any other return value, or a throw, is ignored.
+   * A `claim` getter that throws cannot be called; Fabric refuses the request.
+   */
+  claim?: () => void | boolean;
   /** Called exactly once. */
   reply: (result: FabricProgramRunReplyV1) => void;
 }
+
+/** Runs a saved program. Exactly one of `ref` or `code` is allowed. */
+export interface FabricProgramRunByRefRequestV1 extends FabricProgramRunRequestBaseV1 {
+  /** name, name@<digest prefix >= 12>, or a full digest. */
+  ref: string;
+  requirePromoted?: boolean;
+  code?: never;
+  kernel?: never;
+  sha256?: never;
+}
+
+/**
+ * Runs program text the caller built, without saving it anywhere. `sha256` is
+ * the lowercase hex SHA-256 of the code's UTF-8 bytes; a mismatch runs nothing.
+ */
+export interface FabricProgramRunByCodeRequestV1 extends FabricProgramRunRequestBaseV1 {
+  /** Non-empty, at most 65 536 characters. */
+  code: string;
+  /** Only `"typescript"` today; the default. */
+  kernel?: "typescript";
+  sha256: string;
+  ref?: never;
+  requirePromoted?: never;
+}
+
+export type FabricProgramRunRequestV1 = FabricProgramRunByRefRequestV1 | FabricProgramRunByCodeRequestV1;
+
+/** The request fields Fabric reads, once, when a program run event arrives. */
+export type FabricProgramRunFieldV1 =
+  | "ref"
+  | "code"
+  | "kernel"
+  | "sha256"
+  | "input"
+  | "requirePromoted"
+  | "signal"
+  | "claim";
+
+/**
+ * Everything a program run listener keeps of a request. Read once, at the event
+ * boundary and before the listener's first await, so a caller that deletes or
+ * replaces a field afterwards cannot change what runs or lose its reply.
+ */
+export interface FabricProgramRunSnapshotV1 {
+  readonly ref: unknown;
+  readonly code: unknown;
+  readonly kernel: unknown;
+  readonly sha256: unknown;
+  readonly input: unknown;
+  readonly requirePromoted: unknown;
+  readonly signal: unknown;
+  /**
+   * Fields whose getter threw when read. Each is `undefined` above; the handler
+   * refuses the request by name instead of letting the throw escape.
+   */
+  readonly unreadable: ReadonlySet<FabricProgramRunFieldV1>;
+  /**
+   * Acknowledges the request synchronously with the caller's `claim`. Returns
+   * false only when `claim` reports that another responder already holds the
+   * request. A missing, unreadable or throwing `claim` returns true.
+   */
+  readonly claim: () => boolean;
+  /** Calls the caller's `reply` at most once, directly, and never throws. */
+  readonly respond: (result: FabricProgramRunReplyV1) => void;
+}
+
+/**
+ * Reads `reply` and each named field once, and never lets a getter's throw out.
+ * Returns undefined when `reply` cannot be read, because nobody can be told.
+ * Throws when `reply` reads as something other than a function, as the event
+ * has always done for a payload without a `reply` function.
+ */
+export const snapshotFabricProgramRunRequestV1 = (value: unknown): FabricProgramRunSnapshotV1 | undefined => {
+  const request = value as Record<string, unknown> | null | undefined;
+  let reply: unknown;
+  try {
+    reply = request?.reply;
+  } catch {
+    return undefined;
+  }
+  if (typeof reply !== "function") throw new Error("Invalid Pi Fabric program run request");
+  const unreadable = new Set<FabricProgramRunFieldV1>();
+  const read = (field: FabricProgramRunFieldV1): unknown => {
+    try {
+      return request![field];
+    } catch {
+      unreadable.add(field);
+      return undefined;
+    }
+  };
+  const claimFunction = read("claim");
+  const claim = (): boolean => {
+    if (typeof claimFunction !== "function") return true;
+    try {
+      return Reflect.apply(claimFunction, value, []) !== false;
+    } catch {
+      return true;
+    }
+  };
+  let replied = false;
+  const respond = (result: FabricProgramRunReplyV1): void => {
+    if (replied) return;
+    replied = true;
+    try {
+      reply(result);
+    } catch {
+      // A throwing listener must not turn into an unhandled rejection.
+    }
+  };
+  return Object.freeze({
+    ref: read("ref"),
+    code: read("code"),
+    kernel: read("kernel"),
+    sha256: read("sha256"),
+    input: read("input"),
+    requirePromoted: read("requirePromoted"),
+    signal: read("signal"),
+    unreadable,
+    claim,
+    respond,
+  });
+};
 
 export const FABRIC_PROVIDER_REGISTER_EVENT = "pi-fabric:provider:register:v1";
 export const FABRIC_PROVIDER_DISCOVER_EVENT = "pi-fabric:provider:discover:v1";
