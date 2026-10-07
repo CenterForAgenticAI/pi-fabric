@@ -880,6 +880,19 @@ const notifyInstructionError = (
   context.ui.notify(clipUtf8(`Fabric compaction rejected: ${error.code}: ${error.message}`, 512), "error");
 };
 
+// Pi reports a cancelled compaction only as its generic "Compaction
+// cancelled"; name Fabric's reason the same way instruction errors are shown.
+const notifyCompactionCancelled = (
+  context: ExtensionContext | undefined,
+  reason: string,
+): void => {
+  if (!context?.hasUI) return;
+  context.ui.notify(
+    clipUtf8(`Fabric compaction cancelled: ${reason.replace(/^fabric: /, "")}`, 512),
+    "warning",
+  );
+};
+
 export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHookOptions): void => {
   pi.on("session_before_compact", (event: SessionBeforeCompactEvent, context: ExtensionContext) => {
     if (event.customInstructions === "__pi_vcc__") {
@@ -962,6 +975,7 @@ export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHook
         options.onYield?.();
         return;
       }
+      notifyCompactionCancelled(context, result.reason);
       return { cancel: true };
     }
     (event as SessionBeforeCompactEvent & { _fabricCompaction?: boolean })._fabricCompaction = true;
