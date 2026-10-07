@@ -209,6 +209,9 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     state.cwd
       ? state.config.compaction.targetContextRatio
       : DEFAULT_FABRIC_CONFIG.compaction.targetContextRatio;
+  // A deliberate yield the compaction hook noted for the ownership observer
+  // (pi-vcc sentinel or override); the next session_compact consumes it.
+  let compactionYieldPending = false;
   const compactionClaims = new CompactionOwnerRegistry({
     // Claims arrive after load, once the live session context is known.
     warn: (message) => {
@@ -216,6 +219,11 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
       else console.warn(`[pi-fabric] ${message}`);
     },
     fallback: deterministicCompactionFallback(compactionTargetContextRatio),
+    // A yield noted while the owner held compaction, and never consumed,
+    // must not hide the next foreign compaction once Fabric is back.
+    onRelease: () => {
+      compactionYieldPending = false;
+    },
   });
   const state = new FabricState(pi, capturedTools, {
     compactionOwner: () => compactionClaims.active,
@@ -923,7 +931,6 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
   // The observer loads at the first committed compaction; a deliberate yield
   // noted before then is handed over when it does.
   let compactionOwners: Promise<CompactionOwnerObserver> | undefined;
-  let compactionYieldPending = false;
   pi.on("session_compact", async (event, context) => {
     // A claimed owner's result is expected, not a lost ownership race.
     const fabricEngine = !compactionClaims.active
