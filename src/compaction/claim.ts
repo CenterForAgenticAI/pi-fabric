@@ -43,6 +43,8 @@ export interface CompactionOwnerRegistryOptions {
   fallback: CompactionFallback;
   /** Called once each time a held claim ends, before Fabric resumes. */
   onRelease?: () => void;
+  /** Fabric's current carry-forward items; undefined before Fabric knows the session. */
+  carry?: () => readonly string[] | undefined;
 }
 
 /**
@@ -126,6 +128,9 @@ export class CompactionOwnerRegistry {
     if (message.signal?.aborted) {
       return { ok: false, error: `Fabric refused the compaction owner claim from ${compactionOwnerLabel(owner)}: its signal is already aborted` };
     }
+    // The owner takes over compact.carry; hand it Fabric's list at cut-over.
+    const current = this.options.carry?.();
+    const carry = current === undefined ? undefined : Object.freeze([...current]);
     const token = randomUUID();
     const signal = message.signal;
     const onAbort = (): void => {
@@ -141,7 +146,7 @@ export class CompactionOwnerRegistry {
       }),
       release: () => signal?.removeEventListener("abort", onAbort),
     };
-    return { ok: true, handle: this.#handle(token, owner.name) };
+    return { ok: true, handle: this.#handle(token, owner.name), ...(carry ? { carry } : {}) };
   }
 
   /** Only the holder's token releases the claim. */
