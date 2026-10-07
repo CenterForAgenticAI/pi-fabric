@@ -320,7 +320,10 @@ export interface FabricCompactionOwnerRequestV1 {
   instructions?: string;
   preserve?: string[];
   requestedBy?: string;
-  /** Prompt to send after the owner's compaction commits. */
+  /**
+   * Text to send after the owner's compaction commits. Send it as Fabric
+   * does: a labelled custom message that starts a turn, not a user message.
+   */
   seed?: string;
 }
 
