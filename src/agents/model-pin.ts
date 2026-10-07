@@ -12,7 +12,7 @@ export interface ModelPinViolation {
 }
 
 /** Every pin failure starts with this text; the worker builds it, never a model id. */
-export const MODEL_PIN_FAILURE_PREFIX = "Fabric exact model pin violated: ";
+const MODEL_PIN_FAILURE_PREFIX = "Fabric exact model pin violated: ";
 
 /**
  * Whether a run ended on a pin violation. Such a run is never retried or resumed,
