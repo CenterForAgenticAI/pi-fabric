@@ -350,28 +350,47 @@ export interface FabricCompactionOwnerPressureV1 {
 type FabricCompactionOwnerResult<T> = T | Promise<T>;
 
 /**
+ * Upper bound on one owner handler call. Past it Fabric aborts the call's
+ * signal and fails the program call with an error naming the owner and
+ * the action.
+ */
+export const FABRIC_COMPACTION_OWNER_HANDLER_TIMEOUT_MS = 30_000;
+
+/** Passed to every owner handler. */
+export interface FabricCompactionOwnerCallV1 {
+  /** The invoking session's extension context, when Fabric has one. */
+  context: ExtensionContext | undefined;
+  /**
+   * Aborts when the calling program is cancelled or the handler exceeds
+   * `FABRIC_COMPACTION_OWNER_HANDLER_TIMEOUT_MS`. Fabric has already failed
+   * the program call by then; stop the work.
+   */
+  signal: AbortSignal;
+}
+
+/**
  * Supported `compact.*` actions. An absent action, or a request/carry field
  * absent from `fields`, fails the program call with an error naming the owner.
- * `context` is the invoking session's extension context when Fabric has one.
+ * Every handler receives `{ context, signal }` (`FabricCompactionOwnerCallV1`).
  */
 export interface FabricCompactionOwnerActionsV1 {
   request?: {
     fields: readonly FabricCompactionOwnerRequestFieldV1[];
-    handler: (request: FabricCompactionOwnerRequestV1, context: ExtensionContext | undefined) => unknown;
+    handler: (request: FabricCompactionOwnerRequestV1, call: FabricCompactionOwnerCallV1) => unknown;
   };
   /** Result: JSON, at most 16 KiB; reported as `ownerStatus`. */
-  status?: { handler: (context: ExtensionContext | undefined) => unknown };
+  status?: { handler: (call: FabricCompactionOwnerCallV1) => unknown };
   pressure?: {
-    handler: (context: ExtensionContext | undefined) => FabricCompactionOwnerResult<FabricCompactionOwnerPressureV1>;
+    handler: (call: FabricCompactionOwnerCallV1) => FabricCompactionOwnerResult<FabricCompactionOwnerPressureV1>;
   };
   carry?: {
     fields: readonly FabricCompactionOwnerCarryFieldV1[];
     handler: (
       update: FabricCompactionOwnerCarryUpdateV1,
-      context: ExtensionContext | undefined,
+      call: FabricCompactionOwnerCallV1,
     ) => FabricCompactionOwnerResult<FabricCompactionOwnerCarryResultV1>;
   };
-  cancel?: { handler: (context: ExtensionContext | undefined) => unknown };
+  cancel?: { handler: (call: FabricCompactionOwnerCallV1) => unknown };
 }
 
 export type FabricCompactionFallbackResultV1 =
