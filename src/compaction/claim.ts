@@ -101,7 +101,14 @@ export class CompactionOwnerRegistry {
       message.reply?.(result);
       return;
     }
-    message.reply(this.claim(message));
+    const result = this.claim(message);
+    try {
+      message.reply(result);
+    } catch (error) {
+      // The owner never received its token, so it could never withdraw.
+      if (result.ok) this.withdraw(result.handle.token);
+      throw error;
+    }
   }
 
   claim(message: FabricCompactionOwnerClaimV1): FabricCompactionOwnerClaimResultV1 {
