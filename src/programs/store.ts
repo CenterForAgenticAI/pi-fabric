@@ -70,9 +70,6 @@ const MIN_DIGEST_PREFIX = 12;
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const LOCK_STALE_MS = 30_000;
 const LOCK_ATTEMPTS = 500;
-// Windows rejects mkdir with EPERM/EACCES while a released lock directory is
-// still pending deletion: the same contention as EEXIST, not a policy failure.
-const LOCK_BUSY_CODES = new Set(process.platform === "win32" ? ["EEXIST", "EPERM", "EACCES"] : ["EEXIST"]);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -397,14 +394,11 @@ export class ProgramStore {
       return stat !== undefined && Date.now() - stat.mtimeMs > LOCK_STALE_MS;
     };
     for (let attempt = 0; ; attempt++) {
-      let busy: unknown;
       try {
         await fs.promises.mkdir(lock, { mode: 0o700 });
         break;
       } catch (error) {
-        const code = (error as { code?: string }).code;
-        if (!LOCK_BUSY_CODES.has(code ?? "")) throw error;
-        if (code !== "EEXIST") busy = error;
+        if ((error as { code?: string }).code !== "EEXIST") throw error;
       }
       if (await stale(lock)) {
         const claim = `${lock}.reap-${process.pid}-${randomUUID()}`;
@@ -414,7 +408,7 @@ export class ProgramStore {
         }
         continue;
       }
-      if (attempt >= LOCK_ATTEMPTS) throw busy ?? new Error("Timed out waiting for the Fabric program store lock");
+      if (attempt >= LOCK_ATTEMPTS) throw new Error("Timed out waiting for the Fabric program store lock");
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     try {

@@ -32,8 +32,7 @@ export const validationMessage = (
       .slice(0, 5)
       .map((error) => {
         // Prefix nested failures with their property path.
-        const location = error as { instancePath?: unknown; path?: unknown };
-        const at = location.instancePath ?? location.path;
+        const at = (error as { path?: unknown }).path;
         return typeof at === "string" && at !== "" && at !== "/"
           ? `${at}: ${error.message}`
           : error.message;

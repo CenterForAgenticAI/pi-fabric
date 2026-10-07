@@ -20,7 +20,7 @@ import { DecisionStore } from "./decisions/store.js";
 import { PiToolsProvider } from "./providers/pi-tools-provider.js";
 import { powerShellToolDefinitionFactory } from "./providers/pi-bash-cwd.js";
 import type { FabricShellJobStore } from "./core/shell-jobs.js";
-import { SessionsProvider, toolCallShellPreflight } from "./providers/sessions-provider.js";
+import { SessionsProvider } from "./providers/sessions-provider.js";
 import { TasksProvider } from "./providers/tasks-provider.js";
 import { StateProvider } from "./providers/state-provider.js";
 
@@ -87,11 +87,7 @@ export class RuntimeStateBuiltins {
         this.#sessions = true;
         await this.install(createProviderComponent({
           provider: "sessions", description: "Interactive jev-fabric children: open, write, read, wait and stop",
-          create: () => new SessionsProvider(durable, {
-            cwd,
-            shellOverride: () => capturedTools.get("bash") !== undefined,
-            preflight: toolCallShellPreflight(() => capturedTools.runner),
-          }),
+          create: () => new SessionsProvider(durable, { cwd, shellOverride: () => capturedTools.get("bash") !== undefined }),
         }));
       }
     }

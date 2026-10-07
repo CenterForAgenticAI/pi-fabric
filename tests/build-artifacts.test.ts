@@ -28,27 +28,6 @@ const rejected = (dir: string, reason: string): void => {
 };
 
 describe("published build artifact guards", () => {
-  it("checks a staged build named by --dist, with no dist/ beside it", () => {
-    // scripts/build-dist.mjs verifies the staged copy before it replaces dist/.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-build-artifacts-"));
-    temporary.push(dir);
-    fs.cpSync(path.join(root, "dist"), path.join(dir, ".dist-build-1"), { recursive: true });
-    for (const file of ["package.json", "scripts/assert-build-artifacts.mjs", "src/verified/generated/manifest.json"]) {
-      fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
-      fs.copyFileSync(path.join(root, file), path.join(dir, file));
-    }
-    fs.symlinkSync(path.join(root, "node_modules"), path.join(dir, "node_modules"), "junction");
-    const check = () => spawnSync(process.execPath, [path.join(dir, "scripts/assert-build-artifacts.mjs"), "--dist", ".dist-build-1"], { encoding: "utf8", timeout: 60_000 });
-    const passed = check();
-    expect(passed.stderr).toBe("");
-    expect(passed.status).toBe(0);
-    fs.rmSync(path.join(dir, ".dist-build-1", "extension-bootstrap.js"));
-    const missing = check();
-    expect(missing.status).toBe(1);
-    // Node prints an uncaught error through the C runtime, which writes CRLF on Windows.
-    expect(missing.stderr.replace(/\r\n/g, "\n")).toContain("Missing build artifacts:\nextension-bootstrap.js");
-  }, 90_000);
-
   it("uses host-only wildcard peers and exact Pi development dependencies", () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
     expect(manifest.dependencies["pi-fabric-worker-sdk"]).toBe(`npm:@earendil-works/pi-coding-agent@${manifest.devDependencies["@earendil-works/pi-coding-agent"]}`);
@@ -59,11 +38,6 @@ describe("published build artifact guards", () => {
       expect(manifest.overrides?.[name]).toBeUndefined();
       expect(manifest.resolutions?.[name]).toBeUndefined();
     }
-  });
-  it.each(["index.d.ts", "extension-bootstrap.d.ts", "core/host-sdk-runtime.d.ts"])("rejects a private worker SDK leak in %s", (file) => {
-    const dir = fixture();
-    fs.appendFileSync(path.join(dir, "dist", file), '\nexport declare const leaked: import("pi-fabric-worker-sdk").ExtensionAPI;\n');
-    rejected(dir, `Host-facing declaration imports the private worker SDK: ${file}`);
   });
   it("rejects a public export omitted from the compiled tree", () => {
     const dir = fixture();
@@ -125,15 +99,10 @@ describe("published build artifact guards", () => {
     fs.rmSync(path.join(dir, "dist/ui/image-overlays.js"));
     rejected(dir, "ui/image-overlays.js");
   });
-  it.each(["native-discovery.js", "memory/extractive-history.js", "agents/agent-files.js", "durable/worker.js", "durable/worker-host.js"])("requires stable optional entry %s", (entry) => {
+  it.each(["native-discovery.js", "memory/extractive-history.js", "durable/worker.js", "durable/worker-host.js"])("requires stable optional entry %s", (entry) => {
     const dir = fixture();
     fs.rmSync(path.join(dir, "dist", entry));
     rejected(dir, entry);
-  });
-  it("rejects the named agent file loader in the startup graph", () => {
-    const dir = fixture();
-    fs.appendFileSync(path.join(dir, "dist/extension-bootstrap.js"), "\n// src/agents/agent-files.ts\n");
-    rejected(dir, "Startup static graph contains lazy module marker: src/agents/agent-files.ts");
   });
   it("rejects an eager extractive engine implementation", () => {
     const dir = fixture();

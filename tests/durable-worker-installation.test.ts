@@ -9,21 +9,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentManager } from "../src/agents/manager.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 
-// The Bun-parent probe cold-loads the private SDK and starts a second worker.
-// Windows CI exceeded its old 25s process/30s test ceiling under the smoke load.
-// Match the 90s Windows SDK budget used by the offline continuation probe, with
-// nested exit/cleanup headroom; retain the existing 20s/25s/30s Unix limits.
-const BUN_WORKER_TIMEOUT_MS = process.platform === "win32" ? 90_000 : 20_000;
-const BUN_PROCESS_TIMEOUT_MS = BUN_WORKER_TIMEOUT_MS + 5_000;
-const BUN_TEST_TIMEOUT_MS = BUN_PROCESS_TIMEOUT_MS + 5_000;
-
 const roots: string[] = [];
 const managers: AgentManager[] = [];
 afterEach(async () => {
   await Promise.all(managers.splice(0).map(manager => manager.close()));
   vi.unstubAllEnvs();
-  // Windows can hold a handle on a just-closed worker's files for a moment.
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
 // A Pi-managed installation has production dependencies, but no physical host
@@ -81,12 +72,12 @@ describe("installed durable worker without host peers", () => {
       "task-file": taskFile, "status-file": statusFile,
       "lifecycle-file": path.join(root, "bun-lifecycle.jsonl"), "log-file": path.join(root, "bun-events.jsonl"),
       "pi-binary": "forbidden-legacy-fallback", "claude-binary": "unused", "veda-binary": "unused",
-      "veda-backend": "agy", "veda-persona": "unused", "timeout-ms": String(BUN_WORKER_TIMEOUT_MS), depth: "1",
+      "veda-backend": "agy", "veda-persona": "unused", "timeout-ms": "20000", depth: "1",
       "full-code-mode": "false", extensions: "true", tools: '["read"]', "granted-risks": "[]", transport: "process",
     };
     const child = await promisify(execFile)("bun", [path.join(root, "dist/worker.js"),
       ...Object.entries(flags).flatMap(([key, value]) => [`--${key}`, value])],
-    { cwd: root, timeout: BUN_PROCESS_TIMEOUT_MS, maxBuffer: 100000 }).then(
+    { cwd: root, timeout: 25000, maxBuffer: 100000 }).then(
       output => ({ ...output, exitCode: 0 }), error => ({ stderr: String(error.stderr), exitCode: error.code }),
     );
     expect(child, child.stderr).toMatchObject({ exitCode: 0 });
@@ -94,7 +85,7 @@ describe("installed durable worker without host peers", () => {
     expect(record.status, record.error).toBe("completed");
     expect(record.text).toContain("installed durable worker works");
     expect(record.toolCalls).toBe(1);
-  }, BUN_TEST_TIMEOUT_MS);
+  }, 30000);
 
   it("runs SDK RPC, a discovered extension, and a real tool outside the checkout", async () => {
     const { manager } = installation();
@@ -130,15 +121,5 @@ describe("installed durable worker without host peers", () => {
     expect(result.error).toContain("Durable Pi worker failed");
     expect(result.error).toContain("pi-fabric-worker-sdk");
     expect(result.error).not.toContain("transport exited without a result");
-  }, 30000);
-
-  it("names the build and the remedy when the private SDK is not installed", async () => {
-    const { root, manager } = installation();
-    fs.rmSync(path.join(root, "node_modules/pi-fabric-worker-sdk"));
-    const result = await manager.run({ task: "read fixture", tools: ["read"] });
-    expect(result.status).toBe("failed");
-    expect(result.error).toContain(`Fabric build at ${fs.realpathSync(root)} cannot start a worker: its dependency "pi-fabric-worker-sdk" is not installed`);
-    expect(result.error).not.toContain("(the build has no node_modules)");
-    expect(result.error).toContain("restart Pi");
   }, 30000);
 });

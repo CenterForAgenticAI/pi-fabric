@@ -2,7 +2,7 @@ import {
   readFabricExecutionTraceV1,
   type FabricExecutionOutcomeV1,
   type FabricTraceJsonValue,
-} from "../audit/trace-schema.js";
+} from "../audit/trace.js";
 
 export type FabricProjectionSource = "trace" | "legacy";
 

@@ -43,24 +43,7 @@ exclusive transaction prevents concurrent writers, including directory aliases;
 process death releases it without timeout-based stealing or lock-file deletion.
 Reopening the same run uses its initial run ID for idempotent submission and
 resumes checkpoints. Completed work is not repeated. An interrupted unsafe tool
-fails closed, including writes and shell commands.
-
-In the durable worker, an interrupted `fabric_exec` call reruns once if its
-program made no effect. The leaf adapter below does not do this. The worker
-offers the call a fence. Fabric accepts it only when every effect must cross the
-host bridge, which holds for the QuickJS and Monty runtimes but not for CPython
-or the Node and Bun processes. Before the first effect, Fabric arms the fence
-and the worker commits that mark. An effect is any call outside the read-only
-set: the tier that speculation may run early (`pi.read`, `pi.grep`,
-`pi.find`, `pi.ls`, and status and lookup actions such as `memory.recall` and
-`programs.get`), the native store load, discovery, and progress reporting. A
-read approval that would prompt or call the auto classifier also arms, and so
-does semantic search. On recovery, an accepted fence that was never armed reruns
-the program from the start. An armed fence, an unaccepted one, or a second crash
-fails closed as before. A rerun can read different file contents than the first
-attempt did. It also emits its progress and `workflow.item` transitions again,
-with the same `invocationId` and item IDs, so a listener that acts on them
-should deduplicate.
+fails closed, including `fabric_exec`, writes, and shell commands.
 
 A worker's store lives in its run directory under `durable/`. Recovery never
 replays streaming updates, so each provider delta and tool progress update commits

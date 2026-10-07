@@ -3,9 +3,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
   SessionBeforeCompactEvent,
-  SessionBeforeCompactResult,
   SessionBeforeTreeEvent,
-  SessionBeforeTreeResult,
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { acceptCompactionCut, acceptSummaryBounds } from "../verified/policy.js";
@@ -904,13 +902,8 @@ const notifyCompactionCancelled = (
   );
 };
 
-export interface CompactionHandlers {
-  beforeCompact: (event: SessionBeforeCompactEvent, context: ExtensionContext) => SessionBeforeCompactResult | undefined;
-  beforeTree: (event: SessionBeforeTreeEvent, context: ExtensionContext) => SessionBeforeTreeResult | undefined;
-}
-
-export const compactionHandlers = (options: CompactionHookOptions): CompactionHandlers => ({
-  beforeCompact: (event, context) => {
+export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHookOptions): void => {
+  pi.on("session_before_compact", (event: SessionBeforeCompactEvent, context: ExtensionContext) => {
     if (event.customInstructions === "__pi_vcc__") {
       options.onYield?.();
       return;
@@ -996,9 +989,9 @@ export const compactionHandlers = (options: CompactionHookOptions): CompactionHa
     }
     (event as SessionBeforeCompactEvent & { _fabricCompaction?: boolean })._fabricCompaction = true;
     return { compaction: result.compaction };
-  },
+  });
 
-  beforeTree: (event, context) => {
+  pi.on("session_before_tree", (event: SessionBeforeTreeEvent, context: ExtensionContext) => {
     if (options.getEngine() !== "fabric") return;
     const { preparation } = event;
     if (!preparation.userWantsSummary) return;
@@ -1019,11 +1012,5 @@ export const compactionHandlers = (options: CompactionHookOptions): CompactionHa
     );
     if (!compiled) return;
     return { summary: compiled };
-  },
-});
-
-export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHookOptions): void => {
-  const handlers = compactionHandlers(options);
-  pi.on("session_before_compact", handlers.beforeCompact);
-  pi.on("session_before_tree", handlers.beforeTree);
+  });
 };

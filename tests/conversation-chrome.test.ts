@@ -80,7 +80,7 @@ describe("native conversation chrome", () => {
     expect(lines.find((line) => line.includes("draft"))).toMatch(/^  draft/);
     const footerIndex = lines.findIndex((line) => line.includes("/repo/child (feature/chat)"));
     expect(footerIndex).toBeGreaterThan(rules[1]!.index);
-    expect(lines[footerIndex + 1]).toContain("idle · ↑1.2k ↓400 R600 $0.012 · ?/128k ctx");
+    expect(lines[footerIndex + 1]).toContain("run ↑1.2k ↓400 R600 $0.012");
     expect(lines[footerIndex + 1]).toContain("?/128k ctx");
     expect(lines[footerIndex + 1]).toMatch(/openai\/child-model • low$/);
     view.dispose();
@@ -98,18 +98,6 @@ describe("native conversation chrome", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("visible draft");
     view.dispose();
-  });
-
-  it("shows a run's tokens, calls and time, and its status only once it settles", () => {
-    const now = Date.now();
-    const running = { ...target, kind: "agent" as const, status: "running", toolCalls: 12, startedAt: now - 184_000,
-      usage: { input: 43_000, output: 2_200, cacheRead: 147_000, cacheWrite: 0, cost: 0.122 }, contextWindow: 272_000 };
-    // While it runs, the border says Working; the line carries only what that does not.
-    expect(stripTerminalSequences(conversationFooter(running, theme, 160)[1]!))
-      .toMatch(/^↑43k ↓2\.2k R147k \$0\.122 · 12 calls · 3m0[45]s · \?\/272k ctx /);
-    const settled = { ...running, status: "failed", toolCalls: 1, finishedAt: now - 120_000 };
-    expect(stripTerminalSequences(conversationFooter(settled, theme, 160)[1]!))
-      .toMatch(/^failed · ↑43k ↓2\.2k R147k \$0\.122 · 1 call · 1m04s · \?\/272k ctx /);
   });
 
   it("does not invent usage or current context occupancy", () => {
@@ -148,45 +136,36 @@ describe("native conversation chrome", () => {
     });
     try {
       const lines = plain(view.render(120));
-      // No header above the transcript: only the blank rows that bottom-align it.
-      const history = lines.indexOf("history starts here");
-      expect(history).toBeGreaterThan(0);
-      expect(lines.slice(0, history).every((line) => line.trim() === "")).toBe(true);
-      const border = lines.findIndex((line) => line.startsWith("─"));
-      expect(border).toBeGreaterThan(history);
-      expect(lines.slice(history + 1, border).every((line) => line.trim() === "")).toBe(true);
+      expect(lines[0]).toBe("history starts here");
       expect(lines.some((line) => /^─.* chat-test · read-only ──$/.test(line))).toBe(true);
       expect(lines).not.toContain("chat-test");
       const footer = lines.findIndex((line) => line.includes("/repo/child (feature/chat)"));
       expect(lines[footer]).toBe("/repo/child (feature/chat) • chat-test • read-only");
-      expect(lines[footer + 1]).toContain("completed · ↑1.2k ↓400 R600 $0.012 · ?/128k ctx");
+      expect(lines[footer + 1]).toContain("completed run ↑1.2k");
       expect(lines.filter((line) => line.includes("openai/child-model"))).toHaveLength(1);
       expect(lines.join("\n")).not.toContain("Target finished");
     } finally { view.dispose(); render.mockRestore(); }
   });
 
-  it.each(["regular", "fullscreen"])("places a nested target's own name on the input border in %s mode, including resize", (mode) => {
+  it.each(["regular", "fullscreen"])("places a themed nested target on the input border in %s mode, including resize", (mode) => {
     const main = { ...target, id: "main", name: "Main", kind: "main" as const };
     const parent = { ...target, id: "parent", name: "ancestor", parentId: main.id };
     const child = { ...target, name: "研究👩‍💻é-active-target", parentId: parent.id };
-    // Pi paints the editor border in the thinking-level colour; the badge takes that colour.
-    let border = "250;220;120";
-    const fg = vi.fn((color: string, text: string) =>
-      color === "borderMuted" || color.startsWith("thinking") ? `\x1b[38;2;${border}m${text}\x1b[39m` : text);
-    const view = new FabricConversationView({ ...tui, mode, terminal: { ...tui.terminal, write: vi.fn() } } as TUI, { ...theme, fg } as unknown as Theme, {
+    let background = "44";
+    const bg = vi.fn((_color: string, text: string) => `\x1b[${background}m${text}\x1b[49m`);
+    const view = new FabricConversationView({ ...tui, mode, terminal: { ...tui.terminal, write: vi.fn() } } as TUI, { ...theme, bg } as unknown as Theme, {
       state: new FabricConversationState(), targets: () => [main, parent, child], initialTargetId: child.id,
       transcript: () => nativeTranscript(), loadOlder: () => false, loadNewer: () => false, loadLatest: () => false,
       send: vi.fn(), stop: vi.fn(), close: vi.fn(),
     });
     try {
       const wide = view.render(120);
-      const badge = wide.find((line) => line.includes(child.name))!;
-      expect(stripTerminalSequences(badge)).toMatch(/^─+ 研究👩‍💻é-active-target ──$/);
-      // Only the target's own name: no Main and no ancestors.
+      const badge = wide.find((line) => line.includes("Main > ancestor >"))!;
+      expect(stripTerminalSequences(badge)).toMatch(/^─+ Main > ancestor > 研究👩‍💻é-active-target ──$/);
       expect(visibleWidth(badge)).toBe(120);
-      // A light border gets black text.
-      expect(badge).toContain(`\x1b[48;2;250;220;120;38;2;0;0;0m ${child.name} `);
-      expect(plain(wide).filter((line) => line.startsWith("─") && line.includes(child.name))).toHaveLength(1);
+      expect(badge).toContain("\x1b[44m");
+      expect(wide.filter((line) => line.includes("Main > ancestor >"))).toHaveLength(1);
+      expect(bg).toHaveBeenCalledWith("selectedBg", expect.stringContaining(child.name));
       for (const width of [1, 2, 5, 8, 16, 24, 40, 120]) {
         const lines = view.render(width);
         expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
@@ -196,10 +175,9 @@ describe("native conversation chrome", () => {
           expect(border).not.toContain("ancestor");
         }
       }
-      // A new thinking level recolours the border, and the badge with it; a dark one gets white text.
-      border = "40;60;160";
+      background = "45";
       view.invalidate();
-      expect(view.render(120).find((line) => line.includes(child.name))).toContain("\x1b[48;2;40;60;160;38;2;255;255;255m");
+      expect(view.render(120).find((line) => line.includes("Main > ancestor >"))).toContain("\x1b[45m");
       Object.assign(child, { name: "active-" + "界".repeat(200), readOnlyReason: "Target finished" });
       const readonly = view.render(40);
       const readonlyBadge = plain(readonly).find((line) => /^─.*active-/.test(line))!;

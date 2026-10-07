@@ -9,15 +9,12 @@ import { capabilityAuthority } from "../dist/verified/generated/authority.js";
 import { bindingStep } from "../dist/verified/generated/lifecycle.js";
 import { storageTransition } from "../dist/verified/generated/storage.js";
 import { resourceScope, resourceConflict } from "../dist/verified/generated/resources.js";
-import { meshGrantTake } from "../dist/verified/generated/grants.js";
-import { budgetAdmission } from "../dist/verified/generated/budget.js";
-import { speculationAdmission, speculationCheck, speculationAccounting } from "../dist/verified/generated/speculation.js";
 
 // The retired PoC must not remain reachable through package exports.
 await assert.rejects(import("pi-fabric/verified/cell-provider"), { code: "ERR_PACKAGE_PATH_NOT_EXPORTED" });
 await assert.rejects(import("pi-fabric/verified/goal-provider"), { code: "ERR_PACKAGE_PATH_NOT_EXPORTED" });
 const root = new URL("../", import.meta.url);
-const stems = ["policy", "compaction", "resources", "lifecycle", "storage", "provider", "authority", "grants", "speculation", "budget"];
+const stems = ["policy", "compaction", "resources", "lifecycle", "storage", "provider", "authority"];
 for (const file of [...stems.flatMap((stem) => [`${stem}.js`, `${stem}.d.ts`]), "manifest.json"]) {
   assert.equal(readFileSync(new URL(`src/verified/generated/${file}`, root), "utf8"), readFileSync(new URL(`dist/verified/generated/${file}`, root), "utf8"));
 }
@@ -26,16 +23,6 @@ assert.equal(call(policy.pointerCurrent, { source: 1, lineage: 0 })["out.current
 assert.equal(call(policy.headReadable, { sequence: 1, version: 1, committed: 0, pending: 1, marker: 0 })["out.readable"], 0);
 assert.equal(call(policy.useNormalized, { canonical: 1, plan: 1, changed: 1, accepted: 1 })["out.use"], 0);
 assert.deepEqual(call(policy.consume, { active: 1 }), { "out.released": 1, "out.active": 0 });
-assert.equal(call(policy.headReadable, { sequence: 1, version: 1, committed: 0, pending: 1, marker: 1 })["out.readable"], 1);
-const budget = { valid: 1, spentHigh: 10, spentLow: 3, limitHigh: 10, limitLow: 4 };
-assert.equal(call(budgetAdmission, budget)["out.admitted"], 1);
-assert.equal(call(budgetAdmission, { ...budget, spentLow: 4 })["out.admitted"], 0);
-const grant = { authenticated: 1, now: 11, expiresAt: 13, uses: 2, topic: 3, requestedTopic: 3, hasTopic: 1, kind: 5, hasKind: 1, requestedKind: 5, hasRequestedKind: 0, externalKind: 6 };
-assert.deepEqual(call(meshGrantTake, grant), { "out.plan": 5, "out.uses": 1, "out.topic": 3, "out.kind": 5 });
-assert.equal(call(meshGrantTake, { ...grant, requestedTopic: 4 })["out.plan"], 3);
-assert.equal(call(speculationAdmission, { ended: 0, duplicate: 0, entries: 2, inFlight: 1, maxEntries: 3, maxConcurrent: 2 })["out.plan"], 0);
-assert.equal(call(speculationCheck, { settled: 1, aborted: 1, now: 110, createdAt: 100, ttl: 1, birthEpoch: 2, epoch: 2, fresh: 1, failed: 0 })["out.outcome"], 2);
-assert.equal(call(speculationAccounting, { event: 7 }).epoch, 1);
 
 const set = (ids) => new Map(ids.map((id) => [id, 1]));
 const empty = new Map();

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { Type, getCurrentTools, type ToolResultMessage } from "@earendil-works/pi-ai";
+import { Type, getCurrentTools } from "@earendil-works/pi-ai";
 import { MemoryStorage, type Storage } from "@earendil-works/pi-durable";
 import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
 import { Agent, type AgentEvent, type AgentTool } from "@earendil-works/pi-agent-core";
@@ -24,39 +24,6 @@ function setup(storage: Storage = new MemoryStorage(), tools: AgentTool[] = [], 
   return { agent, faux, models };
 }
 const tool = (execute: AgentTool["execute"]): AgentTool => ({ name: "effect", label: "Effect", description: "effect", parameters: Type.Object({}), execute });
-// Fabric reads the fence through this process-global key, never through an import.
-type Fence = { toolCallId: string; accept(): Promise<void>; arm(): Promise<void> };
-const fenceStore = () => (globalThis as { [key: symbol]: unknown })[Symbol.for("pi-fabric.durable-tool-fence.v1")] as AsyncLocalStorage<Fence> | undefined;
-// Interrupts the first `crashes` attempts of one fabric_exec call, then recovers.
-async function interruptFabricExec(step: (fence: Fence | undefined) => Promise<void>, crashes = 1) {
-  const dir = await mkdtemp(join(tmpdir(), "durable-agent-")); dirs.push(dir);
-  let entered = deferred(); const seen: (Fence | undefined)[] = [];
-  const program: AgentTool = { ...tool(async (_id, _args, signal) => {
-    seen.push(fenceStore()?.getStore());
-    if (seen.length > crashes) return { content: [{ type: "text", text: "rerun" }], details: {} };
-    await step(seen.at(-1)); entered.resolve();
-    await new Promise<void>(resolve => signal?.addEventListener("abort", () => resolve(), { once: true }));
-    return { content: [{ type: "text", text: "late" }], details: {} };
-  }), name: "fabric_exec" };
-  const first = setup(await openNodeJsonlStorage(dir, BACKGROUND_CONTEXT), [program]);
-  first.faux.setResponses([fauxAssistantMessage(fauxToolCall("fabric_exec", {}, { id: "program" }), { stopReason: "toolUse" })]);
-  const run = first.agent.prompt("do it").catch(() => {});
-  await entered.promise; await first.agent.close(); await run;
-  for (let attempt = 1; attempt < crashes; attempt++) {
-    entered = deferred();
-    const again = setup(await openNodeJsonlStorage(dir, BACKGROUND_CONTEXT), [program]);
-    again.faux.setResponses([fauxAssistantMessage("recovered")]);
-    const resumed = again.agent.prompt("do it").catch(() => {});
-    // A missing rerun settles the prompt instead of reaching the tool.
-    await Promise.race([entered.promise, resumed]); await again.agent.close(); await resumed;
-  }
-  const second = setup(await openNodeJsonlStorage(dir, BACKGROUND_CONTEXT), [program]);
-  second.faux.setResponses([fauxAssistantMessage("recovered")]);
-  await second.agent.prompt("do it");
-  const results = second.agent.state.messages.filter((m): m is ToolResultMessage => m.role === "toolResult");
-  await second.agent.close();
-  return { seen, results };
-}
 const journalBytes = async (dir: string) => {
   let total = 0;
   for (const name of await readdir(dir)) total += (await stat(join(dir, name))).size;
@@ -302,43 +269,6 @@ describe("DurableAgent", () => {
     expect(second.agent.state.messages.filter(m => m.role === "user")).toHaveLength(1);
     expect(second.agent.state.messages.some(m => m.role === "toolResult" && m.isError)).toBe(true);
     await second.agent.close();
-  });
-
-  it("reruns an interrupted fabric_exec that accepted its fence and never armed it", async () => {
-    const { seen, results } = await interruptFabricExec(async fence => { await fence!.accept(); });
-    expect(seen).toHaveLength(2);
-    expect(seen[0]).toMatchObject({ toolCallId: "program" });
-    expect(results).toHaveLength(1);
-    expect(results[0]).toMatchObject({ isError: false, content: [{ type: "text", text: "rerun" }] });
-  });
-
-  it("never reruns an interrupted fabric_exec after it armed its fence", async () => {
-    const { seen, results } = await interruptFabricExec(async fence => { await fence!.accept(); await fence!.arm(); });
-    expect(seen).toHaveLength(1);
-    expect(results).toHaveLength(1);
-    expect(results[0]).toMatchObject({ isError: true, details: { interrupted: true } });
-  });
-
-  it("never reruns an interrupted fabric_exec that did not accept its fence", async () => {
-    const { seen, results } = await interruptFabricExec(async () => {});
-    expect(seen[0]).toMatchObject({ toolCallId: "program" });
-    expect(seen).toHaveLength(1);
-    expect(results[0]).toMatchObject({ isError: true, details: { interrupted: true } });
-  });
-
-  it("reruns an interrupted fabric_exec at most once", async () => {
-    const { seen, results } = await interruptFabricExec(async fence => { await fence!.accept(); }, 2);
-    expect(seen).toHaveLength(2);
-    expect(results).toHaveLength(1);
-    expect(results[0]).toMatchObject({ isError: true, details: { interrupted: true } });
-  });
-
-  it("offers the rerun fence only to fabric_exec", async () => {
-    let offered: Fence | undefined | "unseen" = "unseen";
-    const { agent, faux } = setup(new MemoryStorage(), [tool(async () => { offered = fenceStore()?.getStore(); return { content: [], details: {} }; })]);
-    faux.setResponses([fauxAssistantMessage(fauxToolCall("effect", {}), { stopReason: "toolUse" }), fauxAssistantMessage("done")]);
-    await agent.prompt("go");
-    expect(offered).toBeUndefined();
   });
 
   it("journals streaming updates linearly while delivering every full partial (#229)", async () => {

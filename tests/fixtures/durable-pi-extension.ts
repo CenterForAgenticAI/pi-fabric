@@ -16,18 +16,8 @@ export default async function (pi: ExtensionAPI) {
     if (text === "write fixture") return fauxAssistantMessage([fauxToolCall("write", { path: process.env.DURABLE_TEST_FILE!, content: "overwritten" })]);
     if (text === "fabric fixture") return fauxAssistantMessage([fauxToolCall("fabric_exec", { code: process.env.DURABLE_TEST_FABRIC_CODE! })]);
     if (text === "hold effect") return fauxAssistantMessage([fauxToolCall("hold_effect", {})]);
-    if (text === "fetch fixture") return fauxAssistantMessage([fauxToolCall("fetch_probe", {})]);
     return fauxAssistantMessage(JSON.stringify({ reply: text, images: typeof last?.content === "string" ? 0 : last?.content.filter(part => part.type === "image").length ?? 0 }));
   }));
-  pi.registerTool({ name: "fetch_probe", label: "Fetch probe", description: "Offline HTTP proxy fixture", parameters: Type.Object({}),
-    async execute() {
-      const urls = JSON.parse(process.env.DURABLE_TEST_FETCH_URLS!) as string[];
-      const bodies = await Promise.all(urls.map(async url => (await fetch(url, { signal: AbortSignal.timeout(5000) })).text()));
-      return { content: [{ type: "text", text: bodies.join(",") }], details: {} };
-    },
-  });
-  // An input hook that consumes the task, like a quota or account gate.
-  if (process.env.DURABLE_TEST_HANDLE_INPUT) pi.on("input", () => ({ action: "handled" }));
   pi.registerTool({ name: "hold_effect", label: "Hold effect", description: "Offline crash-safety fixture", parameters: Type.Object({}),
     async execute(_id, _args, signal) {
       fs.appendFileSync(process.env.DURABLE_TEST_EFFECT!, "effect\n");

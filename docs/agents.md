@@ -40,10 +40,6 @@ After a failed or aborted assistant response (including `Error: Terminated`), Fa
 
 Fabric handles exhausted retries explicitly without waiting forever on an earlier `willRetry` flag. Child shutdown after RPC stdin closes is also bounded: 5 seconds for graceful exit, then SIGTERM and a further 5 seconds before SIGKILL. These failures settle `agents.wait`/`join` and notify detached callers normally; they do not automatically replay potentially side-effecting work. Already-running workers must be stopped and respawned to use the fix.
 
-### Pi task consumed without a turn
-
-A Pi extension can take the first task prompt without starting a turn, for example an `input` hook that returns `handled`. Pi then answers the prompt with `disposition: "handled"` and sends no `agent_start`. The worker sends the task with the id `fabric-task` and follows only that reply. If the reply says `handled` and no turn starts within 60 seconds, or the child exits first, the run fails with `Pi handled the task without starting a turn; terminating child`. The wait covers an extension command that handled the prompt and then starts its own turn. The failure also carries the last warning or error notice the child sent before the reply, flattened and limited to 500 characters, so the parent sees why the task was refused. If the reply carries an absent disposition (an older Pi host) and the child starts no turn within 300 seconds, the run also fails with a message that starts `Pi acknowledged the task`. Later steer, follow-up and operator commands are not tracked. The task is not replayed.
-
 ### Image-heavy lifecycle events
 
 Pi repeats message history in `agent_end.messages` and tool results in `turn_end.toolResults`. Fabric streams past these redundant top-level fields, recording empty arrays in the worker event log. Large accumulated histories therefore do not trip the event-size guard or interrupt completion/retries. Authoritative message/tool events, final text, usage, and Pi's persisted session history are unchanged.
@@ -68,62 +64,6 @@ return results.map(result => result.status === "fulfilled"
 ### Child system prompt
 
 `systemPrompt` on `agents.run` or `agents.spawn` adds text to the child's system prompt. Fabric joins it ahead of any [component model guidance](components.md), and Pi and Claude children append the result to their system prompt with `--append-system-prompt`. A Veda child receives it as a `<system_instructions>` block in its prompt. A blank value is ignored, and durable `agents.spawn` refuses it.
-
-### Named agent files
-
-A named agent file saves the settings of a child agent in a Markdown file with YAML frontmatter. Pass its name as `agent` to `agents.run` or `agents.spawn` and Fabric fills the request from the file. Files written for Claude Code subagents and for Pi agent profiles load unchanged.
-
-```ts
-const reviewer = await agents.run({ agent: "reviewer", task: "Review the diff on this branch" });
-// A field you pass on the call wins over the file.
-const quick = await agents.run({ agent: "reviewer", task: "Skim the diff", thinking: "low" });
-```
-
-An agent file looks like this:
-
-```md
----
-name: reviewer
-description: Reviews a diff for defects
-tools: Read, Grep, Glob
-model: cheap
-effort: high
-runtimes:
-  fabric:
-    timeoutMs: 1800000
----
-
-You review diffs. Report defects only.
-```
-
-**Where Fabric looks.** Fabric reads the visible `*.md` files directly inside two folders, with no recursion. It skips names that start with a dot. From lowest to highest precedence:
-
-1. `agents/` inside the Pi agent directory (`~/.pi/agent/agents` unless `PI_CODING_AGENT_DIR` says otherwise).
-2. `.pi/agents` at the project root Fabric uses for the mesh.
-
-A project file shadows a user file with the same `name`. Fabric reads the project folder only when the host trusts the project, and says so when it skips a folder that exists. The folder list is the `AGENT_FILE_FOLDERS` constant in `src/agents/agent-files.ts`.
-
-**Fields.**
-
-| Frontmatter | Becomes | Notes |
-| --- | --- | --- |
-| `name` | the run name | Required. 1 to 64 characters from letters, digits, `.`, `_` and `-`, starting with a letter or digit. The call's `name` wins. |
-| `description` | nothing | Shown by `agents.definitions()`. |
-| body | `systemPrompt` | The text after the frontmatter. It is handled exactly like a `systemPrompt` passed on the call (see [Child system prompt](#child-system-prompt)): Fabric joins it ahead of any component model guidance. |
-| `model` | `model` | Resolved like a call's `model`, so `models.aliases` names and their thinking levels apply. `inherit` or no value sets nothing. |
-| `tools` | `tools` | A YAML list or a comma-separated string. Claude Code names map to Pi names without regard to case: `Read` to `read`, `Grep` to `grep`, `Glob` to `find`, `LS` to `ls`, `Bash` to `bash`, `Edit`, `MultiEdit` to `edit`, `Write` to `write`. Other names stay as written. No value means the default allowlist. |
-| `thinking` or `effort` | `thinking` | One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Writing both is an error. |
-| `runtimes.fabric` | request fields | Fabric-only settings under their request field names: `runner`, `kernel`, `model`, `thinking`, `tools`, `timeoutMs`, `readOnly`. They win over the shared fields above. An unknown key is an error. |
-
-Any other top-level field, such as `color`, `skills`, `delegate` or `permissionMode`, is ignored. Fabric reports each one as a warning in `agents.definitions()` and in the run's progress notice. It never fails the run, so a file written for another tool keeps loading. Pi agent profiles accept only seven keys, so a file in `.pi/agents` that you share with that tool must keep to them. Put Fabric-only settings under `runtimes.fabric` only in a folder that tool does not read.
-
-**Override rule.** Fabric fills a request field from the file only when the call leaves it out. A field passed on the call, including an empty list, always wins. `agents.spawn` with `residency: "durable"` refuses a file that has a body, because a durable spawn does not accept `systemPrompt`.
-
-**Errors.** An unknown name fails before any child starts. The message lists the available names and suggests the closest one. A file Fabric cannot read fails with the file path and the line, for example a missing closing `---`, a duplicate key, an unknown thinking level, or an unknown `runtimes.fabric` key. A broken project file never falls back to a user file of the same name.
-
-**Listing.** `agents.definitions()` returns `{ name, description, path, scope, shadows?, warnings, error? }[]` with `scope` set to `"user"` or `"project"`. `shadows` is the path of the user file a project file replaces. A file that cannot be read appears with an `error`. The call reads the folders each time and starts no child.
-
-Fabric does not read actor templates from files (they stay in `global-actors.json`), does not look in `.claude/agents`, and does not preload skills. Fabric loads the file reader and its YAML parser on first use, so a session that never names an agent does not pay for them.
 
 ### Requested models are authoritative
 
@@ -229,7 +169,7 @@ return { audit, supervisor };
 
 The first durable request starts one hidden resident host for the current root when needed. Fabric transfers actor ownership to this host or starts the one-shot run there. It publishes the owner in the standard participant directory. Fabric routes `steer`, `followUp`, `tell`, blocking `ask`, and `stop` through the acknowledged mesh control plane. The process uses the captured agent, mesh, timeout, recursion, and cost-ceiling configuration. It also uses the runner, model, and tool capabilities that the originating call explicitly authorized. Users do not configure a daemon profile or workflow policy.
 
-The original TUI can shut down after the transfer. Durable agents continue until they reach a terminal status. A resumed copy of the same root can call `agents.status`, `agents.wait`, `agents.log`, and `agents.cleanup`. A new root session in the same project can call `agents.status`, `agents.wait`, and `agents.log` for that durable agent too. The project boundary is the mesh root (`<project>/.pi/fabric/mesh` unless `mesh.root` says otherwise), and a run in another mesh root stays unknown. The read needs no opt-in from the run, and `agents.status` returns the full record, including `text`. It only reads: the completion receipt, `agents.cleanup`, and notifications stay with the root that spawned the agent. A scoped session reads only a run whose scope its own scope covers (same principal, every grant), and it never reads a run launched without a scope. If the run is unfinished and its resident host is not running, a wait from the owning root restarts the host for a hosted run (see hosted runs). `agents.wait` from another root fails instead, because it never starts that root's host. Resume the spawning session to re-attach a hosted run. The mesh stores terminal notifications and active actor deliveries until Main resumes. Durable actors keep their registry definition, mailbox history, runner session, mesh subscriptions, and replay cursor. Main relays session-bound host events while it is available. The cross-process relay can omit oversized raw image blocks. The relay keeps their redacted media descriptors.
+The original TUI can shut down after the transfer. Durable agents continue until they reach a terminal status. A resumed copy of the same root can call `agents.status`, `agents.wait`, `agents.log`, and `agents.cleanup`. The mesh stores terminal notifications and active actor deliveries until Main resumes. Durable actors keep their registry definition, mailbox history, runner session, mesh subscriptions, and replay cursor. Main relays session-bound host events while it is available. The cross-process relay can omit oversized raw image blocks. The relay keeps their redacted media descriptors.
 
 A durable actor has one resident execution owner. Other trusted sessions in the project can call `ask`, `tell`, `steer`, `followUp`, and `stop`; Fabric routes each call to that owner. Direct messages carry the caller's model and thinking binding. Actor status, mailbox history, logs, and definition export are shared project views. Only the owner can clear the mailbox or change tools, events, instructions, delivery policy, and project defaults. Fabric sends durable actor removal to the resident owner. The hidden host exits after a short idle grace when it owns no live durable actor or running durable agent. Durable residency requires a trusted project and `mesh.enabled`. Schema enforce mode does not support it.
 
@@ -383,7 +323,7 @@ Veda children do not have recursive Fabric capabilities. Fabric rejects `recursi
 
 ### Custom runners
 
-The default `pi-durable` runner uses the full isolated Pi/Fabric worker host; explicit `pi` selects the legacy CLI. See [Durable Pi runner](durable-pi.md) for recovery boundaries and the separate `pi-durable-leaf` hosted factory. The default runner reruns an interrupted `fabric_exec` once when its program made no effect. Neither restores arbitrary `fabric_exec` continuations.
+The default `pi-durable` runner uses the full isolated Pi/Fabric worker host; explicit `pi` selects the legacy CLI. See [Durable Pi runner](durable-pi.md) for recovery boundaries and the separate `pi-durable-leaf` hosted factory. Neither restores arbitrary `fabric_exec` continuations.
 
 A Pi extension can add a runner through the `pi-fabric/runners` subpath. The subpath is never loaded by the Fabric extension at startup.
 
@@ -486,8 +426,6 @@ This is the host-level equivalent of the `pi-model-switch` extension's `switch_m
 
 Herdr uses its local socket API to create an argv-backed background tab as one atomic operation. It does not change focus or require shell quoting. Automatic selection works only when the parent Pi process already runs in Herdr. This requires `HERDR_ENV=1` with an injected workspace and socket. Select `transport: "herdr"` under the same conditions. Use the attach command in the handle to open a child directly.
 
-Inside Herdr, a root session also shows its running agents on its own pane, whatever transport they use, and marks the pane blocked while a child question waits on the user. See `ui.herdrStatus` in the [configuration reference](configuration.md#ui).
-
 LocalTerm provides the required primitives that match tmux: detached creation, pinning, listing, capture, exec, attach, and kill. Pi Fabric requires no LocalTerm patch. Start the daemon before you select this transport:
 
 ```bash
@@ -583,8 +521,6 @@ return { self: await agents.self(), lineage };
 
 Child dialogs (`select`, `confirm`, `input`, `editor`) are cancelled by default. With `agents.childQuestions: "route"` they reach the parent's UI, or a root-held [durable decision](decisions.md#routed-child-questions) when the parent is headless; the run record shows `blockedOn` while one waits.
 
-Routing also gives a Pi child with extensions the tools in `agents.childQuestionTools` (default `["ask"]`), so the caller does not have to name them in `tools`. A child's system prompt lists only the extension tools its `tools` allowlist permits.
-
 For Main and one-shot agents, `steer` arrives after the tool calls in the current turn and before the next model call. `followUp` waits until the current run settles. For actors, both operations add a message to the serial mailbox. `agents.status({ id })` accepts any participant ID. It returns complete details for a local run or actor and a bounded directory summary for a remote participant. `agents.setSteeringMode` and `setFollowUpMode` continue to control local one-shot runs.
 
 Local routing returns `"main"` or `"local"`. For cross-process `steer`, `followUp`, and `stop`, Fabric resolves the exact owner of the target. It sends a control command addressed to that owner and waits for an acknowledgement that matches the version, target, and owner identity. Success returns `routed: "mesh", acknowledged: true` after this verified acknowledgement. Unknown IDs, stale owners, rejection, and timeout throw an error. The dashboard actions `s`, `u`, and `x` use the same route. Set `mesh.enabled` to use cross-process control. See [`references/agents.md`](../skillsets/typescript/fabric-exec/references/agents.md).
@@ -595,7 +531,7 @@ An owner keeps its host ID across restarts (a Pi session's Main ID, or a residen
 
 ### Peer labels and queue gates
 
-Every root participant mints a project-scoped label such as `FAB-1` at its first Fabric use (a `fabric_exec` run, an agent, or an actor), so opening Pi and leaving it idle takes no number: the prefix derives from the project directory basename (initials for multi-word names, up to three letters for single-word names) and the number comes from a mesh-wide monotonic counter, so a number is never minted twice. The counter belongs to a generation (`FABRIC_PEER_LABEL_SEQUENCE`, currently 3); this generation restarted numbering at 1, retired the labels earlier generations recorded, and skips any number a still-running older session holds. Concurrent sessions claim numbers by compare-and-swap under the mesh lock, so each gets its own. A resumed session keeps its label: it reads the `pi-fabric-peer` entry it recorded for its own participant id and reuses that label, without taking a number, at once, even before its first Fabric use, unless the label belongs to another project, comes from an older counter generation, or another live participant holds it. Forks and clones have new participant ids, so they take new numbers. Labels appear on participant records, peer projections, and the dashboard, giving other sessions' tooling a stable handle to show users in place of raw session ids. A root session also shows its own label at the head of the Fabric widget (or in the Pi footer when the widget is hidden) and, when configured, in its Herdr tab or pane name, so you can tell which terminal is `FAB-3`. Headless hosts read the label and participant id from the `pi-fabric-peer` session entry through Pi's RPC `get_entries`; see `ui.sessionLabel` in [UI configuration](configuration.md#ui).
+Every root participant mints a project-scoped label such as `FAB-1` when it first publishes: the prefix derives from the project directory basename (initials for multi-word names, up to three letters for single-word names) and the number comes from a mesh-wide monotonic counter, so retired labels are never reused. Labels appear on participant records, peer projections, and the dashboard, giving other sessions' tooling a stable handle to show users in place of raw session ids.
 
 Two host-local, versioned events on `pi.events` let queue extensions coordinate with peers:
 
@@ -622,7 +558,7 @@ File or git changes you did not make may be theirs: do not revert or overwrite t
 - **Cache safety.** The notice is a persistent transcript message appended at a turn boundary. The system prompt, tool declarations, and every earlier message stay byte-identical, so the provider's cached prefix remains valid and only the notice itself is new input. The mid-run notice is a native `turn_end` boundary entry: it rides the request the run was about to make and never triggers an extra one. The text is deterministic for a given change. It carries labels, participant ids, and a working directory when that differs from the caller's, and no clock, run status, or model.
 - **Once per change.** Fabric rebuilds what the model was told from the notices on the active branch, so resuming or navigating a session does not repeat one. A compaction may drop earlier notices from the context, so the current peers are stated again at the next boundary.
 - **Departures are debounced.** A peer is reported gone only after it has been absent for 20 seconds, longer than the 15-second host lease, so a missed heartbeat or a wake from sleep is not reported as a departure and a rejoin. Arrivals are reported at once.
-- **Scope.** Only root sessions with a UI receive notices. A run without a UI, such as `pi -p`, gets none: nobody reads the notice there, and the model's reply to it would replace the answer in the output. Child agents and actors are coordinated by their parent. A notice shares what the participant directory already shares: prompts, results, and errors stay local.
+- **Scope.** Only root sessions receive notices. Child agents and actors are coordinated by their parent. A notice shares what the participant directory already shares: prompts, results, and errors stay local.
 
 **Limitation:** a session joins the participant directory when its Fabric runtime activates, which is normally its first `fabric_exec` call. Before that it neither sees peers nor is seen by them, so the first notice of a fresh session arrives after that first call, before the next model request. A session that never runs `fabric_exec` stays invisible.
 
@@ -857,7 +793,7 @@ return agents.create({
 });
 
 // List the templates. Then create a new actor from one in the current project.
-const [template] = await agents.actors({ scope: "global" });
+const [template] = agents.actors({ scope: "global" });
 return agents.import({ name: template.name });                       // create it without inherited history
 return agents.import({ name: "security-reviewer", as: "security-reviewer-2" }); // rename it if the name exists
 

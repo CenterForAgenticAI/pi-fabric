@@ -53,17 +53,14 @@ export const resolveForegroundTools = (input: {
   policy: FabricForegroundConfig;
   mode: "full-code" | "enforce" | "orchestration";
   managedHost?: boolean;
-  managedForeground?: readonly string[] | undefined;
   registered: readonly { name: string; exposure?: string; sourceInfo?: { source: string } }[];
   active: ReadonlySet<string>;
-  allowlist?: { has(name: string): boolean } | undefined;
+  allowlist?: ReadonlySet<string> | undefined;
 }): FabricForegroundResolution => {
-  const policy = input.managedHost && input.managedForeground !== undefined
-    ? { tools: input.managedForeground.map(name => ({ name })), maxTools: MAX_FOREGROUND_TOOLS }
-    : input.policy;
+  const { policy } = input;
   // Orchestration already declares Pi's active set; the policy has nothing to add.
   if (policy.tools.length === 0 || input.mode === "orchestration") return NO_FOREGROUND;
-  const blanket = input.mode === "enforce" ? "enforce" : input.managedHost && input.managedForeground === undefined ? "managed-host" : undefined;
+  const blanket = input.mode === "enforce" ? "enforce" : input.managedHost ? "managed-host" : undefined;
   if (blanket) return { tools: [], refused: policy.tools.map(({ name }) => ({ name, reason: blanket })) };
   const registered = new Map(input.registered.map((tool) => [tool.name, tool]));
   const tools: string[] = [];

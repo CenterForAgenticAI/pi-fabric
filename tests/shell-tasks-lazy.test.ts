@@ -27,17 +27,12 @@ describe("shell inspector first use", () => {
       controller.start(context);
       await vi.advanceTimersByTimeAsync(5000);
       expect(loads).not.toHaveBeenCalled(); expect(imageLoads).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
-      const focus = vi.spyOn(controller, "focusWidget");
-      await controller.openTasks(context);
-      expect(focus).toHaveBeenCalledWith(context);
-      expect(loads).not.toHaveBeenCalled(); expect(custom).not.toHaveBeenCalled();
-      const job = jobs.begin("bash", "watch"); job.spill();
-      const pending = controller.openTasks(context, job.id);
+      const pending = controller.openTasks(context);
       expect(controller.ownsInput).toBe(true);
       await vi.waitFor(() => expect(custom).toHaveBeenCalledOnce());
       expect(loads).toHaveBeenCalledOnce();
       expect(imageLoads).toHaveBeenCalledOnce();
-      expect(view.render(80).join("\n")).toContain(job.id);
+      expect(view.render(80).join("\n")).toContain("No background shell tasks");
       controller.stop(); await pending;
       expect(controller.ownsInput).toBe(false); expect(vi.getTimerCount()).toBe(0);
     } finally { controller.stop(); await jobs.close(); }

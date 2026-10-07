@@ -1,13 +1,17 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { build } from "esbuild";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { durableExtensionLoadError } from "../src/durable/extension-load-error.js";
 import { parseDurableWorkerOptions } from "../src/durable/worker-options.js";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-durable-host-"));
+// Extensions outside `root` cannot reach the checkout's node_modules through an ancestor.
+const outside = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-durable-outside-"));
 const extension = path.resolve("tests/fixtures/durable-pi-extension.ts");
 let entry: string;
 beforeAll(async () => {
@@ -16,7 +20,7 @@ beforeAll(async () => {
   entry = path.join(root, "build", "worker.js");
   await build({ entryPoints: ["src/durable/worker.ts"], outdir: path.dirname(entry), bundle: true, packages: "external", platform: "node", format: "esm", splitting: true, target: "node24", logLevel: "silent" });
 }, 30000);
-afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+afterAll(() => { for (const directory of [root, outside]) fs.rmSync(directory, { recursive: true, force: true }); });
 
 async function worker(name: string, extra: string[] = [], environment: NodeJS.ProcessEnv = {}, discover = false) {
   const cwd = path.join(root, name); fs.mkdirSync(cwd, { recursive: true });
@@ -62,16 +66,6 @@ async function worker(name: string, extra: string[] = [], environment: NodeJS.Pr
   return { child, messages, send, wait, stop, cwd, fixture, effect };
 }
 
-// Load the built Fabric extension next to the fixture, with a program that holds
-// on a gate file until the test opens it.
-const fabricWorker = (name: string, code: string) => {
-  const agentDir = path.join(root, name, "agent"); fs.mkdirSync(agentDir, { recursive: true });
-  fs.writeFileSync(path.join(agentDir, "fabric.json"), JSON.stringify({ fullCodeMode: true, mesh: { enabled: false }, mcp: { enabled: false } }));
-  const inherited = Object.fromEntries(["PI_FABRIC_DEPTH", "PI_FABRIC_BUDGET", "PI_FABRIC_BUDGET_FILE", "PI_FABRIC_BUDGET_ID", "PI_FABRIC_WRITE_POLICY", "PI_FABRIC_TOOL_ALLOWLIST", "PI_FABRIC_SCOPE", "PI_FABRIC_LINEAGE", "PI_FABRIC_PARENT_RUN", "PI_FABRIC_ACTOR_ID"].map(key => [key, undefined]));
-  return worker(name, ["-e", path.resolve("dist/index.js")], { ...inherited, PI_OFFLINE: "1", DURABLE_TEST_FABRIC_CODE: code });
-};
-const holdOnGate = (gate: string) => `const gate = await pi.read({ path: ${JSON.stringify(gate)} });\nif (gate.includes("hold")) { await tools.progress({ message: "holding" }); await new Promise(resolve => setTimeout(resolve, 60000)); }\nreturn gate.includes("open") ? "gate-open" : "gate-closed";`;
-
 const answer = (messages: any[]) => messages.filter(event => event.type === "message_end" && event.message?.role === "assistant")
   .flatMap(event => event.message.content).filter(part => part.type === "text").map(part => part.text).join("\n");
 
@@ -84,6 +78,15 @@ describe("durable native RPC worker", () => {
     expect(() => parseDurableWorkerOptions([...args, "--unsafe"])).toThrow("Unsupported");
     expect(() => parseDurableWorkerOptions([...args, "--model"])).toThrow("Missing");
     expect(() => parseDurableWorkerOptions([...args, "--no-tools"])).toThrow("mutually exclusive");
+  });
+
+  it("names the typebox alias cause and workaround only for alias-rewritten typebox paths", () => {
+    const aliased = [{ path: "/x/ext.ts", error: "Failed to load extension: Cannot find module '/app/node_modules/typebox/build/index.mjs/does-not-exist'\nRequire stack:\n- /x/ext.ts" }];
+    const aliasMessage = durableExtensionLoadError(aliased).message;
+    expect(aliasMessage.startsWith(`Durable worker extension loading failed: ${JSON.stringify(aliased)}`)).toBe(true);
+    expect(aliasMessage).toMatch(/typebox[\s\S]*"typebox" root[\s\S]*runner "pi"/);
+    const missing = [{ path: "/x/ext.ts", error: "Failed to load extension: Cannot find module 'left-pad'\nRequire stack:\n- /x/ext.ts" }];
+    expect(durableExtensionLoadError(missing).message).toBe(`Durable worker extension loading failed: ${JSON.stringify(missing)}`);
   });
 
   it("runs real SDK tools, exports history, and reopens completed work without repeating it", async () => {
@@ -188,43 +191,42 @@ describe("durable native RPC worker", () => {
     } finally { await resumed.stop(); }
   }, 40000);
 
-  it("reruns an interrupted read-only fabric_exec once after confirmed process death", async () => {
-    const gate = path.join(root, "fabric-read", "gate.txt");
-    const first = await fabricWorker("fabric-read", holdOnGate(gate));
-    try {
-      fs.writeFileSync(gate, "hold\n");
-      first.send({ type: "prompt", id: "read", message: "fabric fixture" });
-      // Progress follows the durable accept, so the kill lands after it.
-      await first.wait(event => event.type === "tool_execution_update" && JSON.stringify(event).includes("holding"));
-    } finally { await first.stop(true); }
-    fs.writeFileSync(gate, "open\n");
-    const resumed = await fabricWorker("fabric-read", holdOnGate(gate));
-    try {
-      resumed.send({ type: "prompt", id: "read", message: "fabric fixture" });
-      await resumed.wait(event => event.type === "agent_settled");
-      expect(answer(resumed.messages)).toContain("gate-open");
-      expect(answer(resumed.messages)).not.toMatch(/interrupted/i);
-    } finally { await resumed.stop(); }
-  }, 60000);
+  // The pinned SDK's jiti aliases "typebox" (and "@sinclair/typebox") to one file and treats an
+  // alias as a path prefix, so "typebox/type" reaches resolution as "<entry>/type".
+  // Keep the extension outside `root` so only the SDK's alias, not an ancestor node_modules, can resolve typebox.
+  const typeboxProbe = (name: string, source: (marker: string) => string) => {
+    const directory = path.join(outside, name); fs.mkdirSync(directory, { recursive: true });
+    const marker = path.join(directory, "typebox-loaded.json");
+    const file = path.join(directory, "typebox-probe.ts");
+    fs.writeFileSync(file, source(marker));
+    expect(() => createRequire(file).resolve("typebox")).toThrow();
+    return { file, marker };
+  };
 
-  it("does not rerun an interrupted fabric_exec that reached an effect", async () => {
-    const gate = path.join(root, "fabric-effect", "gate.txt");
-    const effect = path.join(root, "fabric-effect", "effect.txt");
-    const code = `await pi.write({ path: ${JSON.stringify(effect)}, content: "effect\\n" });\n${holdOnGate(gate)}`;
-    const first = await fabricWorker("fabric-effect", code);
+  it("loads extensions that import exported typebox subpaths through the SDK alias", async () => {
+    const probe = typeboxProbe("typebox-subpath", marker => `import fs from "node:fs";
+import { Object as TObject, String as TString } from "typebox/type";
+import { Number as SNumber } from "@sinclair/typebox/type";
+export default function () {
+  fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify(TObject({ name: TString(), size: SNumber() })));
+}
+`);
+    const host = await worker("typebox-subpath", ["--no-tools", "-e", probe.file]);
     try {
-      fs.writeFileSync(gate, "hold\n");
-      first.send({ type: "prompt", id: "effect", message: "fabric fixture" });
-      await first.wait(event => event.type === "tool_execution_update" && JSON.stringify(event).includes("holding"));
-    } finally { await first.stop(true); }
-    fs.writeFileSync(gate, "open\n");
-    const resumed = await fabricWorker("fabric-effect", code);
-    try {
-      resumed.send({ type: "prompt", id: "effect", message: "fabric fixture" });
-      await resumed.wait(event => event.type === "agent_settled");
-      expect(fs.readFileSync(effect, "utf8")).toBe("effect\n");
-      expect(answer(resumed.messages)).not.toContain("gate-open");
-      expect(answer(resumed.messages)).toMatch(/interrupted/i);
-    } finally { await resumed.stop(); }
-  }, 60000);
+      expect(JSON.parse(fs.readFileSync(probe.marker, "utf8"))).toMatchObject({
+        type: "object", properties: { name: { type: "string" }, size: { type: "number" } },
+      });
+    } finally { await host.stop(); }
+  }, 30000);
+
+  it("keeps unexported typebox subpaths fatal and names the cause and workaround", async () => {
+    const probe = typeboxProbe("typebox-unexported", marker => `import fs from "node:fs";
+import * as missing from "typebox/does-not-exist";
+export default function () { fs.writeFileSync(${JSON.stringify(marker)}, String(Object.keys(missing).length)); }
+`);
+    await expect(worker("typebox-unexported", ["--no-tools", "-e", probe.file])).rejects.toThrow(
+      /Durable worker extension loading failed[\s\S]*index\.mjs\/does-not-exist[\s\S]*"typebox" root[\s\S]*runner "pi"/,
+    );
+    expect(fs.existsSync(probe.marker)).toBe(false);
+  }, 30000);
 });

@@ -9,10 +9,6 @@ import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import { rmTempSync } from "./fixtures/temp-cleanup.js";
 
 const workerPath = path.resolve("dist/worker.js");
-// Windows CI cold-boots the Pi host and Fabric worker alongside other suites.
-// Keep the agent's deadline inside the test ceiling so it can settle and clean up.
-const AGENT_TIMEOUT_MS = process.platform === "win32" ? 90_000 : 30_000;
-const TEST_TIMEOUT_MS = AGENT_TIMEOUT_MS + 15_000;
 
 describe.skipIf(!fs.existsSync(workerPath))("real trajectory executor continuation", () => {
   let directory: string | undefined;
@@ -36,7 +32,7 @@ describe.skipIf(!fs.existsSync(workerPath))("real trajectory executor continuati
       fullCodeMode: true,
       mcp: { enabled: false },
       prewalk: { mode: "trajectory", model: "handoff-probe/executor", alwaysRearm: true },
-      agents: { runner, maxDepth: 1, timeoutMs: AGENT_TIMEOUT_MS },
+      agents: { runner, maxDepth: 1, timeoutMs: 30_000 },
       mesh: { enabled: false },
     }));
     vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
@@ -56,7 +52,7 @@ describe.skipIf(!fs.existsSync(workerPath))("real trajectory executor continuati
       role: "toolResult", toolCallId: "frontier", toolName: "fabric_exec", content: [{ type: "text", text: "partial work" }],
       isError: false, timestamp: 3,
     }, "frontier");
-    manager = new AgentManager(directory, { ...DEFAULT_FABRIC_CONFIG.agents, runner, maxDepth: 1, timeoutMs: AGENT_TIMEOUT_MS }, {
+    manager = new AgentManager(directory, { ...DEFAULT_FABRIC_CONFIG.agents, runner, maxDepth: 1, timeoutMs: 30_000 }, {
       workerPath,
       piBinary: runner === "pi"
         ? path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js")
@@ -67,8 +63,7 @@ describe.skipIf(!fs.existsSync(workerPath))("real trajectory executor continuati
       task: "Finish the implementation and verify it", model: "handoff-probe/executor", kernel: "typescript",
       recursive: true, extensions: true, transport: "process", sessionSeed: seed,
     });
-    const eventsPath = path.join(directory, "runs", result.id, "events.jsonl");
-    const log = fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, "utf8") : "";
+    const log = fs.readFileSync(path.join(directory, "runs", result.id, "events.jsonl"), "utf8");
     expect(result, `${result.error}\n${result.stderr}\n${log.slice(-12_000)}`).toMatchObject({
       status: "completed", turns: 3, toolCalls: 2,
       text: "Finished original assignment directly after the failed handoff; verification passed.",
@@ -81,5 +76,5 @@ describe.skipIf(!fs.existsSync(workerPath))("real trajectory executor continuati
     expect(continuation).toHaveLength(1);
     expect(log).toContain("depth limit");
     expect(events.filter(event => event.type === "tool_execution_start" && event.toolName === "fabric_exec")).toHaveLength(2);
-  }, TEST_TIMEOUT_MS);
+  }, 45_000);
 });

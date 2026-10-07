@@ -3,7 +3,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "../core/atomic-write.js";
-import { takeMeshGrant } from "../verified/grants.js";
 import { validateMeshTopic, type MeshEvent, type MeshIdentity, type MeshStore } from "./store.js";
 
 /**
@@ -203,31 +202,27 @@ export async function postWithMeshGrant(
       // Compare every candidate so timing does not depend on the match position.
       if (timingSafeEqual(presented, Buffer.from(grant.hash, "hex")) && match === undefined) match = grant;
     }
-    // Decide over the exact record read under this lock; there is no policy fallback.
-    const plan = takeMeshGrant(match, { authenticated: TOKEN_PATTERN.test(input.token), now,
-      ...(input.topic !== undefined ? { topic: input.topic } : {}),
-      ...(input.kind !== undefined ? { kind: input.kind } : {}),
-    });
-    switch (plan.plan) {
-      case "Invalid": throw new Error("Fabric mesh grant token is not valid or was revoked");
-      case "Expired": throw new Error("Fabric mesh grant has expired");
-      case "Exhausted": throw new Error("Fabric mesh grant has no uses left");
-      case "Topic": throw new Error(`Fabric mesh grant does not cover topic ${input.topic}`);
-      case "Kind": throw new Error(`Fabric mesh grant does not cover kind ${input.kind}`);
-      case "Consume": break;
+    if (!match || !TOKEN_PATTERN.test(input.token)) throw new Error("Fabric mesh grant token is not valid or was revoked");
+    if (match.expiresAt <= now) throw new Error("Fabric mesh grant has expired");
+    if (match.uses <= 0) throw new Error("Fabric mesh grant has no uses left");
+    if (input.topic !== undefined && input.topic !== match.topic) {
+      throw new Error(`Fabric mesh grant does not cover topic ${input.topic}`);
     }
-    const accepted = match!;
+    if (match.kind !== undefined && input.kind !== undefined && input.kind !== match.kind) {
+      throw new Error(`Fabric mesh grant does not cover kind ${input.kind}`);
+    }
+    const kind = input.kind ?? match.kind ?? "external";
     const event = append({
-      topic: plan.topic,
-      kind: plan.kind,
-      from: { id: `external:${accepted.grantId}`, name: "external", kind: "agent" },
+      topic: match.topic,
+      kind,
+      from: { id: `external:${match.grantId}`, name: "external", kind: "agent" },
       ...(input.data !== undefined ? { data: input.data } : {}),
       origin: "external",
       untrusted: true,
-      grantId: accepted.grantId,
-      maxEventBytes: accepted.maxEventBytes,
+      grantId: match.grantId,
+      maxEventBytes: match.maxEventBytes,
     });
-    const updated: MeshGrantRecord = { ...accepted, uses: plan.uses };
+    const updated: MeshGrantRecord = { ...match, uses: match.uses - 1 };
     writeGrants(store, grants.map((grant) => grant === match ? updated : grant));
     return { event, grant: info(updated) };
   });

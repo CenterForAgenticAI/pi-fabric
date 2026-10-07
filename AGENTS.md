@@ -95,36 +95,29 @@ Publishing runs `prepack`, which is `proof:check && typecheck && build` followed
 `scripts/bundle-pi-packages.mjs`, never the suite. That script turns each
 `bundledDependencies` symlink (Bun's isolated linker) into a real copy so `bun pm
 pack` does not silently drop it, and prunes Pi host packages from it. `proof:check` runs the pinned
-`gdp-wired` devDependency in bounded isolated workers; normal builds verify the
-checked-in artifact hashes without loading the prover. After a version bump the artifact is verified through
+`gdp-wired` devDependency; normal builds verify the checked-in artifact hashes without loading the
+prover. After a version bump the artifact is verified through
 `dist-tags` and `time["<version>"]` in the packument.
 
 ## Verified policy kernels
 
 The kernels are gdp-wired rules and functions in `proofs/*.ts`: one module each
-for policy, compaction, resources, lifecycle, storage, provider, authority,
-mesh grants, speculation and budget admission,
+for policy, compaction, resources, lifecycle, storage, provider and authority,
 registered in `proofs/index.ts`. Each law restates its requirement apart from
 the rule body, and specification changes require independent review; never
 weaken a law, or delete a broken variant, to make an implementation pass. When
 a law is refused, read the verdict first: add a missing helper law beside it, or
 fix the rule.
 
-`bun run proof:generate` proves every law (`proven && checked && !assumes`)
-from every state the laws allow, requires every broken variant to be refused
-with a counterexample (`stuck: 'sat'`), cross-checks the builders against the
+`bun run proof:generate` proves every law (`proven && checked`), requires every
+broken variant to be refused, cross-checks the builders against the
 interpreter, and compiles the shipped machines into `src/verified/generated/`
-with a SHA-256 receipt. Independent kernels and mutation batches run in at most
-four isolated workers; every kernel keeps its full invariant context. Use
-`bun run proof:check --jobs 1` for a serial diagnostic run. No verdict cache skips
-proofs. Do not hand-edit `src/verified/generated/`. After
+with a SHA-256 receipt. Do not hand-edit `src/verified/generated/`. After
 changing a proof module, a bridge in `src/verified/`, or the gdp-wired pin, run
 `bun run proof:generate`, `bun run proof:check`, and the targeted
 `tests/verified-kernels.test.ts`, `tests/verified-resources.test.ts`,
 `tests/verified-providers.test.ts`, `tests/verified-authority.test.ts`,
-`tests/verified-lifecycle.test.ts`, `tests/verified-storage.test.ts`,
-`tests/verified-grants.test.ts`, `tests/verified-speculation.test.ts`,
-`tests/verified-budget.test.ts`, `tests/verified-kernel-pool.test.ts`, and
+`tests/verified-lifecycle.test.ts`, `tests/verified-storage.test.ts`, and
 `tests/verified-artifact.test.ts` plus relevant integration tests. The prover
 is a devDependency: never import `gdp-wired` from `src/`. See
 `docs/verified-kernels.md` for the acceptance ledger and explicit host/adapter

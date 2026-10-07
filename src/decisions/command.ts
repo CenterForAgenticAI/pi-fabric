@@ -7,7 +7,6 @@ import { decisionHopLabel, DecisionStore, type DecisionRecord } from "./store.js
 // dialogs. The person at the terminal may answer any holder.
 
 const CANCEL_LABEL = "Cancel this decision";
-const ANSWER_LABEL = "Answer this question";
 
 const operator = (): string => {
   try {
@@ -69,14 +68,6 @@ export const openFabricDecisions = async (
       if (!option) return;
       await store.answer(record.id, { optionId: option.id }, by);
       context.ui.notify(`Answered ${record.id}: ${option.label}`, "info");
-      return;
-    }
-    // A text box cannot tell an empty answer from a cancel, so ask which one first.
-    const action = await context.ui.select(prompt, [ANSWER_LABEL, CANCEL_LABEL]);
-    if (action === undefined) return;
-    if (action === CANCEL_LABEL) {
-      await store.cancel(record.id, by);
-      context.ui.notify(`Cancelled decision ${record.id}`, "info");
       return;
     }
     const text = record.input === "editor"

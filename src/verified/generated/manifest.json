@@ -1,44 +1,33 @@
 {
   "version": 3,
-  "prover": "gdp-wired@0.30.1",
+  "prover": "gdp-wired@0.7.0",
   "inputs": {
-    "proofs/index.ts": "6e3d0e5a5b1ef6bafc6f4fee9bdf83ba30034d6680220ddca46204b50ebd8f95",
-    "proofs/kernel.ts": "0edaa003d2ca5f33c4e30e65a427efb6d0b2135e097875f62732907f5a4b411b",
-    "proofs/policy.ts": "525f2306ee56395ce5424495ea0cd7031c6b64238b1673c05be09d4292ede621",
+    "proofs/index.ts": "d9e2c3f14979dea32bfbd42d2c844ba00ac714e48cbe665d1b9e664e08c60505",
+    "proofs/kernel.ts": "c2f7a54f611c859256de1ab0badcb698ee8c8148dc1f2847d683acd1dd71b795",
+    "proofs/policy.ts": "47701ff159ea3c1cd142676d93d50346e8542ca6fcf2ccf5f8412a3d5581844a",
     "proofs/compaction.ts": "b559117f9f2224ba7bace8a94fc06af0ff60dd7cd997af5d177990202b4ca9b2",
-    "proofs/resources.ts": "2253513bbe9cef4a166feb2ff83020d0e36388e2f9ce15911a9ff1e8aabab697",
-    "proofs/lifecycle.ts": "e2a41e2a3f0701ccce977d0a0414ca6d1ded43d4365315e799a4a3abd1645320",
+    "proofs/resources.ts": "49c55464807e77fa508047973196613969ca0fdafbddc48bfe58efb035fdd3a0",
+    "proofs/lifecycle.ts": "e43bc62b44982c55424ba6c36157d89eb4c2545fc445334585ce2379d0a295de",
     "proofs/storage.ts": "5428833c8d71be81947159c8d09fcf31989809da4f09156c7f10cc0291a7df84",
     "proofs/provider.ts": "f067052d8571c79ac9880692aa33a4a794744d3c586db53afd89d466db5659cc",
-    "proofs/authority.ts": "3e4d111396e7b4a5f0798832972a75b945270bb481b77810e253a212684e96fe",
-    "proofs/grants.ts": "c71c1e8b327034dbf710d1f8839f0bd036783dedd22470a9c069029f3ea0ba38",
-    "proofs/speculation.ts": "dc1f1b59f2e5414a439e7e62c897bd238b3470c7e608a9228fcf9e3b18dc9477",
-    "proofs/budget.ts": "a6aa3ce2aaffe80d411f8addb6953cbee82c522743a7934dca12e823cf8e3f13",
-    "scripts/verified-kernels.ts": "6b839fc89c86e7ac1185d334a96aeb86459fc9219194bd313c04d89bbfbfc772",
-    "scripts/verified-kernel-pool.ts": "7869f607e4ff87ac219fe2b14df06887fbc56a43c783118e64387f477e5ead42",
-    "scripts/verified-kernel-worker.ts": "d9a9a4a6e80d92f515ee4f8018193418d6937255688cf2f7e52953813bc65a4f"
+    "proofs/authority.ts": "b9ee6a4dc95ba3783879423ecf61eaf2256ac62805927ca5b8ba1f390e53cf56",
+    "scripts/verified-kernels.ts": "193e8a49557c80cad81ba59fec0f68d47ca55a5d72effafd8bfe75b45041e301"
   },
   "outputs": {
-    "src/verified/generated/policy.js": "3e691c8c45d8a0225737373c7139725ad51e9665c4abab7ae55498e22fbcb339",
-    "src/verified/generated/policy.d.ts": "43bad7eb09bb7fb74278af917dde55615134284dd49295a4474c2783f9235913",
-    "src/verified/generated/compaction.js": "ff1481ca679493bffb624e497b8eb470f0f3449c587c9f50df4f37c2385f90d2",
-    "src/verified/generated/compaction.d.ts": "d21a18dbd6f1cedb0136760cecb82bf0cd02529f9f4e10d5f30e389f48590aec",
-    "src/verified/generated/resources.js": "de90ffe7e1769c9b6661146338a576fff249926da3d8d826f5cba1946c460670",
-    "src/verified/generated/resources.d.ts": "352184014316cf58080aa71dd404ffb7c2bce0403f08b7978d4c9f9af723cd8d",
-    "src/verified/generated/lifecycle.js": "1e5b62ae8636944ac40f6bde066196ebb9d92d97f1e800c36a4dcc7116d0972b",
-    "src/verified/generated/lifecycle.d.ts": "dc9ac35a75c5d595ef252b68735c059fd03bf64cca903a9c3444768137d95311",
-    "src/verified/generated/storage.js": "ae871a12535997b2c72dc300242d4435f2646ed4ac55600aeb75f4882465223d",
-    "src/verified/generated/storage.d.ts": "b362c6a324a40d38fb82906ca18128e36d1aeeaa279f8a07c918b90a8ff795e1",
-    "src/verified/generated/provider.js": "c6164e325c469e86c744e85b391fd189891ce487b8aa99afe119eba3e44274a3",
-    "src/verified/generated/provider.d.ts": "cdab18d26a4a8bfceffe4d920fd21fd5dca07f55988bd59ec70d3cb181d6afc9",
-    "src/verified/generated/authority.js": "23788775dd582a00aea9845d8ea121d82a8e3d1dea4c91219d8ee100001ea411",
-    "src/verified/generated/authority.d.ts": "e4606d19e294e0cdc15fc4221bf95d941d4fb29bf2552743a265042b932c5035",
-    "src/verified/generated/grants.js": "eef09e5606de25abe124071f7f3a8428ce84e536cea24e2d6655c6a09ca9822e",
-    "src/verified/generated/grants.d.ts": "e78c493a432fa70800fb5cee8f7d02e6b20665aa24b526434f7ba490773a75ea",
-    "src/verified/generated/speculation.js": "348f498f41e272e750b59f864882b98454f3cc9da070787ce858329851abdf17",
-    "src/verified/generated/speculation.d.ts": "6e35a586800e9a7f1458a4d39a31196e6079e9445f0d5086ef9f6f6ed1355d58",
-    "src/verified/generated/budget.js": "ec4ca7dd319d7453623e4fa70ea3ce5bca25556e5d44e92a6380da66bcfaa129",
-    "src/verified/generated/budget.d.ts": "1ab5ebb6b7d0f05d1bba817f004062148932eda5d0524bb0522c501c6c640560"
+    "src/verified/generated/policy.js": "6ce44289a28d41db6cc57a6a274ca761120b55b57bae3b2cadb292d082924179",
+    "src/verified/generated/policy.d.ts": "7ca558a828c83f973bd9d818d3459da10d0d4c820c7bc35479931f4be38b2b11",
+    "src/verified/generated/compaction.js": "f43c71d2979ef3e0da8a58efeef5c35156df2da72b1a99fe64a844c9517e540f",
+    "src/verified/generated/compaction.d.ts": "64c313e8c77d54395839d0d366a4f9df373fdf7498bc0948443cbae0b6e917d8",
+    "src/verified/generated/resources.js": "2f6311d94545d9d47429f1c3f093aef6640f34bbcd2a9716f790b0e5cbece908",
+    "src/verified/generated/resources.d.ts": "b29dcd0409b2cb69e68812dae604913808e610ed14ccb241c20cd3923a437043",
+    "src/verified/generated/lifecycle.js": "b509b6848256377dabae48f69a993dca87538b8f069caef5c7638edc93992021",
+    "src/verified/generated/lifecycle.d.ts": "c181d0a1311aea61ec42f9c8433802fc2c8bb2f185258d9e85f088af742a1873",
+    "src/verified/generated/storage.js": "8f9078836dd95e69799a3434682cae6d40f88c4a73e30a139c6ee57f39325040",
+    "src/verified/generated/storage.d.ts": "d1af617336c5a60e6cda6c2e798baec306fd9af9931da2fa3c96edb890170aba",
+    "src/verified/generated/provider.js": "c3c01497cfe4a4fb3b8f82e98cd227910797d95b7d8a85aa61bcfea801a457a4",
+    "src/verified/generated/provider.d.ts": "2cb74826b3a4bb9ae87e7381da7d044ddde7bfe2dea755a1ecd2a6813e0917c8",
+    "src/verified/generated/authority.js": "3b557affa630580a4fe0343f4b2cfa84f3d4611b2c8e258d03b3c5dc2bf9459f",
+    "src/verified/generated/authority.d.ts": "37254e843d86481c543103629ab82095733d60ab87b9fad7d04593dc12ea4e71"
   },
   "claims": {
     "policy": [
@@ -62,7 +51,6 @@
       "headReadable: head_sound: a readable head has its sequence, its version, and a commit or a marked pending write",
       "headReadable: pending_without_marker_hidden: a pending uncommitted head without its marker is hidden",
       "headReadable: committed_head_visible: a committed head with its sequence and version is visible",
-      "headReadable: pending_head_visible: a pending head with its sequence, version and commit marker is visible",
       "certificateAccepted: certificate_sound: an accepted certificate has every fact",
       "certificateAccepted: certificate_complete: a certificate with every fact is accepted",
       "consume: consume_once: an inactive token releases nothing",
@@ -78,9 +66,8 @@
       "compactionCut: cut_sound: an open cut is eligible, after the previous marker, and within its tail budget; span_sound: a span keeps the cut open only if it was open and the span does not straddle the boundary; refusal_final: a refused cut stays refused; header_once: a header opens only an unstarted cut; cut_complete: a valid header opens a fresh cut, and an allowed span keeps it open"
     ],
     "resources": [
-      "resourceScope: scope names are a set; resource_source_refinement: an exact source keeps every declared name, and only those; resource_source_valid: an exact source is nonempty, with no empty or wildcard identity; resource_source_complete: every nonempty source of valid identities is exact; resource_refinement: normalization keeps a scope's names in both directions or widens it to unknown; resource_output_valid: an exact normal form is nonempty, at most 64 valid names of at most 256 code units; resource_unknown: a refused scope is unknown and names nothing; resource_precision: a valid bounded set-equivalent proposal is accepted as given (so the identity proposal is unchanged); resource_recheck_idempotent: rechecking a normal form against itself keeps it",
-      "resourceConflict: resource_pair_sound: quiet effects never conflict, nor do two commutative ones; resource_conflict_exact: exact disjoint scopes never conflict; resource_conflict_complete: an ordered pair of effects with an unknown scope conflicts; resource_pair_complete: an ordered pair of effects sharing a named resource conflicts",
-      "resourceGroups: resource_groups_known: independent groups have no ordered pair of effects with an unknown scope; resource_groups_unshared: independent groups have no ordered pair of effects naming one resource; resource_groups_unknown_complete: an ordered pair of effects with an unknown scope makes the groups conflict; resource_groups_shared_complete: an ordered pair of effects naming one resource makes the groups conflict"
+      "resourceScope: scope names are a set; resource_source_refinement: an exact source keeps every declared name, and only those; resource_source_valid: an exact source is nonempty, with no empty or wildcard identity; resource_source_complete: every nonempty source of valid identities is exact; resource_refinement: normalization keeps a scope's names in both directions or widens it to unknown; resource_output_valid: an exact normal form is nonempty, at most 64 valid names of at most 256 code units; resource_unknown: a refused scope is unknown and names nothing; resource_precision: a valid bounded set-equivalent proposal is accepted as given (so the identity proposal is unchanged)",
+      "resourceConflict: resource_pair_sound: quiet effects never conflict, nor do two commutative ones; resource_conflict_exact: exact disjoint scopes never conflict; resource_conflict_complete: an ordered pair of effects with an unknown scope conflicts; resource_pair_complete: an ordered pair of effects sharing a named resource conflicts"
     ],
     "lifecycle": [
       "bindingStep: inspect_safe: a granted inspection is open to ordinary work and changes nothing; every inspection changes nothing; inspect_open_complete: an inspection open to ordinary work is granted; begin_safe: a granted begin was open and adds exactly one call; a denied one changes nothing; begin_open_complete: every open begin is granted with one more call; retain_safe: a granted retain was open and adds exactly one hold; a denied one changes nothing; retain_open_complete: every open retain is granted with one more hold; close_safe: close starts only from a retiring, ownerless, idle binding, into Closing; otherwise nothing changes; close_complete: a retiring, ownerless, idle binding starts closing; release_exact: a release with holds removes exactly one; with none it is refused and changes nothing; end_exact: an end with calls removes exactly one; with none it is refused and changes nothing; revoke_preserves_work: revocation retires, drops the owner and keeps every hold and call; drop_owner_preserves_work: dropping the owner keeps everything else; retire_preserves_work: retirement changes only the phase; activation_exact: Staged and Active activate; every other phase is refused unchanged; completion_exact: Closing completes into Closed; every other phase is refused unchanged; failure_exact: abort quarantines every unclosed binding, keeping its work; Closed is refused unchanged; closing_refuses_work: a closing binding refuses every begin; revoked_refuses_work: a revoked binding refuses ordinary work; cleanup_after_revocation: a revoked retiring binding still admits cleanup"
@@ -100,36 +87,7 @@
       "providerTicket: provider_plan_safe: a planned write had a live grant for this key, no cancellation and the expected revision, and forwards them exactly; provider_ticket_consumed: taking consumes the ticket and keeps its contents; provider_revocation_consumes: revoking consumes the ticket and plans nothing; provider_revoked_refused: a consumed ticket plans nothing; provider_canceled_refused: a canceled take plans nothing; state_stale_refused: a revision other than the expected one plans nothing; provider_admission_complete: a live ticket taken for its key at its revision plans exactly its write; provider_replay_refused: a second take of the same ticket plans nothing"
     ],
     "authority": [
-      "capabilityAuthority: grants are a set; authority_issue_exact: issuance is live and holds exactly its grants; authority_use_safe: a granted use was live and named a held grant; authority_use_complete: a live use of a held grant is granted; authority_use_preserves: a use changes no authority; authority_derive_safe: a live child had a live parent and holds exactly its candidate, all within the parent; authority_derive_complete: a candidate within a live parent is derived exactly; authority_released_cannot_derive: a released parent derives only a released child; authority_released_not_live: release leaves no live authority and no grants; authority_child_use_safe: a derived child's granted use names a grant of its parent; authority_released_refused: a released authority grants nothing"
-    ],
-    "grants": [
-      "meshGrantTake: grant_safe: consumption requires authentication, an unexpired use, and matching requested scopes",
-      "meshGrantTake: grant_complete: every authenticated unexpired in-scope use is consumed",
-      "meshGrantTake: grant_decrement: consumption removes exactly one remaining use",
-      "meshGrantTake: grant_refusal_preserves: refusal changes no remaining use",
-      "meshGrantTake: grant_forwarding: the topic and selected kind are forwarded exactly",
-      "meshGrantTake: grant_invalid: failed authentication is the first refusal",
-      "meshGrantTake: grant_expired: an authenticated grant expires at its deadline, before other refusals",
-      "meshGrantTake: grant_exhausted: an authenticated unexpired grant without uses is refused",
-      "meshGrantTake: grant_topic: a live use cannot name another topic",
-      "meshGrantTake: grant_kind: a live topic-matching use cannot widen a fixed kind"
-    ],
-    "speculation": [
-      "speculationAdmission: speculation_admission_exact: only a new live entry below both caps is admitted",
-      "speculationAdmission: speculation_ended: ended invocations are refused without counting a skip",
-      "speculationAdmission: speculation_skipped: a live duplicate or full store counts a skip",
-      "speculationCheck: speculation_ready_exact: readiness requires a fresh, unexpired current entry and, after settlement, no abort or failure",
-      "speculationCheck: speculation_expiry_exact: expiry precedes other pre-settlement failures, but not a post-settlement abort or epoch change",
-      "speculationCheck: speculation_epoch_exact: an epoch change or settled abort wins unless a pre-settlement entry has expired",
-      "speculationCheck: speculation_freshness_exact: a current unexpired entry with failed freshness is refused",
-      "speculationCheck: speculation_failure_exact: provider failure is checked only after settlement, following epoch, expiry and freshness",
-      "speculationAccounting: speculation_launch_count: launch adds exactly one, other events preserve launches; speculation_serve_count: service adds exactly one, other events preserve services; speculation_epoch_count: epoch invalidation adds exactly one only for its event; speculation_freshness_count: freshness invalidation adds exactly one only for its event; speculation_failure_count: failure adds exactly one only for its event; speculation_waste_count: discarded work adds exactly one only for its event; speculation_skip_count: skipped admission adds exactly one only for its event; speculation_epoch_successor: a bump advances the epoch exactly once and preserves it on every other event"
-    ],
-    "budget": [
-      "budgetAdmission: budget_safe: admission has valid observations strictly below the ordered threshold",
-      "budgetAdmission: budget_complete: valid observations below the threshold are admitted",
-      "budgetAdmission: budget_exhausted: equality and larger observations are refused",
-      "budgetAdmission: budget_invalid: invalid observations are never admitted"
+      "capabilityAuthority: grants are a set; authority_issue_exact: issuance is live and holds exactly its grants; authority_use_safe: a granted use was live and named a held grant; authority_use_complete: a live use of a held grant is granted; authority_use_preserves: a use changes no authority; authority_derive_safe: a live child had a live parent and holds exactly its candidate, all within the parent; authority_derive_complete: a candidate within a live parent is derived exactly; authority_released_cannot_derive: a released parent derives only a released child; authority_released_not_live: release leaves no live authority and no grants; authority_released_refused: a released authority grants nothing"
     ]
   }
 }

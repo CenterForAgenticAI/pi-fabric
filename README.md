@@ -62,7 +62,7 @@ return {
 };
 ```
 
-Independent calls run in parallel, and the returned object enters the model context. Known providers support concise direct calls such as `mcp.fal_ai.get_model_schema(...)`, `memory.recall(...)`, `state.get()`, `schema.status()`, and `compact.status()`. A provider another extension registers gets a typed global named after it, such as `context.task_add(...)` ([program globals](docs/providers.md#program-globals-and-types)). Refs found or computed at runtime use `tools.call({ ref, args })` (TypeScript notation). Python uses `await tools.call({"ref": ref, "args": args})`, native dictionary results, and `asyncio.gather` for independent calls.
+Independent calls run in parallel, and the returned object enters the model context. Known providers support concise direct calls such as `mcp.fal_ai.get_model_schema(...)`, `memory.recall(...)`, `state.get()`, `schema.status()`, and `compact.status()`. Refs found or computed at runtime use `tools.call({ ref, args })` (TypeScript notation). Python uses `await tools.call({"ref": ref, "args": args})`, native dictionary results, and `asyncio.gather` for independent calls.
 
 To select Python, put this in `~/.pi/agent/fabric.json` or a trusted project's `.pi/fabric.json`, or use `/fabric settings` → **Executor** → **Kernel**:
 
@@ -77,12 +77,6 @@ Pi's native MCP can optionally supply selected servers beneath the same Fabric A
 ## Install
 
 Requires Node.js 24+ and Pi 1.0.0+. Monty's optional native package installs on supported platforms; only the explicit CPython escape hatch requires CPython 3.10+. Fabric warns when a detectable host is older than the required native loadout and nested-execution contracts.
-
-**0.126.1: quieter background optimization.** Automatic entropy improvement notices no longer interrupt the conversation. Background compilation, saved plans, and activation continue unchanged; use `/fabric entropy` to inspect entropy on demand.
-
-**0.126.0: idle warming for background work.** With Pi's `cacheWarming: "idle"` enabled, wake-capable spilled shell jobs re-price idle cache refreshes at certain continuation while preserving Pi's savings threshold and 30-minute idle horizon. UI-only monitors, interruption, provider errors, and abandoned branches are excluded; refreshes remain paid native `cache_warm` usage. The fullscreen dock now preserves other extensions' status rows. Policy verification also covers mesh grants, speculation, and budget admission, with 27 registered kernels and 75 counterexample-backed broken variants.
-
-**0.125.2: arbitrary-state policy proofs.** The dev-only gdp-wired prover is pinned to 0.30.1. Policy proof runs use `{from: 'any'}` and accept only `proven && checked && !assumes`, with counterexample-backed refusals for all 50 broken variants. Generated kernel bodies are unchanged, and default certificates need no environment override. Windows offline continuation tests use a platform-sized cold-start budget.
 
 **0.103.1: Pi 1.0 compatibility.** Full-code and Schema enforce loadouts own declarations through native `prepareLoadout`, including built-in codemode, tool search, MCP, late activation, and reload. Captured dispatch and core overrides retain native middleware; capture patches restore on the final shutdown lease without recursive wrapping. Run `bun run test:pi1` for public-contract, compiled SDK, and bundled-CLI regressions. Optional/audit mode retains the host loadout.
 
@@ -136,7 +130,7 @@ Pi loads advanced patterns after direct user invocation. Run `/skill:fabric-guid
 | A persistent watcher for one measurable goal | `/skill:fabric-supervisor Watch this migration until it is complete and tested.` |
 | A strict auditor for one feature design spec | `/skill:fabric-spec Implement docs/specs/checkout.md to the tee; nothing missing, nothing extra.` |
 | A quiet decision-point reviewer | `/skill:fabric-advisor Focus on migration correctness.` |
-| Independent reviewers, optionally one model per seat, and one decision | `/skill:fabric-council Review this design for correctness, security, and operability.` |
+| Same-model independent reviewers and one decision | `/skill:fabric-council Review this design for correctness, security, and operability.` |
 | Multi-model compare-not-merge deliberation or act mode | `/skill:fabric-fusion Deliberate this design across models.` |
 | One command that chooses advisor or supervisor | `/skill:fabric-ambient advisor Focus on migration correctness.` |
 | A durable team coordinating through versioned tasks | `/skill:fabric-swarm Coordinate this migration across owned task partitions.` |
@@ -148,7 +142,7 @@ Execution references stay progressive: the model loads the selected kernel's ski
 
 ## Agent conversations
 
-Press **↓** in an empty editor and **Enter** on an agent in the list at the bottom of the screen, or run **`/fabric chat <agent-id-or-name>`**, to open a live, full-screen child conversation with a multiline editor. Send steering or follow-ups directly, switch between nested agents, and return to Main without stopping its work. Drafts and scroll positions stay with each conversation. Completed one-shot agents are read-only; persistent actors accept further messages. Drag to select transcript text, use `/copy` or `/copy selection`, and type `/help` for the small set of preview-local commands with slash completion. See [focused conversations](docs/interface.md#focused-conversations) for controls and current limitations.
+Press **ctrl+shift+a** or run **`/fabric chat <agent-id-or-name>`** to open a live, full-screen child conversation with a multiline editor. Send steering or follow-ups directly, switch between nested agents, and return to Main without stopping its work. Drafts and scroll positions stay with each conversation. Completed one-shot agents are read-only; persistent actors accept further messages. Drag to select transcript text, use `/copy` or `/copy selection`, and type `/help` for the small set of preview-local commands with slash completion. See [focused conversations](docs/interface.md#focused-conversations) for controls and current limitations.
 
 ## The dashboard
 

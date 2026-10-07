@@ -65,7 +65,6 @@ import { ProcessTransport } from "./transports/process-transport.js";
 import { ScreenTransport } from "./transports/screen-transport.js";
 import { TmuxTransport } from "./transports/tmux-transport.js";
 import type {
-  AgentActivity,
   AgentChildQuestionRequest,
   AgentChildQuestionResponse,
   FabricBudgetSummary,
@@ -106,7 +105,6 @@ import {
 } from "./budget-ledger.js";
 import type { BudgetLedgerDetail } from "./budget-ledger.js";
 import type { BudgetLedgerState } from "./budget-ledger.js";
-import { budgetAdmits } from "../verified/budget.js";
 import { readJsonlPage } from "../log-tail.js";
 import {
   canRemoveManagedRunRoot,
@@ -243,8 +241,6 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
   /** Routed child dialogs in flight; aborted at settlement. */
   questions?: AbortController;
   questionDecisionId?: string;
-  /** Titles of the routed child questions now waiting on the user, oldest first. */
-  questionTitles?: string[];
   latestRecord?: AgentRunRecord;
   latestUiRecord?: AgentRunRecord;
   background: boolean;
@@ -709,11 +705,6 @@ export class AgentManager {
     return resolveAgentCwd(this.cwd, requestedCwd);
   }
 
-  /** The project root Fabric already uses for the mesh; named agent files live under its .pi folder. */
-  get projectRoot(): string {
-    return this.#projectRoot;
-  }
-
   #inheritedSessionPins(request: AgentRunRequest): InheritedSessionPin[] | undefined {
     const explicit = request.inheritedSessionPins;
     if (explicit && explicit.length > 0) return explicit;
@@ -917,7 +908,7 @@ export class AgentManager {
     }
     if (this.#budget) {
       const spent = readBudgetLedger(this.#budget.file).cost;
-      if (!budgetAdmits(spent, this.#budget.budget)) {
+      if (spent >= this.#budget.budget) {
         throw new Error(
           `Fabric recursion budget exceeded: spent $${spent.toFixed(6)} of $${this.#budget.budget.toFixed(6)}. Increase agents.budgetUsd or simplify the task.`,
         );
@@ -1611,17 +1602,6 @@ export class AgentManager {
 
   list(): Array<AgentRunRecord | AgentHandleInfo> {
     return [...this.#runs.keys()].map((id) => this.status(id));
-  }
-
-  /** Unsettled runs, each with the title of a child question it waits on. */
-  activity(): AgentActivity[] {
-    return [...this.#runs.values()]
-      .filter((managed) => !managed.settled)
-      .map((managed) => ({
-        id: managed.id,
-        name: managed.actorName ?? managed.name,
-        ...(managed.questionTitles?.length ? { question: managed.questionTitles.at(-1)! } : {}),
-      }));
   }
 
   listForUi(): Array<AgentRunRecord | AgentHandleInfo> {
@@ -2361,11 +2341,6 @@ export class AgentManager {
   #askParent(managed: ManagedAgent, question: Record<string, unknown>): Promise<AgentChildQuestionResponse> {
     if (!this.#onChildQuestion || managed.settled) return Promise.resolve({ cancelled: true });
     managed.questions ??= new AbortController();
-    const title =
-      typeof question.title === "string" && question.title.trim() ? question.title.trim() : "question";
-    // A run can have several questions open; each answer removes only its own.
-    (managed.questionTitles ??= []).push(title);
-    this.#invalidateUiList();
     return this.#onChildQuestion({
       runId: managed.id,
       name: managed.actorName ?? managed.name,
@@ -2378,8 +2353,6 @@ export class AgentManager {
       },
     }).catch((): AgentChildQuestionResponse => ({ cancelled: true })).then((response) => {
       delete managed.questionDecisionId;
-      const waiting = managed.questionTitles?.lastIndexOf(title) ?? -1;
-      if (waiting >= 0) managed.questionTitles!.splice(waiting, 1);
       this.#invalidateUiList();
       return response;
     });
@@ -2464,31 +2437,13 @@ export class AgentManager {
   readonly #inheritedToolAllowlist = readChildToolAllowlist();
 
   #childTools(request: AgentRunRequest, runner: FabricRunnerAdapter, requiresFabricKernel = false): string[] {
-    const requested = request.tools ?? this.config.defaultTools;
-    const tools = requested.filter(
+    const tools = [...(request.tools ?? this.config.defaultTools)].filter(
       (tool) => tool !== "fabric_exec" &&
         (this.#inheritedToolAllowlist === undefined || this.#inheritedToolAllowlist.has(tool)),
     );
     const extensions = request.recursive === true
       ? true
       : (request.extensions ?? this.config.extensions);
-    // agents.childQuestions "route" sends a child's dialogs to the parent, so a
-    // Pi child with extensions also gets the tool that opens them. An empty
-    // list asks for no tools, a Pi tool list of +name/-name modifiers cannot
-    // take a plain name, and an inherited allowlist is never widened. Read the
-    // request, not the filtered list: the filter can drop a -name modifier.
-    if (
-      this.config.childQuestions === "route" &&
-      (runner.id === "pi" || runner.id === "pi-durable") &&
-      runner.capabilities.questions &&
-      extensions &&
-      requested.length > 0 &&
-      !requested.some((tool) => tool.startsWith("+") || tool.startsWith("-"))
-    ) {
-      for (const tool of this.config.childQuestionTools ?? ["ask"]) {
-        if (this.#inheritedToolAllowlist === undefined || this.#inheritedToolAllowlist.has(tool)) tools.push(tool);
-      }
-    }
     if (
       runner.capabilities.recursiveFabric &&
       (request.recursive || ((this.#fullCodeMode || requiresFabricKernel) && extensions))

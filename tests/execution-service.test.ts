@@ -12,26 +12,6 @@ import { PiToolsProvider } from "../src/providers/pi-tools-provider.js";
 import type { FabricActionDescriptor, FabricProvider } from "../src/protocol.js";
 
 describe("FabricExecutionService", () => {
-  it("enforces configured uninterrupted CPU slices without changing the unlimited default", async () => {
-    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
-    const service = new FabricExecutionService(new ActionRegistry(), config);
-    const run = (code: string) => service.execute({
-      code, signal: undefined, parentToolCallId: "cpu-slice",
-      context: { cwd: process.cwd(), hasUI: false } as ExtensionContext,
-      onPartial() {},
-    });
-    const busy = 'const end = Date.now() + 100; while (Date.now() < end) {} return "done";';
-    const unlimited = await run(busy);
-    expect(unlimited.success, unlimited.error).toBe(true);
-    expect(unlimited.value).toBe("done");
-    config.executor.maxCpuSliceMs = 20;
-    const bounded = await run(busy);
-    expect(bounded.success).toBe(false);
-    expect(bounded.error).toContain("uninterrupted CPU");
-    const yielding = await run('await new Promise(resolve => setTimeout(resolve, 100)); return "done";');
-    expect(yielding.success, yielding.error).toBe(true);
-    expect(yielding.value).toBe("done");
-  });
   it("defers explicit handoff and completes every later call in the same program", async () => {
     const registry = new ActionRegistry();
     const demoDescriptor = {

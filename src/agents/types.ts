@@ -179,8 +179,6 @@ export interface AgentRunRecord {
   updatedAt: number;
   finishedAt?: number;
   currentTool?: string;
-  /** Latest declared fabric_exec display name; it holds until the next declaration. */
-  milestone?: string;
   turns: number;
   toolCalls: number;
   text: string;
@@ -375,15 +373,6 @@ export interface AgentSteerEntry {
   instructions?: string;
   data?: unknown;
   ts: number;
-}
-
-/** One unsettled run, as `AgentManager.activity()` reports it to status displays. */
-export interface AgentActivity {
-  id: string;
-  /** The actor name for an actor activation, otherwise the run name. */
-  name: string;
-  /** Title of a routed child question waiting on the user. */
-  question?: string;
 }
 
 /** A routed child dialog (agents.childQuestions "route"); `question` is the raw worker payload. */

@@ -15,7 +15,6 @@ export type PolicyBug =
   | "coverage ignores truncation"
   | "canonical arguments are rewritten"
   | "pending head needs no marker"
-  | "marked pending head is hidden"
   | "certificate skips its last fact"
   | "consumption stays active"
   | "summary ignores the byte limit"
@@ -71,7 +70,7 @@ const normalized = (bug?: PolicyBug) => fun("use normalized")
 const head = (bug?: PolicyBug) => fun("head readable")
   .inputs({ sequence: bool, version: bool, committed: bool, pending: bool, marker: bool })
   .returns(({ sequence, version, committed, pending, marker }) => ({
-    readable: all(sequence, version, bug === "marked pending head is hidden" ? committed : committed.or(bug === "pending head needs no marker" ? pending : pending.and(marker))),
+    readable: all(sequence, version, committed.or(bug === "pending head needs no marker" ? pending : pending.and(marker))),
   }));
 
 const FACTS = ["f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7"] as const;
@@ -154,7 +153,6 @@ export const policyKernels = (bug?: PolicyBug): Kernel[] => {
       h.law("head_sound: a readable head has its sequence, its version, and a commit or a marked pending write", () => [], ({ readable }, e) => readable.implies(all(e.sequence, e.version, e.committed.or(e.pending.and(e.marker))))),
       h.law("pending_without_marker_hidden: a pending uncommitted head without its marker is hidden", ({ committed, pending, marker }) => [committed.not(), pending, marker.not()], ({ readable }) => readable.not()),
       h.law("committed_head_visible: a committed head with its sequence and version is visible", ({ sequence, version, committed }) => [sequence, version, committed], ({ readable }) => readable),
-      h.law("pending_head_visible: a pending head with its sequence, version and commit marker is visible", ({ sequence, version, pending, marker }) => [sequence, version, pending, marker], ({ readable }) => readable),
     ] },
     { id: "certificateAccepted", fun: ce, decisions: [
       ce.law("certificate_sound: an accepted certificate has every fact", () => [], ({ accepted }, e) => accepted.implies(all(...FACTS.map((name) => e[name])))),
@@ -188,7 +186,7 @@ export const policyKernels = (bug?: PolicyBug): Kernel[] => {
 export const POLICY_BUGS: PolicyBug[] = [
   "transition ignores the epoch", "cleanup failure is disposed", "unknown conflict reads one side",
   "known conflict ignores ordering", "lineage admits non-members", "pointer ignores lineage",
-  "coverage ignores truncation", "canonical arguments are rewritten", "pending head needs no marker", "marked pending head is hidden",
+  "coverage ignores truncation", "canonical arguments are rewritten", "pending head needs no marker",
   "certificate skips its last fact", "consumption stays active", "summary ignores the byte limit",
   "sample loses an entry", "chunk ignores completion",
 ];

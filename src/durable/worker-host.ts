@@ -9,6 +9,7 @@ import {
   type CreateAgentSessionRuntimeFactory, type LoadExtensionsResult,
   type ProjectTrustContext, type ProjectTrustHandler,
 } from "@earendil-works/pi-coding-agent";
+import { durableExtensionLoadError } from "./extension-load-error.js";
 import { createDurableAgentSession } from "./session.js";
 import { openDurableWorkerStorage } from "./storage.js";
 import type { DurableWorkerOptions } from "./worker-options.js";
@@ -52,27 +53,6 @@ const advertiseHostExtensionRunner = (): void => {
   (holder[key] ??= new Set()).add(ExtensionRunner);
 };
 
-interface PiHttpDispatcher {
-  applyHttpProxySettings(httpProxy: string | undefined): void;
-  configureHttpDispatcher(timeoutMs?: number): void;
-}
-let piHttpDispatcher: Promise<PiHttpDispatcher> | undefined;
-
-/**
- * Apply the HTTP policy Pi's CLI applies at startup: the global `httpProxy`
- * setting, then a proxy-aware dispatcher honoring HTTP(S)_PROXY, NO_PROXY and
- * the idle timeout. The SDK does not export this bootstrap, so load the pinned
- * SDK's own module beside its entry instead of copying the proxy logic (#270).
- */
-export async function configureDurableHttp(settings: SettingsManager): Promise<void> {
-  piHttpDispatcher ??= import(
-    new URL("./core/http-dispatcher.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href
-  ) as Promise<PiHttpDispatcher>;
-  const { applyHttpProxySettings, configureHttpDispatcher } = await piHttpDispatcher;
-  applyHttpProxySettings(settings.getGlobalSettings().httpProxy);
-  configureHttpDispatcher(settings.getHttpIdleTimeoutMs());
-}
-
 /** A full native Pi runtime host whose Agent scheduling is owned by pi-durable. */
 export async function createDurableWorkerRuntime(options: DurableWorkerOptions): Promise<AgentSessionRuntime> {
   advertiseHostExtensionRunner();
@@ -91,7 +71,6 @@ export async function createDurableWorkerRuntime(options: DurableWorkerOptions):
     // The native runtime already aborts, emits shutdown, and disposes the old session.
     await closeCurrent();
     const settings = SettingsManager.create(target.cwd, target.agentDir, { projectTrusted: false });
-    await configureDurableHttp(settings);
     const services = await createAgentSessionServices({
       cwd: target.cwd, agentDir: target.agentDir, settingsManager: settings,
       modelRuntimeSignal: AbortSignal.timeout(15_000),
@@ -113,7 +92,7 @@ export async function createDurableWorkerRuntime(options: DurableWorkerOptions):
       },
     });
     const extensionErrors = services.resourceLoader.getExtensions().errors;
-    if (extensionErrors.length) throw new Error(`Durable worker extension loading failed: ${JSON.stringify(extensionErrors)}`);
+    if (extensionErrors.length) throw durableExtensionLoadError(extensionErrors);
     for (const diagnostic of services.diagnostics) {
       process.stderr.write(`${diagnostic.type}: ${diagnostic.message}\n`);
     }
