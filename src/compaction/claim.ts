@@ -41,6 +41,8 @@ export interface CompactionOwnerRegistryOptions {
   warn: (message: string) => void;
   /** Fabric's deterministic summary, offered to the holder only. */
   fallback: CompactionFallback;
+  /** Called once each time a held claim ends, before Fabric resumes. */
+  onRelease?: () => void;
 }
 
 /**
@@ -153,7 +155,9 @@ export class CompactionOwnerRegistry {
   clear(): void {
     const held = this.#held;
     this.#held = undefined;
-    held?.release();
+    if (!held) return;
+    held.release();
+    this.options.onRelease?.();
   }
 
   #handle(token: string): FabricCompactionOwnerHandleV1 {
