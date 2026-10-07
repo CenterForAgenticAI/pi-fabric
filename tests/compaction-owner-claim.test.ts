@@ -551,6 +551,15 @@ describe("compact.* under a claim", () => {
     expect((pressure as { ownerPressure: object }).ownerPressure).not.toHaveProperty("extra");
   });
 
+  it.each(["__proto__", "constructor", "prototype"])("refuses the reserved threshold name %s instead of dropping it", async (name) => {
+    const { provider } = setup({
+      // JSON.parse makes "__proto__" an own key, as a JSON round trip would.
+      pressure: { handler: () => JSON.parse(`{"stage":"fold","thresholds":{"fold":0.7,${JSON.stringify(name)}:0.5}}`) as never },
+    });
+    await expect(provider.invoke("pressure", {}, invocation()))
+      .rejects.toThrow(`compaction owner pi-context-aware@1.4.0: compact.pressure threshold name "${name}" is reserved`);
+  });
+
   it("leaves status and pressure unchanged without a claim", async () => {
     const provider = new CompactProvider(new CompactController(), { owner: () => undefined });
     expect(await provider.invoke("status", {}, invocation())).not.toHaveProperty("claim");

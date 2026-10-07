@@ -198,6 +198,9 @@ export interface CompactProviderOptions {
 // Owner handler results cross into program results: JSON only, bounded.
 const MAX_OWNER_RESULT_BYTES = 16 * 1024;
 const MAX_OWNER_THRESHOLDS = 16;
+// Names an object copy would drop or treat as prototype machinery; refused
+// so a threshold never silently disappears.
+const RESERVED_THRESHOLD_NAMES = new Set(["__proto__", "constructor", "prototype"]);
 
 const ownerRef = (claim: ActiveCompactionOwner): { name: string; version: string } => ({
   name: claim.owner.name,
@@ -236,6 +239,9 @@ const ownerPressure = (claim: ActiveCompactionOwner, value: unknown): FabricComp
   if (entries.length > MAX_OWNER_THRESHOLDS) throw invalid();
   const thresholds: Record<string, number> = {};
   for (const [name, threshold] of entries) {
+    if (RESERVED_THRESHOLD_NAMES.has(name)) {
+      throw ownerError(claim, `compact.pressure threshold name "${name}" is reserved`);
+    }
     if (name.length === 0 || name.length > 64 || typeof threshold !== "number" || !Number.isFinite(threshold)) {
       throw invalid();
     }
