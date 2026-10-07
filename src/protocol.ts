@@ -422,7 +422,17 @@ export interface FabricCompactionOwnerHandleV1 {
 }
 
 export type FabricCompactionOwnerClaimResultV1 =
-  | { ok: true; handle: FabricCompactionOwnerHandleV1 }
+  | {
+    ok: true;
+    handle: FabricCompactionOwnerHandleV1;
+    /**
+     * Fabric's carry-forward items when the claim was made, as a frozen copy.
+     * Under the claim `compact.carry` goes to the owner, so this is the list
+     * the owner takes over. Absent when Fabric has not started the session
+     * yet (the owner's `session_start` ran before Fabric's).
+     */
+    carry?: readonly string[];
+  }
   | { ok: false; error: string; holder?: FabricCompactionOwnerIdentityV1 };
 
 export interface FabricCompactionOwnerClaimV1 {

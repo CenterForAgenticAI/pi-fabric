@@ -803,32 +803,61 @@ return { seed: requested.intent.seed, owner: requested.claim?.name, actions: sta
   });
 });
 
+// Fabric after its own session_start, on a session whose branch is `branch`.
+const startFabric = async (branch: unknown[] = []) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-claim-"));
+  cleanups.push(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const agentDir = path.join(cwd, "agent");
+  fs.mkdirSync(agentDir);
+  fs.mkdirSync(path.join(cwd, ".pi"));
+  fs.writeFileSync(path.join(cwd, ".pi", "fabric.json"), JSON.stringify({
+    compaction: { outputReserveTokens: 10_000 }, prewalk: { alwaysRearm: false }, mesh: { enabled: false }, components: [],
+  }));
+  vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+  for (const key of ["PI_FABRIC_PARENT_RUN", "PI_FABRIC_ACTOR_ID", "PI_FABRIC_DEPTH", "PI_FABRIC_CAPABILITY_REQUIREMENTS", "PI_FABRIC_CAPABILITY_DIGEST"]) {
+    vi.stubEnv(key, undefined);
+  }
+  const fabric = await loadFabric();
+  const context = {
+    cwd,
+    hasUI: false,
+    isProjectTrusted: () => true,
+    model: { provider: "anthropic", id: "sonnet", contextWindow: 100_000 },
+    getContextUsage: () => ({ tokens: 95_000, contextWindow: 100_000, percent: 95 }),
+    compact: vi.fn((options?: { onComplete?: (result: never) => void }) => options?.onComplete?.({} as never)),
+    sessionManager: { getSessionId: () => cwd, getBranch: () => branch, getSessionFile: () => undefined, getLeafId: () => undefined },
+    ui: { setStatus: vi.fn(), notify: vi.fn() },
+  } as unknown as ExtensionContext;
+  await fabric.emit("session_start", { type: "session_start" }, context);
+  return { fabric, context };
+};
+
+describe("claim cut-over", () => {
+  it("hands the owner a frozen copy of Fabric's carry list in the claim result", async () => {
+    const { fabric } = await startFabric([
+      { type: "custom", id: "c1", parentId: null, timestamp: "2026-10-07T00:00:00.000Z", customType: "pi-fabric-compact-carry", data: { version: 1, items: ["Old focus"] } },
+      { type: "custom", id: "c2", parentId: "c1", timestamp: "2026-10-07T00:00:01.000Z", customType: "pi-fabric-compact-carry", data: { version: 1, items: ["Auth regression is still open", "tests/auth.test.ts"] } },
+    ]);
+    const claim = claimMessage();
+    fabric.send(claim.message);
+
+    const result = claim.result() as { ok: true; carry?: readonly string[] };
+    expect(result).toMatchObject({ ok: true, carry: ["Auth regression is still open", "tests/auth.test.ts"] });
+    expect(Object.isFrozen(result.carry)).toBe(true);
+  }, 60_000);
+
+  it("leaves carry out of the claim result before Fabric has started the session", async () => {
+    const fabric = await loadFabric();
+    const claim = claimMessage();
+    fabric.send(claim.message);
+    expect(claim.result()).toMatchObject({ ok: true });
+    expect(claim.result()).not.toHaveProperty("carry");
+  });
+});
+
 describe("threshold trigger under a claim", () => {
   it("skips Fabric's settled-boundary trigger while a claim is held", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-claim-"));
-    cleanups.push(() => fs.rmSync(cwd, { recursive: true, force: true }));
-    const agentDir = path.join(cwd, "agent");
-    fs.mkdirSync(agentDir);
-    fs.mkdirSync(path.join(cwd, ".pi"));
-    fs.writeFileSync(path.join(cwd, ".pi", "fabric.json"), JSON.stringify({
-      compaction: { outputReserveTokens: 10_000 }, prewalk: { alwaysRearm: false }, mesh: { enabled: false }, components: [],
-    }));
-    vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
-    for (const key of ["PI_FABRIC_PARENT_RUN", "PI_FABRIC_ACTOR_ID", "PI_FABRIC_DEPTH", "PI_FABRIC_CAPABILITY_REQUIREMENTS", "PI_FABRIC_CAPABILITY_DIGEST"]) {
-      vi.stubEnv(key, undefined);
-    }
-    const fabric = await loadFabric();
-    const context = {
-      cwd,
-      hasUI: false,
-      isProjectTrusted: () => true,
-      model: { provider: "anthropic", id: "sonnet", contextWindow: 100_000 },
-      getContextUsage: () => ({ tokens: 95_000, contextWindow: 100_000, percent: 95 }),
-      compact: vi.fn((options?: { onComplete?: (result: never) => void }) => options?.onComplete?.({} as never)),
-      sessionManager: { getSessionId: () => cwd, getBranch: () => [], getSessionFile: () => undefined, getLeafId: () => undefined },
-      ui: { setStatus: vi.fn(), notify: vi.fn() },
-    } as unknown as ExtensionContext;
-    await fabric.emit("session_start", { type: "session_start" }, context);
+    const { fabric, context } = await startFabric();
 
     const handle = claimed(fabric.send);
     await fabric.emit("agent_settled", { type: "agent_settled" }, context);
