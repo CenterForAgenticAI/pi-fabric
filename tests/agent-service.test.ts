@@ -480,4 +480,13 @@ describe("hosted agent service model selection", () => {
     expect(() => agentServiceArgs("run", { task: "t", model: "provider/model-a", modelMatch: "exact" }))
       .toThrow(/Invalid hosted agents.run arguments/);
   });
+
+  it("gives the hosted model field its own help, which does not point at the absent modelMatch field", () => {
+    for (const name of ["run", "spawn"]) {
+      const descriptor = agentServiceDescriptors().find((entry) => entry.name === name);
+      const model = (descriptor?.inputSchema as { properties: { model: { description?: string } } }).properties.model;
+      expect(model.description).toBeTruthy();
+      expect(model.description).not.toMatch(/modelMatch/);
+    }
+  });
 });
