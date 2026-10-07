@@ -1183,6 +1183,11 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
   });
 
   pi.on("session_shutdown", async (_event, context) => {
+    // A claim never outlives the runtime it was made in: reload, session
+    // replacement and quit all shut this instance down. Cleared before any
+    // await, so a later step that throws cannot leave the old handle active.
+    unsubscribeCompactionOwner();
+    compactionClaims.clear();
     entropyStopping = true;
     clearEntropyRetry();
     // Queue the richest final window and let async I/O/cooperative scoring
@@ -1201,10 +1206,6 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     unsubscribeToolPlacement();
     unsubscribeProgramRun();
     programRunContext = undefined;
-    // A claim never outlives the runtime it was made in: reload, session
-    // replacement and quit all shut this instance down.
-    unsubscribeCompactionOwner();
-    compactionClaims.clear();
     pendingHandoffs.clear();
     directToolApproval.clear();
     toolDisplay.clear();
