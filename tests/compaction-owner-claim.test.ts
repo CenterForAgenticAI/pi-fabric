@@ -408,6 +408,15 @@ describe("compact.* under a claim", () => {
     expect(controller.status().pending).toBeUndefined();
   });
 
+  it("refuses a blank seed before it reaches the owner", async () => {
+    const request = vi.fn();
+    const { provider } = setup({ request: { fields: ["seed"], handler: request } });
+
+    await expect(provider.invoke("request", { seed: "   " }, invocation()))
+      .rejects.toThrow("Invalid compact.request arguments: compact seed must be a non-empty string of at most 8192 characters");
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it("fails an undeclared carry field with the owner's name and forwards nothing", async () => {
     const carry = vi.fn(() => ({ items: [] }));
     const { provider, appendEntry } = setup({ carry: { fields: ["add"], handler: carry } });
