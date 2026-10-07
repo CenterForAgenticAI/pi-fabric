@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { FabricState } from "../fabric-state.js";
-import type { FabricProgramRunReplyV1, FabricProgramRunRequestV1 } from "../protocol.js";
-import { hostProgramRunSource } from "./source.js";
+import type { FabricProgramRunFieldV1, FabricProgramRunReplyV1, FabricProgramRunSnapshotV1 } from "../protocol.js";
+import { callerCodeLabel, callerCodeProgram, hostProgramRunSource, sha256Hex } from "./source.js";
 import {
+  MAX_PROGRAM_CODE_CHARS,
   MAX_PROGRAM_REF_CHARS,
   normalizeProgramInput,
   ProgramStore,
@@ -26,12 +27,26 @@ export interface ProgramHostDeps {
   pi: Pick<ExtensionAPI, "sendMessage">;
 }
 
-export interface HostProgramRunRequest {
-  ref: string;
+interface HostProgramRunBase {
   input?: unknown;
-  requirePromoted?: boolean;
   signal?: AbortSignal;
 }
+
+/** A saved program, chosen by name or digest. */
+export interface HostSavedProgramRunRequest extends HostProgramRunBase {
+  ref: string;
+  requirePromoted?: boolean;
+}
+
+/** Caller-supplied TypeScript and its SHA-256, which the event handler has already verified. */
+export interface HostCodeProgramRunRequest extends HostProgramRunBase {
+  code: string;
+  sha256: string;
+}
+
+export type HostProgramRunRequest = HostSavedProgramRunRequest | HostCodeProgramRunRequest;
+
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
@@ -58,24 +73,47 @@ export const runHostProgram = async (
   let program: string | undefined;
   let reply: FabricProgramRunReplyV1;
   let details: Record<string, unknown> = {};
+  const caller = "code" in request;
   try {
     await deps.state.ensure(context);
-    if (!deps.state.registry.has("programs")) throw new Error("Saved programs are unavailable in this session");
-    const store = new ProgramStore(programsDirectory(context.cwd));
-    const record = await store.resolve(request.ref, { requirePromoted: request.requirePromoted === true });
-    program = programRef(record, true);
+    if (!deps.state.registry.has("programs")) {
+      throw new Error(caller ? "Program runs are unavailable in this session" : "Saved programs are unavailable in this session");
+    }
+    const kernel = deps.state.config.executor.kernel;
+    // Either way the run is a one-call program that invokes `programs.run`, so
+    // saved and caller-supplied programs share its authorization, approval and trace.
+    let ref: string;
+    let displayName: string;
+    let requirePromoted = false;
+    if (caller) {
+      // Nothing is saved: `programs.run` resolves this ref to the verified code.
+      if (kernel !== "typescript") {
+        throw new Error(`This session's kernel is ${kernel}; caller-supplied code runs only in the typescript kernel`);
+      }
+      program = callerCodeProgram(request.sha256);
+      ref = program;
+      displayName = `Program ${callerCodeLabel(request.sha256)}`;
+    } else {
+      const store = new ProgramStore(programsDirectory(context.cwd));
+      const record = await store.resolve(request.ref, { requirePromoted: request.requirePromoted === true });
+      program = programRef(record, true);
+      // Pin the resolved digest so a concurrent promotion cannot swap versions.
+      ref = record.digest;
+      displayName = `Program ${record.name}`;
+      requirePromoted = request.requirePromoted === true;
+    }
     const input = normalizeProgramInput(request.input);
     const result = await deps.state.execution.execute({
-      // Pin the resolved digest so a concurrent promotion cannot swap versions.
-      code: hostProgramRunSource(deps.state.config.executor.kernel, {
-        ref: record.digest,
+      code: hostProgramRunSource(kernel, {
+        ref,
         ...(input !== undefined ? { input } : {}),
-        ...(request.requirePromoted ? { requirePromoted: true } : {}),
+        ...(requirePromoted ? { requirePromoted: true } : {}),
       }),
+      ...(caller ? { callerProgram: { code: request.code, sha256: request.sha256 } } : {}),
       signal: request.signal,
       parentToolCallId: `fabric_program_${randomUUID()}`,
       context,
-      display: { name: `Program ${record.name}` },
+      display: { name: displayName },
       invokedBy: "host",
       onPartial() {},
     });
@@ -91,7 +129,7 @@ export const runHostProgram = async (
   } catch (error) {
     reply = { ok: false, error: errorText(error), ...(program ? { program } : {}) };
   }
-  const label = reply.program ?? request.ref;
+  const label = caller ? callerCodeLabel(request.sha256) : reply.program ?? request.ref;
   const body = reply.ok
     ? [...reply.logs, valueText(reply.value)].join("\n")
     : `Error: ${reply.error}`;
@@ -103,7 +141,8 @@ export const runHostProgram = async (
       details: {
         version: 1,
         invokedBy: "host",
-        ...(reply.program ? { program: reply.program } : { ref: request.ref }),
+        ...(reply.program ? { program: reply.program } : caller ? {} : { ref: request.ref }),
+        ...(caller ? { source: "caller-code", sha256: request.sha256 } : {}),
         success: reply.ok,
         ...(reply.ok ? {} : { error: reply.error }),
         ...details,
@@ -119,46 +158,72 @@ const isAbortSignal = (value: unknown): value is AbortSignal =>
   typeof value === "object" && value !== null && typeof (value as AbortSignal).aborted === "boolean" &&
   typeof (value as AbortSignal).addEventListener === "function";
 
-/** `pi-fabric:program:run:v1`; replies exactly once, never throws. */
+/**
+ * `pi-fabric:program:run:v1`; replies exactly once, never throws. It reads only
+ * the snapshot the listener took at the event boundary, never the caller's object.
+ */
 export const handleFabricProgramRunEvent = async (
-  value: unknown,
+  request: FabricProgramRunSnapshotV1,
   deps: ProgramHostDeps & { context: ExtensionContext | undefined },
 ): Promise<void> => {
-  const request = value as Partial<FabricProgramRunRequestV1>;
-  if (typeof request?.reply !== "function") return;
-  const respond = request.reply;
-  let replied = false;
-  const once = (result: FabricProgramRunReplyV1): void => {
-    if (replied) return;
-    replied = true;
-    try {
-      respond(result);
-    } catch {
-      // A throwing listener must not turn into an unhandled rejection.
-    }
+  const { ref, code, kernel, sha256, input, requirePromoted, signal, unreadable, respond } = request;
+  const refuse = (reason: string): void => respond({ ok: false, error: `Invalid program run request: ${reason}` });
+  // A named field whose getter threw is refused by name, at the point its check
+  // would have run. origin/main never read most of them, so these texts are new.
+  const refuseUnreadable = (...fields: FabricProgramRunFieldV1[]): boolean => {
+    const field = fields.find((name) => unreadable.has(name));
+    if (field === undefined) return false;
+    refuse(`${field} could not be read`);
+    return true;
   };
-  if (typeof request.ref !== "string" || !request.ref || request.ref.length > MAX_PROGRAM_REF_CHARS) {
-    once({ ok: false, error: "Invalid program run request: ref must be a non-empty string" });
-    return;
+  try {
+    if (refuseUnreadable("ref")) return;
+    // Without a ref, an unreadable `code` is the only request this can be.
+    if (ref === undefined && refuseUnreadable("code")) return;
+    if (ref !== undefined && code !== undefined) return refuse("ref and code are mutually exclusive");
+    let run: HostProgramRunRequest;
+    if (code === undefined) {
+      // The saved-program checks, texts and order are the ones this event has always had.
+      // A ref with an unreadable `code` stays here; the final check refuses it.
+      if (typeof ref !== "string" || !ref || ref.length > MAX_PROGRAM_REF_CHARS) {
+        return refuse("ref must be a non-empty string");
+      }
+      if (refuseUnreadable("requirePromoted")) return;
+      if (requirePromoted !== undefined && typeof requirePromoted !== "boolean") {
+        return refuse("requirePromoted must be a boolean");
+      }
+      if (refuseUnreadable("signal")) return;
+      if (signal !== undefined && !isAbortSignal(signal)) return refuse("signal must be an AbortSignal");
+      run = {
+        ref,
+        ...(input !== undefined ? { input } : {}),
+        ...(requirePromoted ? { requirePromoted: true } : {}),
+        ...(signal ? { signal } : {}),
+      };
+    } else {
+      if (typeof code !== "string" || !code.trim()) return refuse("code must be a non-empty string");
+      if (code.length > MAX_PROGRAM_CODE_CHARS) return refuse(`code exceeds ${MAX_PROGRAM_CODE_CHARS} characters`);
+      if (refuseUnreadable("kernel")) return;
+      if (kernel !== undefined && kernel !== "typescript") return refuse('kernel must be "typescript"');
+      if (refuseUnreadable("sha256")) return;
+      if (typeof sha256 !== "string" || !SHA256_PATTERN.test(sha256)) {
+        return refuse("sha256 must be 64 lowercase hex characters");
+      }
+      if (sha256Hex(code) !== sha256) return refuse("sha256 does not match code");
+      if (refuseUnreadable("signal")) return;
+      if (signal !== undefined && !isAbortSignal(signal)) return refuse("signal must be an AbortSignal");
+      run = { code, sha256, ...(input !== undefined ? { input } : {}), ...(signal ? { signal } : {}) };
+    }
+    if (!deps.context) {
+      respond({ ok: false, error: "No active Pi session to run the program in" });
+      return;
+    }
+    // Last, as origin/main read `input` last: nothing runs on a request that could not be read in full.
+    if (refuseUnreadable("code", "kernel", "sha256", "requirePromoted", "input", "claim")) return;
+    respond(await runHostProgram(deps, deps.context, run));
+  } catch (error) {
+    respond({ ok: false, error: errorText(error) });
   }
-  if (request.requirePromoted !== undefined && typeof request.requirePromoted !== "boolean") {
-    once({ ok: false, error: "Invalid program run request: requirePromoted must be a boolean" });
-    return;
-  }
-  if (request.signal !== undefined && !isAbortSignal(request.signal)) {
-    once({ ok: false, error: "Invalid program run request: signal must be an AbortSignal" });
-    return;
-  }
-  if (!deps.context) {
-    once({ ok: false, error: "No active Pi session to run the program in" });
-    return;
-  }
-  once(await runHostProgram(deps, deps.context, {
-    ref: request.ref,
-    ...(request.input !== undefined ? { input: request.input } : {}),
-    ...(request.requirePromoted ? { requirePromoted: true } : {}),
-    ...(request.signal ? { signal: request.signal } : {}),
-  }));
 };
 
 const summaryLine = (program: FabricProgramSummary): string =>
