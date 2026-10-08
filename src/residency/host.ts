@@ -12,8 +12,9 @@ import {
 } from "../core/atomic-write.js";
 import {
   normalizeModelAliases,
-  resolveAvailablePiModel,
+  resolvePiModelSelector,
   type FabricModelCandidate,
+  type FabricModelMatch,
 } from "../core/model-resolution.js";
 import { loadModelUsage } from "../core/model-usage.js";
 import {
@@ -240,7 +241,7 @@ class ResidentHost {
       readJson<Partial<ResidentHostConfig>>(guidanceConfigPath) ?? config;
     const currentModelGuidance = () =>
       parseFabricOwnedModelGuidance(currentConfig().modelGuidance ?? config.modelGuidance);
-    const resolveResidentPiModel = (selector?: string): string => {
+    const resolveResidentPiModel = (selector?: string, modelMatch?: FabricModelMatch): string => {
       const state = currentConfig().piModels ?? config.piModels;
       const available: FabricModelCandidate[] = Array.isArray(state?.available)
         ? state.available.flatMap((candidate) =>
@@ -254,11 +255,11 @@ class ResidentHost {
           )
         : [];
       const query = selector?.trim() || state?.defaultModel?.trim() || "";
-      const resolved = resolveAvailablePiModel(query, {
+      const resolved = resolvePiModelSelector(query, {
         aliases: normalizeModelAliases(state?.aliases),
         available,
         lastUsed: loadModelUsage(),
-      });
+      }, modelMatch);
       return `${resolved.provider}/${resolved.id}`;
     };
     this.agents = new AgentManager(config.cwd, config.agents, {
@@ -278,7 +279,7 @@ class ResidentHost {
       hostId: this.hostId,
       identityId: this.identity.id,
       retention: config.retention,
-      preparePiModel: async (model) => resolveResidentPiModel(model),
+      preparePiModel: async (model, options) => resolveResidentPiModel(model, options?.modelMatch),
       resolveParticipantGuidance: ({ model }) => {
         if (!model) return undefined;
         return resolveFabricModelGuidance(currentModelGuidance(), {
