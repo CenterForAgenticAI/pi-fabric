@@ -836,6 +836,13 @@ export class FabricRuntimeState {
       },
     );
     this.#globalActors = new GlobalActorRegistry(resolveAgentDir(), this.#config.mesh.maxEventBytes);
+    const globalActorsError = this.#globalActors.loadError;
+    if (globalActorsError) {
+      // Global actor actions also fail with this error until the file reads again.
+      const detail = `${globalActorsError.message}. Global actor templates are unavailable until the file is repaired.`;
+      console.warn(`[pi-fabric] ${detail}`);
+      if (context.hasUI) context.ui.notify(`Pi Fabric: ${detail}`, "warning");
+    }
     this.#residency = ownsPersistentActorRegistry
       ? new ResidencyClient({
           config: {

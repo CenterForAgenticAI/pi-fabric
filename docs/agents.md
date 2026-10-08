@@ -719,7 +719,7 @@ The `offset` values on log lines and all page cursors are byte offsets in the JS
 
 ## Global actor templates
 
-Persistent actors belong to a project mesh. If you want to reuse a persona in several projects, store it in the project-independent **template library**. This library is in your agent directory at `~/.pi/agent/fabric/actors/`. A template contains only an actor definition, including its name, instructions, subscriptions, and run settings. It contains no mailbox, session transcript, run logs, or other history. Templates are inactive. Import one into a project to run it.
+Persistent actors belong to a project mesh. If you want to reuse a persona in several projects, store it in the project-independent **template library**. This library is in your agent directory at `~/.pi/agent/fabric/actors/`. A template contains only an actor definition, including its name, instructions, subscriptions, and run settings. It contains no mailbox, session transcript, run logs, or other history. Templates are inactive. Import one into a project to run it. If the library file exists but cannot be read or parsed, Fabric warns at startup, and every global template action fails with that error until the file reads again. Fabric never replaces an unreadable library with an empty one.
 
 ```ts
 // Store a reusable persona in the global registry. This does not create a live actor.
