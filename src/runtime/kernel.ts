@@ -39,6 +39,12 @@ export interface FabricSandboxOptions {
   isHumanWaitHostCall?(ref: string, args: Record<string, unknown>): boolean;
   /** Declared core override fields must not be consumed as built-in aliases. */
   piToolCanonicalFields?: Record<string, string[]>;
+  /**
+   * Registered providers to expose as globals named after them. Each call is
+   * a `fabric.$call` host call, exactly like `tools.call`. Kernels skip any
+   * name src/provider-globals.ts refuses and never replace an existing global.
+   */
+  providerGlobals?: readonly string[];
   transpiledCode?: string;
   transpiledSourceMap?: string;
 }
