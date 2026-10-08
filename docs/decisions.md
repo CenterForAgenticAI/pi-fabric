@@ -126,7 +126,15 @@ By default a child Pi run cancels every dialog (`select`, `confirm`, `input`, `e
 
 The deadline is the dialog's own timeout, or `agents.childQuestionTimeoutMs` (default 10 minutes). The worker owns that deadline and answers `cancelled` when it passes, so a child never waits on a parent that has gone away. A settled run, including a stopped one, cancels its open question decision. Runners that declare the `questions` capability route dialogs: the built-in `pi` and `pi-durable` runners, and hosted runners through `reporter.question`. Other runners cancel them.
 
-A durable run's decision lives in the project mesh, so it outlives the session that spawned the run. Any root session on the same mesh, `/fabric decisions`, or `pi-fabric decisions answer` can answer it until its deadline. When the resident host shuts down, it stops its durable worker runs, which cancels their decisions. A durable hosted run is detached instead, and its open decision no longer reaches it: an answer is not delivered, and the decision stays open until its deadline. The runner can ask again after the next resident host re-attaches it.
+A durable run's decision lives in the project mesh, so it outlives the session that spawned the run. Any root session on the same mesh, `/fabric decisions`, or `pi-fabric decisions answer` can answer it until its deadline.
+
+Only the resident host that raised a decision can deliver its answer, so a decision does not outlive that host:
+
+- When the resident host shuts down, it stops its durable worker runs, which cancels their decisions. It detaches its durable hosted runs instead and cancels their open decisions (`via: "abort"`, `answeredBy` the resident host id) before it exits. The run's `blockedOn` keeps `since` and drops `decisionId`.
+- When a resident host dies without shutting down, its decisions stay open, and an answer reaches nothing. The next resident host for the same root cancels every open question decision that an earlier generation raised (`via: "restart"`) before it re-attaches any run.
+- A re-attached hosted run starts without `blockedOn`. A runner that still waits on its question asks again through the new host's reporter, which raises a new decision and names it in `blockedOn.decisionId`. Fabric does not answer a detached run's question: the old reporter's `question` never settles, so the runner never takes the cancellation as an answer.
+
+A parent waiting on the old decision sees it settle `cancelled`. If the run still needs an answer, it reads the run's `blockedOn.decisionId` or lists open decisions once the next resident host re-attaches the run. Until then, no decision is open for that question.
 
 ## Human surfaces
 

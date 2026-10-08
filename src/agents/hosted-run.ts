@@ -121,6 +121,9 @@ const boundedText = (value: string, max: number): string =>
 const questionText = (value: unknown, max: number): string | undefined =>
   typeof value === "string" ? value.slice(0, max) : undefined;
 
+/** What a detached run's reporter gives the runner: no answer, so it asks the next host. */
+const unanswered = (): Promise<never> => new Promise<never>(() => {});
+
 /**
  * One adapter-owned run. Fabric spawns no process: this object writes the same
  * status, lifecycle and transcript files a worker would, so the manager's
@@ -183,7 +186,11 @@ export class HostedRun {
     return run;
   }
 
-  /** Rebuild a run persisted by `prepare`; never calls `start`. */
+  /**
+   * Rebuild a run persisted by `prepare`; never calls `start`. No question is
+   * routed through this host yet, so a `blockedOn` left by an earlier host is
+   * dropped; the runner asks again through the new reporter.
+   */
   static recover(
     adapter: FabricHostedRunner,
     state: HostedRunState,
@@ -191,7 +198,10 @@ export class HostedRun {
     record: AgentRunRecord,
     hooks: HostedRunHooks,
   ): HostedRun {
-    return new HostedRun(adapter, state.locator, state.context, files, { ...record, hosted: { locator: state.locator } }, hooks);
+    const { blockedOn, ...rest } = record;
+    const run = new HostedRun(adapter, state.locator, state.context, files, { ...rest, hosted: { locator: state.locator } }, hooks);
+    if (blockedOn) run.#write();
+    return run;
   }
 
   get record(): AgentRunRecord {
@@ -278,8 +288,17 @@ export class HostedRun {
     this.#closed = true;
   }
 
-  /** Keep the remote run alive and stop observing it; recovery re-attaches. */
+  /**
+   * Keep the remote run alive and stop observing it; recovery re-attaches. The
+   * manager cancels the decisions behind open questions, so the record stops
+   * naming one. Pending and later `question` calls never settle: the runner
+   * sees no answer and asks again through the next host's reporter.
+   */
   detach(): void {
+    if (!this.#closed && !this.terminal && this.#record.blockedOn?.decisionId) {
+      this.#record.blockedOn = { since: this.#record.blockedOn.since };
+      this.#write();
+    }
     this.#closed = true;
     this.#released = true;
     this.#detached = true;
@@ -393,6 +412,7 @@ export class HostedRun {
       ? question.options.filter((option): option is string => typeof option === "string").slice(0, MAX_QUESTION_OPTIONS)
       : undefined;
     if (method === "select" && !options?.length) throw new Error("A select question needs options");
+    if (this.#detached) return unanswered();
     if (this.#closed || this.terminal || !this.hooks.ask) return { cancelled: true };
     const timeout = Math.min(
       typeof question.timeoutMs === "number" && question.timeoutMs > 0 ? Math.floor(question.timeoutMs) : this.hooks.questionTimeoutMs,
@@ -418,6 +438,8 @@ export class HostedRun {
         pending.decisionId = decisionId;
         this.#writeBlockedOn();
       }), "Hosted runner question", timeout + 1_000).catch((): AgentChildQuestionResponse => ({ cancelled: true }));
+      // The host let go of this run: its decision was cancelled, not answered.
+      if (this.#detached) return unanswered();
       if (method === "confirm") return "confirmed" in response ? response : { cancelled: true };
       if (!("value" in response) || (method === "select" && !options!.includes(response.value))) {
         return { cancelled: true };

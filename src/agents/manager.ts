@@ -231,10 +231,12 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
   worktreeResult?: AgentWorktreeResult;
   nestedSnapshot?: AgentRunRecord[];
   nestedSnapshotAt?: number;
-  /** Routed child dialogs in flight; aborted at settlement. */
+  /** Routed child dialogs in flight; aborted at settlement and when a durable hosted run is detached. */
   questions?: AbortController;
   /** Open routed dialogs, oldest first, with the decision behind each once raised. */
   openQuestions?: Array<{ decisionId?: string }>;
+  /** Routed dialogs not yet answered; close awaits a detached run's cancellations. */
+  asks?: Set<Promise<AgentChildQuestionResponse>>;
   latestRecord?: AgentRunRecord;
   latestUiRecord?: AgentRunRecord;
   background: boolean;
@@ -1761,7 +1763,14 @@ export class AgentManager {
     const detached = [...this.#runs.values()].filter(
       (managed) => !managed.settled && managed.hosted && managed.residency === "durable",
     );
-    for (const managed of detached) managed.hosted!.detach();
+    // Its routed questions lose their reporter with this host: cancel their
+    // decisions now (the detached run never sees the cancellation as an answer),
+    // and the runner asks again through the next host.
+    for (const managed of detached) {
+      managed.hosted!.detach();
+      managed.questions?.abort(new Error("Fabric resident host detached the run"));
+    }
+    await Promise.allSettled(detached.flatMap((managed) => [...(managed.asks ?? [])]));
     const running = [...this.#runs.values()].filter((managed) => !managed.settled && !detached.includes(managed));
     for (const managed of running) managed.hosted?.markShutdown();
     await Promise.allSettled(running.map((managed) => this.stop(managed.id)));
@@ -2294,7 +2303,7 @@ export class AgentManager {
     managed.questions ??= new AbortController();
     const open: { decisionId?: string } = {};
     (managed.openQuestions ??= []).push(open);
-    return this.#onChildQuestion({
+    const asked = this.#onChildQuestion({
       runId: managed.id,
       name: managed.actorName ?? managed.name,
       ...(managed.actorId ? { actorId: managed.actorId } : {}),
@@ -2307,9 +2316,12 @@ export class AgentManager {
       },
     }).catch((): AgentChildQuestionResponse => ({ cancelled: true })).then((response) => {
       managed.openQuestions!.splice(managed.openQuestions!.indexOf(open), 1);
+      managed.asks?.delete(asked);
       this.#invalidateUiList();
       return response;
     });
+    (managed.asks ??= new Set()).add(asked);
+    return asked;
   }
 
   #appendAttributedBudgetLedger(
