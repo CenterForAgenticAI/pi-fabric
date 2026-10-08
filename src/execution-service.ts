@@ -267,12 +267,12 @@ export class FabricExecutionService {
   async execute(options: FabricExecutionOptions): Promise<FabricExecutionResult> {
     const executor = this.config.executor;
     const codemodeProfile = executor.codemodeProfile;
-    if (
-      process.env.PI_FABRIC_WRITE_POLICY &&
-      (executor.kernel === "python"
-        ? executor.pythonRuntime !== "monty"
-        : this.config.schema.mode !== "enforce" && executor.runtime !== "quickjs")
-    ) {
+    const nativeExecutor = executor.kernel === "python"
+      ? executor.pythonRuntime !== "monty"
+      : this.config.schema.mode !== "enforce" && executor.runtime !== "quickjs";
+    const hostExecutorDenial = nativeExecutor ? this.registry.hostPolicy?.executorDenial() : undefined;
+    if (hostExecutorDenial) throw new Error(hostExecutorDenial);
+    if (process.env.PI_FABRIC_WRITE_POLICY && nativeExecutor) {
       // Native executors bypass a confined child's tool_call write guard.
       const { readWritePolicy } = await import("./agents/write-guard.js");
       if (readWritePolicy()?.shell !== "unconfined") {

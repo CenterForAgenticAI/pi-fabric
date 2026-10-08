@@ -154,6 +154,87 @@ export const readFabricToolPlacementRequestV1 = (
   }
   return value as FabricToolPlacementRequestV1;
 };
+export const FABRIC_HOST_POLICY_EVENT = "pi-fabric:host-policy:v1";
+export const MAX_FABRIC_HOST_POLICY_NAMES = 256;
+
+/**
+ * A restriction the embedding host (for example a delegate worker runner)
+ * places on this Fabric instance. Policies only accumulate: a later policy can
+ * narrow the surface but never lift an earlier one.
+ *
+ * - `deniedTools`: Pi core and captured extension tool names refused through
+ *   `pi.*` and `extensions.*`.
+ * - `deniedProviders`: Fabric providers refused entirely.
+ * - `allowedUnhookedRisks`: risk classes still allowed for actions that do not
+ *   replay Pi `tool_call` hooks (every provider except `pi` and `extensions`).
+ *   Defaults to `["read"]`.
+ *
+ * Any active policy also refuses native executors, which bypass tool hooks.
+ */
+export interface FabricHostPolicyV1 {
+  owner: string;
+  reason: string;
+  deniedTools?: string[];
+  deniedProviders?: string[];
+  allowedUnhookedRisks?: FabricRisk[];
+}
+
+export interface FabricHostPolicyAckV1 {
+  version: 1;
+  accepted: true;
+}
+
+/** Host-local synchronous request; Fabric replies only after the policy is in force. */
+export interface FabricHostPolicyRequestV1 {
+  policy: FabricHostPolicyV1;
+  reply: (ack: FabricHostPolicyAckV1) => void;
+}
+
+const FABRIC_RISKS: ReadonlySet<string> = new Set(["read", "write", "execute", "network", "agent"]);
+
+const boundedNames = (value: unknown): value is string[] =>
+  Array.isArray(value) &&
+  value.length <= MAX_FABRIC_HOST_POLICY_NAMES &&
+  value.every((name) => typeof name === "string" && name.length > 0 && name.length <= 256);
+
+const boundedLabel = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0 && value.length <= 1_024;
+
+/** Copies named fields only; anything malformed is rejected, never partially applied. */
+export const readFabricHostPolicyRequestV1 = (
+  value: unknown,
+): FabricHostPolicyRequestV1 | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const reply = record.reply;
+  const raw = record.policy;
+  if (typeof reply !== "function") return undefined;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const policy = raw as Record<string, unknown>;
+  if (!boundedLabel(policy.owner) || !boundedLabel(policy.reason)) return undefined;
+  if (policy.deniedTools !== undefined && !boundedNames(policy.deniedTools)) return undefined;
+  if (policy.deniedProviders !== undefined && !boundedNames(policy.deniedProviders)) return undefined;
+  if (
+    policy.allowedUnhookedRisks !== undefined &&
+    (!Array.isArray(policy.allowedUnhookedRisks) ||
+      policy.allowedUnhookedRisks.some((risk) => typeof risk !== "string" || !FABRIC_RISKS.has(risk)))
+  ) {
+    return undefined;
+  }
+  return {
+    policy: {
+      owner: policy.owner,
+      reason: policy.reason,
+      ...(policy.deniedTools ? { deniedTools: [...policy.deniedTools] } : {}),
+      ...(policy.deniedProviders ? { deniedProviders: [...policy.deniedProviders] } : {}),
+      ...(policy.allowedUnhookedRisks
+        ? { allowedUnhookedRisks: [...(policy.allowedUnhookedRisks as FabricRisk[])] }
+        : {}),
+    },
+    reply: reply as FabricHostPolicyRequestV1["reply"],
+  };
+};
+
 export const FABRIC_COMPONENT_REGISTER_EVENT = "pi-fabric:component:register:v1";
 export const FABRIC_COMPONENT_DISCOVER_EVENT = "pi-fabric:component:discover:v1";
 export const FABRIC_PREWALK_REQUEST_EVENT = "pi-fabric:prewalk:request:v1";

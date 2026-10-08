@@ -45,6 +45,7 @@ import {
   ownsFabricToolSource,
 } from "./core/tool-ownership.js";
 import { readChildToolAllowlist } from "./core/child-tool-allowlist.js";
+import { FabricHostPolicy } from "./core/host-policy.js";
 import { formatForeground } from "./core/foreground-tools.js";
 import {
   expandSkillDirMarkersForRead,
@@ -88,6 +89,8 @@ import {
   FABRIC_PROVIDER_REGISTER_EVENT,
   FABRIC_PROVIDER_WITHDRAW_EVENT,
   FABRIC_TOOL_PLACEMENT_EVENT,
+  FABRIC_HOST_POLICY_EVENT,
+  readFabricHostPolicyRequestV1,
   readFabricProviderWithdrawalV1,
   readFabricToolPlacementRequestV1,
   type FabricComponentRegistration,
@@ -200,7 +203,9 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
   );
   const capturedTools = new CapturedToolCatalog();
   const proxyContract = new ProxyContractLedger();
+  const hostPolicy = new FabricHostPolicy();
   const state = new FabricState(pi, capturedTools, {
+    hostPolicy,
     paths: FABRIC_RUNTIME_PATHS,
     ...(FABRIC_ENTRY_IDENTITY ? { entryIdentity: FABRIC_ENTRY_IDENTITY } : {}),
     ...(options.managedHost ? {managedHost: options.managedHost} : {}),
@@ -291,6 +296,8 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     return (name) => {
       if (allowlist && !allowlist.has(name)) return false;
       const captured = capturedTools.get(name) !== undefined;
+      const provider = PI_CORE_TOOL_NAME_SET.has(name) ? "pi" : "extensions";
+      if (hostPolicy.denial({ ref: `${provider}.${name}`, provider, name, risk: "read" })) return false;
       if (PI_CORE_TOOL_NAME_SET.has(name)) {
         if (!registry.has("pi")) return false;
         if (options.managedHost) return captured;
@@ -319,6 +326,15 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
       }));
     },
   );
+
+  // An embedding host narrows this instance before handing it to a model. The
+  // reply is the acknowledgement that the policy is already in force.
+  const unsubscribeHostPolicy = pi.events.on(FABRIC_HOST_POLICY_EVENT, (value: unknown) => {
+    const request = readFabricHostPolicyRequestV1(value);
+    if (!request) throw new Error("Invalid Pi Fabric host policy request");
+    hostPolicy.apply(request.policy);
+    request.reply({ version: 1, accepted: true });
+  });
 
   // Host program runs (daemons, embedders) use the live session's context.
   let programRunContext: ExtensionContext | undefined;
@@ -1144,6 +1160,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     unsubscribeProviderRegistration();
     unsubscribeProviderWithdrawal();
     unsubscribeToolPlacement();
+    unsubscribeHostPolicy();
     unsubscribeProgramRun();
     programRunContext = undefined;
     pendingHandoffs.clear();
