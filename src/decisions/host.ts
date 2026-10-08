@@ -148,6 +148,28 @@ const responseFromDecision = (
 };
 
 /**
+ * Cancel the routed child questions that an earlier process with this store's
+ * identity raised and left open: a resident host that died while a durable run
+ * waited. The wait and the reporter that would deliver an answer died with that
+ * process, so the decision could only mislead; the runner asks again through
+ * the current host. Call it before this process routes any question. Records
+ * `via: "restart"`.
+ */
+export const cancelOrphanedChildQuestions = async (store: DecisionStore): Promise<string[]> => {
+  const cancelled: string[] = [];
+  for (const record of await store.listOwnOpen()) {
+    if (record.kind !== "question" || record.holder !== "root" || !record.raisedBy.runId) continue;
+    try {
+      await store.cancel(record.id, { answeredBy: store.identity.id, via: "restart" });
+      cancelled.push(record.id);
+    } catch {
+      // Answered, expired, or cancelled meanwhile: nothing is left to release.
+    }
+  }
+  return cancelled;
+};
+
+/**
  * Answer one routed child dialog: through the parent's interactive UI when it
  * has one, otherwise through a root-held decision. Missing UI and store, a
  * malformed request, or any failure cancels the child's dialog. A host with no
