@@ -347,6 +347,19 @@ export class FabricState {
     this.#current()?.registerExternalComponent(component, options);
   }
 
+  /** Apply only the decision selector; existing program snapshots and policy stay intact. */
+  setDecisionProfile(profile: string | null | undefined): void {
+    const profiles = this.config.jev.decisionProfiles?.profiles;
+    if (profile !== undefined && profile !== null &&
+        (typeof profile !== "string" || !/^[A-Za-z0-9_.-]{1,128}$/.test(profile) ||
+         ["__proto__", "prototype", "constructor"].includes(profile) || !profiles || !Object.hasOwn(profiles, profile))) {
+      throw new Error("Decision profile must name a configured profile or use document default");
+    }
+    this.#runtime?.setDecisionProfile(profile);
+    if (profile === undefined) delete this.config.jev.decisionProfile;
+    else this.config.jev.decisionProfile = profile;
+  }
+
   reloadConfig(context: ExtensionContext): void {
     const next = this.#managedHost?.config() ?? loadFabricConfig({
       cwd: context.cwd,

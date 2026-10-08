@@ -686,7 +686,11 @@ const mergeObjects = (
   const merged = { ...base };
   for (const [key, value] of Object.entries(override)) {
     const baseValue = merged[key];
-    if (
+    // Routing documents replace atomically: never splice one provider's route/options
+    // into another provider across trusted global/project layers or UI updates.
+    if (key === "decisionProfiles") {
+      merged[key] = structuredClone(value);
+    } else if (
       typeof baseValue === "object" &&
       baseValue !== null &&
       !Array.isArray(baseValue) &&

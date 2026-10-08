@@ -28,6 +28,7 @@ export interface JevFabricResolution {
 export const JEV_FABRIC_REQUIREMENTS = {
   durable: { protocol: 1, features: ["follow", "list", "label"] },
   jev: { protocol: 2, features: ["serve-concurrent", "serve-24h", "jev-request-credential"] },
+  decisions: { protocol: 2, features: ["serve-concurrent", "serve-24h", "jev-request-credential", "decisions", "decision-targets"] },
   sessions: { protocol: 2, features: ["sessions", "serve-concurrent", "read", "cwd", "serve-24h", "durable-input"] },
 } as const;
 export type JevFabricRequirement = keyof typeof JEV_FABRIC_REQUIREMENTS;

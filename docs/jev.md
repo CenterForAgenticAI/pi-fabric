@@ -6,6 +6,11 @@ Programs run in persistent QuickJS contexts with exact granted capabilities. Use
 
 For guided authoring, invoke `/skill:fabric-jev <task>`. It is user-opt-in and available in both kernel skill trees. Python callers use `tools.call` dictionaries; the Jev program artifact itself remains TypeScript in QuickJS, without changing the outer Fabric kernel. See [skills](skills.md).
 
+For multi-provider model switching, inline images and exact provider evidence,
+use the additive [lossless decisions API](jev-decisions.md): `jev.decide`,
+`jev.resolveDecision`, `jev.models` and portable profiles. These require a
+compatible native binary; `jev.evaluate` below keeps its legacy contract.
+
 ## Shell-first workflow
 
 1. Launch an authorized command; code owns commands and arguments. Never execute model answers or untrusted output as shell source.

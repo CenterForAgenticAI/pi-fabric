@@ -7,7 +7,7 @@ interface SettingsSectionOptions {
   modelSource: ModelSource;
   claudeModelSource?: ModelSource;
   classifierModels?: readonly string[];
-  availableClassifierModels?: readonly string[];
+  availableClassifierModels?: readonly string[] | undefined;
   activeModelKey?: string;
   cachedMcpServers?: readonly string[];
 }

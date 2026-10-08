@@ -186,6 +186,7 @@ describe("FabricSettingsComponent", () => {
       "Executor",
       "Schema",
       "Approvals",
+      "Decisions",
       "MCP",
       "Prewalk",
       "Agents",
@@ -199,7 +200,7 @@ describe("FabricSettingsComponent", () => {
     ]) {
       expect(labels).toContain(label);
     }
-    expect(items.length).toBe(14);
+    expect(items.length).toBe(15);
   });
 
   it("marks submenu rows with a drill-in marker and leaves inline toggles plain", () => {

@@ -12,6 +12,7 @@ import {
   MAX_AUDIT_VALUE_CHARS,
   boundedPreviewValue,
   boundedResult,
+  strictDecisionResult,
   failedResultError,
   failedResultOutcome,
   previewArgs,
@@ -1124,7 +1125,9 @@ export class ActionRegistry {
             ...(context.signal ? { signal: context.signal } : {}),
           }))
         : providerValue;
-      const bounded = boundedResult(value, context.maxResultChars);
+      const bounded = action.ref === "jev.decide"
+        ? strictDecisionResult(value)
+        : boundedResult(value, context.maxResultChars);
       const resultError = failedResultError(value);
       activeAudit.success = resultError === undefined;
       if (resultError) activeAudit.error = resultError;

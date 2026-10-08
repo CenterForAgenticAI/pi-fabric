@@ -72,13 +72,13 @@ export const buildExtractiveSection = (
   const disclosure = "Opt-in: sends bounded current-session active-branch user/assistant text to the selected native classifier (API charges). No thinking/tool output. No secret scanning. Scores are salience, not truth. Raw history and compaction are unchanged.";
   return setting("memory", "Extractive history", summaryFor("memory", config), {
     description: disclosure,
-    submenu: sectionSubmenu(theme, "Extractive history", disclosure, [
+    submenu: sectionSubmenu(theme, "Extractive history", disclosure, () => [
       setting("memory.extractive.mode", "Consent / mode", mode, {
         description: disclosure,
         submenu: stringOptionsSubmenu(theme, [EXTRACTIVE_OFF, EXTRACTIVE_LOCAL, EXTRACTIVE_CONSENT], "Explicit classifier opt-in", disclosure),
       }),
       setting("memory.extractive.classifier", "Native classifier", `${extractive.provider}/${extractive.model}`, {
-        description: `Native registry classifiers only. Available now: ${options.availableClassifierModels?.join(", ") || "none (deterministic fallback; configure credentials)"}.`,
+        description: `Native registry classifiers only. Available now: ${options.availableClassifierModels === undefined ? "not checked (reopen this section after discovery)" : options.availableClassifierModels.join(", ") || "none"}. Unavailable credentials use deterministic fallback.`,
         submenu: stringOptionsSubmenu(theme, options.classifierModels ?? [], "Select native classifier", "Any registered classifier; unavailable credentials produce deterministic fallback. Selection does not enable inference."),
       }),
       ...([
@@ -89,7 +89,7 @@ export const buildExtractiveSection = (
       ] as const).map(([key, label, values]) => setting(`memory.extractive.${key}`, label, String(extractive[key]), {
         submenu: numericSubmenu(theme, values, String, label, "Whole bundles or omission with source addresses; never clipped evidence."),
       })),
-    ], persist),
+    ], persist, { refreshOnChange: false }),
   });
 };
 

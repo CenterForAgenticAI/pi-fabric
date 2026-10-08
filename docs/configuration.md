@@ -243,6 +243,23 @@ where absent values do not participate, and time spent inside a `humanWaitRefs` 
 
 Host ceilings include `maxDurationMs`, `maxEvaluations`, `maxToolCalls`, `maxTokens`, `maxConcurrentRuns`, and `maxRetainedRuns`. Request controls are `model`, `requestTimeoutMs`, and `maxRequestBytes`. Per-program limits cannot raise these ceilings. Per-program `maxEvaluations: 0` disables program inference for deterministic shell orchestration. See [Jev programs](jev.md) for typed decisions, shell/task composition, and cancellation; harness CLIs need no component configuration. Jev is unavailable in Schema enforce and managed-host modes.
 
+## Lossless decision profiles
+
+`jev.decisionProfiles` is a portable `{version:1, defaultProfile?, profiles}`
+document; global/project precedence replaces it atomically rather than merging
+fields from different providers. `jev.decisionProfile` optionally selects one
+of its names. `null` restores the document default and can clear an inherited
+global selector; an empty or unknown name is invalid.
+
+In `/fabric settings` → **Decisions**, select a configured profile or
+**Document default**. This updates defaults for future direct calls/new programs
+without reloading approval policy. Already-running programs retain their
+captured selection and all calls retain their existing budgets. This setting
+never changes Main's chat model or `approvals.model`.
+
+See [lossless decision models](jev-decisions.md) for configuration examples,
+capability discovery, native binary requirements and credential boundaries.
+
 ## Components
 
 `components` is a root array of declarative supervised instances. Each `id` gives one instance a stable identity, and `component` names its definition in the versioned protocol. Fabric passes `config` to `activate(context, config)`. The `disabled` field removes an instance from the active graph and preserves its declaration. An empty array is the default, with a limit of 256 valid entries. The runtime installs enabled first-party providers as pinned `fabric.provider.*` components whose reserved IDs sit outside this array.

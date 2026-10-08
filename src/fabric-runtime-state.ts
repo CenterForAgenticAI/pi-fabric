@@ -194,6 +194,7 @@ export class FabricRuntimeState {
   #shellTiming: FabricShellTimingBridge | undefined;
   #actors: ActorDirectory | undefined;
   #jevObservationHost: JevObservationHost | undefined;
+  #jevDecisionProfileSetter: ((profile: string | null | undefined) => void) | undefined;
   #globalActors: GlobalActorRegistry | undefined;
   #mesh: MeshStore | undefined;
   #identity: MeshIdentity | undefined;
@@ -967,6 +968,8 @@ export class FabricRuntimeState {
             authorize: (ref, parentToolCallId) => this.#schema!.authorize(ref, parentToolCallId),
             jevFabric: this.#shellJobs.durable,
           });
+          const setDecisionProfile = (profile: string | null | undefined) => provider.setDecisionProfile(profile);
+          this.#jevDecisionProfileSetter = setDecisionProfile;
           // A program may pin jev.evaluate itself. Cancel at owner retirement,
           // not only at provider.close(), which waits for those pins to drain.
           const stop = () => { observationHost?.close(); provider.manager.stopAll(); };
@@ -975,6 +978,7 @@ export class FabricRuntimeState {
             component.signal.removeEventListener("abort", stop);
             observationHost?.close();
             if (this.#jevObservationHost === observationHost) this.#jevObservationHost = undefined;
+            if (this.#jevDecisionProfileSetter === setDecisionProfile) this.#jevDecisionProfileSetter = undefined;
             await provider.manager.close();
           }, { label: "jev-program-owner", kind: "transactional", resources: ["jev:programs"], ordering: "ordered" });
           return provider;
@@ -1101,6 +1105,11 @@ export class FabricRuntimeState {
     this.#config.schema.mode = mode;
     this.#config.executor.runtime = executorRuntime;
     this.#configureSpeculation();
+  }
+
+  /** Updates the active owner's defaults, never a managed program's captured target. */
+  setDecisionProfile(profile: string | null | undefined): void {
+    this.#jevDecisionProfileSetter?.(profile);
   }
 
   reloadConfig(context: ExtensionContext, next: FabricConfig): void {

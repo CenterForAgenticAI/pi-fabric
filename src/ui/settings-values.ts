@@ -7,6 +7,7 @@ import {
   clampCompactionTokenThreshold,
 } from "../config.js";
 import { INHERIT_VALUE } from "./model-picker.js";
+import { DECISION_PROFILE_SETTING_ID, decisionProfileSelection, decisionProfileSummary } from "./settings-decision-profiles.js";
 import {
   THINKING_LEVELS,
   thinkingLabel,
@@ -197,6 +198,7 @@ export const EXTRACTIVE_LOCAL = "Deterministic only (no classifier)";
 export const EXTRACTIVE_CONSENT = "Enable classifier: send bounded user/assistant text; API charges";
 
 export const coerceValue = (id: string, value: string, config: FabricConfig): unknown => {
+  if (id === DECISION_PROFILE_SETTING_ID) return decisionProfileSelection(config.jev, value);
   if (id === "mcp.nativeServers") return value.split(",").map(name => name.trim()).filter(Boolean);
   if (id === COMPACTION_THRESHOLD_SETTING_ID) {
     if (value === COMPACTION_DEFAULT_THRESHOLD_LABEL) return { mode: "default" };
@@ -281,6 +283,8 @@ export const summaryFor = (id: string, config: FabricConfig): string => {
       return config.schema.mode;
     case "approvals":
       return config.approvals.execute;
+    case "decisions":
+      return decisionProfileSummary(config.jev);
     case "mcp":
       return config.mcp.enabled
         ? config.mcp.jev.semanticSearch ? "enabled · semantic" : "enabled"
