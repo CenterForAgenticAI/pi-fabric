@@ -1,6 +1,6 @@
 import type { AgentRunRequest } from "./types.js";
 import { isFabricThinking, normalizeThinkingBounds } from "../thinking.js";
-import { aliasThinking, type FabricModelAliases } from "../core/model-resolution.js";
+import { aliasThinking, assertExactModelRequest, type FabricModelAliases } from "../core/model-resolution.js";
 import { isFabricRunnerId } from "./runner-registry.js";
 
 const stringArray = (value: unknown): string[] | undefined => Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : undefined;
@@ -33,15 +33,19 @@ export const normalizeAgentRunRequest = (
       : typeof defaults.model === "string"
         ? defaults.model
         : undefined;
+  // An exact-match request never consults aliases, so no alias level applies either.
   const thinking = isFabricThinking(args.thinking)
     ? args.thinking
-    : aliasThinking(defaults.models?.aliases, requestedModel ?? "");
+    : args.modelMatch === undefined
+      ? aliasThinking(defaults.models?.aliases, requestedModel ?? "")
+      : undefined;
   const tools = stringArray(args.tools);
   const timeoutMs = typeof args.timeoutMs === "number" && Number.isFinite(args.timeoutMs) && args.timeoutMs > defaults.timeoutMs ? args.timeoutMs : undefined;
   if (args.runner !== undefined && !isFabricRunnerId(args.runner)) {
     throw new Error(`Invalid Fabric agent runner: ${JSON.stringify(args.runner)}`);
   }
   const runner = args.runner ?? defaults.runner;
+  assertExactModelRequest({ modelMatch: args.modelMatch, runner, model: args.model });
   const inheritedModel =
     (runner === "pi" || runner === "pi-durable") && !defaults.model && defaults.inheritedModel
       ? `${defaults.inheritedModel.provider}/${defaults.inheritedModel.id}`
@@ -64,6 +68,7 @@ export const normalizeAgentRunRequest = (
       : inheritedModel
         ? { model: inheritedModel }
         : {}),
+    ...(args.modelMatch === "exact" ? { modelMatch: "exact" as const } : {}),
     ...(typeof args.persona === "string" && args.persona.trim()
       ? { persona: args.persona.trim() }
       : {}),

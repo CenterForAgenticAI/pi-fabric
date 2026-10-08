@@ -62,6 +62,8 @@ interface FabricAgentRequest {
   runner?: FabricAgentRunner;
   transport?: FabricTransport;
   model?: string;
+  /** Pi only. "exact": model must be a visible provider/id; no alias, closest-match or fuzzy step and no alias thinking level; refused before launch otherwise. */
+  modelMatch?: "exact";
   persona?: string;
   thinking?: FabricThinking;
   /** Child thinking bounds; must lie inside this session's bounds. Levels outside are clamped. */
@@ -85,6 +87,8 @@ interface FabricAgentRequest {
   /** Narrow the host-issued scope; omitted inherits it. Refused when this session is unscoped. */
   scope?: { grants: { resource: string; actions: ("read" | "write" | "execute")[] }[] };
   schema?: Record<string, unknown>;
+  /** Appended to the child's system prompt (Veda receives it as a <system_instructions> block); blank is ignored and durable spawn refuses it. */
+  systemPrompt?: string;
   prompt?: string;
   instructions?: string;
   timeout_ms?: number;

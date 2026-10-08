@@ -3,6 +3,7 @@ import childProcess from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentService, createAgentServiceClient, createAgentServiceHandler, createAgentsProvider, type AgentExecutionPort, type AgentExecutionRequest, type AgentExecutionResponse, type AgentServiceEvent } from "../src/agents.js";
 import type { FabricInvocationContext } from "../src/protocol.js";
+import { agentServiceArgs, agentServiceDescriptors } from "../src/agents/service-schema.js";
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
@@ -466,4 +467,26 @@ describe("hosted Fabric agent service", () => {
     }));
   });
 
+});
+
+describe("hosted agent service model selection", () => {
+  it("does not offer modelMatch, because the host owns model selection there", () => {
+    for (const name of ["run", "spawn"]) {
+      const descriptor = agentServiceDescriptors().find((entry) => entry.name === name);
+      expect(descriptor?.inputSchema).toBeDefined();
+      expect(descriptor?.inputSchema).not.toHaveProperty("properties.modelMatch");
+    }
+    expect(() => agentServiceArgs("run", { task: "t", model: "provider/model-a" })).not.toThrow();
+    expect(() => agentServiceArgs("run", { task: "t", model: "provider/model-a", modelMatch: "exact" }))
+      .toThrow(/Invalid hosted agents.run arguments/);
+  });
+
+  it("gives the hosted model field its own help, which does not point at the absent modelMatch field", () => {
+    for (const name of ["run", "spawn"]) {
+      const descriptor = agentServiceDescriptors().find((entry) => entry.name === name);
+      const model = (descriptor?.inputSchema as { properties: { model: { description?: string } } }).properties.model;
+      expect(model.description).toBeTruthy();
+      expect(model.description).not.toMatch(/modelMatch/);
+    }
+  });
 });

@@ -1,8 +1,9 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolveAgentDir } from "./core/agent-dir.js";
 import {
-  resolveAvailablePiModel,
+  resolvePiModelSelector,
   type FabricModelCandidate,
+  type FabricModelMatch,
 } from "./core/model-resolution.js";
 import { loadModelUsage } from "./core/model-usage.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -674,20 +675,28 @@ export class FabricRuntimeState {
         ...(defaultModel ? { defaultModel } : {}),
       };
     };
-    const resolveParticipantPiModel = (selector?: string) => {
+    const resolveParticipantPiModel = (selector?: string, modelMatch?: FabricModelMatch) => {
       const models = visiblePiModels();
       const state = piModelState(models);
       const query = selector?.trim() || state.defaultModel || "";
-      const resolved = resolveAvailablePiModel(query, {
+      const resolved = resolvePiModelSelector(query, {
         aliases: state.aliases,
         available: state.available,
         lastUsed: loadModelUsage(),
-      });
+      }, modelMatch);
+      // The resolver returns the registry's own spelling. Match it case-sensitively
+      // first so entries that differ only by case cannot swap places: the model
+      // authenticated must be the entry the resolver chose, not an earlier twin.
+      // An exact request never falls back to the case-insensitive lookup.
       const model = models.find(
-        (candidate) =>
-          String(candidate.provider).toLowerCase() === resolved.provider.toLowerCase() &&
-          String(candidate.id).toLowerCase() === resolved.id.toLowerCase(),
-      );
+        (candidate) => String(candidate.provider) === resolved.provider && String(candidate.id) === resolved.id,
+      ) ?? (modelMatch === "exact"
+        ? undefined
+        : models.find(
+            (candidate) =>
+              String(candidate.provider).toLowerCase() === resolved.provider.toLowerCase() &&
+              String(candidate.id).toLowerCase() === resolved.id.toLowerCase(),
+          ));
       if (!model) {
         throw new Error(
           `Model ${JSON.stringify(query)} is not available to this Pi session. ` +
@@ -746,8 +755,8 @@ export class FabricRuntimeState {
           keepRecentTokens: settings.keepRecentTokens,
         };
       },
-      preparePiModel: async (modelKey) => {
-        const resolved = resolveParticipantPiModel(modelKey);
+      preparePiModel: async (modelKey, options) => {
+        const resolved = resolveParticipantPiModel(modelKey, options?.modelMatch);
         const auth = await context.modelRegistry.getApiKeyAndHeaders(resolved.model);
         if (!auth.ok) throw new Error(auth.error);
         return resolved.key;
