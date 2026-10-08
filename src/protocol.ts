@@ -442,6 +442,16 @@ export interface FabricMcpServerTypeSource {
   tools: FabricNamedActionTypeSource[];
 }
 
+/**
+ * One registered provider that gets a program global named after it. Its
+ * actions' input schemas are its TypeScript declarations; an empty list
+ * declares the global loosely (any action, one argument object).
+ */
+export interface FabricProviderTypeSource {
+  provider: string;
+  actions: FabricNamedActionTypeSource[];
+}
+
 export type {
   FabricKernel,
   FabricKernelRuntime,
@@ -454,21 +464,30 @@ export type { FabricPythonRuntime } from "./config.js";
 
 /**
  * Live descriptor snapshot the registry hands to the guest declaration
- * builder so dynamic surfaces (mcp, extensions) get argument checking before
- * the sandbox runs. Empty/absent sections keep the loose static declarations.
+ * builder so dynamic surfaces (mcp, extensions, provider globals) get argument
+ * checking before the sandbox runs. Empty/absent sections keep the loose
+ * static declarations.
  */
 export interface FabricGuestTypeSources {
   mcpServers?: FabricMcpServerTypeSource[];
   extensionTools?: FabricNamedActionTypeSource[];
+  /**
+   * Providers registered outside Fabric whose names can be program globals
+   * (see `src/provider-globals.ts`). Each entry is exactly one global the
+   * program gets, typed or loose.
+   */
+  providers?: FabricProviderTypeSource[];
 }
 
 /**
  * Pre-rendered `declare const` blocks replacing the loose mcp/extensions
  * declaration lines. Values are full replacement text (helpers + declare).
+ * `providers` replaces nothing: it declares one new global per provider.
  */
 export interface FabricDynamicGuestDeclarations {
   mcp?: string;
   extensions?: string;
+  providers?: string;
 }
 
 /**

@@ -9,6 +9,7 @@ import { StringDecoder } from "node:string_decoder";
 import { runAbortable, settleWithin } from "../async-settlement.js";
 import { piBashExitMetadata } from "../core/pi-bash-error.js";
 import { isPiShellRef } from "../core/pi-tools.js";
+import { providerGlobalNames } from "../provider-globals.js";
 import type { FabricHostCall, FabricKernelRuntime, FabricSandboxOptions, FabricSandboxResult } from "./kernel.js";
 import { CPYTHON_CHILD_SOURCE } from "./cpython-child-source.js";
 import { HumanWaitDeadlinePause } from "./deadline-pause.js";
@@ -109,6 +110,8 @@ export class CPythonRuntime implements FabricKernelRuntime {
       return failure("runtime_error", "CPython memory limit must be a positive safe integer");
     }
     if (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 1) return failure("runtime_error", "CPython timeout must be positive");
+    // The child rechecks each name against its own keywords, builtins and namespace.
+    const providerGlobals = providerGlobalNames(options.providerGlobals ?? []);
     const startedAt = Date.now();
     let command: Awaited<ReturnType<typeof launch>>;
     try { command = await launch(this.binary, this.enforce, options.cwd ?? process.cwd()); }
@@ -299,7 +302,7 @@ export class CPythonRuntime implements FabricKernelRuntime {
           if (!verified) { fail("Invalid CPython IPC handshake"); return; }
           buffer = buffer.subarray(handshake + 1);
           expectedToken = undefined;
-          send({ type: "execute", code, strings: options.strings ?? {}, memoryLimitBytes: options.memoryLimitBytes });
+          send({ type: "execute", code, strings: options.strings ?? {}, memoryLimitBytes: options.memoryLimitBytes, providerGlobals });
           if (settled || finishing) return;
         }
         let newline: number;
@@ -344,7 +347,7 @@ export class CPythonRuntime implements FabricKernelRuntime {
         });
       } else {
         attach(child.stdio[3] as Duplex);
-        send({ type: "execute", code, strings: options.strings ?? {}, memoryLimitBytes: options.memoryLimitBytes });
+        send({ type: "execute", code, strings: options.strings ?? {}, memoryLimitBytes: options.memoryLimitBytes, providerGlobals });
       }
     });
   }
