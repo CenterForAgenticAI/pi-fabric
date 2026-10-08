@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { writeJsonAtomic } from "../core/atomic-write.js";
+import { validateAgentResult } from "./result.js";
 import type {
   FabricHostedLiveness,
   FabricHostedReporter,
@@ -436,12 +437,16 @@ export class HostedRun {
         value = { fabricTruncated: true };
       }
     }
-    this.#settle({
+    const settled: { status: AgentRunRecord["status"]; text: string; value?: unknown; error?: string } = {
       status,
       text: output,
       ...(value !== undefined ? { value } : {}),
       ...(status === "completed" ? {} : { error: output.slice(0, MAX_ERROR_CHARS) || `Hosted run ${status}` }),
-    });
+    };
+    // The same check a Fabric worker applies: a completed run with a schema
+    // must return a matching value, or it fails as invalid structured output.
+    validateAgentResult(settled, this.context.schema);
+    this.#settle(settled);
   }
 
   #fail(failure: Parameters<FabricHostedReporter["fail"]>[0]): void {
