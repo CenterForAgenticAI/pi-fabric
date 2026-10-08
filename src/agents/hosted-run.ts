@@ -57,8 +57,14 @@ export interface HostedRunFiles {
 }
 
 export interface HostedRunHooks {
-  /** Route a dialog through the parent (UI or decision); absent when childQuestions is not "route". */
-  ask?: (question: Record<string, unknown>) => Promise<AgentChildQuestionResponse>;
+  /**
+   * Route a dialog through the parent (UI or decision); absent when childQuestions
+   * is not "route". `onDecision` names the decision that backs a headless question.
+   */
+  ask?: (
+    question: Record<string, unknown>,
+    onDecision: (decisionId: string) => void,
+  ) => Promise<AgentChildQuestionResponse>;
   questionTimeoutMs: number;
 }
 
@@ -129,7 +135,9 @@ export class HostedRun {
   #released = false;
   #detached = false;
   #shutdown = false;
-  #pendingQuestions = 0;
+  /** Routed questions in flight, oldest first, with the decision backing each once raised. */
+  #questions: Array<{ decisionId?: string }> = [];
+  #blockedSince: number | undefined;
   #deliveries: Promise<void> = Promise.resolve();
   lastLiveness: FabricHostedLiveness = "running";
   readonly reporter: FabricHostedReporter;
@@ -393,10 +401,9 @@ export class HostedRun {
     const messageText = questionText(question.message, MAX_QUESTION_TEXT_CHARS);
     const placeholder = questionText(question.placeholder, MAX_QUESTION_TEXT_CHARS);
     const prefill = questionText(question.prefill, MAX_QUESTION_TEXT_CHARS);
-    if (this.#pendingQuestions++ === 0) {
-      this.#record.blockedOn = { since: Date.now() };
-      this.#write();
-    }
+    const pending: { decisionId?: string } = {};
+    this.#questions.push(pending);
+    this.#writeBlockedOn();
     try {
       const response = await withTimeout(() => this.hooks.ask!({
         requestId: randomUUID(),
@@ -407,6 +414,9 @@ export class HostedRun {
         ...(placeholder !== undefined ? { placeholder } : {}),
         ...(prefill !== undefined ? { prefill } : {}),
         timeout,
+      }, (decisionId) => {
+        pending.decisionId = decisionId;
+        this.#writeBlockedOn();
       }), "Hosted runner question", timeout + 1_000).catch((): AgentChildQuestionResponse => ({ cancelled: true }));
       if (method === "confirm") return "confirmed" in response ? response : { cancelled: true };
       if (!("value" in response) || (method === "select" && !options!.includes(response.value))) {
@@ -414,11 +424,30 @@ export class HostedRun {
       }
       return response;
     } finally {
-      if (--this.#pendingQuestions === 0 && !this.#closed && !this.terminal) {
-        delete this.#record.blockedOn;
-        this.#write();
-      }
+      this.#questions.splice(this.#questions.indexOf(pending), 1);
+      this.#writeBlockedOn();
     }
+  }
+
+  /**
+   * `blockedOn` while any routed question is open: `since` the first opened, and
+   * the decision of the oldest question that has one. Written only on change.
+   */
+  #writeBlockedOn(): void {
+    if (this.#closed || this.terminal) return;
+    const current = this.#record.blockedOn;
+    if (this.#questions.length === 0) {
+      this.#blockedSince = undefined;
+      if (!current) return;
+      delete this.#record.blockedOn;
+      this.#write();
+      return;
+    }
+    this.#blockedSince ??= Date.now();
+    const decisionId = this.#questions.find((question) => question.decisionId)?.decisionId;
+    if (current?.since === this.#blockedSince && current.decisionId === decisionId) return;
+    this.#record.blockedOn = { since: this.#blockedSince, ...(decisionId ? { decisionId } : {}) };
+    this.#write();
   }
 
   #finish(result: Parameters<FabricHostedReporter["finish"]>[0]): void {
