@@ -253,6 +253,9 @@ export class JevProgramManager {
           }, {
             timeoutMs, memoryLimitBytes: Math.min(config.executor.memoryLimitBytes, 64 * 1024 * 1024),
             maxCpuSliceMs: 100, maxPendingTimers: 128, maxLogChars: 4096, strings: { __jevInput: JSON.stringify(input), __jevRunId: id }, signal: controller.signal,
+            // Globals only for providers the program's committed view binds,
+            // matching the declarations its type check used.
+            providerGlobals: sources.providers?.map((source) => source.provider) ?? [],
           });
           info.logs = result.logs;
           if (budgetFailure) { info.state = "failed"; info.error = budgetFailure; }

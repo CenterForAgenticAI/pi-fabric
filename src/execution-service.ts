@@ -328,6 +328,10 @@ export class FabricExecutionService {
     let code = options.code;
     let checked: FabricTypeCheckResult = { errors: [] };
     let guestTypeSources: FabricGuestTypeSources = {};
+    // Registered providers that get a program global. TypeScript takes the
+    // names from the same snapshot its declarations come from, so the type
+    // gate and the sandbox always agree on which globals exist.
+    let providerGlobals: string[] = [];
     const unavailable = new Map(
       this.registry.unavailableProviders().map((entry) => [entry.name, entry.reason]),
     );
@@ -348,7 +352,8 @@ export class FabricExecutionService {
         extensionContext: options.context,
         update() {},
         ...(this.#capabilityView ? { capabilityView: this.#capabilityView } : {}),
-      });
+      }, { code: options.code });
+      providerGlobals = guestTypeSources.providers?.map((source) => source.provider) ?? [];
       ({ code, checked } = (runtime as TypeScriptKernelRuntime).prepare(
         options.code,
         effectiveFullCodeMode,
@@ -358,6 +363,16 @@ export class FabricExecutionService {
         false,
         codemodeProfile,
       ));
+    } else {
+      providerGlobals = this.registry.providerGlobals({
+        cwd: options.context.cwd,
+        signal: options.signal,
+        parentToolCallId: options.parentToolCallId,
+        nestedToolCallId: `${options.parentToolCallId}_globals`,
+        extensionContext: options.context,
+        update() {},
+        ...(this.#capabilityView ? { capabilityView: this.#capabilityView } : {}),
+      });
     }
     if (checked.errors.length > 0) {
       for (const error of checked.errors) {
@@ -724,6 +739,7 @@ export class FabricExecutionService {
       ...(options.hardTimeoutMs === undefined ? { minimumTimeoutMsForHostCall } : {}),
       ...(options.hardTimeoutMs === undefined && humanWaitRefs.size > 0 ? { isHumanWaitHostCall } : {}),
       ...(!python ? { piToolCanonicalFields } : {}),
+      ...(providerGlobals.length > 0 ? { providerGlobals } : {}),
       ...(options.tokenBudget !== undefined ? { tokenBudget: options.tokenBudget } : {}),
     };
     // Saved programs (`programs.run`) execute through this same bridge, so a
