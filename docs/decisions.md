@@ -6,7 +6,7 @@ Three sources raise decisions:
 
 - programs, through `decisions.raise`;
 - headless approvals, when `approvals.headless` is `"decision"`;
-- routed child dialogs, when `agents.childQuestions` is `"route"` and the parent session has no interactive UI.
+- routed child dialogs, when `agents.childQuestions` is `"route"` and the parent session has no interactive UI or the child is a durable run.
 
 ## Record
 
@@ -121,10 +121,12 @@ By default a child Pi run cancels every dialog (`select`, `confirm`, `input`, `e
 
 1. The worker writes a lifecycle record `{ event: "question", data: { requestId, method, title, message?, options?, placeholder?, prefill?, timeout } }` and sets `blockedOn: { since }` on the run record.
 2. The parent AgentManager asks through its own interactive UI when it has one, with the child's name prefixed to the title. A parent that is itself an RPC child asks through its own UI channel, so questions climb to the first session with a person or a headless root.
-3. Without an interactive UI, the parent raises a `kind: "question"` decision held by `"root"`. `select` options become `o1`, `o2`, … (the first 12), and `confirm` becomes `yes`/`no`. The run record then shows `blockedOn: { decisionId, since }`.
+3. Without an interactive UI, the parent raises a `kind: "question"` decision held by `"root"`. A `residency: "durable"` run's parent is the resident host, which has no UI, so its dialogs always become decisions. `select` options become `o1`, `o2`, … (the first 12), and `confirm` becomes `yes`/`no`. The run record then shows `blockedOn: { decisionId, since }`. A durable run's record, read from the session, shows only `since`; find its decision with `/fabric decisions` or `decisions.list`.
 4. The answer goes back through the run's steer channel as `{ type: "ui_response", requestId, value? | confirmed? | cancelled? }`, and the worker forwards it to the child as `extension_ui_response`.
 
-The deadline is the dialog's own timeout, or `agents.childQuestionTimeoutMs` (default 10 minutes). The worker owns that deadline and answers `cancelled` when it passes, so a child never waits on a parent that has gone away. A settled run cancels its open question decision. Only the `pi` runner routes dialogs.
+The deadline is the dialog's own timeout, or `agents.childQuestionTimeoutMs` (default 10 minutes). The worker owns that deadline and answers `cancelled` when it passes, so a child never waits on a parent that has gone away. A settled run, including a stopped one, cancels its open question decision. Only the `pi` runner routes dialogs.
+
+A durable run's decision lives in the project mesh, so it outlives the session that spawned the run. Any root session on the same mesh, `/fabric decisions`, or `pi-fabric decisions answer` can answer it until its deadline. When the resident host shuts down, it stops its durable worker runs, which cancels their decisions. A durable hosted run is detached instead, and its open decision no longer reaches it: an answer is not delivered, and the decision stays open until its deadline. The runner can ask again after the next resident host re-attaches it.
 
 ## Human surfaces
 
