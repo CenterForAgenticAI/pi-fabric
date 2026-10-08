@@ -1,8 +1,10 @@
+import { providerGlobalNames } from "../provider-globals.js";
 import { sanitizeMcpRefPart } from "../ref-names.js";
 import type {
   FabricDynamicGuestDeclarations,
   FabricGuestTypeSources,
   FabricNamedActionTypeSource,
+  FabricProviderTypeSource,
 } from "../protocol.js";
 
 // Renders guest .d.ts fragments for the dynamic call surfaces
@@ -22,6 +24,10 @@ const MAX_SECTION_CHARS = 60_000;
 const MAX_MCP_SERVERS = 64;
 const MAX_TOOLS_PER_SERVER = 128;
 const MAX_EXTENSION_TOOLS = 256;
+const MAX_ACTIONS_PER_PROVIDER = 128;
+// The provider-global proxy answers these with undefined (no thenable, no
+// JSON hook), so declaring them as actions would promise a call that never runs.
+const UNCALLABLE_PROVIDER_MEMBERS = new Set(["then", "toJSON"]);
 
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
@@ -293,6 +299,68 @@ const renderExtensionsDeclaration = (
   );
 };
 
+// One global per eligible provider (src/provider-globals.ts), in the same
+// order and under the same cap as the globals the kernels install, so the
+// type gate and the runtime always agree on which names exist. Typed members
+// come from each action's input schema; a provider with no typed actions, or
+// one rendered after the section budget ran out, gets the loose
+// FabricProviderGlobal shape. When only some actions fit, the rest stay
+// callable through an intersection with that loose shape. Calls return
+// Promise<any>, as permissive as tools.call, so moving a call from tools.call
+// to the global never adds a result-type error.
+const renderProviderDeclarations = (
+  sources: NonNullable<FabricGuestTypeSources["providers"]>,
+): string | undefined => {
+  const byName = new Map<string, FabricProviderTypeSource>();
+  for (const source of sources) {
+    if (typeof source?.provider === "string" && !byName.has(source.provider)) byName.set(source.provider, source);
+  }
+  const names = providerGlobalNames(byName.keys());
+  if (names.length === 0) return undefined;
+  const budget: FabricRenderBudget = { chars: MAX_SECTION_CHARS };
+  const blocks: string[] = [];
+  for (const name of names) {
+    const interfaceName = `FabricProviderGlobal_${name}`;
+    const frame = `interface ${interfaceName} {\n}\ndeclare const ${name}: ${interfaceName} & FabricProviderGlobal;\n`.length;
+    const actions = Array.isArray(byName.get(name)!.actions) ? byName.get(name)!.actions : [];
+    const seen = new Set<string>();
+    const members: string[] = [];
+    let used = 0;
+    let omitted = Math.max(0, actions.length - MAX_ACTIONS_PER_PROVIDER);
+    for (const action of actions.slice(0, MAX_ACTIONS_PER_PROVIDER)) {
+      if (typeof action?.name !== "string" || seen.has(action.name) || UNCALLABLE_PROVIDER_MEMBERS.has(action.name)) continue;
+      seen.add(action.name);
+      let line: string;
+      try {
+        line = `  ${renderMember(action.name, action, "Promise<any>")}\n`;
+      } catch {
+        line = `  ${propertyKey(action.name)}(args?: Record<string, unknown>): Promise<any>;\n`;
+      }
+      if (used + line.length + frame > budget.chars) {
+        omitted += 1;
+        continue;
+      }
+      used += line.length;
+      members.push(line);
+    }
+    if (members.length === 0) {
+      blocks.push(`declare const ${name}: FabricProviderGlobal;\n`);
+      continue;
+    }
+    const block =
+      `interface ${interfaceName} {\n${members.join("")}}\n` +
+      `declare const ${name}: ${interfaceName}${omitted > 0 ? " & FabricProviderGlobal" : ""};\n`;
+    budget.chars -= block.length;
+    blocks.push(block);
+  }
+  return (
+    "// Generated from the providers other extensions registered for this\n" +
+    "// execution. Each global calls tools.call({ ref: \"<provider>.<action>\", args }),\n" +
+    "// so the registry still validates, approves and audits every call.\n" +
+    blocks.join("")
+  );
+};
+
 // Renders replacement `declare const mcp` / `declare const extensions` blocks
 // for guestTypeDeclarations(). Missing or empty sections return undefined so
 // the loose static lines survive, matching cold-cache behavior.
@@ -309,6 +377,10 @@ export const buildDynamicGuestDeclarations = (
   }
   if (sources.extensionTools && sources.extensionTools.length > 0) {
     dynamic.extensions = renderExtensionsDeclaration(sources.extensionTools);
+  }
+  if (sources.providers && sources.providers.length > 0) {
+    const providers = renderProviderDeclarations(sources.providers);
+    if (providers) dynamic.providers = providers;
   }
   return dynamic;
 };
