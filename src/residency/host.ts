@@ -23,6 +23,8 @@ import {
 import { ActorDirectory } from "../actors/directory.js";
 import type { FabricActorInfo } from "../actors/types.js";
 import { AgentManager } from "../agents/manager.js";
+import { routeChildQuestion } from "../decisions/host.js";
+import { DecisionStore } from "../decisions/store.js";
 import { launchScope } from "../scope.js";
 import { useBudgetLedger } from "../agents/budget-ledger.js";
 import { LifecycleBroker } from "../lifecycle/broker.js";
@@ -261,6 +263,15 @@ class ResidentHost {
       });
       return `${resolved.provider}/${resolved.id}`;
     };
+    // agents.childQuestions "route": this host has no UI, so a durable child's
+    // dialog always becomes a root-held decision in the project mesh, answered
+    // by a root session or the decisions CLI. The run's settlement cancels it.
+    const decisions = new DecisionStore(this.mesh, {
+      id: this.identity.id,
+      name: this.identity.name,
+      kind: this.identity.kind,
+      sessionId: config.sessionId,
+    });
     this.agents = new AgentManager(config.cwd, config.agents, {
       workerPath: config.workerPath,
       fabricExtensionPath: config.fabricExtensionPath,
@@ -288,6 +299,7 @@ class ResidentHost {
         }).appendText || undefined;
       },
       onLifecycle: (event) => void this.lifecycle?.publish(event).catch(() => undefined),
+      onChildQuestion: (request) => routeChildQuestion(request, { store: decisions }),
       onBackgroundComplete: (result) => {
         if (!config.agents.notifyOnComplete) return;
         const durationMs = Math.max(0, (result.finishedAt ?? Date.now()) - result.startedAt);
