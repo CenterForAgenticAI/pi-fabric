@@ -45,6 +45,18 @@ describe("extractive source index", () => {
     expect(view.advisory).toContain("no inferred supersession");
   });
 
+  it("keeps volatile diagnostics and range counts after the evidence", () => {
+    const index = buildExtractiveIndex([{ entryId: "u1", role: "user", quotes: ["exact evidence"] }]);
+    const input = { ...index, ranked: index.candidates, session: "s", config: config() };
+    const first = renderExtractiveView({ ...input, diagnostic: "first status" });
+    const second = renderExtractiveView({ ...input, diagnostic: "different status" });
+    const evidenceEnd = first.indexOf('"diagnostic":');
+    expect(first.indexOf('"evidence":')).toBeLessThan(evidenceEnd);
+    expect(first.indexOf('"candidates":')).toBeGreaterThan(evidenceEnd);
+    expect(first.indexOf('"index":')).toBeGreaterThan(evidenceEnd);
+    expect(first.slice(0, evidenceEnd)).toBe(second.slice(0, evidenceEnd));
+  });
+
   it("parents reselect from full underlying pools, never only child displays", () => {
     const index = buildExtractiveIndex(Array.from({ length: 30 }, (_, i) => ({ entryId: `u${i}`, role: "user" as const, quotes: [i === 3 ? "rare zebra requirement" : `routine ${i}`] })));
     expect(index.root!.children).toHaveLength(2);

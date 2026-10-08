@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ClassifierAnswer, ClassifierContext, ClassifierResult, Usage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { FabricExtractiveConfig } from "../config.js";
@@ -56,6 +57,7 @@ interface Prepared {
   sessionId: string; configHash: string; sourceHash: string; entryIds: string[];
   text: string; signal: AbortSignal | undefined; usage: Usage | undefined;
   config: FabricExtractiveConfig; lineage: string; branchLength: number;
+  boundary?: { index: number; prefixHash: string };
 }
 
 /** Session-owned, disposable derived state. No source files, global stores or connector. */
@@ -172,6 +174,33 @@ export class ExtractiveHistory {
       context.signal?.removeEventListener("abort", abort);
       if (this.pending === controller) this.pending = undefined;
     }
+  }
+
+  /** Request-local data only; never alter prompt options, system messages or tools. */
+  inject(context: ExtensionContext, messages: AgentMessage[]): AgentMessage[] {
+    const view = this.view(context);
+    if (!view) return messages;
+    const prepared = this.prepared!;
+    if (!prepared.boundary) {
+      // Bind once, before the initiating user message in the first request.
+      // Looking for the latest user on every replay would move past steering
+      // and invalidate the already-cached tool loop.
+      let index = messages.length - 1;
+      while (index >= 0 && messages[index]!.role !== "user") index--;
+      if (index < 0) { this.invalidate(); return messages; }
+      prepared.boundary = { index, prefixHash: digest(messages.slice(0, index + 1)) };
+    }
+    const { index, prefixHash } = prepared.boundary;
+    if (messages[index]?.role !== "user" || digest(messages.slice(0, index + 1)) !== prefixHash) {
+      // Compaction or another transform rewrote the boundary. Omit rather than
+      // relocate, and don't re-anchor until the next before_agent_start.
+      this.invalidate(); return messages;
+    }
+    return [...messages.slice(0, index), {
+      role: "custom", customType: EXTRACTIVE_CUSTOM_TYPE, content: view.text,
+      display: false, timestamp: 0,
+      details: { advisory: true, ...(view.usage ? { classifierUsage: view.usage } : {}) },
+    }, ...messages.slice(index)];
   }
 
   view(context: ExtensionContext): { text: string; usage?: Usage } | undefined {

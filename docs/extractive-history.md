@@ -102,12 +102,27 @@ classifies facts, preferences, goals or commands.
 
 The implementation imports lazily at an enabled `before_agent_start` boundary.
 It issues at most one batch for the current source user-entry turn. A `context`
-hook prepends one replay-safe ephemeral custom data message: JSON-quoted,
-explicitly **untrusted historical evidence**, not system instructions. It never
+hook inserts one replay-safe ephemeral custom data message immediately before
+the last user message in the first request (normally the initiating prompt),
+after the existing history. That boundary and the view are frozen for the run:
+tool steps and mid-turn steering cannot move the advisory. If the boundary or
+its preceding messages are removed or rewritten, injection stops until the next
+preparation rather than falling back to the conversation head or tail.
+
+The content is JSON-quoted, explicitly **untrusted historical evidence**, not
+system instructions. Extraction never changes `systemPrompt`,
+`systemPromptOptions`, tool declarations or `context_with_system`. It never
 calls `sendMessage`/`appendEntry`, so its output cannot enter its own candidate
 pool or become persisted compactor input. The raw outgoing prompt and work
 remain intact. Quotation is provenance/framing, not a promise that a downstream
 model is immune to prompt injection.
+
+This protects the older raw-history prefix, not every byte across turns:
+replacing the previous ephemeral advisory can still invalidate the previous
+turn's suffix. It does not retain old advisories, persist a view or grow the
+context budget. Diagnostic/count/range metadata follows the evidence, but
+query-dependent selection itself is not prefix-stable. These are structural
+cache safeguards, not a provider cache-hit or billing guarantee.
 
 Successes **and failures** are cached against session, source-bundle content,
 provider/model and rubric version. Caches are session-owned, in-memory,

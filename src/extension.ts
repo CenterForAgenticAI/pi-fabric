@@ -1017,13 +1017,10 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     const customType = "fabric-extractive-history";
     const messages = event.messages.filter((message) => !(message.role === "custom" && message.customType === customType));
     if (!extractiveConfig()?.enabled) invalidateExtractive(true);
-    const view = extractiveHistory?.view(context);
-    if (!view) return messages.length !== event.messages.length ? { messages } : undefined;
-    // Request-local custom data: never appendEntry/sendMessage, never system
-    // instructions, never replace current raw work. Replays contain one copy.
-    return { messages: [{ role: "custom" as const, customType, content: view.text,
-      display: false, timestamp: 0, details: { advisory: true, ...(view.usage ? { classifierUsage: view.usage } : {}) },
-    }, ...messages] };
+    // Request-local data at a frozen turn boundary, never in systemPrompt or
+    // prompt options. Keep the older conversation prefix and raw work intact.
+    const projected = extractiveHistory?.inject(context, messages) ?? messages;
+    return projected !== messages || messages.length !== event.messages.length ? { messages: projected } : undefined;
   });
   pi.on("before_agent_start", async (event, context) => {
     const config = state.bootstrapped ? state.config : DEFAULT_FABRIC_CONFIG;
