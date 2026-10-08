@@ -15,22 +15,22 @@ process.env.PI_FABRIC_AGENT_DIR = path.join(scratch, "exports");
 const host = await import("@earendil-works/pi-coding-agent");
 const ai = await import("@earendil-works/pi-ai");
 const { Type } = await import("typebox");
-assert.equal(host.VERSION, "1.0.0");
+assert.equal(host.VERSION, "1.1.0");
 assert.equal(typeof host.ExtensionRunner.prototype.getAllRegisteredTools, "function");
 assert.equal(typeof host.ExtensionRunner.prototype.createToolContext, "function");
 const hostEntry = await realpath(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")));
 const hostManifest = JSON.parse(await readFile(path.resolve(path.dirname(hostEntry), "../package.json"), "utf8"));
-assert.equal(hostManifest.version, "1.0.0");
+assert.equal(hostManifest.version, "1.1.0");
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 let scenarios = 0;
 try {
-  for (const [mode, fullCodeMode, schemaMode, nativeMcp = false] of [["on", true, "off"], ["only", true, "off"], ["only", false, "enforce"], ["only", true, "off", true], ["on", false, "off", true], ["on", false, "audit"]]) {
+  for (const [mode, fullCodeMode, schemaMode, nativeMcp = false, profile = "additive"] of [["on", true, "off"], ["only", true, "off"], ["only", false, "enforce"], ["only", true, "off", true], ["on", false, "off", true], ["on", false, "audit"], ["only", true, "off", true, "native"]]) {
     const cwd = path.join(scratch, `session-${scenarios}`);
     await mkdir(cwd, { recursive: true });
     const mcpConfig = path.join(cwd, "mcporter.json");
     await writeFile(mcpConfig, JSON.stringify({ mcpServers: {}, imports: [] }));
     await writeFile(path.join(scratch, "fabric.json"), JSON.stringify({
-      fullCodeMode, schema: { mode: schemaMode }, capture: { keepVisible: ["fixture_echo"] },
+      fullCodeMode, executor: { codemodeProfile: profile }, schema: { mode: schemaMode }, capture: { keepVisible: ["fixture_echo"] },
       approvals: { read: "allow", write: "allow", execute: "allow" },
       mcp: { enabled: nativeMcp, nativeServers: nativeMcp ? ["fixture"] : [], configPath: mcpConfig, cache: { revalidate: "off" } }, mesh: { enabled: false }, memory: { enabled: false },
       agents: { enabled: false }, entropy: { enabled: false, compile: false }, ui: { enabled: false },
@@ -43,7 +43,7 @@ try {
     let api, toolContext, nextCode, calls = 0, preparations = 0, overrides = 0;
     const originalCaptureMethod = host.ExtensionRunner.prototype.getAllRegisteredTools;
     const fixtureTool = (name, exposure = "direct") => ({
-      name, label: name, description: "Offline proxy fixture", exposure,
+      name, label: name, description: "Offline proxy fixture", exposure, promptGuidelines: [`guideline:${name}`],
       parameters: Type.Object({ value: Type.String() }), outputSchema: Type.Object({ value: Type.String() }),
       async execute(_id, args, _signal, onUpdate, ctx) {
         toolContext = ctx; calls++;
@@ -77,12 +77,15 @@ try {
           events.push(event);
           if (event.toolName === "mcp__fixture__echo" && event.input.value === "native-block") return { block: true, reason: "native MCP denied" };
           if (event.toolName === "fixture_echo" && event.input.value === "block") return { block: true, reason: "fixture denied" };
-          if (event.toolName === "fixture_echo" && event.input.value === "rewrite") event.input.value = "rewritten";
+          if (["fixture_echo", "fixture_alias"].includes(event.toolName) && event.input.value === "rewrite") event.input.value = "rewritten";
         });
         pi.on("tool_result", (event) => {
           events.push(event);
           if (event.toolName === "mcp__fixture__echo" && event.input.value === "native-redact" && !event.isError) return { content: [{ type: "text", text: "native redacted" }] };
-          if (event.toolName === "fixture_echo" && !event.isError) return { content: [{ type: "text", text: "redacted" }], structuredContent: { value: "redacted" } };
+          if (["fixture_echo", "fixture_alias"].includes(event.toolName) && !event.isError) {
+            if (event.toolName === "fixture_alias") assert.equal(event.input.value, "rewritten");
+            return { content: [{ type: "text", text: "redacted" }], structuredContent: { value: "redacted" } };
+          }
         });
         pi.on("session_start", () => pi.registerTool(fixtureTool("fixture_start")));
         pi.registerProvider("offline-pi1", {
@@ -91,7 +94,12 @@ try {
           streamSimple(model, context) {
             requests.push(context);
             const declared = ai.getCurrentTools(context.messages).map(tool => tool.name);
-            if (fullCodeMode || schemaMode === "enforce") assert.deepEqual(declared, ["fabric_exec"]);
+            if (fullCodeMode || schemaMode === "enforce") {
+              assert.deepEqual(declared, ["fabric_exec"]);
+              const description = ai.getCurrentTools(context.messages)[0].description;
+              if (api.getActiveTools().includes("fixture_echo")) assert.match(description, /guideline:fixture_echo/);
+              assert.ok(!description.includes("guideline:fixture_hidden"));
+            }
             else {
               assert.ok(declared.includes("fabric_exec"), "non-exclusive mode retains Fabric");
               assert.ok(declared.includes("codemode") && declared.includes("tool_search"), "optional/audit mode retains the native loadout");
@@ -167,7 +175,8 @@ try {
         assert.equal(session.messages.findLast((m) => m.role === "toolResult")?.isError, false);
       }
       if (nativeMcp) {
-        nextCode = `const descriptor = await tools.describe({ref:"mcp.fixture.echo"}); const result = await mcp.fixture.echo({value:"adapter"}); const aliases = ${fullCodeMode ? 'await tools.list({provider:"extensions",query:"mcp__fixture__echo"})' : '[]'}; return {descriptor,result,aliases};`;
+        const discovery = profile === "native" ? "fabric.tools" : "tools";
+        nextCode = `const descriptor = await ${discovery}.describe({ref:"mcp.fixture.echo"}); const result = await mcp.fixture.echo({value:"adapter"}); const aliases = ${fullCodeMode ? `await ${discovery}.list({provider:"extensions",query:"mcp__fixture__echo"})` : '[]'}; return {descriptor,result,aliases};`;
         await session.prompt("Verify the opt-in native MCP adapter preserves the Fabric surface.");
         const result = session.messages.findLast(m => m.role === "toolResult" && m.toolName === "fabric_exec");
         assert.equal(result?.isError, false, JSON.stringify(result));
@@ -193,6 +202,18 @@ try {
         await session.prompt("Core overrides stay captured across active-set changes.");
         assert.equal(overrides, 1);
         assert.match(JSON.stringify(session.messages.findLast(m => m.role === "toolResult")?.content), /override:fixture-path/);
+      }
+      if (profile === "native") {
+        // Use a fresh direct registration: the earlier mutation deliberately
+        // evicted fixture_echo from Fabric's capture catalog as well as Pi's
+        // active set. Do not undo that removal just to test alias parity.
+        api.registerTool(fixtureTool("fixture_alias"));
+        nextCode = 'return {native:await tools.fixture_alias({value:"rewrite"}),fabric:await extensions.fixture_alias({value:"rewrite"})};';
+        await session.prompt("Verify native and additive aliases use the same host dispatch and redaction.");
+        const result = session.messages.findLast(m => m.role === "toolResult");
+        assert.equal(result?.isError, false, JSON.stringify(result));
+        assert.match(JSON.stringify(result.content), /redacted/);
+        assert.equal(result.nestedCalls.calls.filter(call => call.name === "fixture_alias").length, 2);
       }
       const oldRunner = session.extensionRunner;
       await session.reload();

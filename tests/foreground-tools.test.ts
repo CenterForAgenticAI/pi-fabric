@@ -8,7 +8,7 @@ import type {
   ToolCallEvent,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CapturedToolCatalog } from "../src/capture/catalog.js";
 import { DEFAULT_FABRIC_CONFIG, normalizeFabricConfig } from "../src/config.js";
 import { ApprovalController, FabricSessionApprovals } from "../src/core/approval-controller.js";
@@ -22,6 +22,15 @@ import {
 import { fabricModelContext, fabricToolLoadout, fabricToolPlacement } from "../src/core/tool-ownership.js";
 import { FabricState } from "../src/fabric-state.js";
 import { CapturedToolsProvider } from "../src/providers/captured-tools-provider.js";
+
+// These fixtures own their config/authority. A Fabric child running Vitest
+// must not inherit its host's tool allowlist or full-code-mode override.
+// Explicit inherited-authority behavior is tested by resolveForegroundTools.
+beforeEach(() => {
+  vi.stubEnv("PI_FABRIC_TOOL_ALLOWLIST", undefined);
+  vi.stubEnv("PI_FABRIC_FULL_CODE_MODE", undefined);
+});
+afterEach(() => vi.unstubAllEnvs());
 
 const source = (kind: "builtin" | "extension") => ({
   path: kind === "builtin" ? "<builtin:x>" : "/extensions/ask.ts",
@@ -124,7 +133,7 @@ describe("resolveForegroundTools", () => {
 describe("foreground loadout and placement", () => {
   it("keeps foreground tools declared beside fabric_exec", () => {
     const tools = registered.map(({ name }) => ({ name }));
-    const loadout = { registered: tools, declared: tools } as unknown as Parameters<typeof fabricToolLoadout>[0];
+    const loadout = { registered: tools, declared: tools, callable: tools } as unknown as Parameters<typeof fabricToolLoadout>[0];
     const hidden = fabricToolLoadout(loadout, true, ["ask_user"])?.hiddenDeclarations ?? [];
     expect(hidden).not.toContain("ask_user");
     expect(hidden).not.toContain("fabric_exec");
@@ -267,7 +276,7 @@ describe("foreground extension wiring", () => {
       .map(([tool]) => tool as ToolDefinition).find((tool) => tool.name === "fabric_exec")!;
     const hidden = () => {
       const tools = registered.map(({ name }) => ({ name }));
-      return fabricTool.prepareLoadout!({ registered: tools, declared: tools } as never)?.hiddenDeclarations;
+      return fabricTool.prepareLoadout!({ registered: tools, declared: tools, callable: tools } as never)?.hiddenDeclarations;
     };
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-foreground-wiring-"));
     fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });

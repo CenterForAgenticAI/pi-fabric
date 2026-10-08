@@ -354,7 +354,7 @@ describe("CompactController", () => {
       errorListeners: new Set(),
     });
 
-    const emitted = runner.emit({ type: "agent_settled" }).then(() => {
+    const emitted = runner.emit({ type: "agent_settled", aborted: false }).then(() => {
       timeline.push("public:agent_settled");
     });
     await Promise.resolve();

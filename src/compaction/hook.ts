@@ -8,7 +8,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { acceptCompactionCut, acceptSummaryBounds } from "../verified/policy.js";
 import { calculateContextTokens, DEFAULT_COMPACTION_SETTINGS, estimateTokens } from "../core/token-math.js";
-import { buildSessionContext, sessionEntryToContextMessages } from "../core/session-context.js";
+import { applyContextEdits, buildSessionContext, sessionEntryToContextMessages } from "../core/session-context.js";
 import { clipUtf8, MAX_SUMMARY_BYTES, utf8Bytes } from "./bounds.js";
 import { modelCompactionKey } from "./threshold.js";
 import { NO_BUILTIN_ENRICHERS, runEnrichers, type CompactionEnricher } from "./enrichers.js";
@@ -156,6 +156,9 @@ const collectContextEntries = (entries: SessionEntry[], startIndex: number): Liv
   for (let index = Math.max(0, startIndex); index < entries.length; index++) {
     const entry = entries[index]!;
     if (entry.type === "compaction") continue;
+    // Prompt/tool checkpoints are replayed by Pi, not continuity content. They
+    // must not create a fictitious prefix before the first user-message span.
+    if (isMessageEntry(entry) && entry.message.role === "system") continue;
     if (entry.type === "custom_message" && !isPiCustomMessageEntry(entry)) continue;
     if (isMessageEntry(entry) && isHiddenEmptyCustom(entry.message)) continue;
     const messages = contextMessages(entry);
@@ -517,6 +520,7 @@ export const computeCut = (
   branchEntries: SessionEntry[],
   options?: { tokensBefore: number; budget: FabricCompactionBudget },
 ): CutResult => {
+  branchEntries = applyContextEdits(branchEntries);
   const proposed = proposeCut(branchEntries, options);
   if (!proposed.ok) return proposed;
   const live = collectLive(branchEntries);
@@ -746,6 +750,9 @@ export const compileFabricSummary = (
       instructionError: instructions.error,
     };
   }
+  // Native recovery appends context_edit omissions before invoking this hook.
+  // Summaries and token/cut selection must use that same content-only view.
+  branchEntries = applyContextEdits(branchEntries);
   const cut = computeCut(
     branchEntries,
     budget ? { tokensBefore, budget } : undefined,

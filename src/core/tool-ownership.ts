@@ -16,15 +16,35 @@ import type { ToolLoadout, ToolLoadoutChanges } from "@earendil-works/pi-coding-
 
 // Hide every registered declaration, including historical transcript declarations,
 // except resolved foreground tools (full code mode only; enforce resolves none).
-// Keep tools active: Pi 0.99 uses that set for native nested-call availability.
+// Keep tools active: Pi uses that set for native nested-call availability.
+// Since 1.0.4, hidden declarations also lose their system-prompt guidelines.
+// Carry callable tools' guidance on Fabric itself, using the pending loadout
+// rather than capture metadata (which excludes built-ins and can lag refresh).
 export const fabricToolLoadout = (
   loadout: ToolLoadout,
   exclusive: boolean,
   foreground: readonly string[] = [],
-): ToolLoadoutChanges | undefined =>
-  exclusive
-    ? { hiddenDeclarations: loadout.registered.map((tool) => tool.name).filter((name) => name !== "fabric_exec" && !foreground.includes(name)) }
-    : undefined;
+): ToolLoadoutChanges | undefined => {
+  if (!exclusive) return undefined;
+  const hiddenDeclarations = loadout.registered.map((tool) => tool.name)
+    .filter((name) => name !== "fabric_exec" && !foreground.includes(name));
+  const hidden = new Set(hiddenDeclarations);
+  const guidelines = loadout.callable.flatMap((tool) => {
+    // The capability was added in 1.0.4; older supported hosts still put these
+    // rules in the system prompt and need no duplicate.
+    const rules = typeof loadout.getPromptGuidelines === "function"
+      ? loadout.getPromptGuidelines(tool.name) : [];
+    return hidden.has(tool.name) && rules.length > 0
+      ? [`${tool.name}:`, ...rules.map((rule) => `- ${rule}`)] : [];
+  });
+  const fabric = loadout.declared.find((tool) => tool.name === "fabric_exec");
+  return {
+    hiddenDeclarations,
+    ...(fabric && guidelines.length > 0 ? { descriptions: {
+      fabric_exec: `${fabric.description}\n\nGuidelines for tools called inside fabric_exec:\n${guidelines.join("\n")}`,
+    } } : {}),
+  };
+};
 
 /**
  * Answer pi-fabric:tool-placement:v1. `model` mirrors fabricToolLoadout: an
@@ -65,7 +85,18 @@ export const fabricModelContext = (
   tools: Pick<import("@earendil-works/pi-ai").Tool, "name" | "description" | "parameters">
     | readonly Pick<import("@earendil-works/pi-ai").Tool, "name" | "description" | "parameters">[],
 ): import("@earendil-works/pi-agent-core").AgentMessage[] => {
-  const declared = Array.isArray(tools) ? [...tools] : [tools];
+  // Preserve prepareLoadout descriptions from the current native transcript.
+  // Replacing them with the registration-time definition drops hidden-tool
+  // guidelines and other native loadout transformations at this fallback seam.
+  const effective = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role !== "system") continue;
+    if ("replace" in message && message.replace === true) effective.clear();
+    for (const tool of message.toolsAdded ?? []) effective.set(tool.name, tool.description);
+  }
+  const declared = (Array.isArray(tools) ? [...tools] : [tools]).map((tool) => ({
+    ...tool, description: effective.get(tool.name) ?? tool.description,
+  }));
   let first = true;
   return messages.map((message) => {
     if (message.role !== "system") return message;

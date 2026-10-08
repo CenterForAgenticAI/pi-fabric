@@ -8,16 +8,16 @@ import { expect, it } from "vitest";
 import { fabricToolLoadout } from "../src/core/tool-ownership.js";
 
 // No compiled Fabric, capture patch, or context_with_system fallback: this
-// witnesses the public 1.0 prepareLoadout/exposure/executeTool contract itself.
+// witnesses the public 1.1 prepareLoadout/exposure/executeTool contract itself.
 it("uses native prepareLoadout to hide historical and late declarations without removing callable tools", async () => {
-  expect(VERSION).toBe("1.0.0");
+  expect(VERSION).toBe("1.1.0");
   const cwd = await mkdtemp(path.join(os.tmpdir(), "fabric-pi1-public-"));
   const settingsManager = SettingsManager.inMemory({ defaultProjectTrust: "never", compaction: { enabled: false }, retry: { enabled: false } });
   let api!: ExtensionAPI;
   let exclusive = false, emitCall = false, executions = 0;
   const requests: string[][] = [], loadouts: ToolLoadout[] = [], events: ToolCallEvent[] = [];
   const fixture = (name: string, exposure: "direct" | "deferred" | "hidden" = "direct") => ({
-    name, exposure, label: name, description: name, parameters: Type.Object({ value: Type.String() }),
+    name, exposure, label: name, description: name, promptGuidelines: [`guideline:${name}`], parameters: Type.Object({ value: Type.String() }),
     outputSchema: Type.Object({ value: Type.String() }),
     async execute(_id: string, args: { value: string }) {
       executions++;
@@ -59,7 +59,12 @@ it("uses native prepareLoadout to hide historical and late declarations without 
         api: "offline-public", apiKey: "offline", baseUrl: "http://invalid.local",
         models: [{ id: "fixture", name: "Fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 2048 }],
         streamSimple(model, context) {
-          requests.push(getCurrentTools(context.messages).map(t => t.name));
+          const tools = getCurrentTools(context.messages);
+          requests.push(tools.map(t => t.name));
+          if (exclusive) {
+            expect(tools.find(t => t.name === "fabric_exec")?.description).toContain("guideline:fixture_deferred");
+            expect(tools.find(t => t.name === "fabric_exec")?.description).not.toContain("guideline:fixture_hidden");
+          }
           const call = emitCall; emitCall = false;
           const message: AssistantMessage = {
             role: "assistant", content: call ? [{ type: "toolCall", id: "public-outer", name: "fabric_exec", arguments: {} }] : [{ type: "text", text: "done" }],
@@ -92,6 +97,7 @@ it("uses native prepareLoadout to hide historical and late declarations without 
       await session.prompt("Hide declarations but retain native callable dispatch.");
       expect(requests.slice(1)).toEqual([["fabric_exec"], ["fabric_exec"]]);
       expect(loadouts.at(-1)?.registered.map(t => t.name)).toContain("fixture_late");
+      expect(loadouts.at(-1)?.getPromptGuidelines("fixture_late")).toEqual(["guideline:fixture_late"]);
       expect(executions).toBe(1);
       expect(events.some(e => e.toolName === "fixture_deferred" && e.parentToolCallId === "public-outer")).toBe(true);
       expect([...session.messages].reverse().find(m => m.role === "toolResult" && m.toolName === "fabric_exec")).toMatchObject({ isError: false, nestedCalls: { calls: expect.arrayContaining([expect.objectContaining({ name: "fixture_deferred" })]) } });

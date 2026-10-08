@@ -51,13 +51,38 @@ describe("FabricToolOwnership", () => {
   it("hides every other declaration, including historical, deferred and native orchestrators", () => {
     const names = ["fabric_exec", "read", "codemode", "tool_search", "late_mcp", "deferred", "withdrawn"];
     const registered = names.map((name) => ({ name }));
-    const loadout = { registered, declared: registered.slice(0, 4) } as unknown as Parameters<typeof fabricToolLoadout>[0];
+    const loadout = { registered, declared: registered.slice(0, 4), callable: registered.slice(1) } as unknown as Parameters<typeof fabricToolLoadout>[0];
     expect(fabricToolLoadout(loadout, true)?.hiddenDeclarations).toEqual(names.slice(1));
     expect(fabricToolLoadout(loadout, false)).toBeUndefined();
   });
 });
 
+describe("hidden-tool guidance", () => {
+  it("carries only hidden callable guidelines without changing optional loadouts", () => {
+    const names = ["fabric_exec", "read", "deferred", "foreground", "withdrawn"];
+    const registered = names.map(name => ({ name, description: name }));
+    const loadout = {
+      registered, declared: registered, callable: registered.slice(1, 4),
+      getPromptGuidelines: (name: string) => [`rule:${name}`],
+    } as unknown as Parameters<typeof fabricToolLoadout>[0];
+    const result = fabricToolLoadout(loadout, true, ["foreground"]);
+    expect(result?.descriptions?.fabric_exec).toContain("rule:read");
+    expect(result?.descriptions?.fabric_exec).toContain("rule:deferred");
+    expect(result?.descriptions?.fabric_exec).not.toContain("rule:foreground");
+    expect(result?.descriptions?.fabric_exec).not.toContain("rule:withdrawn");
+    expect(fabricToolLoadout(loadout, false)).toBeUndefined();
+  });
+});
+
 describe("fabricModelContext", () => {
+  it("retains the latest native loadout description through authoritative projection", () => {
+    const tool = { name: "fabric_exec", description: "base", parameters: {} };
+    const messages = [
+      { role: "system", content: "", toolsAdded: [{ ...tool, description: "old" }], timestamp: 1 },
+      { role: "system", content: "", toolsAdded: [{ ...tool, description: "current guidelines" }], timestamp: 2 },
+    ] as Parameters<typeof fabricModelContext>[0];
+    expect(fabricModelContext(messages, tool)[0]).toMatchObject({ toolsAdded: [{ ...tool, description: "current guidelines" }] });
+  });
   it("removes historical additions/removals without changing messages or prompt sections", () => {
     const tool = { name: "fabric_exec", description: "Fabric", parameters: { type: "object", properties: {} } };
     const messages = [
