@@ -3,8 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { AgentManager } from "../src/agents/manager.js";
 import type { AgentRunRecord } from "../src/agents/types.js";
 import { DEFAULT_FABRIC_CONFIG, type FabricAgentConfig } from "../src/config.js";
+import { routeChildQuestion } from "../src/decisions/host.js";
 import { DecisionStore, type DecisionRecord } from "../src/decisions/store.js";
 import { MeshStore, type MeshIdentity } from "../src/mesh/store.js";
 import { runResidentHostFromConfigPath } from "../src/residency/host.js";
@@ -16,7 +18,12 @@ import {
   type ResidentCommandResponse,
   type ResidentHostConfig,
 } from "../src/residency/protocol.js";
-import { registerAgentRunner, type FabricRunnerCapabilities } from "../src/runners.js";
+import {
+  registerAgentRunner,
+  type FabricHostedReporter,
+  type FabricRunnerAnswer,
+  type FabricRunnerCapabilities,
+} from "../src/runners.js";
 import { FabricControlPlane } from "../src/topology/control-plane.js";
 import { rmTempSync } from "./fixtures/temp-cleanup.js";
 
@@ -279,6 +286,34 @@ describe("resident host routed child questions", () => {
     },
   );
 
+  it.skipIf(process.platform === "win32")(
+    "names the decision in a durable pi-runner worker's status file while it waits",
+    { timeout: 45_000 },
+    async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-resident-question-log-"));
+      cleanups.push(() => rmTempSync(root));
+      process.env.FAKE_PI_QUESTION_LOG = path.join(root, "responses.jsonl");
+      cleanups.push(() => {
+        delete process.env.FAKE_PI_QUESTION_LOG;
+      });
+      const state = await harness({ childQuestions: "route", childQuestionTimeoutMs: 30_000 });
+      const run = await spawnDurable(state.config, { task: "ASK", runner: "pi", transport: "process" });
+
+      const decision = await openQuestion(state, run.runDirectory);
+      // The worker writes this file; a session reads a durable run only from it.
+      await waitFor(() => runRecord(run.runDirectory)?.blockedOn?.decisionId === decision.id);
+      expect(runRecord(run.runDirectory)).toMatchObject({
+        status: "running",
+        blockedOn: { since: expect.any(Number), decisionId: decision.id },
+      });
+
+      await state.decisions.answer(decision.id, { optionId: "o1" }, human);
+      const settled = await settledRecord(run.runDirectory);
+      expect(settled).toMatchObject({ status: "completed" });
+      expect(settled.blockedOn).toBeUndefined();
+    },
+  );
+
   it("still cancels a durable child's question when childQuestions is not route", { timeout: 30_000 }, async () => {
     registerAskOnce("ask-cancel");
     const state = await harness({ childQuestions: "cancel" });
@@ -288,5 +323,95 @@ describe("resident host routed child questions", () => {
       text: JSON.stringify({ cancelled: true }),
     });
     expect(await state.decisions.list()).toEqual([]);
+  });
+});
+
+// The AgentManager that a resident host owns, with the host's router over a
+// real decision store.
+describe("durable hosted run questions in the agent manager", () => {
+  interface Asker {
+    /** Ask through the reporter of the latest start or attach. */
+    ask(title: string): Promise<FabricRunnerAnswer>;
+  }
+
+  const registerAsker = (id: string): Asker => {
+    let reporter: FabricHostedReporter | undefined;
+    const asker: Asker = {
+      ask: (title) => reporter!.question({ method: "input", title }),
+    };
+    cleanups.push(registerAgentRunner({
+      kind: "hosted",
+      id,
+      label: "Asker",
+      capabilities: QUESTIONS_ONLY,
+      prepare: (context) => ({ job: context.idempotencyKey }),
+      start(_locator, _context, current) {
+        reporter = current;
+      },
+      attach(_locator, _context, current) {
+        reporter = current;
+      },
+      liveness: () => "running",
+      stop: () => ({ confirmed: true }),
+    }));
+    return asker;
+  };
+
+  const managerWithDecisions = (runRoot: string, decisions: DecisionStore): AgentManager => {
+    const manager = new AgentManager(process.cwd(), {
+      ...DEFAULT_FABRIC_CONFIG.agents,
+      childQuestions: "route",
+      childQuestionTimeoutMs: 60_000,
+    }, {
+      runRoot,
+      fullCodeMode: false,
+      onChildQuestion: (request) => routeChildQuestion(request, { store: decisions }),
+    });
+    cleanups.push(() => manager.close());
+    return manager;
+  };
+
+  const stores = () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-hosted-question-"));
+    cleanups.push(() => rmTempSync(root));
+    const mesh = new MeshStore(path.join(root, "mesh"), DEFAULT_FABRIC_CONFIG.mesh.maxEventBytes, DEFAULT_FABRIC_CONFIG.mesh.maxReadEvents);
+    const host: MeshIdentity = { id: "resident:test-host", name: "host", kind: "agent", sessionId: "s" };
+    const person: MeshIdentity = { id: "person", name: "person", kind: "main", sessionId: "p" };
+    return {
+      runRoot: path.join(root, "runs"),
+      host: new DecisionStore(mesh, host),
+      answers: new DecisionStore(mesh, person),
+    };
+  };
+
+  const openTitled = async (decisions: DecisionStore, title: string): Promise<DecisionRecord> => {
+    let found: DecisionRecord | undefined;
+    await waitFor(async () => {
+      found = (await decisions.list({ status: "open" })).find((decision) => decision.title.endsWith(`: ${title}`));
+      return found !== undefined;
+    });
+    return found!;
+  };
+
+  it("names the oldest question's decision in status.json and moves on when it is answered", { timeout: 30_000 }, async () => {
+    const { runRoot, host, answers } = stores();
+    const asker = registerAsker("asker-two");
+    const manager = managerWithDecisions(runRoot, host);
+    const handle = await manager.spawn({ task: "ask twice", runner: "asker-two", residency: "durable" });
+    const status = (): AgentRunRecord => readJson<AgentRunRecord>(path.join(manager.runDirectory(handle.id)!, "status.json"))!;
+
+    const firstAnswer = asker.ask("First");
+    const first = await openTitled(answers, "First");
+    const secondAnswer = asker.ask("Second");
+    const second = await openTitled(answers, "Second");
+    expect(status().blockedOn?.decisionId).toBe(first.id);
+
+    await answers.answer(first.id, { text: "one" }, human);
+    expect(await firstAnswer).toEqual({ value: "one" });
+    expect(status().blockedOn?.decisionId).toBe(second.id);
+
+    await answers.answer(second.id, { text: "two" }, human);
+    expect(await secondAnswer).toEqual({ value: "two" });
+    expect(status().blockedOn).toBeUndefined();
   });
 });

@@ -182,5 +182,13 @@ export const SteerCommandSchema = Type.Union([
     confirmed: Type.Optional(Type.Boolean()),
     cancelled: Type.Optional(Type.Literal(true)),
   }),
+  /** Names the decision behind a routed `question` while it waits; the worker records it in `blockedOn`. */
+  Type.Object({
+    type: Type.Literal("ui_decision"),
+    id: Type.String(),
+    ts: Type.Number(),
+    requestId: Type.String(),
+    decisionId: Type.String(),
+  }),
 ]);
 export type SteerCommand = Static<typeof SteerCommandSchema>;
