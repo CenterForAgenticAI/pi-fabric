@@ -1,9 +1,10 @@
 // Routed child dialogs (agents.childQuestions: "route"). The worker turns a
 // child Pi's extension_ui_request into a `question` lifecycle record for the
 // parent AgentManager and forwards the parent's `ui_response` steer line back
-// as extension_ui_response. The worker owns the deadline: when the parent never
-// answers (gone, headless without decisions, or slow) the child gets a
-// cancelled response, never a hang.
+// as extension_ui_response. A `ui_decision` steer line names the decision that
+// backs a headless question, so the run record can name it too. The worker
+// owns the deadline: when the parent never answers (gone, headless without
+// decisions, or slow) the child gets a cancelled response, never a hang.
 
 export type ChildQuestionMethod = "select" | "confirm" | "input" | "editor";
 
@@ -29,6 +30,7 @@ const MAX_TEXT_CHARS = 8_000;
 const MAX_OPTIONS = 64;
 const MAX_VALUE_CHARS = 64 * 1024;
 const MAX_TIMEOUT_MS = 86_400_000;
+const MAX_DECISION_ID_CHARS = 128;
 
 const text = (value: unknown, max: number): string | undefined =>
   typeof value === "string" ? value.slice(0, max) : undefined;
@@ -37,17 +39,22 @@ interface PendingQuestion {
   method: ChildQuestionMethod;
   options?: string[];
   timer: NodeJS.Timeout;
+  decisionId?: string;
 }
 
 export class ChildQuestionRelay {
   readonly #pending = new Map<string, PendingQuestion>();
+  #since: number | undefined;
+  /** The decision last reported through `blocked`. */
+  #decisionId: string | undefined;
 
   constructor(
     readonly defaultTimeoutMs: number,
     readonly io: {
       emit(question: ChildQuestionEvent): void;
       send(frame: ChildQuestionFrame): void;
-      blocked(since: number | undefined): void;
+      /** Blocked since a time, with the decision of the oldest question that has one; undefined when unblocked. */
+      blocked(since: number | undefined, decisionId?: string): void;
     },
     readonly now: () => number = Date.now,
   ) {}
@@ -89,7 +96,23 @@ export class ChildQuestionRelay {
       ...(prefill !== undefined ? { prefill } : {}),
       timeout,
     });
-    if (this.#pending.size === 1) this.io.blocked(this.now());
+    if (this.#pending.size === 1) {
+      this.#since = this.now();
+      this.io.blocked(this.#since);
+    }
+    return true;
+  }
+
+  /** Apply a parent `ui_decision` steer command naming the decision behind a pending question. */
+  decide(command: Record<string, unknown>): boolean {
+    const id = command.requestId;
+    const decisionId = command.decisionId;
+    if (typeof id !== "string" || typeof decisionId !== "string") return false;
+    if (!decisionId || decisionId.length > MAX_DECISION_ID_CHARS) return false;
+    const pending = this.#pending.get(id);
+    if (!pending) return false;
+    pending.decisionId = decisionId;
+    this.#reportDecision();
     return true;
   }
 
@@ -119,6 +142,8 @@ export class ChildQuestionRelay {
   close(): void {
     for (const pending of this.#pending.values()) clearTimeout(pending.timer);
     this.#pending.clear();
+    this.#since = undefined;
+    this.#decisionId = undefined;
   }
 
   #finish(id: string, frame: ChildQuestionFrame): void {
@@ -131,6 +156,25 @@ export class ChildQuestionRelay {
     } catch {
       // A closed child stdin means the dialog has no reader left.
     }
-    if (this.#pending.size === 0) this.io.blocked(undefined);
+    if (this.#pending.size === 0) {
+      this.#since = undefined;
+      this.#decisionId = undefined;
+      this.io.blocked(undefined);
+    } else {
+      this.#reportDecision();
+    }
+  }
+
+  #reportDecision(): void {
+    let decisionId: string | undefined;
+    for (const pending of this.#pending.values()) {
+      if (pending.decisionId) {
+        decisionId = pending.decisionId;
+        break;
+      }
+    }
+    if (decisionId === this.#decisionId || this.#since === undefined) return;
+    this.#decisionId = decisionId;
+    this.io.blocked(this.#since, decisionId);
   }
 }
