@@ -150,16 +150,17 @@ const responseFromDecision = (
 /**
  * Answer one routed child dialog: through the parent's interactive UI when it
  * has one, otherwise through a root-held decision. Missing UI and store, a
- * malformed request, or any failure cancels the child's dialog.
+ * malformed request, or any failure cancels the child's dialog. A host with no
+ * UI at all (the resident host) omits `context` and only ever raises a decision.
  */
 export const routeChildQuestion = async (
   request: AgentChildQuestionRequest,
-  deps: { context: Pick<ExtensionContext, "hasUI" | "ui">; store?: DecisionStore },
+  deps: { context?: Pick<ExtensionContext, "hasUI" | "ui">; store?: DecisionStore },
 ): Promise<AgentChildQuestionResponse> => {
   const question = parseChildQuestion(request.question);
   if (!question || request.signal.aborted) return CANCELLED;
   const label = `${request.name}: ${question.title || "question"}`;
-  if (deps.context.hasUI) return askViaUi(deps.context.ui, label, question, request.signal);
+  if (deps.context?.hasUI) return askViaUi(deps.context.ui, label, question, request.signal);
   if (!deps.store) return CANCELLED;
   const input: DecisionRaiseInput = {
     kind: "question",
