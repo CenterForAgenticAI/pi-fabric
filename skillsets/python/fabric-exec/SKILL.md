@@ -40,7 +40,7 @@ Use top-level `payloads` for multiline content. Only exact keys supplied in this
 
 ## Discovery and host actions
 
-Known actions use `await mcp.<server>.<tool>(...)`, `await extensions.<name>(...)`, or stable providers `memory`, `state`, `schema`, `compact`, `thinking`, `decisions`, `programs`, `components`, `agents`, and `mesh`. Underscore-prefixed capability names require `tools.call` with the exact discovered ref. Host methods accept one dict or keyword arguments, not callback functions. Supply acyclic JSON-compatible arguments.
+Known actions use `await mcp.<server>.<tool>(...)`, `await extensions.<name>(...)`, or stable providers `memory`, `state`, `schema`, `compact`, `thinking`, `decisions`, `programs`, `components`, `agents`, and `mesh`. A provider another extension registers is also a global named after it: `await context.task_add(title="x")` is `tools.call` with the same policy. Reserved or hyphenated provider names (and `tasks`, `sessions`) have no global; call them with `tools.call`. Underscore-prefixed capability names require `tools.call` with the exact discovered ref. Host methods accept one dict or keyword arguments, not callback functions. Supply acyclic JSON-compatible arguments.
 
 ```python
 hits = await tools.search(query="deployment status", limit=3)
