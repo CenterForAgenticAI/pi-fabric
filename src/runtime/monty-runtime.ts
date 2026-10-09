@@ -176,7 +176,7 @@ export class MontyRuntime implements FabricKernelRuntime {
       class PayloadValues {}
       const attributes = new PayloadValues();
       for (const [key, value] of Object.entries(strings)) Object.defineProperty(attributes, key, { value, enumerable: true });
-      const bindings = montyBindings(native, dispatch);
+      const bindings = montyBindings(native, dispatch, options.providerGlobals);
       bindings.payloads = montyInput(strings);
       bindings.π = new native.ClassInstance(attributes, { name: "FabricPayloads", eagerAttrs: Object.keys(strings) });
       // Bootstrap separately so user traceback offsets remain exactly one wrapper line.

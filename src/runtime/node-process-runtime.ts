@@ -281,7 +281,7 @@ export class NodeProcessRuntime {
       scheduleDeadline();
       send(child, {
         type: "execute",
-        setup: guestSetupSource(options.piToolCanonicalFields, options.nativeStoreEnabled, options.codemodeProfile, options.nativeToolsEnabled),
+        setup: guestSetupSource(options.piToolCanonicalFields, options.nativeStoreEnabled, options.codemodeProfile, options.nativeToolsEnabled, options.providerGlobals),
         code: guestBundle.code,
         strings: options.strings ?? {},
         tokenBudget: options.tokenBudget,
