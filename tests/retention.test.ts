@@ -100,6 +100,56 @@ describe("safe run roots", () => {
   });
 });
 
+describe("durable runner stores", () => {
+  const sweep = (tempRoot: string) => sweepTempRunRoots({ tempRoot, now: 100 * DAY, orphanedTempRunRetentionMs: 6 * HOUR, oneShotRunRetentionMs: DAY });
+  // The layout openDurableWorkerStorage writes under each pi-durable run.
+  const durableRun = (root: string, name: string): string => {
+    const run = path.join(root, name);
+    writeStatus(run, { status: "completed", finishedAt: 1, transport: "process", runner: "pi-durable" });
+    fs.writeFileSync(path.join(run, "task.txt"), "task");
+    for (const key of ["initial", "a".repeat(64)]) {
+      const session = path.join(run, "durable", key);
+      fs.mkdirSync(path.join(session, "store"), { recursive: true });
+      for (const lease of ["lease.sqlite", "lease.sqlite-journal"]) fs.writeFileSync(path.join(session, lease), "");
+      for (const journal of ["main.jsonl", "doc-2.jsonl", "task-18.jsonl"]) fs.writeFileSync(path.join(session, "store", journal), "{}\n");
+    }
+    return run;
+  };
+  const deadRoot = (tempRoot: string, suffix: string): string => {
+    const root = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + suffix);
+    fs.mkdirSync(root);
+    fs.writeFileSync(path.join(root, ".fabric-owner.json"), JSON.stringify({ pid: 2_147_483_647, startedAt: 1, heartbeatAt: 1, orphanedAt: 1 }));
+    return root;
+  };
+
+  it("removes an orphaned root whose finished runs hold durable stores", () => {
+    const tempRoot = temporaryDirectory();
+    const root = deadRoot(tempRoot, "durable");
+    durableRun(root, "run");
+    durableRun(path.join(root, "run", "nested"), "child");
+    expect(sweep(tempRoot).removedRoots).toEqual([root]);
+    expect(fs.existsSync(root)).toBe(false);
+  });
+
+  it("keeps an orphaned root when its durable directory holds anything unexpected", () => {
+    const tempRoot = temporaryDirectory();
+    const cases: Array<[string, (run: string) => void]> = [
+      ["foreign-file", (run) => fs.writeFileSync(path.join(run, "durable", "initial", "store", "notes.txt"), "mine")],
+      ["foreign-key", (run) => fs.mkdirSync(path.join(run, "durable", "other"))],
+      ["foreign-session-entry", (run) => fs.writeFileSync(path.join(run, "durable", "initial", "keep.me"), "mine")],
+      ["linked-journal", (run) => {
+        const journal = path.join(run, "durable", "initial", "store", "main.jsonl");
+        fs.rmSync(journal);
+        fs.symlinkSync(path.join(tempRoot, "outside"), journal);
+      }],
+    ];
+    fs.writeFileSync(path.join(tempRoot, "outside"), "do not delete");
+    for (const [suffix, taint] of cases) taint(durableRun(deadRoot(tempRoot, suffix), "run"));
+    expect(sweep(tempRoot).removedRoots).toEqual([]);
+    expect(fs.readFileSync(path.join(tempRoot, "outside"), "utf8")).toBe("do not delete");
+  });
+});
+
 describe("run-root owner identity", () => {
   const sweep = (tempRoot: string, now: number) => sweepTempRunRoots({ tempRoot, now, orphanedTempRunRetentionMs: 6 * HOUR, oneShotRunRetentionMs: DAY });
   // A PID namespace this process is not in: the signal probe means nothing for it.
