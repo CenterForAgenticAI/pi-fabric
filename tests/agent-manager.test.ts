@@ -1308,6 +1308,7 @@ describe("AgentManager multimodal prompts", () => {
       const frame = JSON.parse(fs.readFileSync(promptLog, "utf8")) as Record<string, unknown>;
       expect(frame).toEqual({
         type: "prompt",
+        id: "fabric-task",
         message: "Inspect the attached image",
         images: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
       });

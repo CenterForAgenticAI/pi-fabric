@@ -284,22 +284,15 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     expect(result.text).toBe("progress preserved");
   }, 30_000);
 
-  it("preserves a bounded prefix when an agent event exceeds the line limit", async () => {
+  it("fails oversized Pi protocol data without persisting its raw prefix", async () => {
     process.env.FAKE_PI_BEHAVIOR = "oversized-event";
     const result = await run("do it", 10_000);
 
     expect(result.status).toBe("failed");
     expect(result.error).toContain("Agent emitted an oversized event line");
-    const artifactPath = result.error?.match(/saved to: (.+)$/)?.[1];
-    expect(artifactPath).toBeDefined();
-    expect(path.dirname(artifactPath!)).toBe(path.dirname(result.logFile!));
-
-    const prefix = fs.readFileSync(artifactPath!, "utf8");
-    expect(prefix).toHaveLength(4 * 1024 * 1024);
-    expect(prefix).toMatch(/^\{"type":"message_end","message":\{"role":"assistant","content":"x+/);
-    if (process.platform !== "win32") {
-      expect(fs.statSync(artifactPath!).mode & 0o777).toBe(0o600);
-    }
+    expect(result.error).toBe("Agent emitted an oversized event line");
+    expect(fs.existsSync(path.join(path.dirname(result.logFile!), "oversized-event-prefix.txt"))).toBe(false);
+    expect(fs.readFileSync(result.logFile!, "utf8")).not.toContain("x".repeat(100));
   }, 30_000);
 
   describe("agent session usage export", () => {
