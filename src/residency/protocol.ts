@@ -68,7 +68,8 @@ export const residentDeliveryPrefix = (rootId: string): string =>
   `${RESIDENT_DELIVERY_PREFIX}${digest(rootId).slice(0, 32)}/`;
 
 export interface ResidentPiModelState {
-  available: FabricModelCandidate[];
+  /** `api` lets the host refuse an extension-provided model for an extensions: false child. */
+  available: Array<FabricModelCandidate & { api?: string }>;
   aliases: FabricModelAliases;
   defaultModel?: string;
 }
@@ -96,6 +97,11 @@ export interface ResidentHostConfig {
   vedaBinary: string;
   piModels?: ResidentPiModelState;
   modelGuidance?: FabricOwnedModelGuidance[];
+  /**
+   * Extension paths the parent session loaded. The host runs Pi with
+   * --no-extensions, so this is the only set agents requiredExtensions may use.
+   */
+  parentExtensions?: string[];
 }
 
 // `identity` and `heartbeatAt` are additive (format stays 1): they let a
