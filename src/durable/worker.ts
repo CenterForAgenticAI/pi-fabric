@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import module from "node:module";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseDurableWorkerOptions } from "./worker-options.js";
 
 try {
@@ -26,6 +26,30 @@ try {
     const sdkEntry = import.meta.resolve("pi-fabric-worker-sdk");
     const sdkName = "@earendil-works/pi-coding-agent";
     const peers = ["@earendil-works/pi-agent-core", "@earendil-works/pi-ai", "@earendil-works/pi-tui", "typebox"];
+    // The SDK's extension loader gives jiti an alias from "typebox" (and "@sinclair/typebox") to
+    // the SDK's require.resolve("typebox") file, and jiti matches aliases as path prefixes. An
+    // extension's "typebox/type" therefore arrives here as "<typebox entry file>/type". Resolve
+    // exactly that form as "typebox/<subpath>" through the same install's exports map; anything
+    // it does not export keeps its original resolution and error.
+    let typeboxEntry: string | null | undefined;
+    const separators = (value: string) => process.platform === "win32" ? value.replaceAll("\\", "/") : value;
+    const repairTypeboxAlias = (specifier: string): module.ResolveFnOutput | undefined => {
+      if (typeboxEntry === undefined) {
+        try { typeboxEntry = module.createRequire(sdkEntry).resolve("typebox"); } catch { typeboxEntry = null; }
+      }
+      if (!typeboxEntry) return undefined;
+      const prefix = `${separators(typeboxEntry)}/`;
+      const candidate = separators(specifier);
+      if (!candidate.startsWith(prefix) || candidate.length === prefix.length) return undefined;
+      try {
+        // CommonJS resolution ignores a replaced parentURL, so resolve from a require rooted in the
+        // typebox entry file: it self-resolves that install's own exports, never another copy.
+        const file = module.createRequire(typeboxEntry).resolve(`typebox/${candidate.slice(prefix.length)}`);
+        return { url: pathToFileURL(file).href, shortCircuit: true };
+      } catch {
+        return undefined;
+      }
+    };
     module.registerHooks({
       resolve(specifier, context, nextResolve) {
         if (specifier === sdkName || specifier.startsWith(`${sdkName}/`)) {
@@ -34,6 +58,8 @@ try {
         if (peers.some(name => specifier === name || specifier.startsWith(`${name}/`))) {
           return nextResolve(specifier, { ...context, parentURL: sdkEntry });
         }
+        const repaired = repairTypeboxAlias(specifier);
+        if (repaired) return repaired;
         return nextResolve(specifier, context);
       },
     });
