@@ -676,7 +676,18 @@ export class AgentsProvider implements FabricProvider {
           context.update(`Waiting for durable agent ${status.name}`);
           return this.residency.waitAgent(id, context.signal);
         }
-        const status = this.manager.status(id);
+        let status: ReturnType<AgentManager["status"]>;
+        try {
+          status = this.manager.status(id);
+        } catch (error) {
+          // A durable run another root session of this project spawned.
+          if (!(error instanceof Error && /Unknown Fabric agent/.test(error.message))) throw error;
+          if (!this.residency?.hasProjectAgent(id)) throw error;
+          const durable = this.residency.statusAgent(id);
+          context.activity?.({ type: "entity", id, kind: "agent", name: durable.name });
+          context.update(`Waiting for durable agent ${durable.name}`);
+          return this.residency.waitProjectAgent(id, context.signal);
+        }
         context.activity?.({ type: "entity", id, kind: "agent", name: status.name });
         return waitWithProgress(
           this.manager,
@@ -707,6 +718,8 @@ export class AgentsProvider implements FabricProvider {
           if (terminalAgentStatuses.has(result.status)) this.residency.acknowledgeCompletion(id);
           return result;
         }
+        // Another root session's run: read it, but leave its completion receipt to that session.
+        if (this.residency?.hasProjectAgent(id)) return this.residency.statusAgent(id);
         const known = this.participants.get(id);
         if (known && !known.local) return known;
         try {
@@ -1167,7 +1180,14 @@ export class AgentsProvider implements FabricProvider {
             ...(before !== undefined ? { before } : {}),
           });
         }
-        return this.manager.readLog(id, { lines, ...(before !== undefined ? { before } : {}) });
+        try {
+          return this.manager.readLog(id, { lines, ...(before !== undefined ? { before } : {}) });
+        } catch (error) {
+          // A durable run another root session of this project spawned.
+          if (!(error instanceof Error && /Unknown Fabric agent/.test(error.message))) throw error;
+          if (!this.residency?.hasProjectAgent(id)) throw error;
+          return this.residency.readAgentLog(id, { lines, ...(before !== undefined ? { before } : {}) });
+        }
       }
       default:
         throw new Error(`Unknown agents action: ${actionName}`);
