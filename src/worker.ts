@@ -449,9 +449,9 @@ const main = async (): Promise<void> => {
     ? new (await loadWorkerQuestions()).ChildQuestionRelay(options.childQuestionTimeoutMs, {
         emit: (question) => emitLifecycle("question", { ...question }),
         send: (frame) => child.stdin?.write(`${JSON.stringify(frame)}\n`),
-        blocked: (since) => {
+        blocked: (since, decisionId) => {
           if (since === undefined) delete record.blockedOn;
-          else record.blockedOn = { since };
+          else record.blockedOn = { since, ...(decisionId ? { decisionId } : {}) };
           update();
         },
       })
@@ -1263,6 +1263,8 @@ const main = async (): Promise<void> => {
             compactControl.queue(command.instructions);
           } else if (command.type === "ui_response") {
             questionRelay?.respond(command);
+          } else if (command.type === "ui_decision") {
+            questionRelay?.decide(command);
           }
         } catch {
           /* stdin closed (settled/stopped child); a late steer is dropped */
