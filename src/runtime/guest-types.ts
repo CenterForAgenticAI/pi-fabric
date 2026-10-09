@@ -384,7 +384,6 @@ interface FabricCapabilityCatalog {
   complete: boolean;
   reasons: string[];
 }
-interface FabricToolsApi {
 interface FabricActionListEnvelope {
   kind: "pi-fabric.action-list";
   version: 1;
