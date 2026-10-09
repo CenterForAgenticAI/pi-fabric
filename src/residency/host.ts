@@ -279,6 +279,20 @@ class ResidentHost {
       identityId: this.identity.id,
       retention: config.retention,
       preparePiModel: async (model) => resolveResidentPiModel(model),
+      // Resolved against the parent's published set: this host loads no extensions.
+      loadedExtensions: () => {
+        const extensions = currentConfig().parentExtensions;
+        return Array.isArray(extensions) && extensions.every((entry) => typeof entry === "string")
+          ? extensions
+          : undefined;
+      },
+      piModelApi: (model) => {
+        const available = (currentConfig().piModels ?? config.piModels)?.available;
+        if (!Array.isArray(available)) return undefined;
+        const match = available.find((candidate) =>
+          `${candidate?.provider}/${candidate?.id}`.toLowerCase() === model.toLowerCase());
+        return typeof match?.api === "string" ? match.api : undefined;
+      },
       resolveParticipantGuidance: ({ model }) => {
         if (!model) return undefined;
         return resolveFabricModelGuidance(currentModelGuidance(), {
