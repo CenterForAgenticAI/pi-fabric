@@ -69,6 +69,8 @@ interface FabricAgentRequest {
   tools?: string[];
   timeoutMs?: number;
   extensions?: boolean;
+  /** Pi only, with extensions: false: package names or absolute paths of extensions this session loaded, e.g. the model's provider. */
+  requiredExtensions?: string[];
   recursive?: boolean;
   /** Filesystem execution directory; relative paths resolve from the parent agent cwd. */
   cwd?: string;

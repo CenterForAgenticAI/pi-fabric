@@ -53,6 +53,14 @@ export const normalizeAgentRunRequest = (
   if (args.recursive === true && args.extensions === false) {
     throw new Error("Recursive Fabric requires extensions enabled; omit recursive or extensions: false");
   }
+  if (
+    args.requiredExtensions !== undefined &&
+    (!Array.isArray(args.requiredExtensions) ||
+      args.requiredExtensions.some((entry) => typeof entry !== "string" || !entry.trim()))
+  ) {
+    throw new Error("requiredExtensions must be a list of extension package names or absolute paths");
+  }
+  const requiredExtensions = args.requiredExtensions as string[] | undefined;
   return {
     task: String(args.task),
     runner,
@@ -74,6 +82,7 @@ export const normalizeAgentRunRequest = (
     ...(typeof args.extensions === "boolean"
       ? { extensions: args.extensions }
       : args.recursive === true ? { extensions: true } : {}),
+    ...(requiredExtensions?.length ? { requiredExtensions: [...requiredExtensions] } : {}),
     ...(typeof args.recursive === "boolean" ? { recursive: args.recursive } : {}),
     ...(options.allowCwd !== false && typeof args.cwd === "string" ? { cwd: args.cwd } : {}),
     ...(typeof args.worktree === "boolean" ? { worktree: args.worktree } : {}),
