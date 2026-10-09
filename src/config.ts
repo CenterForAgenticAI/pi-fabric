@@ -221,6 +221,11 @@ export interface FabricAgentConfig {
   sessionExport: boolean;
   /** Export store root override; PI_FABRIC_AGENT_DIR wins. Empty = ~/.pi-fabric/agent. */
   sessionExportDir: string;
+  /**
+   * Parent directory for each session's managed run root; absent means
+   * os.tmpdir(). PI_FABRIC_RUN_ROOT_PARENT wins. Must be absolute (`~/` expands).
+   */
+  runRootParent?: string;
   /** Admission policy for the model a child process actually reports. */
   modelAdmission: FabricModelAdmission;
   /** Shell command run in each new agent worktree before the child starts. */
@@ -1254,6 +1259,9 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         typeof agents.sessionExportDir === "string"
           ? agents.sessionExportDir
           : DEFAULT_FABRIC_CONFIG.agents.sessionExportDir,
+      ...(stringValue(agents.runRootParent)
+        ? { runRootParent: String(agents.runRootParent).trim() }
+        : {}),
       modelAdmission: modelAdmissionValue(
         agents.modelAdmission,
         DEFAULT_FABRIC_CONFIG.agents.modelAdmission,
