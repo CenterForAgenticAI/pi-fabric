@@ -67,7 +67,7 @@ Python uses the same calls, for example `await decisions.raise(title="Deploy?", 
 | `decisions.escalate({id, reason?})` | agent | the record, now held by the next holder in its chain |
 | `decisions.cancel({id})` | agent | the cancelled record |
 
-`wait` polls the mesh and stops when the calling program is aborted. `holder` defaults to `"user"`.
+`wait` polls the mesh and stops when the calling program is aborted. It is a default [human-wait ref](configuration.md#executor-timeouts-and-ceilings), so the program deadline is paused while it waits; the decision's own deadline and `timeoutMs` still apply. `holder` defaults to `"user"`.
 
 ## Who may answer
 
@@ -111,7 +111,7 @@ Authority for the human surfaces is local file access to the mesh root. Until pr
 `approvals.headless` controls what happens when an action needs approval (`ask`, or an `auto` escalation) and the session has no interactive UI:
 
 - `"deny"` (default) fails the call, as before.
-- `"decision"` raises a `kind: "approval"` decision held by `"user"` with options `approve` and `deny`, and waits for it inside the calling program's abort signal. The deadline is `approvals.headlessTimeoutMs` (default 5 minutes) with `onExpire: "cancel"`. Only an `approve` answer runs the action, once. A deny, a cancellation, an expiry, or an aborted program denies it. Fabric never approves automatically.
+- `"decision"` raises a `kind: "approval"` decision held by `"user"` with options `approve` and `deny`, and waits for it inside the calling program's abort signal. The deadline is `approvals.headlessTimeoutMs` (default 5 minutes) with `onExpire: "cancel"`. Only an `approve` answer runs the action, once. A deny, a cancellation, an expiry, or an aborted program denies it. Fabric never approves automatically. The program deadline is paused while the decision is open, so `approvals.headlessTimeoutMs` is the only bound on the wait.
 
 The decision path covers actions called through `fabric_exec`. Direct native tool approvals in a headless session still fail closed. Session-wide grants ("Allow write access for this session") stay a UI-only choice.
 
