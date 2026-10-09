@@ -1350,9 +1350,19 @@ export class FabricRuntimeState {
         JSON.stringify(component.guidance ?? []),
       ].join("\u0001");
       if (this.#componentTransitionSignatures.get(component.id) === signature) continue;
+      // Recorded up front so a re-report while this publish is in flight is
+      // not published twice; forgotten again on failure so the next report
+      // of the same state retries instead of treating it as delivered.
       this.#componentTransitionSignatures.set(component.id, signature);
       const publication = this.publishHostLifecycle("component.state", component)
-        .catch(() => undefined);
+        .catch((error: unknown) => {
+          if (this.#componentTransitionSignatures.get(component.id) === signature) {
+            this.#componentTransitionSignatures.delete(component.id);
+          }
+          console.warn(
+            `[pi-fabric] Component ${component.id} state publish failed (${error instanceof Error ? error.message : String(error)}); the next report retries.`,
+          );
+        });
       this.#componentTransitionPublications.add(publication);
       void publication.finally(() => this.#componentTransitionPublications.delete(publication));
     }
@@ -1513,16 +1523,21 @@ export class FabricRuntimeState {
   // Activity-only sessions (mesh disabled) silently skip this.
   #publishCompactEvent(kind: string, data: CompactPendingIntent | CompactLastCommit): void {
     if (!this.#mesh || !this.#identity || !this.#config?.mesh.enabled) return;
+    // Best-effort: a full event log or an oversized payload must not break
+    // the host compaction path. MeshStore.publish is async, so failures arrive
+    // as a rejection; a synchronous throw is handled the same way.
+    const report = (error: unknown): void => {
+      console.warn(`[pi-fabric] fabric.compact ${kind} publish failed (${error instanceof Error ? error.message : String(error)}).`);
+    };
     try {
       void this.#mesh.publish({
         topic: "fabric.compact",
         kind,
         from: this.#identity,
         data,
-      });
-    } catch {
-      // Best-effort: a full event log or an oversized payload must not break
-      // the host compaction path.
+      }).catch(report);
+    } catch (error) {
+      report(error);
     }
   }
 
