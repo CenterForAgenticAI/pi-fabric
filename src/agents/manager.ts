@@ -235,9 +235,12 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
   worktreeResult?: AgentWorktreeResult;
   nestedSnapshot?: AgentRunRecord[];
   nestedSnapshotAt?: number;
-  /** Routed child dialogs in flight; aborted at settlement. */
+  /** Routed child dialogs in flight; aborted at settlement and when a durable hosted run is detached. */
   questions?: AbortController;
-  questionDecisionId?: string;
+  /** Open routed dialogs, oldest first, with the decision behind each once raised. */
+  openQuestions?: Array<{ decisionId?: string }>;
+  /** Routed dialogs not yet answered; close awaits a detached run's cancellations. */
+  asks?: Set<Promise<AgentChildQuestionResponse>>;
   latestRecord?: AgentRunRecord;
   latestUiRecord?: AgentRunRecord;
   background: boolean;
@@ -1298,9 +1301,9 @@ export class AgentManager {
       questionTimeoutMs: this.config.childQuestionTimeoutMs ?? DEFAULT_CHILD_QUESTION_TIMEOUT_MS,
       ...(this.config.childQuestions === "route" && this.#onChildQuestion
         ? {
-            ask: (question: Record<string, unknown>) => {
+            ask: (question: Record<string, unknown>, onDecision: (decisionId: string) => void) => {
               const run = managed();
-              return run ? this.#askParent(run, question) : Promise.resolve({ cancelled: true as const });
+              return run ? this.#askParent(run, question, onDecision) : Promise.resolve({ cancelled: true as const });
             },
           }
         : {}),
@@ -1770,7 +1773,14 @@ export class AgentManager {
     const detached = [...this.#runs.values()].filter(
       (managed) => !managed.settled && managed.hosted && managed.residency === "durable",
     );
-    for (const managed of detached) managed.hosted!.detach();
+    // Its routed questions lose their reporter with this host: cancel their
+    // decisions now (the detached run never sees the cancellation as an answer),
+    // and the runner asks again through the next host.
+    for (const managed of detached) {
+      managed.hosted!.detach();
+      managed.questions?.abort(new Error("Fabric resident host detached the run"));
+    }
+    await Promise.allSettled(detached.flatMap((managed) => [...(managed.asks ?? [])]));
     const running = [...this.#runs.values()].filter((managed) => !managed.settled && !detached.includes(managed));
     for (const managed of running) managed.hosted?.markShutdown();
     await Promise.allSettled(running.map((managed) => this.stop(managed.id)));
@@ -2271,45 +2281,62 @@ export class AgentManager {
   #routeChildQuestion(managed: ManagedAgent, data: unknown): void {
     if (typeof data !== "object" || data === null || typeof (data as { requestId?: unknown }).requestId !== "string") return;
     const question = data as Record<string, unknown>;
-    const respond = (response: AgentChildQuestionResponse): void => {
+    const requestId = question.requestId as string;
+    const steer = (command: Record<string, unknown>): void => {
       try {
         fs.appendFileSync(
           path.join(managed.runDirectory, "steer.jsonl"),
-          `${JSON.stringify({ type: "ui_response", requestId: question.requestId, ...response, id: randomUUID(), ts: Date.now() })}\n`,
+          `${JSON.stringify({ ...command, id: randomUUID(), ts: Date.now() })}\n`,
           { encoding: "utf8", mode: 0o600 },
         );
       } catch {
         // The worker's own deadline cancels the dialog if this write is lost.
       }
     };
+    const respond = (response: AgentChildQuestionResponse): void =>
+      steer({ type: "ui_response", requestId, ...response });
     if (!managed.runnerAdapter.capabilities.questions) {
       respond({ cancelled: true });
       return;
     }
-    void this.#askParent(managed, question).then((response) => {
+    // The worker records the decision in the run's status file, where a session
+    // reading a durable run finds it.
+    void this.#askParent(managed, question, (decisionId) => {
+      if (!managed.settled) steer({ type: "ui_decision", requestId, decisionId });
+    }).then((response) => {
       if (!managed.settled) respond(response);
     });
   }
 
   /** One routed dialog for a worker or hosted run; any failure cancels it. */
-  #askParent(managed: ManagedAgent, question: Record<string, unknown>): Promise<AgentChildQuestionResponse> {
+  #askParent(
+    managed: ManagedAgent,
+    question: Record<string, unknown>,
+    onDecision?: (decisionId: string) => void,
+  ): Promise<AgentChildQuestionResponse> {
     if (!this.#onChildQuestion || managed.settled) return Promise.resolve({ cancelled: true });
     managed.questions ??= new AbortController();
-    return this.#onChildQuestion({
+    const open: { decisionId?: string } = {};
+    (managed.openQuestions ??= []).push(open);
+    const asked = this.#onChildQuestion({
       runId: managed.id,
       name: managed.actorName ?? managed.name,
       ...(managed.actorId ? { actorId: managed.actorId } : {}),
       question,
       signal: managed.questions.signal,
       onDecision: (decisionId) => {
-        managed.questionDecisionId = decisionId;
+        open.decisionId = decisionId;
+        onDecision?.(decisionId);
         this.#invalidateUiList();
       },
     }).catch((): AgentChildQuestionResponse => ({ cancelled: true })).then((response) => {
-      delete managed.questionDecisionId;
+      managed.openQuestions!.splice(managed.openQuestions!.indexOf(open), 1);
+      managed.asks?.delete(asked);
       this.#invalidateUiList();
       return response;
     });
+    (managed.asks ??= new Set()).add(asked);
+    return asked;
   }
 
   #appendAttributedBudgetLedger(
@@ -2536,6 +2563,8 @@ export class AgentManager {
     const { logFile: _logFile, nestedAgents: _nestedAgents, ...safeRecord } = record;
     const model = record.model ?? managed.model;
     const thinking = record.thinking ?? managed.thinking;
+    // The oldest open question's decision; the status file can lag a worker's poll.
+    const blockingDecision = managed.openQuestions?.find((open) => open.decisionId)?.decisionId;
     return {
       ...safeRecord,
       cwd: managed.cwd,
@@ -2563,8 +2592,8 @@ export class AgentManager {
       ...(managed.branch ? { branch: managed.branch } : {}),
       ...(managed.worktree ? { worktree: managed.worktree } : {}),
       ...(managed.worktreeResult ? { worktreeResult: managed.worktreeResult } : {}),
-      ...(record.blockedOn && managed.questionDecisionId
-        ? { blockedOn: { ...record.blockedOn, decisionId: managed.questionDecisionId } }
+      ...(record.blockedOn && blockingDecision
+        ? { blockedOn: { ...record.blockedOn, decisionId: blockingDecision } }
         : {}),
     };
   }

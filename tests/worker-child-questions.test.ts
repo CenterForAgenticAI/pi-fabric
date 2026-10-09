@@ -150,6 +150,30 @@ describe("ChildQuestionRelay", () => {
     expect(subject.pending).toBe(0);
   });
 
+  it("reports the oldest pending question's decision and moves on when it is answered", () => {
+    const { io, relay: subject } = relay();
+    subject.request({ id: "a", method: "input", title: "first" });
+    subject.request({ id: "b", method: "input", title: "second" });
+    expect(io.blocked.mock.calls).toEqual([[42]]);
+    expect(subject.decide({ requestId: "b", decisionId: "dec_second" })).toBe(true);
+    expect(io.blocked).toHaveBeenLastCalledWith(42, "dec_second");
+    subject.decide({ requestId: "a", decisionId: "dec_first" });
+    expect(io.blocked).toHaveBeenLastCalledWith(42, "dec_first");
+
+    expect(subject.decide({ requestId: "unknown", decisionId: "dec_x" })).toBe(false);
+    expect(subject.decide({ requestId: "a", decisionId: "" })).toBe(false);
+    expect(subject.decide({ requestId: "a", decisionId: "d".repeat(129) })).toBe(false);
+    expect(subject.decide({ requestId: "a", decisionId: 7 })).toBe(false);
+    expect(io.blocked).toHaveBeenLastCalledWith(42, "dec_first");
+
+    subject.respond({ requestId: "a", value: "one" });
+    expect(io.blocked).toHaveBeenLastCalledWith(42, "dec_second");
+    subject.respond({ requestId: "b", value: "two" });
+    expect(io.blocked).toHaveBeenLastCalledWith(undefined);
+    expect(io.blocked).toHaveBeenCalledTimes(5);
+    subject.close();
+  });
+
   it("times out pending questions as cancelled", async () => {
     vi.useFakeTimers();
     try {
