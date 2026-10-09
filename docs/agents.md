@@ -381,7 +381,7 @@ registerAgentRunner(runner);
 
 ### Worker protocol
 
-A worker runner process talks to Fabric through four files named in `context.files`. `pi-fabric/runners` exports a JSON Schema for each (`AgentRunRecordSchema`, `LifecycleLineSchema`, `TranscriptEventSchema`, `SteerCommandSchema`, protocol version `FABRIC_WORKER_PROTOCOL_VERSION = 1`). Readers ignore unknown fields.
+A worker runner process talks to Fabric through four files named in `context.files`. `pi-fabric/runners` exports a JSON Schema for each (`AgentRunRecordSchema`, `LifecycleLineSchema`, `TranscriptEventSchema`, `SteerCommandSchema`, protocol version `FABRIC_WORKER_PROTOCOL_VERSION = 1`). Readers ignore unknown fields. Fabric can add a steer command type without changing the protocol version, as it did for `ui_decision`, which it sends only to a runner that declares `questions`. A worker must ignore a steer line whose `type` it does not know, as Fabric's own worker does.
 
 | File | Direction | Content |
 | --- | --- | --- |
