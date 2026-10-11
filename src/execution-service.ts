@@ -45,6 +45,7 @@ import {
   type ResolvedFabricAction,
 } from "./core/action-registry.js";
 import { semanticSearchActions } from "./core/semantic-search.js";
+import { TIER_A_SPECULATION_REFS } from "./speculation/eligibility.js";
 import { resolveJevModelRoute } from "./jev/routes.js";
 import {
   ApprovalController,
@@ -209,6 +210,37 @@ export interface FabricExecutionOptions {
   onPartial(snapshot: FabricExecutionPartial): void;
 }
 
+// A durable worker offers this fence to one fabric_exec call. Fabric accepts it
+// only when every effect must cross the host bridge, then arms it before the
+// first effect, so a crashed attempt that never armed changed nothing. It is
+// read through a global so the extension gains no chunk shared with the worker.
+interface DurableToolFence {
+  toolCallId: string;
+  accept(): Promise<void>;
+  arm(): Promise<void>;
+}
+const durableToolFence = (toolCallId: string): DurableToolFence | undefined => {
+  const holder = globalThis as typeof globalThis & { [key: symbol]: { getStore?(): unknown } | undefined };
+  const fence = holder[Symbol.for("pi-fabric.durable-tool-fence.v1")]?.getStore?.() as Partial<DurableToolFence> | undefined;
+  return fence?.toolCallId === toolCallId && typeof fence.accept === "function" && typeof fence.arm === "function"
+    ? fence as DurableToolFence
+    : undefined;
+};
+// Bridge refs that only discover, describe, or present. Semantic search is the
+// exception: it calls a network classifier, so it arms.
+const fenceFreeBridgeRefs: ReadonlySet<string> = new Set([
+  "fabric.$piAllTools", "fabric.$piSearch", "fabric.$piDescribe", "fabric.$piNamespace",
+  "fabric.$allTools", "fabric.$nativeSearch", "fabric.$nativeDescribe", "fabric.$describeNamespace",
+  "fabric.$providers", "fabric.$catalog", "fabric.$models", "fabric.$list", "fabric.$search",
+  "fabric.$describe", "fabric.$progress", "fabric.$configure", "fabric.$phase", "fabric.$item",
+  "fabric.$event", "fabric.$spanStart", "fabric.$spanEnd",
+]);
+// Registry actions a rerun may repeat: speculation's read-only tier, plus the
+// branch-local store load that every native-profile program performs.
+const fenceFreeActionRefs: ReadonlySet<string> = new Set([...TIER_A_SPECULATION_REFS, "native.load"]);
+const fenceFreeAction = (action: ResolvedFabricAction): boolean =>
+  fenceFreeActionRefs.has(action.ref) && action.risk === "read" && action.effect?.kind === "none";
+
 const nativeProviders = new WeakMap<ActionRegistry, NativeCodemodeProvider>();
 
 export class FabricExecutionService {
@@ -265,6 +297,8 @@ export class FabricExecutionService {
   }
 
   async execute(options: FabricExecutionOptions): Promise<FabricExecutionResult> {
+    // Capture before any await. A host-initiated run never belongs to the durable call.
+    const offeredFence = options.invokedBy === "host" ? undefined : durableToolFence(options.parentToolCallId);
     const executor = this.config.executor;
     const codemodeProfile = executor.codemodeProfile;
     if (
@@ -305,6 +339,12 @@ export class FabricExecutionService {
     const python = this.config.executor.kernel === "python";
     const enforce = this.config.schema.mode === "enforce";
     const monty = python && this.config.executor.pythonRuntime === "monty";
+    // CPython and the Node/Bun processes reach the OS directly, so only QuickJS
+    // and Monty can vouch that no effect bypassed the bridge.
+    const fence = offeredFence && (python ? monty : enforce || executor.runtime === "quickjs") ? offeredFence : undefined;
+    let fenceArm: Promise<void> | undefined;
+    // One durable mark per execution; a failed mark keeps failing every effect.
+    const armFence = (): Promise<void> => fenceArm ??= fence ? fence.arm() : Promise.resolve();
     // Snapshot kernel identity before awaits. Schema enforce isolates the selected
     // language rather than silently changing Python programs into TypeScript.
     const runtimeKind = python
@@ -660,10 +700,14 @@ export class FabricExecutionService {
               },
             }
           : {}),
-        ...(this.authorizer
+        ...(this.authorizer || fence
           ? {
-              authorize: (action) =>
-                this.authorizer!.authorize(action.ref, options.parentToolCallId),
+              authorize: async (action: ResolvedFabricAction) => {
+                // Arm before authorizer audits, preparation, approval, or provider work.
+                // A prompt or auto classifier call is not free to repeat either.
+                if (fence && !(fenceFreeAction(action) && approval.decidesWithoutInteraction(action))) await armFence();
+                await this.authorizer?.authorize(action.ref, options.parentToolCallId);
+              },
             }
           : {}),
         approve: async (action, preparedArgs) => {
@@ -820,10 +864,20 @@ export class FabricExecutionService {
       run: runNestedProgram,
     });
     try {
+      // Accept only after setup: from here every effect must cross the bridge.
+      if (fence) await fence.accept();
       sandboxResult = await runtime.execute(
         code,
         hostCall = async (ref, args, runtimeSignal) => {
           const callContext = { ...baseContext, signal: runtimeSignal };
+          // Registry calls arm after resolution; every other bridge ref arms here
+          // unless it only discovers or presents.
+          if (
+            fence && ref.startsWith("fabric.$") && ref !== "fabric.$nativeTool" && ref !== "fabric.$call" &&
+            (!fenceFreeBridgeRefs.has(ref) || (ref === "fabric.$search" && args.searchMode === "semantic"))
+          ) {
+            await armFence();
+          }
           switch (ref) {
             case "fabric.$nativeTool": {
               if (!args.args || typeof args.args !== "object" || Array.isArray(args.args)) throw new Error("Native tools take one argument object");
