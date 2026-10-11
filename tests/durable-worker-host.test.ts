@@ -18,14 +18,14 @@ beforeAll(async () => {
 }, 30000);
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
-async function worker(name: string, extra: string[] = [], environment: NodeJS.ProcessEnv = {}, discover = false) {
+async function worker(name: string, extra: string[] = [], environment: NodeJS.ProcessEnv = {}, discover = false, session = true) {
   const cwd = path.join(root, name); fs.mkdirSync(cwd, { recursive: true });
   const agentDir = path.join(cwd, "agent"); fs.mkdirSync(agentDir, { recursive: true });
   fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: environment.DURABLE_TEST_TRUST ?? "ask", compaction: { enabled: false }, retry: { enabled: false } }));
   const fixture = path.join(cwd, "fixture.txt"); if (!fs.existsSync(fixture)) fs.writeFileSync(fixture, "private fixture");
   const effect = path.join(cwd, "effect.txt");
   const child = spawn(process.execPath, [entry, "--mode", "rpc", "--durable-directory", path.join(cwd, "durable"), "--durable-run-id", name,
-    "--session", path.join(cwd, "session.jsonl"), ...(discover ? [] : ["--no-extensions"]), "-e", extension, "--model", "durable-offline/test", ...extra],
+    ...(session ? ["--session", path.join(cwd, "session.jsonl")] : ["--no-session"]), ...(discover ? [] : ["--no-extensions"]), "-e", extension, "--model", "durable-offline/test", ...extra],
     { cwd, env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, DURABLE_TEST_FAUX_MODULE: import.meta.resolve("@earendil-works/pi-ai/providers/faux"), DURABLE_TEST_FILE: fixture, DURABLE_TEST_EFFECT: effect, ...environment }, stdio: ["pipe", "pipe", "pipe"] }) as ChildProcessWithoutNullStreams;
   const messages: any[] = []; let pending = "", stderr = ""; const change = new Set<() => void>();
   child.stdout.on("data", chunk => {
@@ -175,6 +175,24 @@ describe("durable native RPC worker", () => {
       await resumed.wait(event => event.type === "agent_settled");
       expect(fs.readFileSync(resumed.effect, "utf8")).toBe("effect\n");
       expect(resumed.messages.some(event => JSON.stringify(event).match(/unsafe|interrupted|replay|failed/i))).toBe(true);
+    } finally { await resumed.stop(); }
+  }, 40000);
+
+  it.each([
+    { session: true, restored: "1" },
+    { session: false, restored: "0" },
+  ])("restores extension session entries after process death only from a session file: %o", async ({ session, restored }) => {
+    const name = session ? "entries-file" : "entries-memory";
+    const report = path.join(root, `${name}.txt`);
+    const counts = () => fs.existsSync(report) ? fs.readFileSync(report, "utf8").trim().split("\n") : [];
+    const first = await worker(name, ["--no-tools"], { DURABLE_TEST_ENTRIES: report }, false, session);
+    try {
+      first.send({ type: "prompt", id: "entries", message: "remember" });
+      await first.wait(event => event.type === "agent_settled");
+    } finally { await first.stop(true); }
+    const resumed = await worker(name, ["--no-tools"], { DURABLE_TEST_ENTRIES: report }, false, session);
+    try {
+      await expect.poll(counts, { timeout: 5000 }).toEqual(["0", restored]);
     } finally { await resumed.stop(); }
   }, 40000);
 });
