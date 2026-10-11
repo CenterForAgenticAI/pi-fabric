@@ -411,6 +411,15 @@ describe("AgentsProvider runner support", () => {
     expect(properties(setModel).scope?.enum).toEqual(["session", "project"]);
     expect(properties(setThinking).scope?.enum).toEqual(["session", "project"]);
   });
+  it("exposes requiredExtensions on run and spawn only", async () => {
+    const { provider } = setup();
+    const schemaProperties = async (action: string) =>
+      ((await provider.describe(action, context))?.inputSchema as { properties: Record<string, { type?: string; items?: { type?: string } }> }).properties;
+    for (const action of ["run", "spawn"]) {
+      expect((await schemaProperties(action)).requiredExtensions).toMatchObject({ type: "array", items: { type: "string" } });
+    }
+    expect(await schemaProperties("handoff")).not.toHaveProperty("requiredExtensions");
+  });
   it("exposes the Veda runner and per-run persona on run and spawn", async () => {
     const { provider } = setup();
     const run = await provider.describe("run", context);
