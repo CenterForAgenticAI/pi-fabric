@@ -30,7 +30,7 @@ it.skipIf(!required)("requires usable credential-isolated socket-denied sandbox 
 // Unsupported local platforms select no real-RPC proof. The required Linux CI
 // capability assertion above fails instead of pretending these skipped tests ran.
 describe.skipIf(!isolated)("installed Pi public RPC task boundary (network denied)", () => {
-  it.each(["handled", "continue", "throw"])("observes %s input disposition with no real accounts", async scenario => {
+  it.each(["handled", "handled-notice", "continue", "throw"])("observes %s input disposition with no real accounts", async scenario => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-prompt-rpc-"));
     roots.push(root);
     fs.mkdirSync(path.join(root, "agent"));
@@ -51,9 +51,11 @@ describe.skipIf(!isolated)("installed Pi public RPC task boundary (network denie
     const sandboxPid = JSON.parse(fs.readFileSync(path.join(root, "sandbox-info.json"), "utf8"))["child-pid"];
     expect(Number.isSafeInteger(sandboxPid) && sandboxPid > 0).toBe(true);
     expect(() => process.kill(sandboxPid, 0)).toThrow();
-    if (scenario === "handled") {
+    if (scenario === "handled" || scenario === "handled-notice") {
       expect(result, log).toMatchObject({ status: "failed", turns: 0,
-        error: "Pi handled the task without starting a turn; terminating child" });
+        error: scenario === "handled"
+          ? "Pi handled the task without starting a turn; terminating child"
+          : "Pi handled the task without starting a turn; terminating child. Child notice: Synthetic refusal. Select prompt-probe/offline, then send again." });
       expect(log).toContain('"disposition":"handled"');
       expect(log).not.toContain('"type":"agent_start"');
       // Zero invocations at the public provider stream boundary proves no send.
