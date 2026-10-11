@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -350,6 +350,52 @@ const hostEntry = path.resolve("tests/fixtures/resident-host-process.ts");
 // Registers the "restart-asker" runner inside each host process.
 const questionRunner = path.resolve("tests/fixtures/hosted-question-runner.ts");
 
+// Store locks (mesh, actor registry, bindings) held under the mesh root. The
+// host's own host.lock is left out: a crashed host leaves it by design. A
+// directory or lock can vanish while we walk, so ENOENT just skips it.
+const heldStoreLocks = (meshRoot: string): string[] => {
+  const held: string[] = [];
+  const walk = (directory: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.name.endsWith(".lock") && entry.name !== "host.lock") held.push(entryPath);
+      else if (entry.isDirectory()) walk(entryPath);
+    }
+  };
+  walk(meshRoot);
+  return held;
+};
+
+const processStopped = (pid: number): boolean =>
+  spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim().startsWith("T");
+
+/**
+ * Freeze the host (SIGSTOP) at a moment it holds no store lock, so the SIGKILL
+ * that follows is a crash between store writes. A crash inside a store write
+ * leaves that lock behind, and the next host's writes wait out its stale
+ * window: a different failure, which branch fix/mesh-stale-lock-owner fixes and
+ * tests. If a lock is held, let the host run on (SIGCONT) and try again.
+ */
+const freezeOutsideLocks = async (pid: number, meshRoot: string): Promise<void> => {
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    process.kill(pid, "SIGSTOP");
+    await waitFor(() => processStopped(pid), 15_000);
+    const held = heldStoreLocks(meshRoot);
+    if (held.length === 0) return;
+    process.kill(pid, "SIGCONT");
+    if (Date.now() >= deadline) throw new Error(`Resident host kept holding store locks: ${held.join(", ")}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+};
+
 const startHostProcess = async (state: Harness, backend: string): Promise<HostProcess> => {
   const [command, ...args] = await scriptSpawnArgs(hostEntry, ["--config", state.configPath]);
   const child = spawn(command!, args, {
@@ -375,14 +421,16 @@ const startHostProcess = async (state: Harness, backend: string): Promise<HostPr
   return {
     pid: child.pid!,
     async stop(signal) {
-      child.kill(signal);
       if (signal === "SIGTERM") {
+        child.kill(signal);
         // A graceful close ends by releasing the owner record.
         await waitFor(() => !fs.existsSync(ownerPath), 15_000);
         const timer = setTimeout(() => child.kill("SIGKILL"), 5_000);
         await exited;
         clearTimeout(timer);
       } else {
+        await freezeOutsideLocks(child.pid!, state.config.meshRoot);
+        child.kill("SIGKILL");
         // Reaped, so the next host judges the owner record's pid dead.
         await exited;
       }
