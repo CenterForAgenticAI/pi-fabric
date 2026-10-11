@@ -440,6 +440,33 @@ export const lockOwnerLiveness = (
 };
 
 /**
+ * True only when a line-oriented lock owner is provably gone, whatever the
+ * lock's age: its identity line names this host, PID namespace and boot, and
+ * its pid is absent or now belongs to a process started at another time.
+ * Legacy owners, other hosts, namespaces or boots, unusable pids, and alive or
+ * unknown probes prove nothing, so callers keep their stale-age rule for them.
+ */
+export const lockOwnerProvablyDead = (
+  pid: number,
+  identityLine: string | undefined,
+  options: Pick<OwnerLivenessOptions, "probes"> = {},
+): boolean => {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  const identity = decodeOwnerIdentityLine(identityLine);
+  if (!identity) return false;
+  const self = (options.probes?.self ?? currentOwnerIdentity)();
+  if (
+    identity.hostname !== self.hostname ||
+    identity.pidNamespace !== self.pidNamespace ||
+    identity.bootId !== self.bootId
+  ) return false;
+  return ownerLiveness(
+    { ...identity, pid },
+    options.probes === undefined ? {} : { probes: options.probes },
+  ) === "dead";
+};
+
+/**
  * Runs `refresh(now)` on an unref'd interval until the returned stop function
  * is called. Refresh failures are swallowed: a missed beat only ages the
  * record toward the TTL.

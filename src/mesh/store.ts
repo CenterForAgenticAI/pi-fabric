@@ -5,6 +5,7 @@ import {
   writeFileAtomic,
   encodeOwnerIdentityLine,
   lockOwnerLiveness,
+  lockOwnerProvablyDead,
   SHORT_LOCK_MAX_HOLD_MS,
 } from "../core/atomic-write.js";
 import { readJsonlPage } from "../log-tail.js";
@@ -1016,8 +1017,10 @@ export class MeshStore {
   // either the owner file names a dead process, or the owner file is missing
   // or corrupt — the owner crashed between creating the lock directory and
   // writing the owner file — and the untouched lock directory itself is
-  // stale. Removal re-reads the state it judged stale so a freshly rotated
-  // owner is never deleted mid-check.
+  // stale. A younger lock is also removed when its owner is provably dead:
+  // same host, PID namespace and boot, and the pid is gone or reused. Removal
+  // re-reads the state it judged stale so a freshly rotated owner is never
+  // deleted mid-check.
   #clearStaleLock(ownerPath: string): boolean {
     let lockModifiedAt: number | undefined;
     let owner: string | undefined;
@@ -1033,12 +1036,16 @@ export class MeshStore {
     if (owner !== undefined) {
       const [, pidText, createdText, identityLine] = owner.trim().split("\n");
       const createdAt = Number(createdText);
-      if (Number.isFinite(createdAt) && Date.now() - createdAt <= this.#staleLockMs) return false;
+      const fresh = Number.isFinite(createdAt) && Date.now() - createdAt <= this.#staleLockMs;
+      // A fresh lock is cleared only when its local owner is provably dead.
       // Unknown (another PID namespace within the hold ceiling) is not death.
-      if (lockOwnerLiveness(Number(pidText), createdAt, identityLine, {
-        legacyAlive: processAlive,
-        maxHoldMs: Math.max(SHORT_LOCK_MAX_HOLD_MS, this.#staleLockMs),
-      }) !== "dead") return false;
+      const dead = fresh
+        ? lockOwnerProvablyDead(Number(pidText), identityLine)
+        : lockOwnerLiveness(Number(pidText), createdAt, identityLine, {
+          legacyAlive: processAlive,
+          maxHoldMs: Math.max(SHORT_LOCK_MAX_HOLD_MS, this.#staleLockMs),
+        }) === "dead";
+      if (!dead) return false;
       try {
         if (fs.readFileSync(ownerPath, "utf8") !== owner) return false;
         fs.rmSync(this.#lockPath, { recursive: true, force: true });

@@ -1,8 +1,10 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActorRegistryStore } from "../src/actors/registry-store.js";
+import { encodeOwnerIdentityLine } from "../src/core/atomic-write.js";
 
 const roots: string[] = [];
 const setup = () => {
@@ -17,6 +19,23 @@ const setup = () => {
 const installLock = (lockPath: string, pid: number, createdAt: number) => {
   fs.mkdirSync(lockPath, { recursive: true });
   fs.writeFileSync(path.join(lockPath, "owner"), `previous\n${pid}\n${createdAt}\n`);
+};
+
+// A real pid that just exited, with the identity line the store writes.
+const deadChildPid = (): number => {
+  const child = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore", timeout: 10_000 });
+  expect(child.status).toBe(0);
+  expect(child.pid).toBeGreaterThan(0);
+  return child.pid!;
+};
+const foreignNamespaceLine = (): string => {
+  const own = JSON.parse(encodeOwnerIdentityLine()) as Record<string, unknown>;
+  return JSON.stringify({
+    hostname: own.hostname,
+    pidNamespace: "pid:[1]",
+    bootId: own.bootId,
+    startedAt: own.startedAt,
+  });
 };
 
 afterEach(() => {
@@ -78,6 +97,39 @@ describe("ActorRegistryStore", () => {
     await expect(store.withLock(() => "recovered")).resolves.toBe("recovered");
     expect(process.kill).toHaveBeenCalledWith(123456, 0);
     expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("recovers a fresh lock at once when its local owner is provably dead", async () => {
+    const { store, lockPath } = setup();
+    const pid = deadChildPid();
+    fs.mkdirSync(lockPath, { recursive: true });
+    fs.writeFileSync(path.join(lockPath, "owner"), `crashed\n${pid}\n${Date.now()}\n${encodeOwnerIdentityLine()}\n`);
+
+    const started = performance.now();
+    await expect(store.withLock(() => "recovered")).resolves.toBe("recovered");
+
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("honours a fresh legacy or foreign lock with a dead pid until the timeout", async () => {
+    const pid = deadChildPid();
+    for (const identityLine of [undefined, foreignNamespaceLine()]) {
+      vi.useFakeTimers();
+      const { store, lockPath } = setup();
+      const owner = `previous\n${pid}\n${Date.now()}\n${identityLine ?? ""}`;
+      fs.mkdirSync(lockPath, { recursive: true });
+      fs.writeFileSync(path.join(lockPath, "owner"), owner);
+      const operation = vi.fn();
+      const result = expect(store.withLock(operation)).rejects.toThrow(
+        "Timed out waiting for the Fabric actor registry lock",
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+      await result;
+      expect(operation).not.toHaveBeenCalled();
+      expect(fs.readFileSync(path.join(lockPath, "owner"), "utf8")).toBe(owner);
+      vi.useRealTimers();
+    }
   });
 
   it("waits for a live owner without stealing its stale lock", async () => {
