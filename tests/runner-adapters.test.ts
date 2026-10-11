@@ -274,6 +274,54 @@ describe("hosted runners", () => {
     expect(fs.readFileSync(path.join(manager.runDirectory(result.id)!, "events.jsonl"), "utf8")).toContain("thinking");
   });
 
+  describe("structured output against the run's schema", () => {
+    const schema = {
+      type: "object",
+      properties: { item: { type: "object", properties: { n: { type: "number" } }, required: ["n"] } },
+      required: ["item"],
+    };
+    const finishing = (id: string, structured: unknown, output = "") => {
+      const fake = fakeHosted(id, {
+        onStart: (reporter) => reporter.finish({ status: "completed", output, structured }),
+      });
+      register(fake.adapter);
+      return fake;
+    };
+
+    it("completes a valid structured value unchanged", async () => {
+      finishing("valid-shape", { item: { n: 7 } }, "done");
+      const manager = managerFor(tempRoot());
+      const result = await manager.run({ task: "Valid", runner: "valid-shape", schema });
+      expect(result).toMatchObject({ status: "completed", text: "done", value: { item: { n: 7 } } });
+      expect(result.error).toBeUndefined();
+      expect(readStatus(manager, result.id)).toMatchObject({ status: "completed", value: { item: { n: 7 } } });
+    });
+
+    it("fails a nested schema violation with the structured-output error", async () => {
+      finishing("nested-violation", { item: { n: "not a number" } }, "done");
+      const manager = managerFor(tempRoot());
+      const result = await manager.run({ task: "Invalid", runner: "nested-violation", schema });
+      expect(result.status).toBe("failed");
+      expect(result.error).toMatch(/^Structured agent output was invalid: .*number.* \(output: done\)$/);
+      expect(readStatus(manager, result.id)).toMatchObject({
+        status: "failed",
+        error: expect.stringMatching(/^Structured agent output was invalid: /),
+      });
+    });
+
+    it("leaves a run without a schema unchanged", async () => {
+      finishing("no-schema", { item: { n: "not a number" } }, "plain prose, not JSON");
+      const manager = managerFor(tempRoot());
+      const result = await manager.run({ task: "Free", runner: "no-schema" });
+      expect(result).toMatchObject({
+        status: "completed",
+        text: "plain prose, not JSON",
+        value: { item: { n: "not a number" } },
+      });
+      expect(result.error).toBeUndefined();
+    });
+  });
+
   it("hands hosted runners the narrowed host scope", async () => {
     const scopeHolder = globalThis as unknown as Record<symbol, unknown>;
     const holderKey = Symbol.for("pi-fabric:scope:v1");
