@@ -25,4 +25,13 @@ export default async function (pi: ExtensionAPI) {
       return { content: [{ type: "text", text: "stopped" }], details: {} };
     },
   });
+  // Opt-in: count this extension's own session entries at startup and add one per turn.
+  const report = process.env.DURABLE_TEST_ENTRIES;
+  if (report) {
+    pi.on("session_start", (_event, ctx) => {
+      const entries = ctx.sessionManager.getEntries().filter(entry => entry.type === "custom" && entry.customType === "durable-test.turn");
+      fs.appendFileSync(report, `${entries.length}\n`);
+    });
+    pi.on("turn_end", () => { pi.appendEntry("durable-test.turn", { turn: true }); });
+  }
 }

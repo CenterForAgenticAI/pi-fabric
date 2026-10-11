@@ -133,6 +133,11 @@ const safeRunTree = (root: string, childrenStopped: boolean, owner?: RunRootOwne
         if (fs.readdirSync(file).some((child) => !child.endsWith(".jsonl") || !ownedStat(path.join(file, child))?.isFile())) return false;
         continue;
       }
+      if (stat.isDirectory() && name === "durable-session") {
+        // The pi-durable worker's private Pi session files (src/worker.ts).
+        if (!onlyOwnedFiles(file, (child) => child.endsWith(".jsonl"))) return false;
+        continue;
+      }
       if (stat.isDirectory() && name === "durable") {
         if (!safeDurableTree(file)) return false;
         continue;

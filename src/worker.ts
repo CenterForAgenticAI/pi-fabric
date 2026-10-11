@@ -197,6 +197,26 @@ const terminateChild = (child: ChildProcess, signal: NodeJS.Signals): void => {
 
 
 
+/**
+ * A pi-durable child's journal restores messages only. Without a session file,
+ * a resumed child loses every entry extensions saved (custom entries, context
+ * edits, compaction). Keep a private file with the run so retention removes it
+ * with the run. A relaunched attempt reopens it: never truncate.
+ */
+const durableSessionFile = (statusFile: string): string => {
+  const directory = path.join(path.dirname(statusFile), "durable-session");
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  fs.chmodSync(directory, 0o700);
+  const file = path.join(directory, "session.jsonl");
+  try {
+    fs.closeSync(fs.openSync(file, "wx", 0o600));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if (!fs.lstatSync(file).isFile()) throw new Error(`Durable session file must be a regular file: ${file}`);
+  }
+  return file;
+};
+
 let crashContext: { statusFile: string; record: AgentRunRecord } | undefined;
 let runRecordHelpers: WorkerRunRecordModule | undefined;
 let terminalWritten = false;
@@ -308,7 +328,9 @@ const main = async (): Promise<void> => {
     ? fs.readFileSync(options.schemaFile, "utf8")
     : undefined;
   const piArguments = ["--mode", "rpc"];
-  if (options.sessionFile) piArguments.push("--session", options.sessionFile);
+  const piSessionFile = options.sessionFile ??
+    (options.runner === "pi-durable" ? durableSessionFile(options.statusFile) : undefined);
+  if (piSessionFile) piArguments.push("--session", piSessionFile);
   else piArguments.push("--no-session");
   if (!options.extensions) piArguments.push("--no-extensions");
   // Extension-registered model providers still resolve without the rest of
