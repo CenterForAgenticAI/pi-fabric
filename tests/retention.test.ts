@@ -278,6 +278,32 @@ describe("temporal retention", () => {
     expect(sweepAt(tempRoot, 6 * HOUR + 2).removedRoots).toEqual([runRoot]);
   });
 
+  it("reclaims a pi-durable worker's session folder with its run, but keeps unknown or linked contents", () => {
+    const tempRoot = temporaryDirectory();
+    const runRoot = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "durable-session");
+    markRunRootActive(runRoot, 1);
+    const run = (name: string, files: Record<string, string>) => {
+      const directory = path.join(runRoot, name);
+      writeStatus(directory, { status: "completed", finishedAt: DAY });
+      const sessions = path.join(directory, "durable-session");
+      fs.mkdirSync(sessions, { recursive: true });
+      for (const [file, text] of Object.entries(files)) fs.writeFileSync(path.join(sessions, file), text);
+      return directory;
+    };
+    const plain = run("plain", { "session.jsonl": "{}\n", "2026-10-11T00-00-00-000Z_new.jsonl": "{}\n" });
+    const unknown = run("unknown", { "session.jsonl": "{}\n", "notes.txt": "not Fabric's" });
+    const outside = path.join(temporaryDirectory(), "outside.jsonl");
+    fs.writeFileSync(outside, "keep");
+    const linked = run("linked", { "session.jsonl": "{}\n" });
+    fs.symlinkSync(outside, path.join(linked, "durable-session", "other.jsonl"));
+    markRunRootClosed(runRoot, DAY, true);
+
+    const result = sweepAt(tempRoot, 2 * DAY + 1);
+    expect(result.removedRuns).toEqual([plain]);
+    for (const kept of [unknown, linked]) expect(fs.existsSync(kept)).toBe(true);
+    expect(fs.readFileSync(outside, "utf8")).toBe("keep");
+  });
+
   it("expires actor archives after seven days while preserving the latest run", () => {
     const root = temporaryDirectory();
     const runsDirectory = path.join(root, "runs");
