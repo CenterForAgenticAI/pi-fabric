@@ -96,21 +96,17 @@ export class ApprovalController {
     readonly headless?: (action: ResolvedFabricAction, reason?: string) => Promise<boolean>,
   ) {}
 
-  /** `humanWait` pauses the program deadline only while a person is asked:
-   * the screen prompt or a headless decision. Policy checks and the auto
-   * classifier still spend the normal budget. */
-  async approve(
-    action: ResolvedFabricAction,
-    args: Record<string, unknown> = {},
-    humanWait?: FabricHumanWait,
-  ): Promise<void> {
+  /** Policy only: true when approve() settles without a prompt or classifier call. */
+  decidesWithoutInteraction(action: ResolvedFabricAction): boolean {
+    return this.#policyDecision(action) !== "interactive";
+  }
+
+  #policyDecision(action: ResolvedFabricAction): "allow" | "deny-action" | "deny-risk" | "interactive" {
     const override = actionApprovalOverride(this.config.actions, action.ref);
     // An action-level deny is absolute: no inherited or session risk grant lifts it.
-    if (override === "deny") {
-      throw new FabricTraceSafeError(`${action.ref} is denied by the Fabric approvals.actions policy`);
-    }
+    if (override === "deny") return "deny-action";
     // This is an immutable host capability, not a model/configurable network grant.
-    if (action.risk === "network" && this.brokeredNetwork?.(action.provider) === true) return;
+    if (action.risk === "network" && this.brokeredNetwork?.(action.provider) === true) return "allow";
     // Exact ref beats provider wildcard beats the risk-class mode.
     const mode = override ?? this.config[action.risk];
     if (
@@ -119,10 +115,27 @@ export class ApprovalController {
         this.#inheritedRisks.has(action.risk) ||
         this.sessionApprovals.approvedRisks.has(action.risk)
       ))
-    ) return;
-    if (mode === "deny") {
+    ) return "allow";
+    return mode === "deny" ? "deny-risk" : "interactive";
+  }
+
+  /** `humanWait` pauses the program deadline only while a person is asked:
+   * the screen prompt or a headless decision. Policy checks and the auto
+   * classifier still spend the normal budget. */
+  async approve(
+    action: ResolvedFabricAction,
+    args: Record<string, unknown> = {},
+    humanWait?: FabricHumanWait,
+  ): Promise<void> {
+    const policy = this.#policyDecision(action);
+    if (policy === "deny-action") {
+      throw new FabricTraceSafeError(`${action.ref} is denied by the Fabric approvals.actions policy`);
+    }
+    if (policy === "allow") return;
+    if (policy === "deny-risk") {
       throw new FabricTraceSafeError(`${action.ref} is denied by the Fabric ${action.risk} policy`);
     }
+    const mode = actionApprovalOverride(this.config.actions, action.ref) ?? this.config[action.risk];
 
     await this.sessionApprovals.serialize(async () => {
       if (this.sessionApprovals.approvedRisks.has(action.risk)) return;

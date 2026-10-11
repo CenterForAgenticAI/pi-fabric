@@ -66,6 +66,16 @@ async function worker(name: string, extra: string[] = [], environment: NodeJS.Pr
   return { child, messages, send, wait, stop, cwd, fixture, effect };
 }
 
+// Load the built Fabric extension next to the fixture, with a program that holds
+// on a gate file until the test opens it.
+const fabricWorker = (name: string, code: string) => {
+  const agentDir = path.join(root, name, "agent"); fs.mkdirSync(agentDir, { recursive: true });
+  fs.writeFileSync(path.join(agentDir, "fabric.json"), JSON.stringify({ fullCodeMode: true, mesh: { enabled: false }, mcp: { enabled: false } }));
+  const inherited = Object.fromEntries(["PI_FABRIC_DEPTH", "PI_FABRIC_BUDGET", "PI_FABRIC_BUDGET_FILE", "PI_FABRIC_BUDGET_ID", "PI_FABRIC_WRITE_POLICY", "PI_FABRIC_TOOL_ALLOWLIST", "PI_FABRIC_SCOPE", "PI_FABRIC_LINEAGE", "PI_FABRIC_PARENT_RUN", "PI_FABRIC_ACTOR_ID"].map(key => [key, undefined]));
+  return worker(name, ["-e", path.resolve("dist/index.js")], { ...inherited, PI_OFFLINE: "1", DURABLE_TEST_FABRIC_CODE: code });
+};
+const holdOnGate = (gate: string) => `const gate = await pi.read({ path: ${JSON.stringify(gate)} });\nif (gate.includes("hold")) { await tools.progress({ message: "holding" }); await new Promise(resolve => setTimeout(resolve, 60000)); }\nreturn gate.includes("open") ? "gate-open" : "gate-closed";`;
+
 const answer = (messages: any[]) => messages.filter(event => event.type === "message_end" && event.message?.role === "assistant")
   .flatMap(event => event.message.content).filter(part => part.type === "text").map(part => part.text).join("\n");
 
@@ -229,4 +239,44 @@ export default function () { fs.writeFileSync(${JSON.stringify(marker)}, String(
     );
     expect(fs.existsSync(probe.marker)).toBe(false);
   }, 30000);
+
+  it("reruns an interrupted read-only fabric_exec once after confirmed process death", async () => {
+    const gate = path.join(root, "fabric-read", "gate.txt");
+    const first = await fabricWorker("fabric-read", holdOnGate(gate));
+    try {
+      fs.writeFileSync(gate, "hold\n");
+      first.send({ type: "prompt", id: "read", message: "fabric fixture" });
+      // Progress follows the durable accept, so the kill lands after it.
+      await first.wait(event => event.type === "tool_execution_update" && JSON.stringify(event).includes("holding"));
+    } finally { await first.stop(true); }
+    fs.writeFileSync(gate, "open\n");
+    const resumed = await fabricWorker("fabric-read", holdOnGate(gate));
+    try {
+      resumed.send({ type: "prompt", id: "read", message: "fabric fixture" });
+      await resumed.wait(event => event.type === "agent_settled");
+      expect(answer(resumed.messages)).toContain("gate-open");
+      expect(answer(resumed.messages)).not.toMatch(/interrupted/i);
+    } finally { await resumed.stop(); }
+  }, 60000);
+
+  it("does not rerun an interrupted fabric_exec that reached an effect", async () => {
+    const gate = path.join(root, "fabric-effect", "gate.txt");
+    const effect = path.join(root, "fabric-effect", "effect.txt");
+    const code = `await pi.bash({ cmd: ${JSON.stringify(`echo effect >> '${effect}'`)} });\n${holdOnGate(gate)}`;
+    const first = await fabricWorker("fabric-effect", code);
+    try {
+      fs.writeFileSync(gate, "hold\n");
+      first.send({ type: "prompt", id: "effect", message: "fabric fixture" });
+      await first.wait(event => event.type === "tool_execution_update" && JSON.stringify(event).includes("holding"));
+    } finally { await first.stop(true); }
+    fs.writeFileSync(gate, "open\n");
+    const resumed = await fabricWorker("fabric-effect", code);
+    try {
+      resumed.send({ type: "prompt", id: "effect", message: "fabric fixture" });
+      await resumed.wait(event => event.type === "agent_settled");
+      expect(fs.readFileSync(effect, "utf8")).toBe("effect\n");
+      expect(answer(resumed.messages)).not.toContain("gate-open");
+      expect(answer(resumed.messages)).toMatch(/interrupted/i);
+    } finally { await resumed.stop(); }
+  }, 60000);
 });
