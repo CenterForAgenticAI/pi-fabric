@@ -114,9 +114,37 @@ pi.events.emit(FABRIC_PROGRAM_RUN_EVENT, {
 });
 ```
 
-The reply arrives exactly once. A payload without a `reply` function makes the listener throw synchronously; Pi's event bus catches and logs that throw, and other listeners still run. A `reply` property whose getter throws cannot be answered: Fabric neither replies nor throws. Other invalid fields, a missing session, an unknown ref, and a failed run all reply `{ ok: false, error }`. The event runs in the live session that Fabric saw at `session_start`.
+The reply arrives exactly once. A payload without a `reply` function makes the listener throw synchronously; Pi's event bus catches and logs that throw, and other listeners still run. A `reply` property whose getter throws cannot be answered: Fabric neither claims nor replies, and nothing is thrown. Other invalid fields, a missing session, an unknown ref, and a failed run all reply `{ ok: false, error }`. The event runs in the live session that Fabric saw at `session_start`.
 
-Fabric reads `reply` and the named fields (`ref`, `input`, `requirePromoted`, `signal`) once, when the event arrives, and ignores every other field. A caller that deletes or changes the request afterwards changes nothing, and the reply still arrives on the original `reply`. A named field whose getter throws never escapes the listener. Fabric replies once `{ ok: false, error: "Invalid program run request: <field> could not be read" }`, and nothing runs. The refusal comes at the place that field's check would have come: `ref`, then `requirePromoted`, then `signal`, then the session, then `input`. An earlier check that fails keeps its own error. Before this change, such a getter made the listener throw with no reply. A getter that throws is read once and is not read again.
+Fabric reads `reply` and the named fields (`ref`, `code`, `kernel`, `sha256`, `input`, `requirePromoted`, `signal`, `claim`) once, when the event arrives, and ignores every other field. A caller that deletes or changes the request afterwards changes nothing, and the reply still arrives on the original `reply`. A named field whose getter throws never escapes the listener. Fabric replies once `{ ok: false, error: "Invalid program run request: <field> could not be read" }`, and nothing runs. The refusal comes at the place that field's check would have come. For a `ref` request that is `ref`, then `requirePromoted`, then `signal`, then the session, then `code`, `kernel`, `sha256`, `input` and `claim`. An earlier check that fails keeps its own error. Before this change, such a getter made the listener throw with no reply. A getter that throws is read once and is not read again.
+
+### Running caller-supplied code
+
+A host extension that builds program text itself, such as a program that ships in a package or a small runner it generates per run, can pass the text as `code`, with no `ref`. Extensions already run with the user's full permissions, so this adds no new power. The hash makes the record honest about exactly what ran.
+
+```ts
+import { createHash } from "node:crypto";
+import { FABRIC_PROGRAM_RUN_EVENT, type FabricProgramRunReplyV1 } from "pi-fabric/protocol";
+
+const code = "return { who: input.who };";
+let fabricPresent = false;
+pi.events.emit(FABRIC_PROGRAM_RUN_EVENT, {
+  code,
+  kernel: "typescript",                                    // optional; the only value today
+  sha256: createHash("sha256").update(code, "utf8").digest("hex"),
+  input: { who: "pi-stack" },                              // optional, as for a ref run
+  claim: () => { fabricPresent = true; },                  // optional
+  reply: (result: FabricProgramRunReplyV1) => {},
+});
+if (!fabricPresent) { /* pi-fabric is absent or too old: fall back now */ }
+```
+
+- A request has exactly one of `ref` or `code`. `code` needs `sha256`: the lowercase hex SHA-256 of the code's UTF-8 bytes. `requirePromoted` applies only to `ref`.
+- `claim` is called synchronously, before the listener's first `await`, for every request it will answer, including one it will refuse. A caller that sees no call knows pi-fabric is absent or too old. A `claim` that returns `false` means another responder already holds the request, and Fabric stays silent. Any other return value, or a throw from the call, is ignored. A request without `claim` behaves as before. A `claim` property whose getter throws cannot be called: Fabric refuses that request with one reply and runs nothing. The reply is `Invalid program run request: claim could not be read` unless an earlier check fails first, such as an invalid field or no active session.
+- Fabric refuses before running anything, with one `{ ok: false, error }` reply, when: both or neither of `ref` and `code` are present; `code` is empty or longer than 65 536 characters (the saved-program limit); `kernel` is not `"typescript"`; `sha256` is missing or not 64 lowercase hex characters; the hash does not match the code; or there is no active session. A session whose kernel is Python also refuses, because the code is TypeScript. A session without the `programs` provider, such as a managed embedded host, also refuses, because the run goes through `programs.run`. A valid `ref` request, and every `ref` request that was refused with a reply before, behaves as before `code` existed. The one difference is the next point: an unreadable `code`, `kernel`, `sha256` or `claim` now refuses it.
+- On a `code` request, an unreadable field is refused in this order: `ref`, `code`, `kernel`, `sha256`, the hash check, `signal`, the session, then `requirePromoted`, `input` and `claim`. Fabric still claims the request when `claim` can be read. On a `ref` request, Fabric now also reads `code`, `kernel`, `sha256` and `claim`. Before `code` existed it never read them, so it ran that request; a throwing getter on one of those now refuses it, after the session check.
+- The run takes the saved-program path: a one-call host program invokes `programs.run`, which resolves the verified code in place of a saved record. It therefore faces the same `programs.run` approval and authorization as a `ref` run. A policy that denies `programs.run`, through `approvals.execute` or `approvals.actions["programs.run"]`, refuses a `code` request as it refuses a `ref` request. Actions inside the code face their own approvals as usual. The run has the root capability view, `invokedBy: "host"`, and a `pi-fabric-program-run` message labelled `caller-code@<first 12 hex of the hash>`.
+- The trace records one `fabric.program.run` operation with `args: { program: "caller-code@<full sha256>", invokedBy: "host" }`, as a saved program records `name@<full digest>`. The reply's `program` and the message details' `program` carry the same value. The message details also carry `source: "caller-code"` and the full `sha256`, never the code. The code is held only for that run and resolves only inside the host run that supplied it, never for a model's `programs.run`. Nothing is written to the program store. The binding lasts for the whole host execution, not for one call: inside that run, a saved program that the code runs can itself call `programs.run` with `caller-code@<sha256>` and reach the same code, still under the 16-run nesting budget and the same approvals. It is gone when the run ends, whether it succeeded, threw or was aborted, and no other execution can resolve it.
 
 ## Mesh-triggered runs
 
