@@ -392,8 +392,14 @@ class ResidentHost {
     this.#recoverInterruptedRequests();
     // An earlier host that died left its routed questions open, and their answers
     // would reach nothing. Cancel them before re-attaching runs, whose runners ask
-    // again through this host.
-    await cancelOrphanedChildQuestions(this.#decisions).catch(() => []);
+    // again through this host. A failure must not stop startup, but it leaves those
+    // decisions open, so report it on stderr; the launcher keeps it in child-stderr.log.
+    await cancelOrphanedChildQuestions(this.#decisions).catch((error: unknown) => {
+      process.stderr.write(
+        `[pi-fabric] resident host ${this.hostId} could not cancel orphaned child questions at startup: ${errorMessage(error)}\n`,
+      );
+      return [];
+    });
     await this.#recoverHostedRuns();
     const firstSeenAgents = new Map<string, number>();
     this.participants.registerSource(() =>
