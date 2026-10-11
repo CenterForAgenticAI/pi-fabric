@@ -52,6 +52,14 @@ observers from memory after that commit. The journal grows with the transcript,
 not with the square of each streamed message. Run retention removes `durable/`
 with its run, and unknown or linked files inside it still preserve the run.
 
+Without a seeded session (`fork: true` or a handoff), the worker also keeps a
+private Pi session file at `durable-session/session.jsonl` in its run directory
+(mode `0600`, folder `0700`). The journal restores messages only; the session
+file restores what extensions saved in the session, such as custom entries,
+context edits, and compaction, when a relaunched attempt reopens it. Explicit
+`pi` children keep `--no-session`. Run retention removes `durable-session/`
+with its run; a file other than `*.jsonl`, or a link, preserves the run.
+
 Durability **does not restore arbitrary JavaScript continuations**, promise
 general exactly-once external effects, or restart failed workers indefinitely.
 The standard process/actor lifecycle controls stop/retry/retention. A new run is

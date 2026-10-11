@@ -132,12 +132,12 @@ describe("real worker durable process protocol", () => {
     `);
   });
 
-  const run = async (runner = "pi-durable", scenario = "success") => {
+  const run = async (runner = "pi-durable", scenario = "success", seeded = true) => {
     const root = temporary();
     fs.writeFileSync(path.join(root, "task.txt"), "run on requested model");
     fs.writeFileSync(path.join(root, "scenario"), scenario);
     const args = argv(root, { runner, kernel: "typescript", "write-policy": JSON.stringify({ readOnly: true }),
-      "session-file": path.join(root, "seed.jsonl"), "session-export-file": path.join(root, "export.jsonl") });
+      ...(seeded ? { "session-file": path.join(root, "seed.jsonl") } : {}), "session-export-file": path.join(root, "export.jsonl") });
     const child = spawn(process.execPath, [worker, ...args.slice(2)], {
       env: { ...process.env, FAKE_MODEL_SCENARIO: path.join(root, "scenario") }, stdio: ["ignore", "pipe", "pipe"],
     });
@@ -195,6 +195,26 @@ describe("real worker durable process protocol", () => {
     expect(result.status, result.error).toBe("completed");
     expect(events.some(event => event.type === "launch_probe")).toBe(false);
     expect(frames.at(-1).type).toBe("prompt");
+  });
+
+  it("gives an unseeded durable child a private session file in its run directory", async () => {
+    const { root, result, events } = await run("pi-durable", "success", false);
+    expect(result.status, result.error).toBe("completed");
+    const sessionFile = path.join(root, "durable-session", "session.jsonl");
+    const launch = events.find(event => event.type === "launch_probe");
+    expect(launch.argv).toEqual(expect.arrayContaining(["--session", sessionFile]));
+    expect(launch.argv).not.toContain("--no-session");
+    expect(fs.statSync(sessionFile).isFile()).toBe(true);
+    if (process.platform !== "win32") {
+      expect(fs.statSync(sessionFile).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(path.dirname(sessionFile)).mode & 0o777).toBe(0o700);
+    }
+  });
+
+  it("keeps an unseeded explicit pi child without a session file", async () => {
+    const { root, result } = await run("pi", "success", false);
+    expect(result.status, result.error).toBe("completed");
+    expect(fs.existsSync(path.join(root, "durable-session"))).toBe(false);
   });
 
   it.each(["reswitch", "reject", "exit"])("never prompts before durable model admission: %s", async scenario => {
