@@ -27,6 +27,10 @@ input.on("line", line => {
   fs.writeFileSync(`${root}/prompts`, String(Number(fs.readFileSync(`${root}/prompts`, "utf8")) + 1));
   const ack = disposition => emit({ type: "response", id: frame.id, command: "prompt", success: true,
     ...(disposition ? { data: { disposition } } : {}) });
+  if (scenario === "handled-notice") {
+    emit({ type: "extension_ui_request", id: "ui", method: "notify", notifyType: "warning",
+      message: "Synthetic refusal. Select in-group/model, then send again." });
+  }
   if (scenario.startsWith("handled")) {
     const response = { type: "response", id: frame.id, command: "prompt", success: true,
       data: { disposition: "handled" } };

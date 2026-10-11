@@ -94,6 +94,59 @@ describe("Pi task prompt lifecycle", () => {
     expect(fail).toHaveBeenCalledExactlyOnceWith(HANDLED);
   });
 
+  it("names the child's last warning notice in a handled-task failure", () => {
+    vi.useFakeTimers();
+    const fail = vi.fn();
+    const task = new PiTaskPromptLifecycle(fail);
+    const notify = (message: unknown, notifyType: unknown) =>
+      task.observe({ type: "extension_ui_request", id: "ui", method: "notify", message, notifyType });
+    notify("before the task was sent", "warning");
+    task.sent("task");
+    notify("first warning", "warning");
+    notify("Refused: select\nopenai-codex/gpt-5.5\u202e now", "error");
+    // Neither an info notice nor a non-string message replaces the refusal.
+    notify("informational chatter", "info");
+    notify(42, "warning");
+    task.observe({ ...handledReceipt, data: { disposition: "handled", headers: "SECRET" }, error: "SECRET" });
+    notify("after the response", "warning");
+    vi.advanceTimersByTime(PI_HANDLED_TASK_GRACE_MS);
+    expect(fail).toHaveBeenCalledExactlyOnceWith(
+      `${HANDLED}. Child notice: Refused: select openai-codex/gpt-5.5 now`,
+    );
+  });
+
+  it("carries the child's notice into the failure when the child exits first", () => {
+    vi.useFakeTimers();
+    const fail = vi.fn();
+    const task = new PiTaskPromptLifecycle(fail);
+    task.sent("task");
+    task.observe({ type: "extension_ui_request", method: "notify", notifyType: "warning", message: "Select a model" });
+    task.observe(handledReceipt);
+    task.childExited();
+    expect(fail).toHaveBeenCalledExactlyOnceWith(`${HANDLED}. Child notice: Select a model`);
+  });
+
+  it("bounds an oversized notice and ignores notices once a turn started", () => {
+    vi.useFakeTimers();
+    const fail = vi.fn();
+    const task = new PiTaskPromptLifecycle(fail);
+    task.sent("task");
+    task.observe({ type: "extension_ui_request", method: "notify", notifyType: "warning", message: "x".repeat(2_000) });
+    task.observe(handledReceipt);
+    vi.advanceTimersByTime(PI_HANDLED_TASK_GRACE_MS);
+    expect(fail).toHaveBeenCalledExactlyOnceWith(`${HANDLED}. Child notice: ${"x".repeat(499)}…`);
+
+    const started = vi.fn();
+    const later = new PiTaskPromptLifecycle(started);
+    later.sent("task");
+    later.observe({ type: "agent_start" });
+    later.observe({ type: "extension_ui_request", method: "notify", notifyType: "warning", message: "late" });
+    later.observe(handledReceipt);
+    later.childExited();
+    vi.advanceTimersByTime(PI_HANDLED_TASK_GRACE_MS);
+    expect(started).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, "started", "queued"])("allows a delayed turn after %s acknowledgement", disposition => {
     vi.useFakeTimers();
     const fail = vi.fn();
