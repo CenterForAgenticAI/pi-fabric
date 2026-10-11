@@ -45,6 +45,7 @@ import {
   type FabricNamedActionTypeSource,
   type FabricProvider,
   type FabricProviderListRequest,
+  type FabricProviderTypeSource,
   type FabricScope,
   type FabricScopedProviderResult,
 } from "../protocol.js";
@@ -64,6 +65,7 @@ import {
   isActiveQuarantine,
 } from "../entropy/active.js";
 import { formatFabricEffectConflict } from "./effect-conflict.js";
+import { providerGlobalNames } from "../provider-globals.js";
 import { stableJsonHash } from "./stable-hash.js";
 import type {
   FabricSpeculationReplay,
@@ -165,6 +167,21 @@ export interface FabricRegistryInvocationContext extends FabricInvocationContext
 export const NESTED_TOOL_CALL_ID_PREFIX = FABRIC_NESTED_TOOL_CALL_ID_PREFIX;
 
 const providerNamePattern = /^[a-z][a-z0-9_-]*$/;
+/** A provider whose catalog is slower than this keeps a loose program global for that execution. */
+const PROVIDER_TYPE_SOURCE_TIMEOUT_MS = 500;
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Lexical, deliberately loose: a miss only leaves that global loosely typed. */
+const usesProviderGlobal = (code: string, name: string): boolean =>
+  new RegExp(`(?<![\\w$.])${name}\\s*(?:\\?\\.|\\.|\\[)`).test(code);
+
+/** Copies only the named fields the declaration builder reads; never the descriptor. */
+const actionTypeSource = (name: unknown, inputSchema: unknown): FabricNamedActionTypeSource | undefined =>
+  typeof name === "string" && name.length > 0 && name.length <= 256
+    ? { name, inputSchema: isPlainRecord(inputSchema) ? inputSchema : {} }
+    : undefined;
 /** Process-wide issuance record owned by src/scope.ts. */
 const SCOPE_HOLDER = Symbol.for("pi-fabric:scope:v1");
 
@@ -398,12 +415,15 @@ export class ActionRegistry {
     return this.#providerBindings.unregister(name, options);
   }
 
-  providers(context?: FabricInvocationContext): Array<{ name: string; description: string }> {
+  #visibleProviders(context?: FabricInvocationContext): FabricProvider[] {
     if (context) this.#scopeContext(context);
-    const visible = context?.capabilityView
+    return context?.capabilityView
       ? [...new Set(this.#viewAuthority(context.capabilityView).bindings().map(value => this.#providerBindings.binding(value.providerBindingId)?.provider).filter((provider): provider is FabricProvider => Boolean(provider)))]
       : this.#providerBindings.providers();
-    return visible
+  }
+
+  providers(context?: FabricInvocationContext): Array<{ name: string; description: string }> {
+    return this.#visibleProviders(context)
       .map((provider) => ({ name: provider.name, description: provider.description }))
       .sort((left, right) => left.name.localeCompare(right.name));
   }
@@ -423,19 +443,45 @@ export class ActionRegistry {
   }
 
   /**
-   * Snapshot the tool schemas backing the dynamic guest surfaces (mcp and
-   * extensions) so the type gate can reject argument-shape mistakes before
-   * the sandbox runs. Side-effect-free by construction: MCP data comes from
-   * the provider's cache-warm descriptor slice (listing would schedule
-   * background revalidation), extension data from the captured-tool catalog.
-   * Providers that cannot supply data yet simply contribute no section and
-   * the loose declarations stand for that execution.
+   * Names of the visible providers that get a program global (see
+   * src/provider-globals.ts): sorted, capped, and never a Fabric global, a
+   * built-in provider, or a language keyword or builtin. A committed view
+   * limits the names to the providers it binds.
    */
-  async guestTypeSources(context: FabricInvocationContext): Promise<FabricGuestTypeSources> {
+  providerGlobals(context?: FabricInvocationContext): string[] {
+    return providerGlobalNames(this.#visibleProviders(context).map((provider) => provider.name));
+  }
+
+  /**
+   * Snapshot the tool schemas backing the dynamic guest surfaces (mcp,
+   * extensions and provider globals) so the type gate can reject
+   * argument-shape mistakes before the sandbox runs. Side-effect-free by
+   * construction: MCP data comes from the provider's cache-warm descriptor
+   * slice (listing would schedule background revalidation), extension data
+   * from the captured-tool catalog, provider-global data from each provider's
+   * own list(). Providers that cannot supply data yet simply contribute no
+   * section, or a loose global, and the loose declarations stand for that
+   * execution. With `code`, a provider's list() runs only when the program
+   * uses its global (`name.` or `name[`); other provider globals stay loose,
+   * so a program never waits on, or triggers, a catalog it does not use.
+   */
+  async guestTypeSources(
+    context: FabricInvocationContext,
+    options: { code?: string } = {},
+  ): Promise<FabricGuestTypeSources> {
     context = this.#scopeContext(context);
     const sources: FabricGuestTypeSources = {};
+    const globals = this.providerGlobals(context);
     if (context.capabilityView) {
       const actions = await this.list({ limit: 1_000 }, context);
+      if (globals.length > 0) {
+        sources.providers = globals.map((provider) => ({
+          provider,
+          actions: actions
+            .filter((action) => action.provider === provider)
+            .flatMap((action) => actionTypeSource(action.name, action.inputSchema) ?? []),
+        }));
+      }
       const byServer = new Map<string, FabricNamedActionTypeSource[]>();
       for (const action of actions.filter((candidate) => candidate.provider === "mcp")) {
         const server = action.namespace;
@@ -514,7 +560,53 @@ export class ActionRegistry {
         // for this execution.
       }
     }
+    if (globals.length > 0) {
+      const { code } = options;
+      sources.providers = await Promise.all(globals.map((name) =>
+        code === undefined || usesProviderGlobal(code, name)
+          ? this.#providerTypeSource(name, context)
+          : { provider: name, actions: [] }));
+    }
     return sources;
+  }
+
+  // A provider that fails, stalls past the bound, or lists nothing still gets
+  // its global, declared loosely: the global's existence never depends on a
+  // transient listing, and the registry validates every call at dispatch.
+  async #providerTypeSource(name: string, context: FabricInvocationContext): Promise<FabricProviderTypeSource> {
+    const provider = this.#providerBindings.current(name)?.provider;
+    if (!provider) return { provider: name, actions: [] };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const descriptors = await Promise.race([
+        runAbortable(context.signal, () => this.#providerBindings.trackProvider(provider, () => provider.list({}, context))),
+        new Promise<undefined>((resolve) => {
+          const handle = setTimeout(() => resolve(undefined), PROVIDER_TYPE_SOURCE_TIMEOUT_MS);
+          (handle as { unref?: () => void }).unref?.();
+          timer = handle;
+        }),
+      ]);
+      if (!Array.isArray(descriptors)) return { provider: name, actions: [] };
+      const quarantined = activeQuarantinedRefNames();
+      return {
+        provider: name,
+        actions: descriptors.flatMap((descriptor) => {
+          if (!isPlainRecord(descriptor) || quarantined.has(`${name}.${String(descriptor.name)}`)) return [];
+          // Teaching: the type gate checks against the compiled schema,
+          // the same shape invoke validates against.
+          return actionTypeSource(
+            descriptor.name,
+            isPlainRecord(descriptor.inputSchema)
+              ? effectiveInputSchema(`${name}.${descriptor.name}`, descriptor.inputSchema)
+              : undefined,
+          ) ?? [];
+        }),
+      };
+    } catch {
+      return { provider: name, actions: [] };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   // The model-facing discovery view: quarantined refs hide here, and the
