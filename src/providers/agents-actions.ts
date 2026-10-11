@@ -31,7 +31,13 @@ const runProperties = {
   model: {
     type: "string",
     description:
-      "Pi provider/id copied from agents.models({ runner: \"pi\" }), a configured models.aliases name, or a search term resolved to the closest authenticated model (recency from pi-model-sort breaks ties). Reuse returned keys; never infer version numbers from agent names. Exact keys win; near-miss IDs resolve to the closest visible model on the same provider. Handles report the canonical model. Claude runtime value or Veda backend model/alias are forwarded verbatim.",
+      "Pi provider/id copied from agents.models({ runner: \"pi\" }), a configured models.aliases name, or a search term resolved to the closest authenticated model (recency from pi-model-sort breaks ties). Reuse returned keys; never infer version numbers from agent names. Exact keys win; near-miss IDs resolve to the closest visible model on the same provider. Handles report the canonical model. Claude runtime value or Veda backend model/alias are forwarded verbatim. Set modelMatch: \"exact\" to turn off aliases and near-miss resolution.",
+  },
+  modelMatch: {
+    type: "string",
+    enum: ["exact"],
+    description:
+      "Pi runners only (pi, pi-durable). \"exact\" requires model as a provider/id listed by agents.models({ runner: \"pi\" }) and runs exactly that model: no models.aliases step (an alias named like the model is ignored), no closest or fuzzy match, and no alias thinking level. An unlisted model or any other selector is refused before a child starts, as is any other runner. Omit it for the default resolution.",
   },
   persona: {
     type: "string",
@@ -110,7 +116,7 @@ const runProperties = {
   schema: { type: "object", description: "Optional JSON Schema for validated structured output" },
   systemPrompt: {
     type: "string",
-    description: "Optional extra system prompt body for this child run. Pi runners merge it below component guidance and forward it via --system-prompt; Claude runners receive it via --append-system-prompt. Useful for reliability-focused prompt rules on models with weak behavioral defaults.",
+    description: "Optional extra system prompt body for this child run. Fabric places it ahead of any component guidance. Pi and Claude runners append the result with --append-system-prompt, and Veda receives it as a <system_instructions> block in its prompt. Useful for reliability-focused prompt rules on models with weak behavioral defaults.",
   },
   persistSession: {
     type: "boolean",
