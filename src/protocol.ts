@@ -1,4 +1,10 @@
-import type { BashOperations, BashToolOptions, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  BashOperations,
+  BashToolOptions,
+  CompactionResult,
+  ExtensionContext,
+  SessionBeforeCompactEvent,
+} from "@earendil-works/pi-coding-agent";
 
 /** Host-local opt-in on a bash ToolDefinition; never serialized into guest schemas. */
 export const FABRIC_BASH_MIDDLEWARE = Symbol.for("pi-fabric:bash-middleware:v1");
@@ -154,6 +160,319 @@ export const readFabricToolPlacementRequestV1 = (
   }
   return value as FabricToolPlacementRequestV1;
 };
+
+/**
+ * Host-local compaction ownership. One extension at a time may claim
+ * compaction from Fabric: Fabric's compactor, threshold trigger and threshold
+ * deferral stand down, and `compact.*` program calls route to the owner.
+ * `/tree` branch summaries stay with Fabric unless the claim sets
+ * `branchSummary`. Fabric drops the claim on withdrawal, when `signal`
+ * aborts, and at its own `session_shutdown` (reload, session switch, quit).
+ */
+export const FABRIC_COMPACTION_OWNER_EVENT = "pi-fabric:compaction-owner:v1";
+
+export const FABRIC_COMPACTION_OWNER_REQUEST_FIELDS = [
+  "reason", "instructions", "preserve", "requestedBy", "seed",
+] as const;
+export const FABRIC_COMPACTION_OWNER_CARRY_FIELDS = ["items", "add", "remove", "clear"] as const;
+export type FabricCompactionOwnerRequestFieldV1 = typeof FABRIC_COMPACTION_OWNER_REQUEST_FIELDS[number];
+export type FabricCompactionOwnerCarryFieldV1 = typeof FABRIC_COMPACTION_OWNER_CARRY_FIELDS[number];
+export type FabricCompactionOwnerActionNameV1 = "request" | "status" | "pressure" | "carry" | "cancel";
+
+export interface FabricCompactionOwnerIdentityV1 {
+  /** 1-128 characters, no control characters or surrounding whitespace. */
+  name: string;
+  /** 1-64 characters, same rules. */
+  version: string;
+}
+
+/** Validated `compact.request` arguments; only declared fields ever appear. */
+export interface FabricCompactionOwnerRequestV1 {
+  reason?: string;
+  instructions?: string;
+  preserve?: string[];
+  requestedBy?: string;
+  /**
+   * Text to send after the owner's compaction commits. Send it as Fabric
+   * does: a labelled custom message that starts a turn, not a user message.
+   */
+  seed?: string;
+}
+
+/** Validated `compact.carry` arguments; an empty object reads the list. */
+export interface FabricCompactionOwnerCarryUpdateV1 {
+  items?: string[];
+  add?: string[];
+  remove?: string[];
+  clear?: boolean;
+}
+
+export interface FabricCompactionOwnerCarryResultV1 {
+  items: string[];
+}
+
+/** The owner's own ladder, reported beside Fabric's pressure band. */
+export interface FabricCompactionOwnerPressureV1 {
+  /** 1-64 characters. */
+  stage: string;
+  /** At most 16 named finite numbers (names 1-64 characters). */
+  thresholds?: Record<string, number>;
+}
+
+type FabricCompactionOwnerResult<T> = T | Promise<T>;
+
+/**
+ * Upper bound on one owner handler call. Past it Fabric aborts the call's
+ * signal and fails the program call with an error naming the owner and
+ * the action.
+ */
+export const FABRIC_COMPACTION_OWNER_HANDLER_TIMEOUT_MS = 30_000;
+
+/** Passed to every owner handler. */
+export interface FabricCompactionOwnerCallV1 {
+  /** The invoking session's extension context, when Fabric has one. */
+  context: ExtensionContext | undefined;
+  /**
+   * Aborts when the calling program is cancelled or the handler exceeds
+   * `FABRIC_COMPACTION_OWNER_HANDLER_TIMEOUT_MS`. Fabric has already failed
+   * the program call by then; stop the work.
+   */
+  signal: AbortSignal;
+}
+
+/**
+ * Supported `compact.*` actions. An absent action, or a request/carry field
+ * absent from `fields`, fails the program call with an error naming the owner.
+ * Every handler receives `{ context, signal }` (`FabricCompactionOwnerCallV1`).
+ */
+export interface FabricCompactionOwnerActionsV1 {
+  request?: {
+    fields: readonly FabricCompactionOwnerRequestFieldV1[];
+    handler: (request: FabricCompactionOwnerRequestV1, call: FabricCompactionOwnerCallV1) => unknown;
+  };
+  /** Result: JSON, at most 16 KiB; reported as `ownerStatus`. */
+  status?: { handler: (call: FabricCompactionOwnerCallV1) => unknown };
+  pressure?: {
+    handler: (call: FabricCompactionOwnerCallV1) => FabricCompactionOwnerResult<FabricCompactionOwnerPressureV1>;
+  };
+  carry?: {
+    fields: readonly FabricCompactionOwnerCarryFieldV1[];
+    handler: (
+      update: FabricCompactionOwnerCarryUpdateV1,
+      call: FabricCompactionOwnerCallV1,
+    ) => FabricCompactionOwnerResult<FabricCompactionOwnerCarryResultV1>;
+  };
+  cancel?: { handler: (call: FabricCompactionOwnerCallV1) => unknown };
+}
+
+export type FabricCompactionFallbackResultV1 =
+  | { ok: true; compaction: CompactionResult }
+  | { ok: false; reason: string };
+
+export interface FabricCompactionFallbackOptionsV1 {
+  /** Carry-forward items to render; omitted renders Fabric's stored list. */
+  carry?: readonly string[];
+}
+
+/** Returned to the claimant only; the token is the withdrawal credential. */
+export interface FabricCompactionOwnerHandleV1 {
+  readonly token: string;
+  /** False once the claim is withdrawn or cleared. */
+  readonly active: boolean;
+  /** Releases the claim and restores Fabric's engine; false when no longer held. */
+  withdraw(): boolean;
+  /**
+   * Fabric's deterministic summary (summary compiler plus its enrichers) for
+   * the given `session_before_compact` event. Return `{ compaction }` from
+   * the owner's own handler when its model summary fails.
+   */
+  fallback(
+    event: SessionBeforeCompactEvent,
+    context?: ExtensionContext,
+    options?: FabricCompactionFallbackOptionsV1,
+  ): FabricCompactionFallbackResultV1;
+}
+
+export type FabricCompactionOwnerClaimResultV1 =
+  | {
+    ok: true;
+    handle: FabricCompactionOwnerHandleV1;
+    /**
+     * Fabric's carry-forward items when the claim was made, as a frozen copy.
+     * Under the claim `compact.carry` goes to the owner, so this is the list
+     * the owner takes over. Absent when Fabric has not started the session
+     * yet (the owner's `session_start` ran before Fabric's).
+     */
+    carry?: readonly string[];
+  }
+  | { ok: false; error: string; holder?: FabricCompactionOwnerIdentityV1 };
+
+export interface FabricCompactionOwnerClaimV1 {
+  version: 1;
+  type: "claim";
+  owner: FabricCompactionOwnerIdentityV1;
+  actions: FabricCompactionOwnerActionsV1;
+  /** Also take `/tree` branch summaries. Omitted or false: Fabric keeps them. */
+  branchSummary?: boolean;
+  /** Aborting releases the claim; bind it to the owner's own lifetime. */
+  signal?: AbortSignal;
+  /** Called exactly once, synchronously. No call: Fabric is not loaded. */
+  reply: (result: FabricCompactionOwnerClaimResultV1) => void;
+}
+
+export type FabricCompactionOwnerWithdrawResultV1 =
+  | { ok: true }
+  | { ok: false; error: string };
+
+export interface FabricCompactionOwnerWithdrawV1 {
+  version: 1;
+  type: "withdraw";
+  /** The token from the claim handle; any other token is refused. */
+  token: string;
+  reply?: (result: FabricCompactionOwnerWithdrawResultV1) => void;
+}
+
+export type FabricCompactionOwnerMessageV1 =
+  | FabricCompactionOwnerClaimV1
+  | FabricCompactionOwnerWithdrawV1;
+
+export type FabricCompactionOwnerReadResultV1 =
+  | { ok: true; message: FabricCompactionOwnerMessageV1 }
+  | { ok: false; error: string; reply?: (result: { ok: false; error: string }) => void };
+
+const COMPACTION_OWNER_TEXT = /^[^\u0000-\u001f\u007f]+$/;
+const ownerText = (value: unknown, max: number): value is string =>
+  typeof value === "string"
+  && value.length > 0
+  && value.length <= max
+  && value.trim() === value
+  && COMPACTION_OWNER_TEXT.test(value);
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const unknownKey = (record: Record<string, unknown>, known: readonly string[]): string | undefined =>
+  Object.keys(record).find((key) => !known.includes(key));
+
+const readOwnerFields = <T extends string>(
+  value: unknown,
+  known: readonly T[],
+  action: string,
+): T[] | string => {
+  if (!Array.isArray(value) || value.length > known.length * 2) {
+    return `actions.${action}.fields must be an array of ${known.join(", ")}`;
+  }
+  const fields: T[] = [];
+  for (const field of value) {
+    if (typeof field !== "string" || !(known as readonly string[]).includes(field)) {
+      return `actions.${action}.fields has an unknown field: ${String(field).slice(0, 64)}`;
+    }
+    if (!fields.includes(field as T)) fields.push(field as T);
+  }
+  return fields;
+};
+
+const readOwnerActions = (value: unknown): FabricCompactionOwnerActionsV1 | string => {
+  if (!isPlainRecord(value)) return "actions must be an object";
+  const names: readonly FabricCompactionOwnerActionNameV1[] = ["request", "status", "pressure", "carry", "cancel"];
+  const unknown = unknownKey(value, names);
+  if (unknown !== undefined) return `actions has an unknown action: ${unknown.slice(0, 64)}`;
+  const actions: FabricCompactionOwnerActionsV1 = {};
+  for (const name of names) {
+    const entry = value[name];
+    if (entry === undefined) continue;
+    // Each caller field is read once: a getter cannot pass the check with
+    // one value and be stored with another.
+    const handler = isPlainRecord(entry) ? entry.handler : undefined;
+    if (!isPlainRecord(entry) || typeof handler !== "function") {
+      return `actions.${name} must be an object with a handler function`;
+    }
+    const extra = unknownKey(entry, name === "request" || name === "carry" ? ["fields", "handler"] : ["handler"]);
+    if (extra !== undefined) return `actions.${name} has an unknown key: ${extra.slice(0, 64)}`;
+    if (name === "request" || name === "carry") {
+      const declared = entry.fields;
+      const fields = name === "request"
+        ? readOwnerFields(declared, FABRIC_COMPACTION_OWNER_REQUEST_FIELDS, name)
+        : readOwnerFields(declared, FABRIC_COMPACTION_OWNER_CARRY_FIELDS, name);
+      if (typeof fields === "string") return fields;
+      (actions as Record<string, unknown>)[name] = { fields, handler };
+    } else {
+      (actions as Record<string, unknown>)[name] = { handler };
+    }
+  }
+  return actions;
+};
+
+const isAbortSignalLike = (value: unknown): value is AbortSignal =>
+  typeof value === "object"
+  && value !== null
+  && typeof (value as { aborted?: unknown }).aborted === "boolean"
+  && typeof (value as { addEventListener?: unknown }).addEventListener === "function"
+  && typeof (value as { removeEventListener?: unknown }).removeEventListener === "function";
+
+/**
+ * Validates a compaction-owner message and returns a fresh copy built from
+ * named fields only; the caller's object never reaches stored state.
+ */
+export const readFabricCompactionOwnerMessageV1 = (value: unknown): FabricCompactionOwnerReadResultV1 => {
+  if (!isPlainRecord(value)) return { ok: false, error: "message must be an object" };
+  const rawReply = value.reply;
+  const reply = typeof rawReply === "function"
+    ? rawReply as (result: { ok: false; error: string }) => void
+    : undefined;
+  const fail = (error: string): FabricCompactionOwnerReadResultV1 => ({ ok: false, error, ...(reply ? { reply } : {}) });
+  if (value.version !== 1) return fail("version must be 1");
+  // Each caller field is read once into a local: a getter cannot pass a check
+  // with one value and be stored with another.
+  const type = value.type;
+  if (type === "withdraw") {
+    const extra = unknownKey(value, ["version", "type", "token", "reply"]);
+    if (extra !== undefined) return fail(`withdraw has an unknown key: ${extra.slice(0, 64)}`);
+    if (rawReply !== undefined && !reply) return fail("reply must be a function");
+    const token = value.token;
+    if (!ownerText(token, 128)) return fail("token must be the claim handle's token");
+    return {
+      ok: true,
+      message: {
+        version: 1,
+        type: "withdraw",
+        token,
+        ...(reply ? { reply: reply as NonNullable<FabricCompactionOwnerWithdrawV1["reply"]> } : {}),
+      },
+    };
+  }
+  if (type !== "claim") return fail('type must be "claim" or "withdraw"');
+  const extra = unknownKey(value, ["version", "type", "owner", "actions", "branchSummary", "signal", "reply"]);
+  if (extra !== undefined) return fail(`claim has an unknown key: ${extra.slice(0, 64)}`);
+  if (!reply) return fail("reply must be a function");
+  const owner = value.owner;
+  const name = isPlainRecord(owner) ? owner.name : undefined;
+  const ownerVersion = isPlainRecord(owner) ? owner.version : undefined;
+  if (!ownerText(name, 128) || !ownerText(ownerVersion, 64)) {
+    return fail("owner must be { name, version } with non-empty printable text");
+  }
+  const actions = readOwnerActions(value.actions);
+  if (typeof actions === "string") return fail(actions);
+  const branchSummary = value.branchSummary;
+  if (branchSummary !== undefined && typeof branchSummary !== "boolean") {
+    return fail("branchSummary must be a boolean");
+  }
+  const signal = value.signal;
+  if (signal !== undefined && !isAbortSignalLike(signal)) return fail("signal must be an AbortSignal");
+  return {
+    ok: true,
+    message: {
+      version: 1,
+      type: "claim",
+      owner: { name, version: ownerVersion },
+      actions,
+      ...(branchSummary === true ? { branchSummary: true } : {}),
+      ...(signal !== undefined ? { signal } : {}),
+      reply: reply as FabricCompactionOwnerClaimV1["reply"],
+    },
+  };
+};
+
 export const FABRIC_COMPONENT_REGISTER_EVENT = "pi-fabric:component:register:v1";
 export const FABRIC_COMPONENT_DISCOVER_EVENT = "pi-fabric:component:discover:v1";
 export const FABRIC_PREWALK_REQUEST_EVENT = "pi-fabric:prewalk:request:v1";
