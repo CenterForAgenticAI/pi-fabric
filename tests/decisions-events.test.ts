@@ -4,7 +4,7 @@ import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import { MeshStore, type MeshIdentity } from "../src/mesh/store.js";
-import { DecisionStore, type DecisionRecord } from "../src/decisions/store.js";
+import { DecisionStore } from "../src/decisions/store.js";
 import {
   answerFabricDecisionRequest,
   answerFabricDecisionsCapability,
@@ -33,26 +33,44 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-const waitForOpen = async (store: DecisionStore): Promise<DecisionRecord> => {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    const [open] = await store.list({ status: "open" });
-    if (open) return open;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error("no open decision appeared");
-};
+interface Asked {
+  result: Promise<FabricDecisionResultV1>;
+  /** Resolves with the decision id once the store holds it (the onRaised handshake). */
+  raised: Promise<string>;
+}
 
 const ask = (
   question: FabricDecisionQuestionV1,
   resolve: ResolveFabricDecisions,
   extra: { signal?: AbortSignal; onRaised?: (id: string) => void } = {},
-): Promise<FabricDecisionResultV1> =>
-  new Promise((settle) => {
+): Asked => {
+  let markRaised!: (id: string) => void;
+  const raised = new Promise<string>((settle) => { markRaised = settle; });
+  const result = new Promise<FabricDecisionResultV1>((settle) => {
     void answerFabricDecisionRequest(
-      { version: 1, context, question, claim: () => true, respond: settle, ...extra },
+      {
+        version: 1,
+        context,
+        question,
+        claim: () => true,
+        respond: settle,
+        ...extra,
+        onRaised: (id) => {
+          extra.onRaised?.(id);
+          markRaised(id);
+        },
+      },
       resolve,
     );
   });
+  return { result, raised };
+};
+
+const stored = async (store: DecisionStore, id: string) => {
+  const record = await store.get(id);
+  if (!record) throw new Error(`decision ${id} is not stored`);
+  return record;
+};
 
 const capability = (resolve: ResolveFabricDecisions): Promise<FabricDecisionsCapabilityResultV1> =>
   new Promise((settle) => {
@@ -73,7 +91,7 @@ describe("decisions event channel", () => {
       available: false,
       reason: "mesh disabled",
     });
-    await expect(ask({ title: "Pick" }, async () => ({ reason: "mesh disabled" }))).resolves.toEqual({
+    await expect(ask({ title: "Pick" }, async () => ({ reason: "mesh disabled" })).result).resolves.toEqual({
       ok: false,
       error: "mesh disabled",
     });
@@ -87,12 +105,13 @@ describe("decisions event channel", () => {
       async () => ({ store }),
       { onRaised: (id) => raised.push(id) },
     );
-    const open = await waitForOpen(store);
-    expect(raised).toEqual([open.id]);
-    await store.answer(open.id, { optionId: "blue" }, human);
-    await expect(pending).resolves.toMatchObject({
+    const id = await pending.raised;
+    expect(raised).toEqual([id]);
+    expect((await store.list({ status: "open" })).map((record) => record.id)).toEqual([id]);
+    await store.answer(id, { optionId: "blue" }, human);
+    await expect(pending.result).resolves.toMatchObject({
       ok: true,
-      id: open.id,
+      id,
       status: "answered",
       answer: { optionId: "blue", answeredBy: "alice", via: "cli" },
     });
@@ -111,22 +130,22 @@ describe("decisions event channel", () => {
     } as unknown as FabricDecisionQuestionV1;
     const controller = new AbortController();
     const pending = ask(hostile, async () => ({ store }), { signal: controller.signal });
-    const open = await waitForOpen(store);
+    const open = await stored(store, await pending.raised);
     expect(open).toMatchObject({ kind: "question", holder: "user", onExpire: "cancel" });
     expect(open.defaultOptionId).toBeUndefined();
     expect(open.escalation).toBeUndefined();
     expect(open.options).toEqual([{ id: "yes", label: "Yes" }]);
     controller.abort();
-    await pending;
+    await pending.result;
   });
 
   it("returns cancelled with no answer when a person cancels", async () => {
     const store = decisionStore();
     const pending = ask({ title: "Name?" }, async () => ({ store }));
-    const open = await waitForOpen(store);
-    await store.cancel(open.id, human);
-    const result = await pending;
-    expect(result).toEqual({ ok: true, id: open.id, status: "cancelled" });
+    const id = await pending.raised;
+    await store.cancel(id, human);
+    const result = await pending.result;
+    expect(result).toEqual({ ok: true, id, status: "cancelled" });
   });
 
   it("returns expired with no answer when the timeout passes", async () => {
@@ -135,9 +154,9 @@ describe("decisions event channel", () => {
     roots.push(root);
     const store = new DecisionStore(new MeshStore(root, 64 * 1024, 500), main, () => now);
     const pending = ask({ title: "Name?", timeoutMs: 1_000 }, async () => ({ store }));
-    await waitForOpen(store);
+    await pending.raised;
     now += 2_000;
-    const result = await pending;
+    const result = await pending.result;
     expect(result).toMatchObject({ ok: true, status: "expired" });
     expect("answer" in result).toBe(false);
   });
@@ -146,15 +165,15 @@ describe("decisions event channel", () => {
     const store = decisionStore();
     const controller = new AbortController();
     const pending = ask({ title: "Name?" }, async () => ({ store }), { signal: controller.signal });
-    const open = await waitForOpen(store);
+    const id = await pending.raised;
     controller.abort();
-    await expect(pending).resolves.toEqual({ ok: false, id: open.id, error: "Decision request aborted" });
-    expect((await store.get(open.id))?.status).toBe("cancelled");
+    await expect(pending.result).resolves.toEqual({ ok: false, id, error: "Decision request aborted" });
+    expect((await store.get(id))?.status).toBe("cancelled");
   });
 
   it("rejects invalid questions without raising a decision", async () => {
     const store = decisionStore();
-    const result = await ask({ title: "" }, async () => ({ store }));
+    const result = await ask({ title: "" }, async () => ({ store })).result;
     expect(result.ok).toBe(false);
     expect(await store.list()).toEqual([]);
   });
