@@ -320,6 +320,18 @@ describe("hosted runners", () => {
       });
       expect(result.error).toBeUndefined();
     });
+
+    it("names the size limit when an oversized value was truncated", async () => {
+      // Valid for the schema, but its JSON is just over 1 MiB (1,048,576 bytes).
+      finishing("oversized", { item: { n: 1 }, pad: "x".repeat(1024 * 1024) }, "done");
+      const manager = managerFor(tempRoot());
+      const result = await manager.run({ task: "Big", runner: "oversized", schema });
+      expect(result.status).toBe("failed");
+      expect(result.error).toBe(
+        "Structured agent output was invalid: structured value was truncated at the 1048576-byte limit",
+      );
+      expect(result.value).toEqual({ fabricTruncated: true });
+    });
   });
 
   it("hands hosted runners the narrowed host scope", async () => {
