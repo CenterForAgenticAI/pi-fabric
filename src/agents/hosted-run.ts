@@ -427,15 +427,19 @@ export class HostedRun {
     const status = result.status === "failed" || result.status === "stopped" ? result.status : "completed";
     const output = typeof result.output === "string" ? result.output : "";
     let value: unknown;
+    let truncated: string | undefined;
     if (result.structured !== undefined) {
       try {
         const serialized = JSON.stringify(result.structured);
-        value = serialized !== undefined && Buffer.byteLength(serialized) <= MAX_STRUCTURED_BYTES
-          ? JSON.parse(serialized)
-          : { fabricTruncated: true };
+        if (serialized !== undefined && Buffer.byteLength(serialized) <= MAX_STRUCTURED_BYTES) {
+          value = JSON.parse(serialized);
+        } else {
+          truncated = `structured value was truncated at the ${MAX_STRUCTURED_BYTES}-byte limit`;
+        }
       } catch {
-        value = { fabricTruncated: true };
+        truncated = "structured value could not be serialized as JSON and was truncated";
       }
+      if (truncated) value = { fabricTruncated: true };
     }
     const settled: { status: AgentRunRecord["status"]; text: string; value?: unknown; error?: string } = {
       status,
@@ -445,7 +449,13 @@ export class HostedRun {
     };
     // The same check a Fabric worker applies: a completed run with a schema
     // must return a matching value, or it fails as invalid structured output.
-    validateAgentResult(settled, this.context.schema);
+    // A truncated value cannot carry what the schema asks for, so name the cause.
+    if (truncated && status === "completed" && this.context.schema) {
+      settled.status = "failed";
+      settled.error = `Structured agent output was invalid: ${truncated}`;
+    } else {
+      validateAgentResult(settled, this.context.schema);
+    }
     this.#settle(settled);
   }
 
