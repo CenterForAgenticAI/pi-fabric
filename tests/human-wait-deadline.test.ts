@@ -270,11 +270,14 @@ const approvalFixture = (configure: (config: FabricConfig) => void, headless: bo
 describe.each(runtimes)("%s approval prompt deadline pause", (runtime) => {
   const python = runtime === "monty" || runtime === "cpython";
   const runTest = it.skipIf(python && !availablePythonBackends[runtime]);
+  const deadlineMs = 1_000;
+  // One virtual millisecond more than a full budget, so any unpaused deadline has fired.
+  const pastDeadlineMs = deadlineMs + 1;
   const configure = (config: FabricConfig): void => {
     config.executor = { ...normalizeFabricConfig({ executor: {
       ...(python ? { kernel: "python", pythonRuntime: runtime } : { runtime }),
       memoryLimitBytes: 256 * 1024 * 1024,
-    } }).executor, timeoutMs: 1_000 };
+    } }).executor, timeoutMs: deadlineMs };
   };
   const act = python ? 'await tools.call(ref="extensions.act", args={})' : "await extensions.act({})";
 
@@ -298,7 +301,7 @@ describe.each(runtimes)("%s approval prompt deadline pause", (runtime) => {
     const approve = await nextPrompt();
     await vi.advanceTimersByTimeAsync(60_000);
     approve(true);
-    await vi.advanceTimersByTimeAsync(1_100);
+    await vi.advanceTimersByTimeAsync(pastDeadlineMs);
     const result = await pending;
     expect(result.success).toBe(false);
     expect(result.error).toContain("timed out");
@@ -306,9 +309,9 @@ describe.each(runtimes)("%s approval prompt deadline pause", (runtime) => {
 
   runTest("keeps an explicit hard timeout during an approval", async () => {
     const { run, nextPrompt, ran } = approvalFixture(configure, false);
-    const pending = run(`return ${act}`, 1_000);
+    const pending = run(`return ${act}`, deadlineMs);
     const approve = await nextPrompt();
-    await vi.advanceTimersByTimeAsync(1_001);
+    await vi.advanceTimersByTimeAsync(pastDeadlineMs);
     const result = await pending;
     expect(result.success).toBe(false);
     expect(result.error).toContain("timed out");
@@ -329,4 +332,3 @@ describe.each(runtimes)("%s approval prompt deadline pause", (runtime) => {
     expect(ran()).toBe(0);
   });
 });
-
