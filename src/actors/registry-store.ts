@@ -6,6 +6,7 @@ import {
   encodeOwnerIdentityLine,
   lockOwnerLiveness,
   lockOwnerProvablyDead,
+  reapLockByRenameClaim,
   SHORT_LOCK_MAX_HOLD_MS,
 } from "../core/atomic-write.js";
 
@@ -88,8 +89,17 @@ export class ActorRegistryStore {
             : lockOwnerProvablyDead(Number(pidText), identityLine);
           if (dead) {
             const secondOwner = fs.readFileSync(ownerPath, "utf8");
-            if (secondOwner === firstOwner) {
-              fs.rmSync(lockPath, { recursive: true, force: true });
+            // Claim by rename so a lock a new owner took after this check survives.
+            if (
+              secondOwner === firstOwner &&
+              reapLockByRenameClaim(lockPath, (claimed) => {
+                try {
+                  return fs.readFileSync(path.join(claimed, "owner"), "utf8") === firstOwner;
+                } catch {
+                  return false;
+                }
+              })
+            ) {
               continue;
             }
           }

@@ -112,6 +112,43 @@ describe("ActorRegistryStore", () => {
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
+  it.each([["fresh", 0], ["stale", 60_000]] as const)(
+    "keeps a lock that a new owner takes between the %s dead-owner check and the removal",
+    async (_age, ageMs) => {
+      const { store, lockPath } = setup();
+      const pid = deadChildPid();
+      const ownerPath = path.join(lockPath, "owner");
+      fs.mkdirSync(lockPath, { recursive: true });
+      fs.writeFileSync(ownerPath, `crashed\n${pid}\n${Date.now() - ageMs}\n${encodeOwnerIdentityLine()}\n`);
+      const successor = `successor\n${process.pid}\n${Date.now()}\n${encodeOwnerIdentityLine()}\n`;
+      const readFileSync = fs.readFileSync;
+      let ownerReads = 0;
+      vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options?: unknown) => {
+        const content = readFileSync(file, options as BufferEncoding);
+        // The re-read just before removal still sees the dead owner. A new
+        // owner takes the lock right after it.
+        if (file === ownerPath && ++ownerReads === 2) {
+          fs.rmSync(lockPath, { recursive: true, force: true });
+          fs.mkdirSync(lockPath, { mode: 0o700 });
+          fs.writeFileSync(ownerPath, successor);
+        }
+        return content;
+      }) as typeof fs.readFileSync);
+      vi.useFakeTimers();
+      const operation = vi.fn();
+      const result = expect(store.withLock(operation)).rejects.toThrow(
+        "Timed out waiting for the Fabric actor registry lock",
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+      await result;
+
+      expect(operation).not.toHaveBeenCalled();
+      expect(ownerReads).toBeGreaterThan(2);
+      expect(readFileSync(ownerPath, "utf8")).toBe(successor);
+      expect(fs.readdirSync(path.dirname(lockPath)).filter((name) => name.includes(".lock."))).toEqual([]);
+    },
+  );
+
   it("honours a fresh legacy or foreign lock with a dead pid until the timeout", async () => {
     const pid = deadChildPid();
     for (const identityLine of [undefined, foreignNamespaceLine()]) {

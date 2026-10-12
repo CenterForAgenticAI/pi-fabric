@@ -6,6 +6,7 @@ import {
   encodeOwnerIdentityLine,
   lockOwnerLiveness,
   lockOwnerProvablyDead,
+  reapLockByRenameClaim,
   SHORT_LOCK_MAX_HOLD_MS,
 } from "../core/atomic-write.js";
 import { readJsonlPage } from "../log-tail.js";
@@ -1020,7 +1021,8 @@ export class MeshStore {
   // stale. A younger lock is also removed when its owner is provably dead:
   // same host, PID namespace and boot, and the pid is gone or reused. Removal
   // re-reads the state it judged stale so a freshly rotated owner is never
-  // deleted mid-check.
+  // deleted mid-check, and an owner lock is removed through a rename claim so
+  // a lock a new owner took after that re-read survives.
   #clearStaleLock(ownerPath: string): boolean {
     let lockModifiedAt: number | undefined;
     let owner: string | undefined;
@@ -1048,8 +1050,13 @@ export class MeshStore {
       if (!dead) return false;
       try {
         if (fs.readFileSync(ownerPath, "utf8") !== owner) return false;
-        fs.rmSync(this.#lockPath, { recursive: true, force: true });
-        return true;
+        return reapLockByRenameClaim(this.#lockPath, (claimed) => {
+          try {
+            return fs.readFileSync(path.join(claimed, "owner"), "utf8") === owner;
+          } catch {
+            return false;
+          }
+        });
       } catch {
         return false;
       }

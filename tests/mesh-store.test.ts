@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { encodeOwnerIdentityLine } from "../src/core/atomic-write.js";
 import {
   MeshStore,
@@ -26,6 +26,7 @@ const createStore = (options?: MeshStoreOptions): MeshStore => {
 };
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -316,6 +317,37 @@ describe("MeshStore lock recovery", () => {
     expect(event.sequence).toBe(1);
     expect(fs.existsSync(lockPath)).toBe(false);
   });
+
+  it.each([["fresh", 0], ["stale", 60_000]] as const)(
+    "keeps a lock that a new owner takes between the %s dead-owner check and the removal",
+    async (_age, ageMs) => {
+      const store = createStore({ lockTimeoutMs: 300, staleLockMs: 30_000 });
+      const pid = deadChildPid();
+      const lockPath = holdLock(store, `crashed\n${pid}\n${Date.now() - ageMs}\n${encodeOwnerIdentityLine()}\n`);
+      const ownerPath = path.join(lockPath, "owner");
+      const successor = `successor\n${process.pid}\n${Date.now()}\n${encodeOwnerIdentityLine()}\n`;
+      const readFileSync = fs.readFileSync;
+      let ownerReads = 0;
+      vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options?: unknown) => {
+        const content = readFileSync(file, options as BufferEncoding);
+        // The re-read just before removal still sees the dead owner. A new
+        // owner takes the lock right after it.
+        if (file === ownerPath && ++ownerReads === 2) {
+          fs.rmSync(lockPath, { recursive: true, force: true });
+          fs.mkdirSync(lockPath, { mode: 0o700 });
+          fs.writeFileSync(ownerPath, successor);
+        }
+        return content;
+      }) as typeof fs.readFileSync);
+
+      await expect(
+        store.publish({ topic: "team.auth", from: identity, text: "blocked" }),
+      ).rejects.toThrow("Timed out waiting for the Fabric mesh lock");
+      expect(ownerReads).toBeGreaterThan(2);
+      expect(readFileSync(ownerPath, "utf8")).toBe(successor);
+      expect(fs.readdirSync(store.root).filter((name) => name.startsWith(".lock."))).toEqual([]);
+    },
+  );
 
   it("sweeps a fresh lock whose local pid now belongs to a later process", async (context) => {
     const ownIdentity = localIdentity();
