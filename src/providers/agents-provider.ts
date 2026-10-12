@@ -80,6 +80,7 @@ import {
 } from "../core/model-resolution.js";
 import { loadModelUsage } from "../core/model-usage.js";
 import { AGENTS_ACTION_DESCRIPTORS } from "./agents-actions.js";
+import { FabricTraceSafeError } from "../audit/trace.js";
 import { actionArgNormalizer } from "./arg-normalization.js";
 import { isFabricThinking } from "../thinking.js";
 import { normalizeAgentRunRequest } from "../agents/request.js";
@@ -181,17 +182,17 @@ const checkedRunner = (value: unknown, fallback: FabricAgentRunner): FabricAgent
 };
 
 const MAX_MODEL_KEY_CHARS = 256;
+const MODEL_KEY_RULE =
+  `model must be a string of 1 to ${MAX_MODEL_KEY_CHARS} characters (an exact key from agents.models())`;
+
+// Count code points, as the schema's minLength/maxLength do, not UTF-16 units.
+const isModelKey = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0 && [...value].length <= MAX_MODEL_KEY_CHARS;
 
 /** agents.models({ model }): an exact, untrimmed key; undefined means the unfiltered list. */
 const checkedModelKey = (value: unknown): string | undefined => {
   if (value === undefined) return undefined;
-  // Count code points, as the schema's minLength/maxLength do, not UTF-16 units.
-  const chars = typeof value === "string" ? [...value].length : 0;
-  if (typeof value !== "string" || chars < 1 || chars > MAX_MODEL_KEY_CHARS) {
-    throw new Error(
-      `agents.models model must be a string of 1 to ${MAX_MODEL_KEY_CHARS} characters (an exact key from agents.models())`,
-    );
-  }
+  if (!isModelKey(value)) throw new Error(`agents.models ${MODEL_KEY_RULE}`);
   return value;
 };
 
@@ -373,6 +374,19 @@ const nullModelSpelling = (args: Record<string, unknown>): boolean =>
     ([key, value]) => value === null && "model" in normalizeAgentsArgs("models", { [key]: "" }),
   );
 
+/**
+ * Refuse an invalid agents.models model while preparing it. Normalization both
+ * here and after preparation deletes a null optional field, which would turn
+ * the lookup into the full list, so the schema check cannot be relied on.
+ */
+const refuseInvalidModelsModel = (
+  args: Record<string, unknown>,
+  prepared: Record<string, unknown>,
+): void => {
+  const invalid = prepared.model === undefined ? nullModelSpelling(args) : !isModelKey(prepared.model);
+  if (invalid) throw new FabricTraceSafeError(`Invalid arguments for agents.models: ${MODEL_KEY_RULE}`);
+};
+
 export class AgentsProvider implements FabricProvider {
   readonly #transcripts = new AgentTranscriptReader();
   readonly #router: AgentMessageRouter;
@@ -522,11 +536,7 @@ export class AgentsProvider implements FabricProvider {
     args: Record<string, unknown>,
   ): Record<string, unknown> {
     const prepared = normalizeAgentsArgs(actionName, args);
-    // The shared normalizer drops a null declared field, which would turn
-    // agents.models({ model: null }) into the full list. Keep it so validation refuses it.
-    if (actionName === "models" && !("model" in prepared) && nullModelSpelling(args)) {
-      return { ...prepared, model: null };
-    }
+    if (actionName === "models") refuseInvalidModelsModel(args, prepared);
     return prepared;
   }
 
