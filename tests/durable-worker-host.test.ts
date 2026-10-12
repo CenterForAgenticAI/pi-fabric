@@ -6,6 +6,7 @@ import path from "node:path";
 import { build } from "esbuild";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parseDurableWorkerOptions } from "../src/durable/worker-options.js";
+import { seedDurableWorkerRole } from "../src/durable/worker-role-seed.js";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-durable-host-"));
 const extension = path.resolve("tests/fixtures/durable-pi-extension.ts");
@@ -18,14 +19,14 @@ beforeAll(async () => {
 }, 30000);
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
-async function worker(name: string, extra: string[] = [], environment: NodeJS.ProcessEnv = {}, discover = false, session = true) {
+async function worker(name: string, extra: string[] = [], environment: NodeJS.ProcessEnv = {}, discover = false, session = true, sessionFile?: string) {
   const cwd = path.join(root, name); fs.mkdirSync(cwd, { recursive: true });
   const agentDir = path.join(cwd, "agent"); fs.mkdirSync(agentDir, { recursive: true });
   fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: environment.DURABLE_TEST_TRUST ?? "ask", compaction: { enabled: false }, retry: { enabled: false } }));
   const fixture = path.join(cwd, "fixture.txt"); if (!fs.existsSync(fixture)) fs.writeFileSync(fixture, "private fixture");
   const effect = path.join(cwd, "effect.txt");
   const child = spawn(process.execPath, [entry, "--mode", "rpc", "--durable-directory", path.join(cwd, "durable"), "--durable-run-id", name,
-    ...(session ? ["--session", path.join(cwd, "session.jsonl")] : ["--no-session"]), ...(discover ? [] : ["--no-extensions"]), "-e", extension, "--model", "durable-offline/test", ...extra],
+    ...(session ? ["--session", sessionFile ?? path.join(cwd, "session.jsonl")] : ["--no-session"]), ...(discover ? [] : ["--no-extensions"]), "-e", extension, "--model", "durable-offline/test", ...extra],
     { cwd, env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, DURABLE_TEST_FAUX_MODULE: import.meta.resolve("@earendil-works/pi-ai/providers/faux"), DURABLE_TEST_FILE: fixture, DURABLE_TEST_EFFECT: effect, ...environment }, stdio: ["pipe", "pipe", "pipe"] }) as ChildProcessWithoutNullStreams;
   const messages: any[] = []; let pending = "", stderr = ""; const change = new Set<() => void>();
   child.stdout.on("data", chunk => {
@@ -177,6 +178,38 @@ describe("durable native RPC worker", () => {
       expect(resumed.messages.some(event => JSON.stringify(event).match(/unsafe|interrupted|replay|failed/i))).toBe(true);
     } finally { await resumed.stop(); }
   }, 40000);
+
+  it("opens a seeded empty durable-session file as a valid Pi session and appends to it after a relaunch", async () => {
+    const cwd = path.join(root, "role-seed"); const runDirectory = path.join(cwd, "run");
+    const file = path.join(runDirectory, "durable-session", "session.jsonl");
+    fs.mkdirSync(path.dirname(file), { recursive: true }); fs.closeSync(fs.openSync(file, "wx", 0o600)); // F15 creates it empty
+    expect(seedDurableWorkerRole(file, { runDirectory, cwd })).toBe("seeded");
+    const lines = () => fs.readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    const policy = (entries: any[]) => entries.filter(entry => entry.type === "custom" && entry.customType === "context-aware.policy.v1");
+    const onDisk = lines();
+    expect(onDisk.map(entry => entry.type)).toEqual(["session", "custom"]);
+    const first = await worker("role-seed", ["--no-tools"], {}, false, true, file);
+    try {
+      first.send({ type: "prompt", id: "role", message: "remember" });
+      await first.wait(event => event.type === "agent_settled");
+      first.send({ type: "get_state", id: "state" });
+      expect(await first.wait(event => event.id === "state")).toMatchObject({ success: true, data: { sessionFile: file } });
+    } finally { await first.stop(true); }
+    const afterTurn = lines();
+    expect(afterTurn.slice(0, 2)).toEqual(onDisk); // Pi kept the header and entry, and appended after them.
+    expect(afterTurn.filter(entry => entry.type === "session")).toHaveLength(1);
+    expect(afterTurn.some(entry => entry.type === "message" && entry.message.role === "assistant")).toBe(true);
+    expect(policy(afterTurn)).toHaveLength(1);
+    expect(seedDurableWorkerRole(file, { runDirectory, cwd })).toBe("already-seeded");
+    expect(fs.readFileSync(file, "utf8")).toBe(afterTurn.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+    const resumed = await worker("role-seed", ["--no-tools"], {}, false, true, file);
+    try {
+      resumed.send({ type: "get_state", id: "state" });
+      expect(await resumed.wait(event => event.id === "state")).toMatchObject({ success: true, data: { sessionFile: file } });
+    } finally { await resumed.stop(); }
+    expect(lines()).toEqual(afterTurn); // reopening neither truncates nor adds a second entry
+    expect(policy(lines())).toHaveLength(1);
+  }, 45000);
 
   it.each([
     { session: true, restored: "1" },
