@@ -6,6 +6,7 @@ import path from "node:path";
 import { build } from "esbuild";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parseDurableWorkerOptions } from "../src/durable/worker-options.js";
+import { sweepFabricJournals } from "../src/durable/worker-host.js";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-durable-host-"));
 const extension = path.resolve("tests/fixtures/durable-pi-extension.ts");
@@ -62,20 +63,37 @@ async function worker(name: string, extra: string[] = [], environment: NodeJS.Pr
   return { child, messages, send, wait, stop, cwd, fixture, effect };
 }
 
-// Load the built Fabric extension next to the fixture, with a program that holds
-// on a gate file until the test opens it.
+// Load the built Fabric extension next to the fixture, with a program that polls
+// a gate file until the test opens it. A resume serves the recorded polls from the
+// journal, then polls live.
 const fabricWorker = (name: string, code: string) => {
   const agentDir = path.join(root, name, "agent"); fs.mkdirSync(agentDir, { recursive: true });
   fs.writeFileSync(path.join(agentDir, "fabric.json"), JSON.stringify({ fullCodeMode: true, mesh: { enabled: false }, mcp: { enabled: false } }));
   const inherited = Object.fromEntries(["PI_FABRIC_DEPTH", "PI_FABRIC_BUDGET", "PI_FABRIC_BUDGET_FILE", "PI_FABRIC_BUDGET_ID", "PI_FABRIC_WRITE_POLICY", "PI_FABRIC_TOOL_ALLOWLIST", "PI_FABRIC_SCOPE", "PI_FABRIC_LINEAGE", "PI_FABRIC_PARENT_RUN", "PI_FABRIC_ACTOR_ID"].map(key => [key, undefined]));
   return worker(name, ["-e", path.resolve("dist/index.js")], { ...inherited, PI_OFFLINE: "1", DURABLE_TEST_FABRIC_CODE: code });
 };
-const holdOnGate = (gate: string) => `const gate = await pi.read({ path: ${JSON.stringify(gate)} });\nif (gate.includes("hold")) { await tools.progress({ message: "holding" }); await new Promise(resolve => setTimeout(resolve, 60000)); }\nreturn gate.includes("open") ? "gate-open" : "gate-closed";`;
+const holdOnGate = (gate: string) => `let gate = await pi.read({ path: ${JSON.stringify(gate)} });\nif (gate.includes("hold")) await tools.progress({ message: "holding" });\nwhile (gate.includes("hold")) { await new Promise(resolve => setTimeout(resolve, 50)); gate = await pi.read({ path: ${JSON.stringify(gate)} }); }\nreturn gate.includes("open") ? "gate-open" : "gate-closed";`;
 
 const answer = (messages: any[]) => messages.filter(event => event.type === "message_end" && event.message?.role === "assistant")
   .flatMap(event => event.message.content).filter(part => part.type === "text").map(part => part.text).join("\n");
 
 describe("durable native RPC worker", () => {
+  it("deletes fabric_exec journals a day after their last write and leaves everything else", async () => {
+    const directory = path.join(root, "journal-sweep"); fs.mkdirSync(directory, { recursive: true });
+    const stale = path.join(directory, `${"a".repeat(32)}.jsonl`);
+    const fresh = path.join(directory, `${"b".repeat(32)}.jsonl`);
+    const other = path.join(directory, "notes.jsonl");
+    for (const file of [stale, fresh, other]) fs.writeFileSync(file, "x\n");
+    const now = Date.now();
+    const old = new Date(now - 25 * 60 * 60 * 1000);
+    fs.utimesSync(stale, old, old); fs.utimesSync(other, old, old);
+    await sweepFabricJournals(directory, now);
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(fresh)).toBe(true);
+    expect(fs.existsSync(other)).toBe(true);
+    await expect(sweepFabricJournals(path.join(root, "journal-missing"), now)).resolves.toBeUndefined();
+  });
+
   it("parses the internal protocol, appends both prompts, and rejects unknown or missing options", () => {
     const args = ["--durable-directory", "state", "--durable-run-id", "run", "--append-system-prompt", "instructions", "--append-system-prompt", "schema", "--tools", "read,bash"];
     expect(parseDurableWorkerOptions(args).appendSystemPrompt).toBe("instructions\n\nschema");
@@ -188,7 +206,7 @@ describe("durable native RPC worker", () => {
     } finally { await resumed.stop(); }
   }, 40000);
 
-  it("reruns an interrupted read-only fabric_exec once after confirmed process death", async () => {
+  it("resumes an interrupted read-only fabric_exec after confirmed process death", async () => {
     const gate = path.join(root, "fabric-read", "gate.txt");
     const first = await fabricWorker("fabric-read", holdOnGate(gate));
     try {
@@ -207,7 +225,7 @@ describe("durable native RPC worker", () => {
     } finally { await resumed.stop(); }
   }, 60000);
 
-  it("does not rerun an interrupted fabric_exec that reached an effect", async () => {
+  it("resumes an interrupted fabric_exec from its journal without repeating a finished effect", async () => {
     const gate = path.join(root, "fabric-effect", "gate.txt");
     const effect = path.join(root, "fabric-effect", "effect.txt");
     const code = `await pi.write({ path: ${JSON.stringify(effect)}, content: "effect\\n" });\n${holdOnGate(gate)}`;
@@ -223,8 +241,37 @@ describe("durable native RPC worker", () => {
       resumed.send({ type: "prompt", id: "effect", message: "fabric fixture" });
       await resumed.wait(event => event.type === "agent_settled");
       expect(fs.readFileSync(effect, "utf8")).toBe("effect\n");
-      expect(answer(resumed.messages)).not.toContain("gate-open");
-      expect(answer(resumed.messages)).toMatch(/interrupted/i);
+      expect(answer(resumed.messages)).toContain("gate-open");
+      expect(answer(resumed.messages)).not.toMatch(/interrupted/i);
+    } finally { await resumed.stop(); }
+  }, 60000);
+
+  it("stops at an effect the crash interrupted and never repeats it", async () => {
+    const effect = path.join(root, "fabric-uncertain", "effect.txt");
+    // A Node script records its effect, then hangs until the kill lands mid-call.
+    // It avoids shell syntax that differs between POSIX shells and Windows.
+    fs.mkdirSync(path.dirname(effect), { recursive: true });
+    const hang = path.join(path.dirname(effect), "hang.mjs");
+    fs.writeFileSync(hang, `import fs from "node:fs";\nfs.appendFileSync(${JSON.stringify(effect)}, "effect\\n");\nsetInterval(() => {}, 1000);\n`);
+    const code = `await pi.bash({ cmd: ${JSON.stringify(`"${process.execPath}" "${hang}"`)}, timeout: 120 });\nreturn "program-done";`;
+    const first = await fabricWorker("fabric-uncertain", code);
+    try {
+      first.send({ type: "prompt", id: "uncertain", message: "fabric fixture" });
+      await expect.poll(() => fs.existsSync(effect), { timeout: 15000 }).toBe(true);
+    } finally { await first.stop(true); }
+    const resumed = await fabricWorker("fabric-uncertain", code);
+    try {
+      resumed.send({ type: "prompt", id: "uncertain", message: "fabric fixture" });
+      // The worker has an RPC UI, so it asks first. A dismissed question keeps the stop,
+      // as when a parent cancels a child's dialog.
+      const question = await resumed.wait(event => event.type === "extension_ui_request" && event.method === "select");
+      expect(question.title).toContain("Run it again?");
+      expect(question.options).toEqual(["Run it again", "Stop here"]);
+      resumed.send({ type: "extension_ui_response", id: question.id, cancelled: true });
+      await resumed.wait(event => event.type === "agent_settled");
+      expect(fs.readFileSync(effect, "utf8")).toBe("effect\n");
+      expect(answer(resumed.messages)).toContain("fabric_exec was interrupted during this call, which may have run:");
+      expect(answer(resumed.messages)).not.toContain("program-done");
     } finally { await resumed.stop(); }
   }, 60000);
 });
