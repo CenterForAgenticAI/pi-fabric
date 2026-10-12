@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { assertWorkerRuntime, writeWorkerStartupFailure } from "./worker/startup.js";
-import { seedDurableWorkerRole } from "./durable/worker-role-seed.js";
+import { createDurableSessionFile, seedDurableWorkerRole } from "./durable/worker-role-seed.js";
 
 import { StringDecoder } from "node:string_decoder";
 import type { ImageContent } from "@earendil-works/pi-ai";
@@ -202,21 +202,11 @@ const terminateChild = (child: ChildProcess, signal: NodeJS.Signals): void => {
  * A pi-durable child's journal restores messages only. Without a session file,
  * a resumed child loses every entry extensions saved (custom entries, context
  * edits, compaction). Keep a private file with the run so retention removes it
- * with the run. A relaunched attempt reopens it: never truncate.
+ * with the run. The file is created complete (Pi header plus worker-role entry)
+ * and a relaunched attempt reopens it: never truncate.
  */
-const durableSessionFile = (statusFile: string): string => {
-  const directory = path.join(path.dirname(statusFile), "durable-session");
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  fs.chmodSync(directory, 0o700);
-  const file = path.join(directory, "session.jsonl");
-  try {
-    fs.closeSync(fs.openSync(file, "wx", 0o600));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    if (!fs.lstatSync(file).isFile()) throw new Error(`Durable session file must be a regular file: ${file}`);
-  }
-  return file;
-};
+const durableSessionFile = (statusFile: string, cwd: string): string =>
+  createDurableSessionFile(path.dirname(statusFile), cwd);
 
 let crashContext: { statusFile: string; record: AgentRunRecord } | undefined;
 let runRecordHelpers: WorkerRunRecordModule | undefined;
@@ -330,11 +320,18 @@ const main = async (): Promise<void> => {
     : undefined;
   const piArguments = ["--mode", "rpc"];
   const piSessionFile = options.sessionFile ??
-    (options.runner === "pi-durable" ? durableSessionFile(options.statusFile) : undefined);
+    (options.runner === "pi-durable" ? durableSessionFile(options.statusFile, options.cwd) : undefined);
   // Before Pi starts: mark a session Fabric created for this run as a worker
-  // session (pi-context-aware reads it). A caller-supplied file is never edited.
+  // session (pi-context-aware reads it). Provenance comes from the launcher
+  // (a fork or handoff seed) or from this process creating the durable-session
+  // file; a caller-supplied file is never edited, wherever it lives. A file
+  // that cannot be read as a Pi session throws here, before Pi starts.
   if (options.runner === "pi-durable" && piSessionFile) {
-    seedDurableWorkerRole(piSessionFile, { runDirectory: path.dirname(options.statusFile), cwd: options.cwd });
+    seedDurableWorkerRole(piSessionFile, {
+      runDirectory: path.dirname(options.statusFile),
+      cwd: options.cwd,
+      owned: options.sessionFile === undefined || options.sessionOwned === true,
+    });
   }
   if (piSessionFile) piArguments.push("--session", piSessionFile);
   else piArguments.push("--no-session");
