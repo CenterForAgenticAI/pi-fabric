@@ -1,10 +1,10 @@
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActorRegistryStore } from "../src/actors/registry-store.js";
 import { encodeOwnerIdentityLine } from "../src/core/atomic-write.js";
+import { deadChildPid } from "./dead-child-pid.js";
 
 const roots: string[] = [];
 const setup = () => {
@@ -21,13 +21,6 @@ const installLock = (lockPath: string, pid: number, createdAt: number) => {
   fs.writeFileSync(path.join(lockPath, "owner"), `previous\n${pid}\n${createdAt}\n`);
 };
 
-// A real pid that just exited, with the identity line the store writes.
-const deadChildPid = (): number => {
-  const child = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore", timeout: 10_000 });
-  expect(child.status).toBe(0);
-  expect(child.pid).toBeGreaterThan(0);
-  return child.pid!;
-};
 const foreignNamespaceLine = (): string => {
   const own = JSON.parse(encodeOwnerIdentityLine()) as Record<string, unknown>;
   return JSON.stringify({

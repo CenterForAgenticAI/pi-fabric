@@ -1,9 +1,9 @@
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { encodeOwnerIdentityLine } from "../src/core/atomic-write.js";
+import { deadChildPid } from "./dead-child-pid.js";
 import {
   MeshStore,
   type MeshIdentity,
@@ -294,14 +294,8 @@ describe("MeshStore lock recovery", () => {
     expect(fs.readFileSync(path.join(lockPath, "owner"), "utf8")).toContain(`${process.pid}\n`);
   });
 
-  // A real pid that just exited. The identity line is the one the store
-  // writes, so the owner shares this host, PID namespace and boot.
-  const deadChildPid = (): number => {
-    const child = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore", timeout: 10_000 });
-    expect(child.status).toBe(0);
-    expect(child.pid).toBeGreaterThan(0);
-    return child.pid!;
-  };
+  // The identity line is the one the store writes, so the owner shares this
+  // host, PID namespace and boot.
   const localIdentity = (): Record<string, unknown> =>
     JSON.parse(encodeOwnerIdentityLine()) as Record<string, unknown>;
 
