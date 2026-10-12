@@ -139,13 +139,14 @@ describe("real worker durable process protocol", () => {
   });
 
   const run = async (runner = "pi-durable", scenario = "success", seeded = true,
-    options: { root?: string; sessionFile?: (root: string) => string } = {}) => {
+    options: { root?: string; sessionFile?: (root: string) => string; owned?: boolean; prepare?: (root: string) => void } = {}) => {
     const root = options.root ?? temporary();
     if (options.root) fs.rmSync(path.join(root, "events.jsonl"), { force: true });
     fs.writeFileSync(path.join(root, "task.txt"), "run on requested model");
     fs.writeFileSync(path.join(root, "scenario"), scenario);
+    options.prepare?.(root);
     const args = argv(root, { runner, kernel: "typescript", "write-policy": JSON.stringify({ readOnly: true }),
-      ...(options.sessionFile ? { "session-file": options.sessionFile(root) }
+      ...(options.sessionFile ? { "session-file": options.sessionFile(root), ...(options.owned ? { "session-owned": "true" } : {}) }
         : seeded ? { "session-file": path.join(root, "seed.jsonl") } : {}), "session-export-file": path.join(root, "export.jsonl") });
     const child = spawn(process.execPath, [worker, ...args.slice(2)], {
       env: { ...process.env, FAKE_MODEL_SCENARIO: path.join(root, "scenario") }, stdio: ["ignore", "pipe", "pipe"],
@@ -263,6 +264,7 @@ describe("real worker durable process protocol", () => {
     const sourceBranch = source.getBranch();
     let seeded = "";
     const { root, result, events } = await run("pi-durable", "success", false, {
+      owned: true,
       sessionFile: root => {
         const directory = path.join(root, `${kind}-session`);
         seeded = kind === "fork"
@@ -299,6 +301,75 @@ describe("real worker durable process protocol", () => {
     expect(result.status, result.error).toBe("completed");
     expect(events.find(event => event.type === "launch_probe").session).toBe(seed);
     expect(fs.readFileSync(path.join(root, "caller-session.jsonl"), "utf8")).toBe(seed);
+  });
+
+  it.each(["durable-session", "fork-session", "handoff-session"])("never edits a caller-supplied session file, even one sitting in %s/", async folder => {
+    const seed = "{\"type\":\"session\",\"version\":3,\"id\":\"caller\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/work\"}\n";
+    let file = "";
+    const { result, events } = await run("pi-durable", "success", false, {
+      sessionFile: root => {
+        fs.mkdirSync(path.join(root, folder), { mode: 0o700 });
+        file = path.join(root, folder, "caller.jsonl");
+        fs.writeFileSync(file, seed);
+        return file;
+      },
+    });
+    expect(result.status, result.error).toBe("completed");
+    expect(events.find(event => event.type === "launch_probe").session).toBe(seed);
+    expect(fs.readFileSync(file, "utf8")).toBe(seed);
+  });
+
+  it.skipIf(process.platform === "win32")("fails the launch when durable-session is a link, leaving the target directory untouched", async () => {
+    const target = temporary();
+    fs.chmodSync(target, 0o755);
+    const { result, events } = await run("pi-durable", "success", false, {
+      prepare: root => fs.symlinkSync(target, path.join(root, "durable-session"), "dir"),
+    });
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/real directory, not a link/);
+    expect(events.some(event => event.type === "launch_probe")).toBe(false);
+    expect(fs.readdirSync(target)).toEqual([]);
+    expect(fs.statSync(target).mode & 0o777).toBe(0o755);
+  });
+
+  it("fails the launch with a clear error when a Fabric-written seed is not a Pi session, leaving it unchanged", async () => {
+    const content = "{\"type\":\"sess";
+    let file = "";
+    const { result, events } = await run("pi-durable", "success", false, {
+      owned: true,
+      sessionFile: root => {
+        fs.mkdirSync(path.join(root, "fork-session"), { mode: 0o700 });
+        file = path.join(root, "fork-session", "broken.jsonl");
+        fs.writeFileSync(file, content);
+        return file;
+      },
+    });
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/not a Pi session \(no session header\); refusing to launch/);
+    expect(events.some(event => event.type === "launch_probe")).toBe(false);
+    expect(fs.readFileSync(file, "utf8")).toBe(content);
+  });
+
+  it("passes --session-owned only for a seed Fabric wrote, never for a caller-supplied sessionFile", async () => {
+    const launch = async (request: Record<string, unknown>) => {
+      const root = temporary();
+      const capture = path.join(root, "capture.mjs");
+      fs.writeFileSync(capture, `import fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(path.join(root, "argv.json"))}, JSON.stringify(process.argv));\nawait import(${JSON.stringify(pathToFileURL(path.resolve("tests/fixtures/fake-worker.mjs")).href)});`);
+      const manager = new AgentManager(root, {
+        ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi-durable", model: "provider/default", timeoutMs: 5000, sessionExport: false,
+      }, { workerPath: capture, runRoot: path.join(root, "runs"), preparePiModel: async () => "provider/default" });
+      managers.push(manager);
+      const result = await manager.run({ task: "probe", runner: "pi-durable", transport: "process", ...request } as never);
+      expect(result.status, result.error).toBe("completed");
+      return JSON.parse(fs.readFileSync(path.join(root, "argv.json"), "utf8")) as string[];
+    };
+    const caller = await launch({ sessionFile: path.join(temporary(), "actor.jsonl") });
+    expect(caller).toContain("--session-file");
+    expect(caller).not.toContain("--session-owned");
+    const source = SessionManager.create(os.tmpdir(), path.join(temporary(), "source"));
+    source.appendMessage({ role: "user", content: "inherited question", timestamp: 1 });
+    const forked = await launch({ forkSeed: { sourceSessionId: "source", sourceBranch: source.getBranch() } });
+    expect(forked).toEqual(expect.arrayContaining(["--session-owned", "true"]));
   });
 
   it("keeps an unseeded explicit pi child without a session file", async () => {

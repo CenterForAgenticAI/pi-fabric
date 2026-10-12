@@ -6,7 +6,7 @@ import path from "node:path";
 import { build } from "esbuild";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parseDurableWorkerOptions } from "../src/durable/worker-options.js";
-import { seedDurableWorkerRole } from "../src/durable/worker-role-seed.js";
+import { createDurableSessionFile, seedDurableWorkerRole } from "../src/durable/worker-role-seed.js";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-durable-host-"));
 const extension = path.resolve("tests/fixtures/durable-pi-extension.ts");
@@ -179,11 +179,10 @@ describe("durable native RPC worker", () => {
     } finally { await resumed.stop(); }
   }, 40000);
 
-  it("opens a seeded empty durable-session file as a valid Pi session and appends to it after a relaunch", async () => {
+  it("opens a freshly created durable-session file as a valid Pi session and appends to it after a relaunch", async () => {
     const cwd = path.join(root, "role-seed"); const runDirectory = path.join(cwd, "run");
-    const file = path.join(runDirectory, "durable-session", "session.jsonl");
-    fs.mkdirSync(path.dirname(file), { recursive: true }); fs.closeSync(fs.openSync(file, "wx", 0o600)); // F15 creates it empty
-    expect(seedDurableWorkerRole(file, { runDirectory, cwd })).toBe("seeded");
+    fs.mkdirSync(runDirectory, { recursive: true });
+    const file = createDurableSessionFile(runDirectory, cwd); // header and worker-role entry arrive together
     const lines = () => fs.readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
     const policy = (entries: any[]) => entries.filter(entry => entry.type === "custom" && entry.customType === "context-aware.policy.v1");
     const onDisk = lines();
@@ -200,7 +199,7 @@ describe("durable native RPC worker", () => {
     expect(afterTurn.filter(entry => entry.type === "session")).toHaveLength(1);
     expect(afterTurn.some(entry => entry.type === "message" && entry.message.role === "assistant")).toBe(true);
     expect(policy(afterTurn)).toHaveLength(1);
-    expect(seedDurableWorkerRole(file, { runDirectory, cwd })).toBe("already-seeded");
+    expect(seedDurableWorkerRole(file, { runDirectory, cwd, owned: true })).toBe("already-seeded");
     expect(fs.readFileSync(file, "utf8")).toBe(afterTurn.map(entry => JSON.stringify(entry)).join("\n") + "\n");
     const resumed = await worker("role-seed", ["--no-tools"], {}, false, true, file);
     try {
