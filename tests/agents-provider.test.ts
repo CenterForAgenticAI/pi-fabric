@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SessionManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ActorManager } from "../src/actors/manager.js";
 import type { FabricActorInfo, FabricActorRequest } from "../src/actors/types.js";
 import { GlobalActorRegistry } from "../src/actors/global-registry.js";
@@ -35,6 +35,8 @@ import { AgentManager } from "../src/agents/manager.js";
 import type { AgentRunRecord } from "../src/agents/types.js";
 import { registerAgentRunner } from "../src/runners.js";
 import { ActionRegistry } from "../src/core/action-registry.js";
+import { clearActiveCompiledSurface, setActiveCompiledSurface } from "../src/entropy/active.js";
+import { QuickJsRuntime } from "../src/runtime/quickjs-runtime.js";
 
 const roots: string[] = [];
 const actorManagers: ActorManager[] = [];
@@ -1550,64 +1552,168 @@ describe("AgentsProvider exact model lookup", () => {
   const registryRoute = (provider: AgentsProvider, models: unknown[] = visiblePiModels) => {
     const registry = new ActionRegistry();
     registry.register(provider);
+    const approve = vi.fn(async () => {});
     const routeContext = {
       ...context,
       extensionContext: { modelRegistry: { getAvailable: () => models } } as unknown as ExtensionContext,
-      approve: async () => {},
+      approve,
       audits: [],
       maxResultChars: 100_000,
     };
     return {
+      registry,
+      routeContext,
+      approve,
       invoke: (args: Record<string, unknown>) => registry.invoke("agents.models", args, routeContext),
       close: () => registry.close(),
     };
   };
 
-  it.each(["pi", "pi-durable", "claude", "veda", "acme-null"])(
-    "refuses a null model through the action registry for the %s runner",
-    async (runner) => {
-      const unregister = registerAgentRunner({
-        kind: "worker",
-        id: "acme-null",
-        label: "Acme",
-        capabilities: {
-          recursiveFabric: false,
-          steer: false,
-          followUp: false,
-          persistentSessions: false,
-          kernels: false,
-          handoff: false,
-          modelDiscovery: true,
-          imageInput: false,
-          compaction: false,
-          questions: false,
-          sleep: false,
-          writePolicy: false,
-        },
-        models: () => [{ runner: "acme-null", provider: "acme", id: "large", name: "Large", key: "acme/large" }],
-        launch: () => {
-          throw new Error("not launched");
-        },
-      });
+  const acmeEntry = { runner: "acme-null", provider: "acme", id: "large", name: "Large", key: "acme/large" };
+  const registerAcme = (models: () => unknown[]) =>
+    registerAgentRunner({
+      kind: "worker",
+      id: "acme-null",
+      label: "Acme",
+      capabilities: {
+        recursiveFabric: false,
+        steer: false,
+        followUp: false,
+        persistentSessions: false,
+        kernels: false,
+        handoff: false,
+        modelDiscovery: true,
+        imageInput: false,
+        compaction: false,
+        questions: false,
+        sleep: false,
+        writePolicy: false,
+      },
+      models: models as never,
+      launch: () => {
+        throw new Error("not launched");
+      },
+    });
+
+  const refusedModel = /Invalid arguments for agents\.models: model must be a string of 1 to 256 characters/;
+  // Spellings the argument normalizers repair to model.
+  const modelSpellings = ["model", "Model", "MODEL", "m_o_d_e_l", "mo-del", " model "];
+  // One exact key per runner, and what looking it up returns.
+  const exactLookups: Record<string, { model: string; expected: unknown[] }> = {
+    pi: {
+      model: "anthropic/executor",
+      expected: [{ runner: "pi", provider: "anthropic", id: "executor", name: "Executor", key: "anthropic/executor" }],
+    },
+    "pi-durable": {
+      model: "anthropic/executor",
+      expected: [
+        { runner: "pi-durable", provider: "anthropic", id: "executor", name: "Executor", key: "anthropic/executor" },
+      ],
+    },
+    claude: { model: "claude/haiku", expected: [expect.objectContaining({ key: "claude/haiku" })] },
+    veda: { model: "anything/at-all", expected: [] },
+    "acme-null": { model: "acme/large", expected: [acmeEntry] },
+  };
+
+  // Compiled normalization is on by default (entropy.compile) and runs after
+  // provider preparation; the bare registry leaves it off.
+  describe.each([
+    ["the default runtime route (compiled normalization on)", true],
+    ["a bare registry (compiled normalization off)", false],
+  ])("on %s", (_label, compiled) => {
+    beforeEach(() => {
+      expect(DEFAULT_FABRIC_CONFIG.entropy.compile).toBe(true);
+      if (compiled) setActiveCompiledSurface(undefined, DEFAULT_FABRIC_CONFIG.entropy.compile);
+      else clearActiveCompiledSurface();
+    });
+    afterEach(() => clearActiveCompiledSurface());
+
+    it.each(Object.keys(exactLookups))(
+      "refuses a null model and its spellings before approval for the %s runner",
+      async (runner) => {
+        const discover = vi.fn(() => [acmeEntry]);
+        const unregister = registerAcme(discover);
+        const route = registryRoute(setup().provider);
+        try {
+          for (const spelling of modelSpellings) {
+            await expect(route.invoke({ runner, [spelling]: null })).rejects.toThrow(refusedModel);
+          }
+          // A null canonical model is not rescued by a valid spelling variant.
+          await expect(
+            route.invoke({ runner, model: null, Model: exactLookups[runner]!.model }),
+          ).rejects.toThrow(refusedModel);
+          expect(route.approve).not.toHaveBeenCalled();
+          expect(discover).not.toHaveBeenCalled();
+        } finally {
+          unregister();
+          await route.close();
+        }
+      },
+    );
+
+    it.each([
+      ["false", { model: false }],
+      ["zero", { model: 0 }],
+      ["a number", { model: 42 }],
+      ["an empty string", { model: "" }],
+      ["an empty string under a spelling variant", { Model: "" }],
+      ["a string over 256 characters", { model: "a".repeat(257) }],
+      ["an object", { model: {} }],
+      ["an object wrapping a key", { model: { value: "anthropic/executor" } }],
+      ["an array", { model: ["anthropic/executor"] }],
+      ["an empty array", { model: [] }],
+    ])("refuses %s as the model before approval", async (_label, modelArgs) => {
       const route = registryRoute(setup().provider);
       try {
-        await expect(route.invoke({ runner, model: null })).rejects.toThrow(
-          /Invalid arguments for agents\.models: must be string/,
-        );
-        // A spelling variant the normalizer repairs to model is refused the same way.
-        await expect(route.invoke({ runner, Model: null })).rejects.toThrow(
-          /Invalid arguments for agents\.models: must be string/,
-        );
-        // A supplied model still wins over a null spelling variant.
-        await expect(route.invoke({ runner, model: "acme/large", Model: null })).resolves.toBeInstanceOf(Array);
-        // Without model the call still lists.
-        await expect(route.invoke({ runner })).resolves.toBeInstanceOf(Array);
+        await expect(route.invoke({ runner: "pi", ...modelArgs })).rejects.toThrow(refusedModel);
+        expect(route.approve).not.toHaveBeenCalled();
       } finally {
-        unregister();
         await route.close();
       }
-    },
-  );
+    });
+
+    it.each(Object.keys(exactLookups))(
+      "keeps listing without a model and lets a real model win over a null spelling for the %s runner",
+      async (runner) => {
+        const unregister = registerAcme(() => [acmeEntry]);
+        const route = registryRoute(setup().provider);
+        try {
+          const all = await route.invoke({ runner });
+          await expect(route.invoke({ runner, model: undefined })).resolves.toEqual(all);
+          const { model, expected } = exactLookups[runner]!;
+          await expect(route.invoke({ runner, model })).resolves.toEqual(expected);
+          await expect(route.invoke({ runner, model, Model: null })).resolves.toEqual(expected);
+          await expect(route.invoke({ runner, Model: model })).resolves.toEqual(expected);
+        } finally {
+          unregister();
+          await route.close();
+        }
+      },
+    );
+  });
+
+  it("refuses a null model from a QuickJS guest on the default runtime route", async () => {
+    setActiveCompiledSurface(undefined, DEFAULT_FABRIC_CONFIG.entropy.compile);
+    const route = registryRoute(setup().provider);
+    try {
+      const result = await new QuickJsRuntime().execute(
+        `let refused = "";
+         try { await agents.models({ runner: "pi", model: null }); } catch (error) { refused = String(error); }
+         const pinned = await agents.models({ runner: "pi", model: "anthropic/executor" });
+         return { refused, pinned };`,
+        (ref, args) => route.registry.invoke(ref, args as Record<string, unknown>, route.routeContext),
+        { timeoutMs: 5_000, memoryLimitBytes: 32 * 1024 * 1024 },
+      );
+      expect(result.terminationReason).toBe("completed");
+      expect(result.value).toEqual({
+        refused: expect.stringMatching(refusedModel),
+        pinned: [{ runner: "pi", provider: "anthropic", id: "executor", name: "Executor", key: "anthropic/executor" }],
+      });
+    } finally {
+      clearActiveCompiledSurface();
+      await route.close();
+    }
+  });
 
   it("counts supplementary characters as one character each, like the schema", async () => {
     const id256 = "😀".repeat(256 - "anthropic/".length);
@@ -1622,9 +1728,7 @@ describe("AgentsProvider exact model lookup", () => {
       await expect(route.invoke({ runner: "pi", model: atBound })).resolves.toEqual([
         { runner: "pi", provider: "anthropic", id: id256, name: "Unicode", key: atBound },
       ]);
-      await expect(route.invoke({ runner: "pi", model: overBound })).rejects.toThrow(
-        /must not have more than 256 characters/,
-      );
+      await expect(route.invoke({ runner: "pi", model: overBound })).rejects.toThrow(refusedModel);
       // The provider's own guard agrees with the schema on both sides of the bound.
       await expect(provider.invoke("models", { runner: "pi", model: overBound }, context)).rejects.toThrow(
         /agents\.models model must be a string of 1 to 256 characters/,
