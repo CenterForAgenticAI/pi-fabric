@@ -180,6 +180,19 @@ const checkedRunner = (value: unknown, fallback: FabricAgentRunner): FabricAgent
   return value;
 };
 
+const MAX_MODEL_KEY_CHARS = 256;
+
+/** agents.models({ model }): an exact, untrimmed key; undefined means the unfiltered list. */
+const checkedModelKey = (value: unknown): string | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.length < 1 || value.length > MAX_MODEL_KEY_CHARS) {
+    throw new Error(
+      `agents.models model must be a string of 1 to ${MAX_MODEL_KEY_CHARS} characters (an exact key from agents.models())`,
+    );
+  }
+  return value;
+};
+
 const checkedKernel = (value: unknown): AgentRunRequest["kernel"] => {
   if (value === undefined || value === "inherit" || value === "typescript" || value === "python") return value;
   throw new Error(`Invalid Fabric agent kernel: ${String(value)}`);
@@ -782,11 +795,14 @@ export class AgentsProvider implements FabricProvider {
         return this.lifecycle.unsubscribe(String(args.id));
       case "models": {
         const runner = checkedRunner(args.runner, this.manager.config.runner);
+        const exactKey = checkedModelKey(args.model);
         const runnerAdapter = requireAgentRunner(runner);
+        const matching = <T extends { key: string }>(models: readonly T[]): T[] =>
+          exactKey === undefined ? [...models] : models.filter((model) => model.key === exactKey);
         if (!BUILT_IN_RUNNER_IDS.has(runner)) {
           // A registered runner discovers its own models; none means an advisory empty list.
           return runnerAdapter.models
-            ? [...await runnerAdapter.models({ cwd: this.manager.cwd, refresh: args.refresh === true })]
+            ? matching(await runnerAdapter.models({ cwd: this.manager.cwd, refresh: args.refresh === true }))
             : [];
         }
         if (runner === "veda") {
@@ -798,24 +814,24 @@ export class AgentsProvider implements FabricProvider {
         }
         if (runner === "claude") {
           const models = await this.manager.claudeModels(args.refresh === true);
-          return models.map((model) => ({
+          return matching(models.map((model) => ({
             runner: "claude",
             provider: "claude",
             id: model.value,
             name: model.displayName,
             key: `claude/${model.value}`,
             ...model,
-          }));
+          })));
         }
         try {
           const available = context.extensionContext.modelRegistry.getAvailable();
-          return available.map((model) => ({
+          return matching(available.map((model) => ({
             runner,
             provider: String(model.provider),
             id: String(model.id),
             name: String(model.name ?? model.id),
             key: `${model.provider}/${model.id}`,
-          }));
+          })));
         } catch {
           return [];
         }
