@@ -332,6 +332,32 @@ describe("hosted runners", () => {
       );
       expect(result.value).toEqual({ fabricTruncated: true });
     });
+
+    it("parses text-only output as the value when it is valid JSON for the schema", async () => {
+      finishing("text-json", undefined, '{"item":{"n":3}}');
+      const manager = managerFor(tempRoot());
+      const result = await manager.run({ task: "Text", runner: "text-json", schema });
+      expect(result).toMatchObject({ status: "completed", value: { item: { n: 3 } } });
+      expect(result.error).toBeUndefined();
+    });
+
+    it("fails text-only prose when the run has a schema", async () => {
+      finishing("text-prose", undefined, "the answer is three");
+      const manager = managerFor(tempRoot());
+      const result = await manager.run({ task: "Prose", runner: "text-prose", schema });
+      expect(result.status).toBe("failed");
+      expect(result.error).toMatch(/^Structured agent output was invalid: .* \(output: the answer is three\)$/);
+    });
+
+    it.each(["failed", "stopped"] as const)("does not validate a %s report", async (status) => {
+      const id = `reported-${status}`;
+      register(fakeHosted(id, {
+        onStart: (reporter) => reporter.finish({ status, output: "halted", structured: { item: { n: "bad" } } }),
+      }).adapter);
+      const manager = managerFor(tempRoot());
+      const result = await manager.run({ task: "Halt", runner: id, schema });
+      expect(result).toMatchObject({ status, error: "halted", value: { item: { n: "bad" } } });
+    });
   });
 
   it("hands hosted runners the narrowed host scope", async () => {
