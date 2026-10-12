@@ -92,6 +92,17 @@ const childAlive = (owner: RunRootOwner | undefined, pid: number): boolean => {
 const recordAgeReference = (record: RunRecordSummary, fallback: number): number =>
   time(record.finishedAt) ? record.finishedAt : time(record.updatedAt) ? record.updatedAt : fallback;
 const runFiles = new Set(["task.txt", "status.json", "events.jsonl", "lifecycle.jsonl", "steer.jsonl", "schema.json", "images.json"]);
+/**
+ * The only file writeForkSession (src/agents/handoff.ts) creates in
+ * `<run>/fork-session/`: materializeBranch's `handoff-<uuid>.jsonl`, appended to in place.
+ */
+const FORK_SESSION_FILE = /^handoff-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.jsonl$/;
+/** A crash between a record's temp write and its rename leaves `<name>.<pid>[.<uuid>].tmp` beside it. */
+const RECORD_TEMP_FILE = /^(?:status|hosted)\.json\.\d+(?:\.[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})?\.tmp$/;
+/** src/worker.ts failOversizedEvent saves the first characters of an oversized event line here. */
+const OVERSIZED_EVENT_FILE = "oversized-event-prefix.txt";
+/** src/agents/hosted-run.ts HOSTED_STATE_FILE: the recovery locator of an adapter-owned run. */
+const HOSTED_STATE_FILE = "hosted.json";
 const DURABLE_KEY = /^(?:initial|[0-9a-f]{64})$/;
 const DURABLE_LEASE_FILES = new Set(["lease.sqlite", "lease.sqlite-journal"]);
 const DURABLE_STORE_FILE = /^(?:main|(?:doc|task)-(?:0|[1-9]\d*))\.jsonl(?:\.reclaim)?$/;
@@ -118,7 +129,8 @@ const safeRunTree = (root: string, childrenStopped: boolean, owner?: RunRootOwne
   const pid = record?.transport === "process" && typeof record.sessionId === "string" && /^\d+$/.test(record.sessionId)
     ? Number(record.sessionId) : undefined;
   if (pid !== undefined && childAlive(owner, pid)) return false;
-  if (!record?.status || !TERMINAL_STATUSES.has(record.status)) {
+  const terminal = !!record?.status && TERMINAL_STATUSES.has(record.status);
+  if (!terminal) {
     if (!childrenStopped && pid === undefined) return false;
     if (!ownedStat(path.join(root, "task.txt"))?.isFile()) return false;
   }
@@ -127,7 +139,14 @@ const safeRunTree = (root: string, childrenStopped: boolean, owner?: RunRootOwne
       const file = path.join(root, name);
       const stat = ownedStat(file);
       if (!stat) return false;
-      if (stat.isFile() && runFiles.has(name)) continue;
+      if (stat.isFile() && (runFiles.has(name) || name === OVERSIZED_EVENT_FILE || RECORD_TEMP_FILE.test(name))) continue;
+      // The locator lets a restarted host re-attach an unsettled hosted run; only a settled one is expendable.
+      if (stat.isFile() && name === HOSTED_STATE_FILE && terminal) continue;
+      if (stat.isDirectory() && name === "fork-session") {
+        // Exclusively populated by writeForkSession: owned regular files of its one name shape.
+        if (!onlyOwnedFiles(file, (child) => FORK_SESSION_FILE.test(child))) return false;
+        continue;
+      }
       if (stat.isDirectory() && name === "handoff-session") {
         // This directory is exclusively populated by Fabric's session fork writer.
         if (fs.readdirSync(file).some((child) => !child.endsWith(".jsonl") || !ownedStat(path.join(file, child))?.isFile())) return false;
