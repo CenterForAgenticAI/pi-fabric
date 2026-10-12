@@ -676,6 +676,12 @@ Fabric sanitizes host-event JSON before placing it in the mailbox. The JSON incl
 
 Actors handle one message at a time. By default, they coalesce repeated host events, which is useful for `message_update` and `tool_execution_update`. They restore from the trusted project actor registry.
 
+### Unreadable actor files
+
+Fabric keeps actor state in three kinds of file: the shared registry `actors.json` under the mesh `actors/` directory, a binding file per session under its `bindings/` directory, and the template library `~/.pi/agent/fabric/actors/global-actors.json`. A missing file reads as empty. If a file exists but cannot be read or parsed, every action that would save it fails with `Cannot read Fabric actor store <path>: <detail>`. A template library that cannot be read also produces a warning at startup. Fabric does not overwrite the file, so the other hosts' actors, the other bindings, and the saved templates stay on disk. Shutdown still runs to completion and then reports the same error, without saving the suspended state of this session's actors.
+
+To recover, fix the problem the message names. Restore read permission for your user, or repair the JSON by hand. To start with an empty file instead, move the file aside, for example to `actors.json.bak`, and copy back any entries you want to keep. Fabric reads the file again on the next access, so you do not need to restart.
+
 ### Native asynchronous vision handoff
 
 A vision handoff does not require a separate extension that watches events. Create one persistent actor, select a multimodal model, and subscribe to `input`. Fabric automatically detects and attaches images from the prompt. Passive `steer` sends the description to Main without starting an unrelated idle turn. Set `coalesce: false` to preserve separate image prompts while the vision actor is busy:
