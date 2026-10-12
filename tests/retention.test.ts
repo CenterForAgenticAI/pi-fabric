@@ -337,6 +337,8 @@ describe("temporal retention", () => {
       "2026-01-02T03-04-05Z_0190a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b.jsonl", // no milliseconds
       "2026-01-02T03-04-05-678Z_0190a1b2-c3d4-7e5f-0a6b-7c8d9e0f1a2b.jsonl", // variant 0
       "2026-01-02T03-04-05-678Z-0190a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b.jsonl", // wrong separator
+      "2026-99-99T99-99-99-999Z_0190a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b.jsonl", // right shape, not an instant
+      "2026-02-30T12-00-00-000Z_0190a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b.jsonl", // no 30 February
     ];
     const kept = lookalikes.map((name, index) => {
       const run = forkRun(runRoot, `look-${index}`);
@@ -397,17 +399,14 @@ describe("temporal retention", () => {
       "oversized-event-prefix.txt": "x".repeat(64),
       "status.json.4242.tmp": "{",
       [`status.json.4242.${uuid}.tmp`]: "{",
-      [`hosted.json.4242.${uuid}.tmp`]: "{",
     });
     const lookalikes = [
       "status.json.bak", "status.json.4242.tmp.old", "task.txt.4242.tmp", "oversized-event-prefix.txt.bak", "events.jsonl.4242.tmp",
-      "hosted.json.4242.tmp", // writeFileAtomic always adds a UUID; nothing writes a bare-pid hosted temp
       "status.json.0.tmp", // a pid is positive
       "status.json.00042.tmp", // a pid is unpadded
       "status.json.4242.00000000-0000-0000-0000-000000000000.tmp", // no UUID version or variant
       "status.json.4242.123e4567-e89b-12d3-a456-426614174000.tmp", // version 1
       "status.json.4242.123E4567-E89B-42D3-A456-426614174000.tmp", // uppercase
-      "hosted.json.4242.123e4567-e89b-42d3-c456-426614174000.tmp", // variant c
     ]
       .map((file) => run(`look-${file}`, { [file]: "mine" }));
     const outside = path.join(temporaryDirectory(), "outside.txt");
@@ -462,7 +461,7 @@ describe("temporal retention", () => {
     return { directory, run };
   };
 
-  it("keeps a hosted run's locator unless its terminal record proves the remote work stopped", async () => {
+  it("keeps every run that holds a hosted-run locator, whatever its record says", async () => {
     const tempRoot = temporaryDirectory();
     const runRoot = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "hosted");
     markRunRootActive(runRoot, 1);
@@ -470,55 +469,38 @@ describe("temporal retention", () => {
       JSON.parse(fs.readFileSync(path.join(directory, "status.json"), "utf8")) as { status: string; outcome?: string };
     const uuid = "123e4567-e89b-42d3-a456-426614174000";
 
-    const confirmed = await hostedRun(runRoot, "confirmed", { start: (_locator, _context, reporter) => reporter.finish({ status: "completed", output: "done" }) });
-    await confirmed.run.start();
-    const stoppedConfirmed = await hostedRun(runRoot, "stopped-confirmed", {});
-    await stoppedConfirmed.run.stop();
+    const running = await hostedRun(runRoot, "running", {});
     const startFailed = await hostedRun(runRoot, "start-failed", { start: () => { throw new Error("submit failed"); } });
     await startFailed.run.start();
     const stoppedUnconfirmed = await hostedRun(runRoot, "stopped-unconfirmed", { stop: () => ({ confirmed: false }) });
     await stoppedUnconfirmed.run.stop();
-    const lost = await hostedRun(runRoot, "lost", {});
-    lost.run.settleLost();
-    const running = await hostedRun(runRoot, "running", {});
-    // Only a leftover temp locator: it must follow the record's outcome, not just its status.
-    const tempOnlyIndeterminate = await hostedRun(runRoot, "temp-only-indeterminate", { start: () => { throw new Error("submit failed"); } });
-    await tempOnlyIndeterminate.run.start();
-    fs.rmSync(path.join(tempOnlyIndeterminate.directory, "hosted.json"));
-    fs.writeFileSync(path.join(tempOnlyIndeterminate.directory, `hosted.json.4242.${uuid}.tmp`), "{");
-    const tempOnlyConfirmed = await hostedRun(runRoot, "temp-only-confirmed", {});
-    await tempOnlyConfirmed.run.stop();
-    fs.rmSync(path.join(tempOnlyConfirmed.directory, "hosted.json"));
-    fs.writeFileSync(path.join(tempOnlyConfirmed.directory, `hosted.json.4242.${uuid}.tmp`), "{");
-    // A leftover temp locator follows the same rule as the locator itself.
-    fs.writeFileSync(path.join(confirmed.directory, `hosted.json.4242.${uuid}.tmp`), "{");
-    fs.writeFileSync(path.join(startFailed.directory, `hosted.json.4242.${uuid}.tmp`), "{");
+    const stoppedConfirmed = await hostedRun(runRoot, "stopped-confirmed", {});
+    await stoppedConfirmed.run.stop();
+    // A terminal record without an outcome, written by hand: nothing in status.json vouches the remote work stopped.
+    const handWritten = path.join(runRoot, "hand-written");
+    writeStatus(handWritten, { transport: "hosted", status: "completed", finishedAt: DAY });
+    fs.writeFileSync(path.join(handWritten, "hosted.json"), '{"job":"remote-hand"}');
+    // A leftover temp locator beside a terminal record.
+    const tempBeside = path.join(runRoot, "temp-beside");
+    writeStatus(tempBeside, { transport: "hosted", status: "completed", finishedAt: DAY });
+    const tempName = `hosted.json.4242.${uuid}.tmp`;
+    fs.writeFileSync(path.join(tempBeside, tempName), "{");
 
     // The records are what the real HostedRun wrote, not assumed shapes.
-    expect(status(confirmed.directory)).toMatchObject({ status: "completed" });
-    expect(status(confirmed.directory).outcome).toBeUndefined();
-    expect(status(stoppedConfirmed.directory)).toMatchObject({ status: "stopped" });
-    expect(status(stoppedConfirmed.directory).outcome).toBeUndefined();
+    expect(status(running.directory)).toMatchObject({ status: "running" });
     expect(status(startFailed.directory)).toMatchObject({ status: "failed", outcome: "indeterminate" });
     expect(status(stoppedUnconfirmed.directory)).toMatchObject({ status: "stopped", outcome: "indeterminate" });
-    expect(status(lost.directory)).toMatchObject({ status: "failed", outcome: "indeterminate" });
-    expect(status(running.directory)).toMatchObject({ status: "running" });
-
-    const outside = path.join(temporaryDirectory(), "locator.json");
-    fs.writeFileSync(outside, "keep");
-    const linked = path.join(runRoot, "linked");
-    writeStatus(linked, { transport: "hosted", status: "completed", finishedAt: DAY });
-    fs.symlinkSync(outside, path.join(linked, "hosted.json"));
+    expect(status(stoppedConfirmed.directory)).toMatchObject({ status: "stopped" });
+    const locatorBytes = (directory: string): string => fs.readFileSync(path.join(directory, "hosted.json"), "utf8");
+    const before = new Map([running, startFailed, stoppedUnconfirmed, stoppedConfirmed].map((run) => [run.directory, locatorBytes(run.directory)]));
+    for (const bytes of before.values()) expect(bytes).toContain('"remote-1"');
     markRunRootClosed(runRoot, DAY, true);
 
     const result = sweepAt(tempRoot, Date.now() + 3 * DAY);
-    expect(result.removedRuns.sort()).toEqual([confirmed.directory, stoppedConfirmed.directory, tempOnlyConfirmed.directory].sort());
-    for (const kept of [startFailed, stoppedUnconfirmed, lost, running]) {
-      expect(fs.readFileSync(path.join(kept.directory, "hosted.json"), "utf8")).toContain('"remote-1"');
-    }
-    expect(fs.existsSync(path.join(tempOnlyIndeterminate.directory, `hosted.json.4242.${uuid}.tmp`))).toBe(true);
-    expect(fs.existsSync(linked)).toBe(true);
-    expect(fs.readFileSync(outside, "utf8")).toBe("keep");
+    expect(result.removedRuns).toEqual([]);
+    for (const [directory, bytes] of before) expect(locatorBytes(directory)).toBe(bytes);
+    expect(fs.readFileSync(path.join(handWritten, "hosted.json"), "utf8")).toBe('{"job":"remote-hand"}');
+    expect(fs.readFileSync(path.join(tempBeside, tempName), "utf8")).toBe("{");
   });
 
   it("removes a dead owner's root holding pi-durable journals after the orphan grace (#229)", () => {
