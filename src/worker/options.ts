@@ -71,6 +71,10 @@ export const parseWorkerOptions = (
   const imagesFile = optional(args, "images-file");
   const systemPrompt = optional(args, "system-prompt");
   const sessionFile = optional(args, "session-file");
+  const sessionOwnedSource = optional(args, "session-owned");
+  if (sessionOwnedSource !== undefined && sessionOwnedSource !== "true") {
+    throw new Error("Invalid worker session-owned flag");
+  }
   const persistSessionSource = optional(args, "persist-session");
   if (persistSessionSource !== undefined && persistSessionSource !== "true" && persistSessionSource !== "false") {
     throw new Error("Invalid worker persist-session flag");
@@ -211,6 +215,7 @@ export const parseWorkerOptions = (
     ...(persistSession ? { persistSession: true } : {}),
     ...(modelAdmission ? { modelAdmission } : {}),
     ...(sessionFile ? { sessionFile } : {}),
+    ...(sessionFile && sessionOwnedSource === "true" ? { sessionOwned: true } : {}),
     ...(sessionExportFile ? { sessionExportFile } : {}),
     ...(actorId ? { actorId } : {}),
     ...(actorName ? { actorName } : {}),
