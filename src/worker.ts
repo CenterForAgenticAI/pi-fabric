@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { assertWorkerRuntime, writeWorkerStartupFailure } from "./worker/startup.js";
+import { seedDurableWorkerRole } from "./durable/worker-role-seed.js";
 
 import { StringDecoder } from "node:string_decoder";
 import type { ImageContent } from "@earendil-works/pi-ai";
@@ -330,6 +331,11 @@ const main = async (): Promise<void> => {
   const piArguments = ["--mode", "rpc"];
   const piSessionFile = options.sessionFile ??
     (options.runner === "pi-durable" ? durableSessionFile(options.statusFile) : undefined);
+  // Before Pi starts: mark a session Fabric created for this run as a worker
+  // session (pi-context-aware reads it). A caller-supplied file is never edited.
+  if (options.runner === "pi-durable" && piSessionFile) {
+    seedDurableWorkerRole(piSessionFile, { runDirectory: path.dirname(options.statusFile), cwd: options.cwd });
+  }
   if (piSessionFile) piArguments.push("--session", piSessionFile);
   else piArguments.push("--no-session");
   if (!options.extensions) piArguments.push("--no-extensions");
