@@ -278,30 +278,106 @@ describe("temporal retention", () => {
     expect(sweepAt(tempRoot, 6 * HOUR + 2).removedRoots).toEqual([runRoot]);
   });
 
-  it("reclaims a pi-durable worker's session folder with its run, but keeps unknown or linked contents", () => {
-    const tempRoot = temporaryDirectory();
-    const runRoot = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "durable-session");
-    markRunRootActive(runRoot, 1);
-    const run = (name: string, files: Record<string, string>) => {
-      const directory = path.join(runRoot, name);
-      writeStatus(directory, { status: "completed", finishedAt: DAY });
-      const sessions = path.join(directory, "durable-session");
-      fs.mkdirSync(sessions, { recursive: true });
-      for (const [file, text] of Object.entries(files)) fs.writeFileSync(path.join(sessions, file), text);
-      return directory;
+  describe("durable-session folder", () => {
+    const UUID_A = "0b6f2f62-3c1e-4c7a-9a4e-5d1f0a9b7c11";
+    const UUID_B = "7d9e1c24-8f3a-4b5d-8c60-2a1e4f6b9d03";
+    const setup = () => {
+      const tempRoot = temporaryDirectory();
+      const runRoot = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "durable-session");
+      markRunRootActive(runRoot, 1);
+      const run = (name: string, files: Record<string, string>) => {
+        const directory = path.join(runRoot, name);
+        writeStatus(directory, { status: "completed", finishedAt: DAY });
+        const sessions = path.join(directory, "durable-session");
+        fs.mkdirSync(sessions, { recursive: true });
+        for (const [file, text] of Object.entries(files)) fs.writeFileSync(path.join(sessions, file), text);
+        return directory;
+      };
+      const sweep = () => { markRunRootClosed(runRoot, DAY, true); return sweepAt(tempRoot, 2 * DAY + 1); };
+      return { run, sweep };
     };
-    const plain = run("plain", { "session.jsonl": "{}\n", "2026-10-11T00-00-00-000Z_new.jsonl": "{}\n" });
-    const unknown = run("unknown", { "session.jsonl": "{}\n", "notes.txt": "not Fabric's" });
-    const outside = path.join(temporaryDirectory(), "outside.jsonl");
-    fs.writeFileSync(outside, "keep");
-    const linked = run("linked", { "session.jsonl": "{}\n" });
-    fs.symlinkSync(outside, path.join(linked, "durable-session", "other.jsonl"));
-    markRunRootClosed(runRoot, DAY, true);
 
-    const result = sweepAt(tempRoot, 2 * DAY + 1);
-    expect(result.removedRuns).toEqual([plain]);
-    for (const kept of [unknown, linked]) expect(fs.existsSync(kept)).toBe(true);
-    expect(fs.readFileSync(outside, "utf8")).toBe("keep");
+    it("reclaims a run whose folder holds session.jsonl, or a lone tmp-<uuid v4>.jsonl", () => {
+      const { run, sweep } = setup();
+      const plain = run("plain", { "session.jsonl": "{}\n" });
+      const lone = run("lone", { [`tmp-${UUID_A}.jsonl`]: "{}\n" });
+      const both = run("both", { "session.jsonl": "{}\n", [`tmp-${UUID_B}.jsonl`]: "{}\n" }); // two files, two inodes
+      expect(sweep().removedRuns.sort()).toEqual([plain, lone, both].sort());
+    });
+
+    it.skipIf(process.platform === "win32")("reclaims a terminal run left with session.jsonl and tmp-<uuid>.jsonl as two names of one inode", () => {
+      const { run, sweep } = setup();
+      const crashed = run("crashed", { "session.jsonl": "{}\n" });
+      const sessions = path.join(crashed, "durable-session");
+      fs.linkSync(path.join(sessions, "session.jsonl"), path.join(sessions, `tmp-${UUID_A}.jsonl`)); // crash between link and unlink
+      expect(fs.statSync(path.join(sessions, "session.jsonl")).nlink).toBe(2);
+      expect(sweep().removedRuns).toEqual([crashed]);
+      expect(fs.existsSync(crashed)).toBe(false);
+    });
+
+    it.skipIf(process.platform === "win32")("keeps a run whose tmp name is hard-linked to a file outside the run, and leaves that file's bytes alone", () => {
+      const { run, sweep } = setup();
+      const kept = run("kept", { "session.jsonl": "{}\n" });
+      const outside = path.join(temporaryDirectory(), "outside.jsonl");
+      fs.writeFileSync(outside, "outside bytes");
+      fs.rmSync(path.join(kept, "durable-session", "session.jsonl"));
+      fs.linkSync(outside, path.join(kept, "durable-session", "session.jsonl"));
+      fs.linkSync(outside, path.join(kept, "durable-session", `tmp-${UUID_A}.jsonl`));
+      expect(fs.statSync(outside).nlink).toBe(3);
+      expect(sweep().removedRuns).toEqual([]);
+      expect(fs.existsSync(kept)).toBe(true);
+      expect(fs.readFileSync(outside, "utf8")).toBe("outside bytes");
+    });
+
+    it.skipIf(process.platform === "win32")("keeps a run whose session.jsonl alone is linked to a file outside the run", () => {
+      const { run, sweep } = setup();
+      const kept = run("kept", { "session.jsonl": "{}\n" });
+      const outside = path.join(temporaryDirectory(), "outside.jsonl");
+      fs.writeFileSync(outside, "outside bytes");
+      fs.rmSync(path.join(kept, "durable-session", "session.jsonl"));
+      fs.linkSync(outside, path.join(kept, "durable-session", "session.jsonl"));
+      expect(sweep().removedRuns).toEqual([]);
+      expect(fs.readFileSync(outside, "utf8")).toBe("outside bytes");
+    });
+
+    it.skipIf(process.platform === "win32")("keeps a run when a two-name file is not the session.jsonl plus one tmp pair", () => {
+      const { run, sweep } = setup();
+      const twoTemps = run("two-temps", { [`tmp-${UUID_A}.jsonl`]: "{}\n" });
+      fs.linkSync(path.join(twoTemps, "durable-session", `tmp-${UUID_A}.jsonl`), path.join(twoTemps, "durable-session", `tmp-${UUID_B}.jsonl`));
+      expect(sweep().removedRuns).toEqual([]);
+      expect(fs.existsSync(twoTemps)).toBe(true);
+    });
+
+    it.each([
+      ["an unknown name", "notes.txt"],
+      ["a legacy timestamped Pi name", "2026-10-11T00-00-00-000Z_new.jsonl"],
+      ["an uppercase uuid", `tmp-${UUID_A.toUpperCase()}.jsonl`],
+      ["an all-zero uuid", "tmp-00000000-0000-0000-0000-000000000000.jsonl"],
+      ["a uuid that is not version 4", "tmp-0b6f2f62-3c1e-1c7a-9a4e-5d1f0a9b7c11.jsonl"],
+      ["a tmp name with a suffix", `tmp-${UUID_A}.jsonl.bak`],
+    ])("keeps a run whose folder holds %s", (_label, name) => {
+      const { run, sweep } = setup();
+      const kept = run("kept", { "session.jsonl": "{}\n", [name]: "{}\n" });
+      expect(sweep().removedRuns).toEqual([]);
+      expect(fs.existsSync(kept)).toBe(true);
+    });
+
+    it.skipIf(process.platform === "win32")("keeps a run whose folder holds a symlink", () => {
+      const { run, sweep } = setup();
+      const linked = run("linked", { "session.jsonl": "{}\n" });
+      const outside = path.join(temporaryDirectory(), "outside.jsonl");
+      fs.writeFileSync(outside, "keep");
+      fs.symlinkSync(outside, path.join(linked, "durable-session", `tmp-${UUID_A}.jsonl`));
+      expect(sweep().removedRuns).toEqual([]);
+      expect(fs.readFileSync(outside, "utf8")).toBe("keep");
+    });
+
+    it("keeps a run whose durable-session holds a directory", () => {
+      const { run, sweep } = setup();
+      const kept = run("dir", { "session.jsonl": "{}\n" });
+      fs.mkdirSync(path.join(kept, "durable-session", `tmp-${UUID_A}.jsonl`));
+      expect(sweep().removedRuns).toEqual([]);
+    });
   });
 
   it("expires actor archives after seven days while preserving the latest run", () => {
