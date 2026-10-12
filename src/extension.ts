@@ -106,7 +106,6 @@ import { truncateMiddle } from "./util.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { captureLoadedFileIdentity } from "./build-identity.js";
-import { commandLineFabricCopy } from "./extension-copy.js";
 
 export const FABRIC_MANAGED_HOST_VERSION = 1;
 export type { FabricManagedHostOptions } from "./managed-host.js";
@@ -175,8 +174,12 @@ const SKILL_REFERENCE_CUSTOM_TYPE = "pi-fabric-skill-reference";
 
 return async function piFabric(pi: ExtensionAPI, options: { managedHost?: FabricManagedHostOptions } = {}): Promise<void> {
   // Two Fabric copies in one Pi would both register fabric_exec, and Pi refuses to start.
-  // An embedding host picked this copy itself, so only Pi-loaded copies defer.
-  const preferredCopy = options.managedHost ? undefined : commandLineFabricCopy(FABRIC_EXTENSION_ENTRY_PATH);
+  // An embedding host picked this copy itself, so only Pi-loaded copies defer. The check
+  // loads only when the command line names an extension, so a top-level `pi` never pays for it.
+  const namesExtension = process.argv.some(argument => argument === "-e" || argument === "--extension");
+  const preferredCopy = options.managedHost || !namesExtension
+    ? undefined
+    : (await import("./extension-copy.js")).commandLineFabricCopy(FABRIC_EXTENSION_ENTRY_PATH);
   if (preferredCopy) {
     console.warn(
       `[pi-fabric] ${FABRIC_EXTENSION_ENTRY_PATH} is inactive: the command line loads Fabric from ${preferredCopy}`,
