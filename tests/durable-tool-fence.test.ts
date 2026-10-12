@@ -8,11 +8,12 @@ import { DEFAULT_FABRIC_CONFIG, normalizeFabricConfig, type FabricConfig } from 
 import { ActionRegistry } from "../src/core/action-registry.js";
 import { FabricExecutionService } from "../src/execution-service.js";
 import { PiToolsProvider } from "../src/providers/pi-tools-provider.js";
-import type { FabricActionDescriptor } from "../src/protocol.js";
+import type { FabricActionDescriptor, FabricInvocationContext } from "../src/protocol.js";
 import { availablePythonBackends } from "./fixtures/python-backends.js";
 
 // The durable worker publishes the fence under this key; Fabric never imports the worker.
-type Fence = { toolCallId: string; accept(): Promise<void>; arm(): Promise<void> };
+type JournalOffer = { path: string; digest?: string; accept(digest: string): Promise<void> };
+type Fence = { toolCallId: string; accept(): Promise<void>; arm(): Promise<void>; journal?: JournalOffer };
 const holder = globalThis as { [key: symbol]: unknown };
 const fences = (holder[Symbol.for("pi-fabric.durable-tool-fence.v1")] ??= new AsyncLocalStorage<Fence>()) as AsyncLocalStorage<Fence>;
 
@@ -40,7 +41,10 @@ function deferred() {
   return { promise, resolve };
 }
 
-function fixture(config: FabricConfig = structuredClone(DEFAULT_FABRIC_CONFIG)) {
+function fixture(
+  config: FabricConfig = structuredClone(DEFAULT_FABRIC_CONFIG),
+  effect: (context: FabricInvocationContext) => Promise<unknown> = async () => "written",
+) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-fence-")); roots.push(cwd);
   fs.writeFileSync(path.join(cwd, "sample.txt"), "fabric works\n");
   const events: string[] = [];
@@ -54,15 +58,16 @@ function fixture(config: FabricConfig = structuredClone(DEFAULT_FABRIC_CONFIG)) 
     name: "demo", description: "demo",
     async list() { return [writeAction, lookupAction]; },
     async describe(name) { return name === "write" ? writeAction : name === "lookup" ? lookupAction : undefined; },
-    async invoke() { events.push("invoke"); return "written"; },
+    async invoke(_name, _args, context) { events.push("invoke"); return effect(context); },
   });
   const service = new FabricExecutionService(registry, config);
-  const run = (code: string, fenceId = "call") => fences.run({
+  const run = (code: string, fenceId = "call", journal?: JournalOffer, signal?: AbortSignal) => fences.run({
     toolCallId: fenceId,
     accept: async () => { events.push("accept"); },
     arm: async () => { events.push("arm-start"); armStarted.resolve(); if (holdArm) await armGate.promise; events.push("arm"); },
+    ...(journal ? { journal } : {}),
   }, () => service.execute({
-    code, signal: undefined, parentToolCallId: "call",
+    code, signal, parentToolCallId: "call",
     context: { cwd, hasUI: false } as ExtensionContext, onPartial() {},
   }));
   return { events, run, service, armStarted, hold: () => { holdArm = true; return armGate.resolve; } };
@@ -146,4 +151,61 @@ describe("durable fabric_exec rerun fence", () => {
     expect(result).toMatchObject({ success: true, value: "done" });
     expect(events).toEqual(["invoke"]);
   });
+});
+
+describe("durable fabric_exec crash journal", () => {
+  const journalPath = () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-journal-")); roots.push(root);
+    return path.join(root, "call.jsonl");
+  };
+  const resumeOffer = (file: string, digest: string): JournalOffer => ({
+    path: file, digest, accept: async () => { throw new Error("a resume must not record a new journal"); },
+  });
+
+  it("journals an effectful run instead of arming, and a resume reaches no provider", async () => {
+    const file = journalPath();
+    let digest: string | undefined;
+    const first = fixture();
+    const result = await first.run(effectful, "call", { path: file, accept: async value => { digest = value; } });
+    expect(result).toMatchObject({ success: true, value: "done" });
+    expect(first.events).toEqual(["accept", "invoke"]);
+    expect(digest).toMatch(/^[0-9a-f]{64}$/);
+
+    // A fresh service stands in for the restarted worker.
+    const resumed = fixture();
+    const again = await resumed.run(effectful, "call", resumeOffer(file, digest!));
+    expect(again).toMatchObject({ success: true, value: "done" });
+    expect(resumed.events).toEqual([]);
+  });
+
+  it("records the intent before the effect and does not repeat an interrupted effect", async () => {
+    const file = journalPath();
+    let digest: string | undefined;
+    const controller = new AbortController();
+    let journalAtEffect = "";
+    const first = fixture(undefined, async context => {
+      journalAtEffect = fs.readFileSync(file, "utf8");
+      queueMicrotask(() => controller.abort());
+      return new Promise((_resolve, reject) => context.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+    });
+    const result = await first.run(effectful, "call", { path: file, accept: async value => { digest = value; } }, controller.signal);
+    expect(result).toMatchObject({ success: false });
+    expect(journalAtEffect).toMatch(/"i":\d+,"ref":"demo\.write"/);
+
+    const resumed = fixture();
+    const again = await resumed.run(effectful, "call", resumeOffer(file, digest!));
+    expect(again).toMatchObject({ success: false });
+    expect(JSON.stringify(again)).toContain("fabric_exec was interrupted during this call, which may have run:");
+    expect(JSON.stringify(again)).toContain("demo.write({})");
+    expect(resumed.events).toEqual([]);
+  });
+
+  it.skipIf(!availablePythonBackends.monty)("refuses a resume on a runtime that cannot journal", async () => {
+    const config = normalizeFabricConfig({ executor: { kernel: "python", cpython: { binary: "/nonexistent/python3" }, memoryLimitBytes: 256 * 1024 * 1024 } });
+    const { events, run } = fixture(config);
+    const result = await run('return "ran"', "call", resumeOffer(journalPath(), "0".repeat(64)));
+    expect(result).toMatchObject({ success: false });
+    expect(JSON.stringify(result)).toContain("its runtime changed since the journal was recorded. Nothing was rerun.");
+    expect(events).toEqual([]);
+  }, 30_000);
 });

@@ -63,6 +63,7 @@ const lazy = [
   "runtime/cpython-runtime.js",
   "runtime/monty-runtime.js",
   "runtime/quickjs-runtime.js",
+  "runtime/exec-journal.js",
   "runtime/type-checker.js",
   "speculation/scanner.js",
   "speculation/python-scanner.js",
