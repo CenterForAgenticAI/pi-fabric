@@ -348,7 +348,16 @@ export class ResidencyClient {
       // Only the resident host settles its runs. With no live owner nothing will,
       // so restart it: the new host re-attaches the run. Re-read the status first
       // in case the host settled the run and exited between the two reads.
-      if (!this.#liveOwner() && !this.#settled(id)) {
+      if (!this.#liveOwner()) {
+        const current = this.statusAgent(id);
+        if (terminal(current.status) && "startedAt" in current) continue;
+        // A new host re-attaches only hosted runs (AgentManager.recoverHostedRuns).
+        // Nothing settles any other run once its host is gone, so fail now.
+        if (!("hosted" in current && current.hosted)) {
+          throw new Error(
+            `Durable Fabric agent ${id} (runner ${current.runner}) cannot finish: its resident host ${this.hostId} stopped, and a new host re-attaches only hosted runs`,
+          );
+        }
         if (hostStarts >= MAX_WAIT_HOST_STARTS) {
           throw new Error(
             `Fabric resident host ${this.hostId} stopped ${hostStarts} times while durable Fabric agent ${id} was unfinished`,
@@ -362,11 +371,6 @@ export class ResidencyClient {
       }
       await sleepUnlessAborted(STATUS_POLL_MS, signal).catch(() => undefined);
     }
-  }
-
-  #settled(id: string): boolean {
-    const status = this.statusAgent(id);
-    return terminal(status.status) && "startedAt" in status;
   }
 
   readAgentLog(id: string, options: { lines?: number; before?: number } = {}): FabricAgentLog {
