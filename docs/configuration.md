@@ -639,7 +639,7 @@ Other agent settings:
 
 ### Usage tracking with external tools
 
-Fabric children run with `--no-session`, so token trackers that scrape session files (tokscale, ccusage, …) cannot see subagent token usage or cost. With `sessionExport` enabled (the default), every child writes one usage-only session file (tokens and cost, never transcript content) to:
+Explicit `pi` children run with `--no-session`, and `pi-durable` children keep their session file inside the run directory (with a worker-role entry, see [Durable Pi](durable-pi.md)), so token trackers that scrape session files (tokscale, ccusage, …) cannot see subagent token usage or cost. With `sessionExport` enabled (the default), every child writes one usage-only session file (tokens and cost, never transcript content) to:
 
 ```text
 ~/.pi/agent/sessions/.fabric/<encoded-cwd>/<run>.jsonl

@@ -8,6 +8,7 @@ import { build } from "esbuild";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { durableExtensionLoadError } from "../src/durable/extension-load-error.js";
 import { parseDurableWorkerOptions } from "../src/durable/worker-options.js";
+import { createDurableSessionFile } from "../src/durable/worker-role-seed.js";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-durable-host-"));
 // Extensions outside `root` cannot reach the checkout's node_modules through an ancestor.
@@ -22,14 +23,14 @@ beforeAll(async () => {
 }, 30000);
 afterAll(() => { for (const directory of [root, outside]) fs.rmSync(directory, { recursive: true, force: true }); });
 
-async function worker(name: string, extra: string[] = [], environment: NodeJS.ProcessEnv = {}, discover = false) {
+async function worker(name: string, extra: string[] = [], environment: NodeJS.ProcessEnv = {}, discover = false, session = true, sessionFile?: string) {
   const cwd = path.join(root, name); fs.mkdirSync(cwd, { recursive: true });
   const agentDir = path.join(cwd, "agent"); fs.mkdirSync(agentDir, { recursive: true });
   fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: environment.DURABLE_TEST_TRUST ?? "ask", compaction: { enabled: false }, retry: { enabled: false } }));
   const fixture = path.join(cwd, "fixture.txt"); if (!fs.existsSync(fixture)) fs.writeFileSync(fixture, "private fixture");
   const effect = path.join(cwd, "effect.txt");
   const child = spawn(process.execPath, [entry, "--mode", "rpc", "--durable-directory", path.join(cwd, "durable"), "--durable-run-id", name,
-    "--session", path.join(cwd, "session.jsonl"), ...(discover ? [] : ["--no-extensions"]), "-e", extension, "--model", "durable-offline/test", ...extra],
+    ...(session ? ["--session", sessionFile ?? path.join(cwd, "session.jsonl")] : ["--no-session"]), ...(discover ? [] : ["--no-extensions"]), "-e", extension, "--model", "durable-offline/test", ...extra],
     { cwd, env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, DURABLE_TEST_FAUX_MODULE: import.meta.resolve("@earendil-works/pi-ai/providers/faux"), DURABLE_TEST_FILE: fixture, DURABLE_TEST_EFFECT: effect, ...environment }, stdio: ["pipe", "pipe", "pipe"] }) as ChildProcessWithoutNullStreams;
   const messages: any[] = []; let pending = "", stderr = ""; const change = new Set<() => void>();
   child.stdout.on("data", chunk => {
@@ -279,4 +280,56 @@ export default function () { fs.writeFileSync(${JSON.stringify(marker)}, String(
       expect(answer(resumed.messages)).toMatch(/interrupted/i);
     } finally { await resumed.stop(); }
   }, 60000);
+
+  it("opens a freshly created durable-session file as a valid Pi session and appends to it after a relaunch", async () => {
+    const cwd = path.join(root, "role-seed"); const runDirectory = path.join(cwd, "run");
+    fs.mkdirSync(runDirectory, { recursive: true, mode: 0o700 });
+    const file = createDurableSessionFile(runDirectory, cwd); // header and worker-role entry arrive together
+    const lines = () => fs.readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    const policy = (entries: any[]) => entries.filter(entry => entry.type === "custom" && entry.customType === "context-aware.policy.v1");
+    const onDisk = lines();
+    expect(onDisk.map(entry => entry.type)).toEqual(["session", "custom"]);
+    expect(onDisk[1].parentId).toBe(null);
+    const first = await worker("role-seed", ["--no-tools"], {}, false, true, file);
+    try {
+      first.send({ type: "prompt", id: "role", message: "remember" });
+      await first.wait(event => event.type === "agent_settled");
+      first.send({ type: "get_state", id: "state" });
+      expect(await first.wait(event => event.id === "state")).toMatchObject({ success: true, data: { sessionFile: file } });
+    } finally { await first.stop(true); }
+    const afterTurn = lines();
+    expect(afterTurn.slice(0, 2)).toEqual(onDisk); // Pi kept the header and entry, and appended after them.
+    expect(afterTurn.filter(entry => entry.type === "session")).toHaveLength(1);
+    expect(afterTurn.some(entry => entry.type === "message" && entry.message.role === "assistant")).toBe(true);
+    expect(policy(afterTurn)).toHaveLength(1);
+    // Real Pi opened the file, appended its turn after the policy, and the policy is on the branch from the new leaf.
+    expect(afterTurn.slice(2).every(entry => entry.parentId !== null)).toBe(true);
+    expect(afterTurn[2].parentId).toBe(onDisk[1].id);
+    expect(fs.readFileSync(file, "utf8")).toBe(afterTurn.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+    const resumed = await worker("role-seed", ["--no-tools"], {}, false, true, file);
+    try {
+      resumed.send({ type: "get_state", id: "state" });
+      expect(await resumed.wait(event => event.id === "state")).toMatchObject({ success: true, data: { sessionFile: file } });
+    } finally { await resumed.stop(); }
+    expect(lines()).toEqual(afterTurn); // reopening neither truncates nor adds a second entry
+    expect(policy(lines())).toHaveLength(1);
+  }, 45000);
+
+  it.each([
+    { session: true, restored: "1" },
+    { session: false, restored: "0" },
+  ])("restores extension session entries after process death only from a session file: %o", async ({ session, restored }) => {
+    const name = session ? "entries-file" : "entries-memory";
+    const report = path.join(root, `${name}.txt`);
+    const counts = () => fs.existsSync(report) ? fs.readFileSync(report, "utf8").trim().split("\n") : [];
+    const first = await worker(name, ["--no-tools"], { DURABLE_TEST_ENTRIES: report }, false, session);
+    try {
+      first.send({ type: "prompt", id: "entries", message: "remember" });
+      await first.wait(event => event.type === "agent_settled");
+    } finally { await first.stop(true); }
+    const resumed = await worker(name, ["--no-tools"], { DURABLE_TEST_ENTRIES: report }, false, session);
+    try {
+      await expect.poll(counts, { timeout: 5000 }).toEqual(["0", restored]);
+    } finally { await resumed.stop(); }
+  }, 40000);
 });
