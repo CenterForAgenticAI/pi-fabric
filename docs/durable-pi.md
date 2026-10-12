@@ -60,10 +60,24 @@ context edits, and compaction, when a relaunched attempt reopens it. Explicit
 `pi` children keep `--no-session`. Run retention removes `durable-session/`
 with its run; a file other than `*.jsonl`, or a link, preserves the run.
 
+The worker creates the folder itself, directly under the existing run directory
+and without following links. If `durable-session` already exists it must be a
+real directory (not a link) owned by the worker's user; otherwise the launch
+fails before anything is written. The file is created complete: the worker
+writes the Pi header and the worker-role entry to `tmp-<uuid>.jsonl` in the same
+folder (`0600`), syncs it, and hard-links it to `session.jsonl`. Exactly one of
+two concurrent attempts wins the link; the other keeps the winner's file. A
+crash leaves at most a `tmp-*.jsonl` name, which a relaunch removes and
+retention treats like any other `*.jsonl` file. Pi therefore never sees an empty
+or half-written file. While both names exist (the short gap between link and
+unlink, or after such a crash) the file has two links, and retention leaves the
+run in place until a relaunch removes the temp name.
+
 ### Worker role
 
-Before a `pi-durable` child starts, the worker process marks its session as a
-worker session. It appends one custom entry to the Pi session file:
+Before a `pi-durable` child starts, the worker process makes sure its session
+carries a worker-role entry on the branch Pi opens. The entry is one custom
+entry in the Pi session file:
 
 ```json
 { "type": "custom", "customType": "context-aware.policy.v1",
@@ -77,17 +91,33 @@ seed as a new user message, rewrite it with a model, add the cache listing, and
 compact in the middle of a reply. Fabric does not import pi-context-aware; without
 that extension the entry is one unread line.
 
-- **Which files.** Only files Fabric created for this run: `durable-session/session.jsonl`
-  and the fork and handoff seeds in `fork-session/` and `handoff-session/`. A
-  `sessionFile` the caller supplies (an actor's session, for example) is never
-  modified, so such a child keeps whatever role that file already declares.
-- **Empty file.** The unseeded file is empty, and Pi writes a new session file
-  only once a message exists. The worker therefore writes the Pi session header
-  and the entry in one append, so Pi opens an existing session and appends to it.
-- **Seeded file.** Existing lines are kept byte for byte. The entry is appended as
-  a child of the last entry.
-- **Relaunch.** An entry declared by `pi-fabric/durable-worker` already in the
-  file means nothing is written, so a relaunched attempt never adds a second.
+- **Which files.** Only files Fabric created for this run, and the launcher says
+  which: the worker itself creates `durable-session/session.jsonl`, and the manager
+  passes `--session-owned true` only for the fork and handoff seeds it wrote into
+  `fork-session/` and `handoff-session/`. A `sessionFile` the caller supplies (an
+  actor's session, for example) is never modified, even if it sits in a folder
+  with one of those names, so such a child keeps whatever role that file already
+  declares. A flagged file is also re-checked at launch: it must still resolve to
+  one of this run's session folders, and it is opened once without following
+  links. It must be a regular file with one name (a hardlink is refused), owned by
+  the worker's user, and all reads and the append use that open descriptor.
+- **New durable-session file.** Written complete, as described above: header and
+  entry arrive together, and there is exactly one entry.
+- **Seeded file.** Existing lines are kept byte for byte. Pi opens a session at its
+  last entry (the last line with an `id`) and the role is read from the path from
+  that entry up to the root. The file counts as marked only when a custom entry of
+  type `context-aware.policy.v1` whose `data` is exactly the payload above is on
+  that path. Otherwise one entry is appended as a child of that last entry. An
+  entry on another branch, or one with the same `declaredBy` but a different
+  payload, does not count.
+- **Relaunch.** A file that already carries a valid entry on that path is left
+  untouched, so a relaunched attempt adds nothing. After a relaunch that finds the
+  entry missing from the active branch, the file holds one valid entry on the
+  active branch, plus any older entry that was already there.
+- **Unreadable file.** A Fabric-created file that is not empty but has no Pi
+  session header as its first entry (a torn write, for instance) fails the launch
+  with an error naming the file and saying Pi would refuse it. Nothing is
+  launched and the file is not changed.
 - **Plain `pi`.** Children on the `pi` runner are unchanged: `--no-session`
   and no entry.
 

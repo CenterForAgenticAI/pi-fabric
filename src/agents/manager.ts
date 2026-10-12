@@ -1132,6 +1132,8 @@ export class AgentManager {
         "--model-admission",
         this.config.modelAdmission ?? "strict",
         ...(sessionFile ? ["--session-file", sessionFile] : []),
+        // Provenance: only a seed Fabric wrote itself (never request.sessionFile) may get a worker-role entry.
+        ...(sessionFile && (request.forkSeed || request.sessionSeed) ? ["--session-owned", "true"] : []),
         ...(sessionExportFile ? ["--session-export-file", sessionExportFile] : []),
         ...(inheritedSessionPins && inheritedSessionPins.length > 0
           ? ["--inherited-session-pins", serializeInheritedSessionPins(inheritedSessionPins)]
