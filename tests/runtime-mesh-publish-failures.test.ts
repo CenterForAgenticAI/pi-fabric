@@ -8,7 +8,7 @@ import { normalizeFabricConfig } from "../src/config.js";
 import { FabricRuntimeState } from "../src/fabric-runtime-state.js";
 import { LifecycleBroker } from "../src/lifecycle/broker.js";
 import type { FabricLifecyclePublishRequest } from "../src/lifecycle/types.js";
-import { MeshStore } from "../src/mesh/store.js";
+import type { MeshStore } from "../src/mesh/store.js";
 import {
   FABRIC_COMPONENT_DISCOVER_EVENT,
   type FabricComponentDiscovery,
@@ -105,25 +105,35 @@ const provider = (name: string, actions: readonly string[] = []): FabricProvider
   };
 };
 
-const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 50));
+// One macrotask turn. Node runs every queued promise reaction, then its
+// unhandled-rejection check, before any setImmediate callback, so this is a
+// deterministic flush rather than a timed wait.
+const flushPromiseReactions = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+const warningsMatching = (warn: { mock: { calls: unknown[][] } }, ...parts: string[]): number =>
+  warn.mock.calls.filter((args) =>
+    args.some((arg) => typeof arg === "string" && parts.every((part) => arg.includes(part))),
+  ).length;
 
 describe("Fabric runtime best-effort mesh publications", () => {
   it("handles a rejected compaction publish without an unhandled rejection and reports it", async () => {
     const failure = new Error("mesh event log is full");
-    // A plain patch rather than vi.spyOn: a spy observes the returned promise,
-    // which would mark the rejection handled and hide the defect.
-    const original = MeshStore.prototype.publish;
-    const topics: string[] = [];
-    MeshStore.prototype.publish = function (this: MeshStore, input) {
-      topics.push(input.topic);
-      if (input.topic === "fabric.compact") return Promise.reject(failure);
-      return original.call(this, input);
-    };
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
-    process.on("unhandledRejection", onUnhandled);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { runtime, context } = await startRuntime();
+    // A per-instance stub rather than vi.spyOn: a spy observes the returned
+    // promise, which would mark the rejection handled and hide the defect.
+    // The stub lives on this runtime's store and goes away with it.
+    const mesh = runtime.mesh;
+    const publish = mesh.publish.bind(mesh);
+    const topics: string[] = [];
+    mesh.publish = (input: Parameters<MeshStore["publish"]>[0]) => {
+      topics.push(input.topic);
+      if (input.topic === "fabric.compact") return Promise.reject(failure);
+      return publish(input);
+    };
+    process.on("unhandledRejection", onUnhandled);
     try {
       await runtime.registry.invoke("compact.request", { reason: "test" }, {
         cwd: context.cwd,
@@ -136,40 +146,42 @@ describe("Fabric runtime best-effort mesh publications", () => {
         audits: [],
         maxResultChars: 32_768,
       });
+      await flushPromiseReactions();
       expect(topics).toContain("fabric.compact");
-      await settle();
       expect(unhandled).not.toContain(failure);
-      expect(warn.mock.calls.some((args) =>
-        args.some((arg) => typeof arg === "string" && arg.includes("fabric.compact") &&
-          arg.includes("mesh event log is full")),
-      )).toBe(true);
+      expect(warningsMatching(warn, "fabric.compact", "mesh event log is full")).toBe(1);
     } finally {
-      await runtime.shutdown();
       process.off("unhandledRejection", onUnhandled);
-      MeshStore.prototype.publish = original;
+      await runtime.shutdown();
     }
   });
 
   it("does not remember a failed component transition and republishes it on the next report", async () => {
     const original = LifecycleBroker.prototype.publish;
     let armed = false;
-    let failed = false;
-    const waitingPublications: string[] = [];
+    let failing = false;
+    const published: string[] = [];
     vi.spyOn(LifecycleBroker.prototype, "publish").mockImplementation(
       function (this: LifecycleBroker, request: FabricLifecyclePublishRequest) {
         const data = request.data as Record<string, unknown> | undefined;
         if (armed && request.event === "component.state" && data?.id === WAITING_COMPONENT) {
-          waitingPublications.push(String(data.state));
-          if (!failed && data.state === "waiting") {
-            failed = true;
-            return Promise.reject(new Error("mesh lock timed out"));
-          }
+          published.push(String(data.state));
+          if (failing) return Promise.reject(new Error("mesh lock timed out"));
         }
         return original.call(this, request);
       },
     );
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const failureWarnings = (): number => warningsMatching(warn, WAITING_COMPONENT, "mesh lock timed out");
     const { runtime } = await startRuntime();
+    // A provider change reconciles every component; the waiting component
+    // re-reports its state synchronously, so settle() covers the publish call
+    // and the flush covers its rejection handler.
+    const changeProviders = async (name: string, actions: readonly string[] = []): Promise<void> => {
+      runtime.registerExternal(provider(name, actions));
+      await runtime.components.settle();
+      await flushPromiseReactions();
+    };
     try {
       await runtime.components.settle();
       expect(runtime.components.status(WAITING_COMPONENT)).toMatchObject({
@@ -177,38 +189,40 @@ describe("Fabric runtime best-effort mesh publications", () => {
         missing: expect.arrayContaining(["alpha.cap", "absent.capability"]),
       });
       armed = true;
+      failing = true;
 
       // A real transition: one requirement appears, the component stays
       // waiting on the other, and that publication fails.
-      runtime.registerExternal(provider("alpha", ["cap"]));
-      await vi.waitFor(() => expect(failed).toBe(true), { timeout: 10_000 });
-      await runtime.components.settle();
-      await settle();
+      await changeProviders("alpha", ["cap"]);
       expect(runtime.components.status(WAITING_COMPONENT)).toMatchObject({
         state: "waiting",
         missing: ["absent.capability"],
       });
-      expect(waitingPublications).toEqual(["waiting"]);
-      expect(warn.mock.calls.some((args) =>
-        args.some((arg) => typeof arg === "string" && arg.includes(WAITING_COMPONENT) &&
-          arg.includes("mesh lock timed out")),
-      )).toBe(true);
+      expect(published).toEqual(["waiting"]);
+      expect(failureWarnings()).toBe(1);
 
-      // The next provider change re-reports the same state: the failed
-      // transition is published this time.
-      runtime.registerExternal(provider("first-tick"));
-      await vi.waitFor(
-        () => expect(waitingPublications).toEqual(["waiting", "waiting"]),
-        { timeout: 10_000 },
-      );
-      await runtime.components.settle();
-      await settle();
+      // The next provider change re-reports the same state, so the failed
+      // transition is retried. It fails again within the same streak and is
+      // not logged a second time.
+      await changeProviders("first-tick");
+      expect(published).toEqual(["waiting", "waiting"]);
+      expect(failureWarnings()).toBe(1);
+
+      // The mesh recovers: the retry succeeds.
+      failing = false;
+      await changeProviders("second-tick");
+      expect(published).toEqual(["waiting", "waiting", "waiting"]);
 
       // Once published, the unchanged state is not published again.
-      runtime.registerExternal(provider("second-tick"));
-      await runtime.components.settle();
-      await settle();
-      expect(waitingPublications).toEqual(["waiting", "waiting"]);
+      await changeProviders("third-tick");
+      expect(published).toEqual(["waiting", "waiting", "waiting"]);
+
+      // The success ended the streak, so the next failure is logged again.
+      failing = true;
+      await changeProviders("absent", ["capability"]);
+      expect(runtime.components.status(WAITING_COMPONENT).state).toBe("active");
+      expect(published.length).toBeGreaterThan(3);
+      expect(failureWarnings()).toBe(2);
     } finally {
       await runtime.shutdown();
     }
