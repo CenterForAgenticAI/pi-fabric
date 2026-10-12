@@ -5,6 +5,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ActorBindingStore } from "../src/actors/binding-store.js";
 import { ActorStoreReadError } from "../src/actors/store-read.js";
 
+// Mode 000 does not stop the read on Windows or for root.
+const unreadableFileSkip =
+  process.platform === "win32"
+    ? "Windows does not deny reads by POSIX mode bits"
+    : process.getuid?.() === 0
+      ? "root reads a mode-000 file"
+      : undefined;
+
 const roots: string[] = [];
 
 const setup = (): { first: ActorBindingStore; second: ActorBindingStore } => {
@@ -81,9 +89,10 @@ describe("ActorBindingStore read failures", () => {
     expect(fs.readFileSync(file, "utf8")).toBe(raw);
   });
 
-  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  it(
     "refuses to save over a binding file it has no permission to read",
-    async () => {
+    async ({ skip }) => {
+      skip(unreadableFileSkip !== undefined, unreadableFileSkip);
       const root = freshRoot();
       const raw = JSON.stringify({ format: 1, sessionId, bindings: { "actor:a": saved("provider/model-a") } });
       const file = writeRaw(root, raw);
