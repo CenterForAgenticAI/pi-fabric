@@ -2,6 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import { writeForkSession } from "../src/agents/handoff.js";
 import {
   FABRIC_RUN_ROOT_PREFIX,
   markRunRootActive,
@@ -261,6 +263,122 @@ describe("temporal retention", () => {
     const result = sweepAt(tempRoot, 2 * DAY + 1);
     expect(result.removedRuns.sort()).toEqual([nested, plain].sort());
     for (const kept of [unknown, badKey, linked]) expect(fs.existsSync(kept)).toBe(true);
+    expect(fs.readFileSync(outside, "utf8")).toBe("keep");
+  });
+
+  const forkEntries = (): SessionEntry[] => [
+    { type: "message", id: "u1", parentId: null, timestamp: "2026-01-01T00:00:00.000Z", message: { role: "user", content: "hello", timestamp: 1 } },
+    { type: "message", id: "a1", parentId: "u1", timestamp: "2026-01-01T00:00:01.000Z", message: { role: "assistant", content: [{ type: "text", text: "hi" }], timestamp: 2 } },
+  ] as unknown as SessionEntry[];
+  // The real writer, into the directory the manager gives it, so the layout is not guessed.
+  const forkRun = (runRoot: string, name: string): { run: string; fork: string } => {
+    const run = path.join(runRoot, name);
+    writeStatus(run, { status: "completed", finishedAt: DAY });
+    const fork = path.join(run, "fork-session");
+    writeForkSession({ sourceSessionId: "caller", sourceBranch: forkEntries() }, run, fork);
+    return { run, fork };
+  };
+
+  it("reclaims a forked run's fork-session with its run, but keeps unknown, linked, hard-linked, or nested contents", () => {
+    const tempRoot = temporaryDirectory();
+    const runRoot = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "fork");
+    markRunRootActive(runRoot, 1);
+    const plain = forkRun(runRoot, "plain");
+    expect(fs.readdirSync(plain.fork)).toHaveLength(1);
+    const unknown = forkRun(runRoot, "unknown");
+    fs.writeFileSync(path.join(unknown.fork, "notes.txt"), "not Fabric's");
+    const wrongName = forkRun(runRoot, "wrong-name");
+    fs.writeFileSync(path.join(wrongName.fork, "other.jsonl"), "{}\n");
+    const outside = path.join(temporaryDirectory(), "outside.jsonl");
+    fs.writeFileSync(outside, "keep");
+    const linked = forkRun(runRoot, "linked");
+    fs.symlinkSync(outside, path.join(linked.fork, "handoff-00000000-0000-4000-8000-000000000000.jsonl"));
+    const hardLinked = forkRun(runRoot, "hard-linked");
+    fs.linkSync(path.join(hardLinked.fork, fs.readdirSync(hardLinked.fork)[0]!), path.join(temporaryDirectory(), "alias.jsonl"));
+    const nested = forkRun(runRoot, "nested-dir");
+    fs.mkdirSync(path.join(nested.fork, "sub"));
+    const linkedDirectory = forkRun(runRoot, "linked-dir");
+    fs.rmSync(linkedDirectory.fork, { recursive: true });
+    const outsideDirectory = temporaryDirectory();
+    fs.symlinkSync(outsideDirectory, linkedDirectory.fork);
+    markRunRootClosed(runRoot, DAY, true);
+
+    const result = sweepAt(tempRoot, 2 * DAY + 1);
+    expect(result.removedRuns).toEqual([plain.run]);
+    for (const kept of [unknown, wrongName, linked, hardLinked, nested, linkedDirectory]) expect(fs.existsSync(kept.run)).toBe(true);
+    expect(fs.readFileSync(outside, "utf8")).toBe("keep");
+    expect(fs.existsSync(outsideDirectory)).toBe(true);
+  });
+
+  it("reclaims a forked run whose owner died, once the orphan grace passes", () => {
+    const tempRoot = temporaryDirectory();
+    const runRoot = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "fork-orphan");
+    fs.mkdirSync(runRoot);
+    fs.writeFileSync(path.join(runRoot, ".fabric-owner.json"), JSON.stringify({ pid: 2_147_483_647, startedAt: 1, heartbeatAt: 1 }));
+    forkRun(runRoot, "run");
+    expect(sweepAt(tempRoot, 2).removedRoots).toEqual([]);
+    expect(sweepAt(tempRoot, 6 * HOUR + 2).removedRoots).toEqual([runRoot]);
+  });
+
+  it("reclaims the oversized-event artifact and record temp files a crash leaves, but not lookalikes or links", () => {
+    const tempRoot = temporaryDirectory();
+    const runRoot = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "artifacts");
+    markRunRootActive(runRoot, 1);
+    const uuid = "123e4567-e89b-42d3-a456-426614174000";
+    const run = (name: string, files: Record<string, string>): string => {
+      const directory = path.join(runRoot, name);
+      writeStatus(directory, { status: "failed", finishedAt: DAY });
+      for (const [file, text] of Object.entries(files)) fs.writeFileSync(path.join(directory, file), text);
+      return directory;
+    };
+    const artifacts = run("artifacts", {
+      "oversized-event-prefix.txt": "x".repeat(64),
+      "status.json.4242.tmp": "{",
+      [`status.json.4242.${uuid}.tmp`]: "{",
+      [`hosted.json.4242.${uuid}.tmp`]: "{",
+    });
+    const lookalikes = ["status.json.bak", "status.json.4242.tmp.old", "task.txt.4242.tmp", "oversized-event-prefix.txt.bak", "events.jsonl.4242.tmp"]
+      .map((file) => run(`look-${file}`, { [file]: "mine" }));
+    const outside = path.join(temporaryDirectory(), "outside.txt");
+    fs.writeFileSync(outside, "keep");
+    const linked = run("linked", {});
+    fs.symlinkSync(outside, path.join(linked, "oversized-event-prefix.txt"));
+    const linkedTemp = run("linked-temp", {});
+    fs.symlinkSync(outside, path.join(linkedTemp, "status.json.4242.tmp"));
+    const directoryNamed = run("directory-named", {});
+    fs.mkdirSync(path.join(directoryNamed, "oversized-event-prefix.txt"));
+    markRunRootClosed(runRoot, DAY, true);
+
+    const result = sweepAt(tempRoot, 2 * DAY + 1);
+    expect(result.removedRuns).toEqual([artifacts]);
+    for (const kept of [...lookalikes, linked, linkedTemp, directoryNamed]) expect(fs.existsSync(kept)).toBe(true);
+    expect(fs.readFileSync(outside, "utf8")).toBe("keep");
+  });
+
+  it("reclaims a settled hosted run's hosted.json, but keeps it while the run could still be re-attached", () => {
+    const tempRoot = temporaryDirectory();
+    const runRoot = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "hosted");
+    markRunRootActive(runRoot, 1);
+    const hosted = (name: string, record: Record<string, unknown>): string => {
+      const directory = path.join(runRoot, name);
+      writeStatus(directory, { transport: "hosted", ...record });
+      fs.writeFileSync(path.join(directory, "task.txt"), "task");
+      fs.writeFileSync(path.join(directory, "hosted.json"), "{}");
+      return directory;
+    };
+    const settled = hosted("settled", { status: "completed", finishedAt: DAY });
+    const running = hosted("running", { status: "running", updatedAt: DAY });
+    const outside = path.join(temporaryDirectory(), "locator.json");
+    fs.writeFileSync(outside, "keep");
+    const linked = path.join(runRoot, "linked");
+    writeStatus(linked, { transport: "hosted", status: "completed", finishedAt: DAY });
+    fs.symlinkSync(outside, path.join(linked, "hosted.json"));
+    markRunRootClosed(runRoot, DAY, true);
+
+    const result = sweepAt(tempRoot, 3 * DAY);
+    expect(result.removedRuns).toEqual([settled]);
+    expect(fs.existsSync(running)).toBe(true);
+    expect(fs.existsSync(linked)).toBe(true);
     expect(fs.readFileSync(outside, "utf8")).toBe("keep");
   });
 
