@@ -2,11 +2,12 @@
 
 A decision is a pending question that outlives the call that raised it: an approval, a question, or an escalation. Fabric stores each decision in the project mesh, so a headless session, a resident host, a child agent, and a person at another terminal all see the same record. A human answers through `/fabric decisions` or the `pi-fabric decisions` CLI. A program answers only decisions that are held by its participant.
 
-Three sources raise decisions:
+Four sources raise decisions:
 
 - programs, through `decisions.raise`;
 - headless approvals, when `approvals.headless` is `"decision"`;
-- routed child dialogs, when `agents.childQuestions` is `"route"` and the parent session has no interactive UI.
+- routed child dialogs, when `agents.childQuestions` is `"route"` and the parent session has no interactive UI;
+- other extensions, through the [extension question events](#extension-questions).
 
 ## Record
 
@@ -131,9 +132,11 @@ The deadline is the dialog's own timeout, or `agents.childQuestionTimeoutMs` (de
 Another extension in the same session can hand a question to a person through two host-local, versioned events on `pi.events`. A question tool uses them when it has no screen to ask on.
 
 - `pi-fabric:decisions:capability:v1` claims and resolves with `{ ok: true, available: true, inputs, maxOptions, maxTitleChars, maxBodyChars, maxTextChars, minTimeoutMs, maxTimeoutMs }`, or `{ ok: true, available: false, reason }` when the mesh is disabled or the host is managed. An unclaimed request means no compatible Fabric runtime is loaded.
-- `pi-fabric:decisions:request:v1` takes `question: { title, body?, input?, options?, timeoutMs? }`, an optional `AbortSignal`, and an optional `onRaised(id)` callback. It raises a `kind: "question"` decision and resolves once it settles: `{ ok: true, id, status: "answered", answer }`, `{ ok: true, id, status: "cancelled" | "expired" }`, or `{ ok: false, error, id? }`.
+- `pi-fabric:decisions:request:v1` takes `question: { title, body?, input?, options?, timeoutMs? }`, an optional `source`, an optional `AbortSignal`, and an optional `onRaised(id)` callback. It raises a `kind: "question"` decision and resolves once it settles: `{ ok: true, id, status: "answered", answer }`, `{ ok: true, id, status: "cancelled" | "expired" }`, or `{ ok: false, error, id? }`.
 
 Fabric copies only those question fields. The decision is always held by `"user"` with `onExpire: "cancel"`, so a caller cannot route it to a program, add an escalation chain, or set a default that settles without a person. Only `answered` carries an answer. Omit `timeoutMs` to wait until a person answers or cancels; aborting the signal cancels the stored decision.
+
+`source` names the asking extension, for example its package name. The record stores it as `raisedBy.participantId: "extension:<source>"` next to the session id, so a person can see who asked. It must match `[A-Za-z0-9@][A-Za-z0-9@._/-]{0,63}`; any other value is refused before a decision is raised. Without `source`, the session is the raiser.
 
 ## Human surfaces
 
