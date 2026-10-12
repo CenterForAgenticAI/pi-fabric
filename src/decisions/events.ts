@@ -28,6 +28,16 @@ import {
 export type FabricDecisionsTarget = { store: DecisionStore } | { reason: string };
 export type ResolveFabricDecisions = (context: ExtensionContext) => Promise<FabricDecisionsTarget>;
 
+// A source names the asking extension. It cannot contain ":", so the stored
+// "extension:<source>" participant id never equals a real participant id.
+const SOURCE_PATTERN = /^[A-Za-z0-9@][A-Za-z0-9@._/-]{0,63}$/;
+
+const raisedByFromSource = (source: string | undefined): Partial<DecisionRecord["raisedBy"]> => {
+  if (source === undefined) return {};
+  if (!SOURCE_PATTERN.test(source)) throw new Error("Decision source must match [A-Za-z0-9@][A-Za-z0-9@._/-]{0,63}");
+  return { participantId: `extension:${source}` };
+};
+
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
 const optionField = (option: unknown, field: "id" | "label"): unknown =>
@@ -122,6 +132,7 @@ export const answerFabricDecisionRequest = async (
   let raised: string | undefined;
   try {
     request.signal?.throwIfAborted();
+    const raisedBy = raisedByFromSource(request.source);
     const target = await resolve(request.context);
     if ("reason" in target) {
       respond({ ok: false, error: target.reason });
@@ -130,7 +141,7 @@ export const answerFabricDecisionRequest = async (
     const record = await raiseAndWait(
       target.store,
       decisionInputFromQuestion(request.question),
-      {},
+      raisedBy,
       request.signal,
       (id) => {
         raised = id;

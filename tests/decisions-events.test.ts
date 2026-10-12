@@ -42,7 +42,7 @@ interface Asked {
 const ask = (
   question: FabricDecisionQuestionV1,
   resolve: ResolveFabricDecisions,
-  extra: { signal?: AbortSignal; onRaised?: (id: string) => void } = {},
+  extra: { signal?: AbortSignal; source?: string; onRaised?: (id: string) => void } = {},
 ): Asked => {
   let markRaised!: (id: string) => void;
   const raised = new Promise<string>((settle) => { markRaised = settle; });
@@ -139,6 +139,35 @@ describe("decisions event channel", () => {
     await pending.result;
   });
 
+  it("names the asking extension as the raiser and keeps the session", async () => {
+    const store = decisionStore();
+    const controller = new AbortController();
+    const pending = ask({ title: "Name?" }, async () => ({ store }), { signal: controller.signal, source: "@acme/ask-tool" });
+    const open = await stored(store, await pending.raised);
+    expect(open.raisedBy).toEqual({ participantId: "extension:@acme/ask-tool", sessionId: "main" });
+    controller.abort();
+    await pending.result;
+  });
+
+  it("records the session as the raiser when no source is given", async () => {
+    const store = decisionStore();
+    const controller = new AbortController();
+    const pending = ask({ title: "Name?" }, async () => ({ store }), { signal: controller.signal });
+    const open = await stored(store, await pending.raised);
+    expect(open.raisedBy).toEqual({ participantId: "session:main", sessionId: "main" });
+    controller.abort();
+    await pending.result;
+  });
+
+  it("refuses a source that could pose as a participant, without raising a decision", async () => {
+    const store = decisionStore();
+    for (const source of ["session:main", "", "a\nb", "x".repeat(65), " ask"]) {
+      const result = await ask({ title: "Name?" }, async () => ({ store }), { source }).result;
+      expect(result).toEqual({ ok: false, error: "Decision source must match [A-Za-z0-9@][A-Za-z0-9@._/-]{0,63}" });
+    }
+    expect(await store.list()).toEqual([]);
+  });
+
   it("returns cancelled with no answer when a person cancels", async () => {
     const store = decisionStore();
     const pending = ask({ title: "Name?" }, async () => ({ store }));
@@ -187,5 +216,7 @@ describe("decisions event channel", () => {
     expect(readFabricDecisionRequestV1({ ...base, question: [] })).toBeUndefined();
     expect(readFabricDecisionRequestV1({ ...base, question: { title: "x" }, signal: {} })).toBeUndefined();
     expect(readFabricDecisionRequestV1({ ...base, question: { title: "x" }, onRaised: "no" })).toBeUndefined();
+    expect(readFabricDecisionRequestV1({ ...base, question: { title: "x" }, source: 42 })).toBeUndefined();
+    expect(readFabricDecisionRequestV1({ ...base, question: { title: "x" }, source: "ask" })).toBeDefined();
   });
 });

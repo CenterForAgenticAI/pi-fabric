@@ -351,6 +351,12 @@ export interface FabricDecisionRequestV1 {
   context: ExtensionContext;
   question: FabricDecisionQuestionV1;
   signal?: AbortSignal;
+  /**
+   * Names the asking extension, for example its package name. Recorded as
+   * `raisedBy.participantId: "extension:<source>"`. Must match
+   * `[A-Za-z0-9@][A-Za-z0-9@._/-]{0,63}`; omit it to record the session.
+   */
+  source?: string;
   /** Called once the decision is stored, before waiting starts. */
   onRaised?: (id: string) => void;
   claim: () => boolean;
@@ -390,6 +396,7 @@ export const readFabricDecisionRequestV1 = (
     typeof record.claim !== "function" ||
     typeof record.respond !== "function" ||
     (signal !== undefined && (typeof signal !== "object" || signal === null || typeof signal.aborted !== "boolean")) ||
+    (record.source !== undefined && typeof record.source !== "string") ||
     (record.onRaised !== undefined && typeof record.onRaised !== "function")
   ) {
     return undefined;
