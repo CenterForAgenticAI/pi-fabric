@@ -333,14 +333,17 @@ describe("real worker durable process protocol", () => {
     expect(fs.statSync(target).mode & 0o777).toBe(0o755);
   });
 
-  it.skipIf(process.platform === "win32")("fails the launch before creating anything when the run directory is group-writable", async () => {
+  it.skipIf(process.platform === "win32")("tightens a group-writable run directory and launches with the policy root in the session file", async () => {
     const { root, result, events } = await run("pi-durable", "success", false, {
       prepare: root => fs.chmodSync(root, 0o770),
     });
-    expect(result.status).toBe("failed");
-    expect(result.error).toMatch(/Run directory is writable by group or others/);
-    expect(events.some(event => event.type === "launch_probe")).toBe(false);
-    expect(fs.existsSync(path.join(root, "durable-session"))).toBe(false);
+    expect(result.status, result.error).toBe("completed");
+    expect(fs.statSync(root).mode & 0o7777).toBe(0o750);
+    const file = path.join(root, "durable-session", "session.jsonl");
+    const entries = parseLines(fs.readFileSync(file, "utf8"));
+    expect(entries[1]).toMatchObject({ type: "custom", customType: "context-aware.policy.v1", parentId: null, data: workerPolicy });
+    expect(policyEntries(fs.readFileSync(file, "utf8"))).toHaveLength(1);
+    expect(events.some(event => event.type === "launch_probe")).toBe(true);
   });
 
   // The manager decides which seeds carry the worker role: only a pi-durable child's, never plain pi's.
