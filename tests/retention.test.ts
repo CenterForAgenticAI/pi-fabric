@@ -2,8 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { writeForkSession } from "../src/agents/handoff.js";
+import { HostedRun } from "../src/agents/hosted-run.js";
+import type { FabricHostedRunContext, FabricHostedRunner, FabricRunnerCapabilities } from "../src/agents/runner-registry.js";
+import type { AgentRunRecord } from "../src/agents/types.js";
 import {
   FABRIC_RUN_ROOT_PREFIX,
   markRunRootActive,
@@ -294,12 +297,17 @@ describe("temporal retention", () => {
     const linked = forkRun(runRoot, "linked");
     fs.symlinkSync(outside, path.join(linked.fork, "handoff-00000000-0000-4000-8000-000000000000.jsonl"));
     const hardLinked = forkRun(runRoot, "hard-linked");
-    fs.linkSync(path.join(hardLinked.fork, fs.readdirSync(hardLinked.fork)[0]!), path.join(temporaryDirectory(), "alias.jsonl"));
+    const alias = path.join(temporaryDirectory(), "alias.jsonl");
+    fs.linkSync(path.join(hardLinked.fork, fs.readdirSync(hardLinked.fork)[0]!), alias);
+    const aliasBytes = fs.readFileSync(alias, "utf8");
+    expect(aliasBytes).toContain('"pi-fabric-fork"');
     const nested = forkRun(runRoot, "nested-dir");
     fs.mkdirSync(path.join(nested.fork, "sub"));
     const linkedDirectory = forkRun(runRoot, "linked-dir");
     fs.rmSync(linkedDirectory.fork, { recursive: true });
     const outsideDirectory = temporaryDirectory();
+    const sentinel = path.join(outsideDirectory, "sentinel.jsonl");
+    fs.writeFileSync(sentinel, "keep directory");
     fs.symlinkSync(outsideDirectory, linkedDirectory.fork);
     markRunRootClosed(runRoot, DAY, true);
 
@@ -307,7 +315,61 @@ describe("temporal retention", () => {
     expect(result.removedRuns).toEqual([plain.run]);
     for (const kept of [unknown, wrongName, linked, hardLinked, nested, linkedDirectory]) expect(fs.existsSync(kept.run)).toBe(true);
     expect(fs.readFileSync(outside, "utf8")).toBe("keep");
-    expect(fs.existsSync(outsideDirectory)).toBe(true);
+    expect(fs.readFileSync(alias, "utf8")).toBe(aliasBytes);
+    expect(fs.readFileSync(sentinel, "utf8")).toBe("keep directory");
+  });
+
+  it("accepts only the file names its writers produce in fork-session, and rejects lookalikes", () => {
+    const tempRoot = temporaryDirectory();
+    const runRoot = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "fork-names");
+    markRunRootActive(runRoot, 1);
+    const accepted = forkRun(runRoot, "accepted");
+    fs.writeFileSync(path.join(accepted.fork, "2026-01-02T03-04-05-678Z_0190a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b.jsonl"), "{}\n");
+    const lookalikes = [
+      "handoff-00000000-0000-0000-0000-000000000000.jsonl", // no version or variant
+      "handoff-123e4567-e89b-12d3-a456-426614174000.jsonl", // version 1
+      "handoff-123e4567-e89b-42d3-c456-426614174000.jsonl", // variant c
+      "handoff-123E4567-E89B-42D3-A456-426614174000.jsonl", // uppercase
+      "handoff-123e4567-e89b-72d3-a456-426614174000.jsonl", // handoff names come from randomUUID: version 4 only
+      "handoff-123e4567-e89b-42d3-a456-426614174000.jsonl.bak",
+      "2026-01-02T03-04-05-678Z_123e4567-e89b-42d3-a456-426614174000.jsonl", // Pi session ids are version 7
+      "2026-01-02T03:04:05.678Z_0190a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b.jsonl", // colons and dot: Pi replaces them
+      "2026-01-02T03-04-05Z_0190a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b.jsonl", // no milliseconds
+      "2026-01-02T03-04-05-678Z_0190a1b2-c3d4-7e5f-0a6b-7c8d9e0f1a2b.jsonl", // variant 0
+      "2026-01-02T03-04-05-678Z-0190a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b.jsonl", // wrong separator
+    ];
+    const kept = lookalikes.map((name, index) => {
+      const run = forkRun(runRoot, `look-${index}`);
+      fs.writeFileSync(path.join(run.fork, name), "{}\n");
+      return run.run;
+    });
+    markRunRootClosed(runRoot, DAY, true);
+
+    const result = sweepAt(tempRoot, 2 * DAY + 1);
+    expect(result.removedRuns).toEqual([accepted.run]);
+    for (const run of kept) expect(fs.existsSync(run)).toBe(true);
+  });
+
+  it("reclaims a run whose child extension forked the session into fork-session, via Pi's own branch writer", () => {
+    const tempRoot = temporaryDirectory();
+    const runRoot = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "pi-branch");
+    markRunRootActive(runRoot, 1);
+    const { run, fork } = forkRun(runRoot, "forked");
+    const handoff = fs.readdirSync(fork)[0]!;
+    // SessionManager.createBranchedSession writes <timestamp>_<uuid>.jsonl beside the handoff file.
+    const branched = SessionManager.open(path.join(fork, handoff), fork, run).createBranchedSession("a1");
+    expect(branched).toBeDefined();
+    expect(path.dirname(branched!)).toBe(fork);
+    expect(path.basename(branched!)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.jsonl$/);
+    expect(fs.readdirSync(fork).sort()).toHaveLength(2);
+    // A name Pi does not produce still keeps the run.
+    const stray = forkRun(runRoot, "stray");
+    fs.writeFileSync(path.join(stray.fork, "2026-01-01T00-00-00-000Z_not-a-uuid.jsonl"), "{}\n");
+    markRunRootClosed(runRoot, DAY, true);
+
+    const result = sweepAt(tempRoot, 2 * DAY + 1);
+    expect(result.removedRuns).toEqual([run]);
+    expect(fs.existsSync(stray.run)).toBe(true);
   });
 
   it("reclaims a forked run whose owner died, once the orphan grace passes", () => {
@@ -337,7 +399,16 @@ describe("temporal retention", () => {
       [`status.json.4242.${uuid}.tmp`]: "{",
       [`hosted.json.4242.${uuid}.tmp`]: "{",
     });
-    const lookalikes = ["status.json.bak", "status.json.4242.tmp.old", "task.txt.4242.tmp", "oversized-event-prefix.txt.bak", "events.jsonl.4242.tmp"]
+    const lookalikes = [
+      "status.json.bak", "status.json.4242.tmp.old", "task.txt.4242.tmp", "oversized-event-prefix.txt.bak", "events.jsonl.4242.tmp",
+      "hosted.json.4242.tmp", // writeFileAtomic always adds a UUID; nothing writes a bare-pid hosted temp
+      "status.json.0.tmp", // a pid is positive
+      "status.json.00042.tmp", // a pid is unpadded
+      "status.json.4242.00000000-0000-0000-0000-000000000000.tmp", // no UUID version or variant
+      "status.json.4242.123e4567-e89b-12d3-a456-426614174000.tmp", // version 1
+      "status.json.4242.123E4567-E89B-42D3-A456-426614174000.tmp", // uppercase
+      "hosted.json.4242.123e4567-e89b-42d3-c456-426614174000.tmp", // variant c
+    ]
       .map((file) => run(`look-${file}`, { [file]: "mine" }));
     const outside = path.join(temporaryDirectory(), "outside.txt");
     fs.writeFileSync(outside, "keep");
@@ -355,19 +426,84 @@ describe("temporal retention", () => {
     expect(fs.readFileSync(outside, "utf8")).toBe("keep");
   });
 
-  it("reclaims a settled hosted run's hosted.json, but keeps it while the run could still be re-attached", () => {
+  // Real HostedRun: it writes hosted.json (the locator) and status.json exactly as the manager's runs do.
+  const noCapabilities: FabricRunnerCapabilities = {
+    recursiveFabric: false, steer: false, followUp: false, persistentSessions: false, kernels: false, handoff: false,
+    modelDiscovery: false, imageInput: false, compaction: false, questions: false, sleep: false, writePolicy: false,
+  };
+  const hostedAdapter = (behavior: Pick<Partial<FabricHostedRunner>, "start" | "stop">): FabricHostedRunner => ({
+    kind: "hosted", id: "retention-test", label: "Retention test", capabilities: noCapabilities,
+    prepare: () => ({ job: "remote-1" }),
+    start: () => undefined,
+    attach: () => undefined,
+    liveness: () => "running",
+    stop: () => ({ confirmed: true }),
+    ...behavior,
+  });
+  const hostedRun = async (runRoot: string, name: string, behavior: Pick<Partial<FabricHostedRunner>, "start" | "stop">): Promise<{ directory: string; run: HostedRun }> => {
+    const directory = path.join(runRoot, name);
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, "task.txt"), "task"); // the manager writes it beside status.json
+    const context: FabricHostedRunContext = {
+      id: name, name, task: "task", cwd: directory, runDirectory: directory, residency: "session",
+      deadlineAt: Date.now() + DAY, depth: 0, tools: [], idempotencyKey: name,
+      lineage: { version: 1, rootSessionId: "root", runId: name, depth: 0, childIndex: 0, worker: true },
+    };
+    const record: AgentRunRecord = {
+      id: name, name, task: "task", status: "running", runner: "retention-test", transport: "hosted", cwd: directory,
+      startedAt: Date.now(), updatedAt: Date.now(), turns: 0, toolCalls: 0, text: "",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    };
+    const run = await HostedRun.prepare(
+      hostedAdapter(behavior), context,
+      { statusFile: path.join(directory, "status.json"), lifecycleFile: path.join(directory, "lifecycle.jsonl"), logFile: path.join(directory, "events.jsonl"), stateFile: path.join(directory, "hosted.json") },
+      record, { questionTimeoutMs: 1_000 },
+    );
+    return { directory, run };
+  };
+
+  it("keeps a hosted run's locator unless its terminal record proves the remote work stopped", async () => {
     const tempRoot = temporaryDirectory();
     const runRoot = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "hosted");
     markRunRootActive(runRoot, 1);
-    const hosted = (name: string, record: Record<string, unknown>): string => {
-      const directory = path.join(runRoot, name);
-      writeStatus(directory, { transport: "hosted", ...record });
-      fs.writeFileSync(path.join(directory, "task.txt"), "task");
-      fs.writeFileSync(path.join(directory, "hosted.json"), "{}");
-      return directory;
-    };
-    const settled = hosted("settled", { status: "completed", finishedAt: DAY });
-    const running = hosted("running", { status: "running", updatedAt: DAY });
+    const status = (directory: string): { status: string; outcome?: string } =>
+      JSON.parse(fs.readFileSync(path.join(directory, "status.json"), "utf8")) as { status: string; outcome?: string };
+    const uuid = "123e4567-e89b-42d3-a456-426614174000";
+
+    const confirmed = await hostedRun(runRoot, "confirmed", { start: (_locator, _context, reporter) => reporter.finish({ status: "completed", output: "done" }) });
+    await confirmed.run.start();
+    const stoppedConfirmed = await hostedRun(runRoot, "stopped-confirmed", {});
+    await stoppedConfirmed.run.stop();
+    const startFailed = await hostedRun(runRoot, "start-failed", { start: () => { throw new Error("submit failed"); } });
+    await startFailed.run.start();
+    const stoppedUnconfirmed = await hostedRun(runRoot, "stopped-unconfirmed", { stop: () => ({ confirmed: false }) });
+    await stoppedUnconfirmed.run.stop();
+    const lost = await hostedRun(runRoot, "lost", {});
+    lost.run.settleLost();
+    const running = await hostedRun(runRoot, "running", {});
+    // Only a leftover temp locator: it must follow the record's outcome, not just its status.
+    const tempOnlyIndeterminate = await hostedRun(runRoot, "temp-only-indeterminate", { start: () => { throw new Error("submit failed"); } });
+    await tempOnlyIndeterminate.run.start();
+    fs.rmSync(path.join(tempOnlyIndeterminate.directory, "hosted.json"));
+    fs.writeFileSync(path.join(tempOnlyIndeterminate.directory, `hosted.json.4242.${uuid}.tmp`), "{");
+    const tempOnlyConfirmed = await hostedRun(runRoot, "temp-only-confirmed", {});
+    await tempOnlyConfirmed.run.stop();
+    fs.rmSync(path.join(tempOnlyConfirmed.directory, "hosted.json"));
+    fs.writeFileSync(path.join(tempOnlyConfirmed.directory, `hosted.json.4242.${uuid}.tmp`), "{");
+    // A leftover temp locator follows the same rule as the locator itself.
+    fs.writeFileSync(path.join(confirmed.directory, `hosted.json.4242.${uuid}.tmp`), "{");
+    fs.writeFileSync(path.join(startFailed.directory, `hosted.json.4242.${uuid}.tmp`), "{");
+
+    // The records are what the real HostedRun wrote, not assumed shapes.
+    expect(status(confirmed.directory)).toMatchObject({ status: "completed" });
+    expect(status(confirmed.directory).outcome).toBeUndefined();
+    expect(status(stoppedConfirmed.directory)).toMatchObject({ status: "stopped" });
+    expect(status(stoppedConfirmed.directory).outcome).toBeUndefined();
+    expect(status(startFailed.directory)).toMatchObject({ status: "failed", outcome: "indeterminate" });
+    expect(status(stoppedUnconfirmed.directory)).toMatchObject({ status: "stopped", outcome: "indeterminate" });
+    expect(status(lost.directory)).toMatchObject({ status: "failed", outcome: "indeterminate" });
+    expect(status(running.directory)).toMatchObject({ status: "running" });
+
     const outside = path.join(temporaryDirectory(), "locator.json");
     fs.writeFileSync(outside, "keep");
     const linked = path.join(runRoot, "linked");
@@ -375,9 +511,12 @@ describe("temporal retention", () => {
     fs.symlinkSync(outside, path.join(linked, "hosted.json"));
     markRunRootClosed(runRoot, DAY, true);
 
-    const result = sweepAt(tempRoot, 3 * DAY);
-    expect(result.removedRuns).toEqual([settled]);
-    expect(fs.existsSync(running)).toBe(true);
+    const result = sweepAt(tempRoot, Date.now() + 3 * DAY);
+    expect(result.removedRuns.sort()).toEqual([confirmed.directory, stoppedConfirmed.directory, tempOnlyConfirmed.directory].sort());
+    for (const kept of [startFailed, stoppedUnconfirmed, lost, running]) {
+      expect(fs.readFileSync(path.join(kept.directory, "hosted.json"), "utf8")).toContain('"remote-1"');
+    }
+    expect(fs.existsSync(path.join(tempOnlyIndeterminate.directory, `hosted.json.4242.${uuid}.tmp`))).toBe(true);
     expect(fs.existsSync(linked)).toBe(true);
     expect(fs.readFileSync(outside, "utf8")).toBe("keep");
   });
