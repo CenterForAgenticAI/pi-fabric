@@ -60,6 +60,40 @@ context edits, and compaction, when a relaunched attempt reopens it. Explicit
 `pi` children keep `--no-session`. Run retention removes `durable-session/`
 with its run; a file other than `*.jsonl`, or a link, preserves the run.
 
+### Worker role
+
+Before a `pi-durable` child starts, the worker process marks its session as a
+worker session. It appends one custom entry to the Pi session file:
+
+```json
+{ "type": "custom", "customType": "context-aware.policy.v1",
+  "data": { "schemaVersion": 1, "layer": "host", "declaredBy": "pi-fabric/durable-worker",
+            "values": { "sessionRole": "worker" } } }
+```
+
+This is the entry pi-delegate writes for its workers. Without it, pi-context-aware
+in the child acts as a session with a user at a terminal: it can send a compaction
+seed as a new user message, rewrite it with a model, add the cache listing, and
+compact in the middle of a reply. Fabric does not import pi-context-aware; without
+that extension the entry is one unread line.
+
+- **Which files.** Only files Fabric created for this run: `durable-session/session.jsonl`
+  and the fork and handoff seeds in `fork-session/` and `handoff-session/`. A
+  `sessionFile` the caller supplies (an actor's session, for example) is never
+  modified, so such a child keeps whatever role that file already declares.
+- **Empty file.** The unseeded file is empty, and Pi writes a new session file
+  only once a message exists. The worker therefore writes the Pi session header
+  and the entry in one append, so Pi opens an existing session and appends to it.
+- **Seeded file.** Existing lines are kept byte for byte. The entry is appended as
+  a child of the last entry.
+- **Relaunch.** An entry declared by `pi-fabric/durable-worker` already in the
+  file means nothing is written, so a relaunched attempt never adds a second.
+- **Plain `pi`.** Children on the `pi` runner are unchanged: `--no-session`
+  and no entry.
+
+Fabric does not read the `context-aware.worker-compaction.v1` advisories a worker
+writes.
+
 Durability **does not restore arbitrary JavaScript continuations**, promise
 general exactly-once external effects, or restart failed workers indefinitely.
 The standard process/actor lifecycle controls stop/retry/retention. A new run is
