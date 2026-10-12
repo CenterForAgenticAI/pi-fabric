@@ -139,14 +139,14 @@ describe("real worker durable process protocol", () => {
   });
 
   const run = async (runner = "pi-durable", scenario = "success", seeded = true,
-    options: { root?: string; sessionFile?: (root: string) => string; owned?: boolean; prepare?: (root: string) => void } = {}) => {
+    options: { root?: string; sessionFile?: (root: string) => string; prepare?: (root: string) => void } = {}) => {
     const root = options.root ?? temporary();
     if (options.root) fs.rmSync(path.join(root, "events.jsonl"), { force: true });
     fs.writeFileSync(path.join(root, "task.txt"), "run on requested model");
     fs.writeFileSync(path.join(root, "scenario"), scenario);
     options.prepare?.(root);
     const args = argv(root, { runner, kernel: "typescript", "write-policy": JSON.stringify({ readOnly: true }),
-      ...(options.sessionFile ? { "session-file": options.sessionFile(root), ...(options.owned ? { "session-owned": "true" } : {}) }
+      ...(options.sessionFile ? { "session-file": options.sessionFile(root) }
         : seeded ? { "session-file": path.join(root, "seed.jsonl") } : {}), "session-export-file": path.join(root, "export.jsonl") });
     const child = spawn(process.execPath, [worker, ...args.slice(2)], {
       env: { ...process.env, FAKE_MODEL_SCENARIO: path.join(root, "scenario") }, stdio: ["ignore", "pipe", "pipe"],
@@ -258,21 +258,21 @@ describe("real worker durable process protocol", () => {
     expect(launch.session).toBe(before + saved + "\n");
   });
 
-  it.each(["fork", "handoff"])("marks a Fabric-written %s seed as a worker session and keeps its history", async kind => {
+  it.each(["fork", "handoff"])("starts a pi-durable child on a %s seed that carries the worker role as its root", async kind => {
     const source = SessionManager.create(os.tmpdir(), path.join(temporary(), "source"));
     source.appendMessage({ role: "user", content: "inherited question", timestamp: 1 });
     const sourceBranch = source.getBranch();
     let seeded = "";
     const { root, result, events } = await run("pi-durable", "success", false, {
-      owned: true,
       sessionFile: root => {
         const directory = path.join(root, `${kind}-session`);
+        const options = { workerRole: true };
         seeded = kind === "fork"
-          ? writeForkSession({ sourceSessionId: "source", sourceBranch }, root, directory)
+          ? writeForkSession({ sourceSessionId: "source", sourceBranch }, root, directory, undefined, options)
           : writeHandoffSession({
               sourceSessionId: "source", sourceBranch, sourceBranchLeafId: sourceBranch.at(-1)!.id,
               outerToolResult: { role: "toolResult", toolCallId: "t", toolName: "fabric_exec", content: [{ type: "text", text: "done" }], isError: false, timestamp: 2 },
-            }, root, directory);
+            }, root, directory, undefined, undefined, undefined, options);
         return seeded;
       },
     });
@@ -280,16 +280,16 @@ describe("real worker durable process protocol", () => {
     const launch = events.find(event => event.type === "launch_probe");
     expect(launch.argv).toEqual(expect.arrayContaining(["--session", seeded]));
     expect(path.dirname(seeded)).toBe(path.join(root, `${kind}-session`));
-    const entries = policyEntries(launch.session);
-    expect(entries).toHaveLength(1);
-    expect(entries[0].data).toEqual(workerPolicy);
+    const entries = parseLines(launch.session);
+    expect(policyEntries(launch.session)).toHaveLength(1);
+    expect(entries[1]).toMatchObject({ type: "custom", customType: "context-aware.policy.v1", parentId: null });
+    expect(entries[1].data).toEqual(workerPolicy);
+    expect(entries[2]).toMatchObject({ type: "message", parentId: entries[1].id });
     expect(launch.session).toContain("inherited question");
-    // The entry hangs off the seed's last entry, so Pi's leaf walk still reaches the history.
-    const all = parseLines(launch.session);
-    expect(entries[0].parentId).toBe(all.at(-2).id);
+    expect(launch.session).toBe(fs.readFileSync(seeded, "utf8")); // the worker did not edit the seed
   });
 
-  it("never edits a caller-supplied session file Fabric did not create", async () => {
+  it("leaves a caller-supplied session file byte-identical after launch", async () => {
     const seed = "{\"type\":\"session\",\"version\":3,\"id\":\"caller\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/work\"}\n";
     const { root, result, events } = await run("pi-durable", "success", false, {
       sessionFile: root => {
@@ -301,6 +301,7 @@ describe("real worker durable process protocol", () => {
     expect(result.status, result.error).toBe("completed");
     expect(events.find(event => event.type === "launch_probe").session).toBe(seed);
     expect(fs.readFileSync(path.join(root, "caller-session.jsonl"), "utf8")).toBe(seed);
+    expect(fs.existsSync(path.join(root, "durable-session"))).toBe(false);
   });
 
   it.each(["durable-session", "fork-session", "handoff-session"])("never edits a caller-supplied session file, even one sitting in %s/", async folder => {
@@ -332,44 +333,66 @@ describe("real worker durable process protocol", () => {
     expect(fs.statSync(target).mode & 0o777).toBe(0o755);
   });
 
-  it("fails the launch with a clear error when a Fabric-written seed is not a Pi session, leaving it unchanged", async () => {
-    const content = "{\"type\":\"sess";
-    let file = "";
-    const { result, events } = await run("pi-durable", "success", false, {
-      owned: true,
-      sessionFile: root => {
-        fs.mkdirSync(path.join(root, "fork-session"), { mode: 0o700 });
-        file = path.join(root, "fork-session", "broken.jsonl");
-        fs.writeFileSync(file, content);
-        return file;
-      },
+  it.skipIf(process.platform === "win32")("fails the launch before creating anything when the run directory is group-writable", async () => {
+    const { root, result, events } = await run("pi-durable", "success", false, {
+      prepare: root => fs.chmodSync(root, 0o770),
     });
     expect(result.status).toBe("failed");
-    expect(result.error).toMatch(/not a Pi session \(no session header\); refusing to launch/);
+    expect(result.error).toMatch(/Run directory is writable by group or others/);
     expect(events.some(event => event.type === "launch_probe")).toBe(false);
-    expect(fs.readFileSync(file, "utf8")).toBe(content);
+    expect(fs.existsSync(path.join(root, "durable-session"))).toBe(false);
   });
 
-  it("passes --session-owned only for a seed Fabric wrote, never for a caller-supplied sessionFile", async () => {
-    const launch = async (request: Record<string, unknown>) => {
+  // The manager decides which seeds carry the worker role: only a pi-durable child's, never plain pi's.
+  describe("manager seed options", () => {
+    const launch = async (runner: "pi" | "pi-durable", request: Record<string, unknown>) => {
       const root = temporary();
       const capture = path.join(root, "capture.mjs");
-      fs.writeFileSync(capture, `import fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(path.join(root, "argv.json"))}, JSON.stringify(process.argv));\nawait import(${JSON.stringify(pathToFileURL(path.resolve("tests/fixtures/fake-worker.mjs")).href)});`);
+      fs.writeFileSync(capture, `import fs from 'node:fs';
+const index = process.argv.indexOf('--session-file');
+const seed = index > 0 && fs.existsSync(process.argv[index + 1]) ? fs.readFileSync(process.argv[index + 1], 'utf8') : null;
+const status = process.argv[process.argv.indexOf('--status-file') + 1];
+fs.writeFileSync(${JSON.stringify(path.join(root, "probe.json"))}, JSON.stringify({ argv: process.argv, seed, runMode: fs.statSync(status.replace(/[/\\\\][^/\\\\]*$/, '')).mode & 0o777 }));
+await import(${JSON.stringify(pathToFileURL(path.resolve("tests/fixtures/fake-worker.mjs")).href)});`);
       const manager = new AgentManager(root, {
-        ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi-durable", model: "provider/default", timeoutMs: 5000, sessionExport: false,
+        ...DEFAULT_FABRIC_CONFIG.agents, runner, model: "provider/default", timeoutMs: 5000, sessionExport: false,
       }, { workerPath: capture, runRoot: path.join(root, "runs"), preparePiModel: async () => "provider/default" });
       managers.push(manager);
-      const result = await manager.run({ task: "probe", runner: "pi-durable", transport: "process", ...request } as never);
+      const result = await manager.run({ task: "probe", runner, transport: "process", ...request } as never);
       expect(result.status, result.error).toBe("completed");
-      return JSON.parse(fs.readFileSync(path.join(root, "argv.json"), "utf8")) as string[];
+      return JSON.parse(fs.readFileSync(path.join(root, "probe.json"), "utf8")) as { argv: string[]; seed: string | null; runMode: number };
     };
-    const caller = await launch({ sessionFile: path.join(temporary(), "actor.jsonl") });
-    expect(caller).toContain("--session-file");
-    expect(caller).not.toContain("--session-owned");
-    const source = SessionManager.create(os.tmpdir(), path.join(temporary(), "source"));
-    source.appendMessage({ role: "user", content: "inherited question", timestamp: 1 });
-    const forked = await launch({ forkSeed: { sourceSessionId: "source", sourceBranch: source.getBranch() } });
-    expect(forked).toEqual(expect.arrayContaining(["--session-owned", "true"]));
+    const forkSeed = () => {
+      const source = SessionManager.create(os.tmpdir(), path.join(temporary(), "source"));
+      source.appendMessage({ role: "user", content: "inherited question", timestamp: 1 });
+      return { sourceSessionId: "source", sourceBranch: source.getBranch() };
+    };
+
+    it("puts the worker role at the root of a pi-durable fork seed and passes no ownership flag", async () => {
+      const probe = await launch("pi-durable", { forkSeed: forkSeed() });
+      expect(probe.argv).toContain("--session-file");
+      expect(probe.argv).not.toContain("--session-owned");
+      const entries = parseLines(probe.seed!);
+      expect(entries[1]).toMatchObject({ type: "custom", customType: "context-aware.policy.v1", parentId: null });
+      expect(entries[1].data).toEqual(workerPolicy);
+      expect(entries[2]).toMatchObject({ type: "message", parentId: entries[1].id });
+    });
+
+    it("writes a plain pi fork seed without the worker role, as before", async () => {
+      const probe = await launch("pi", { forkSeed: forkSeed() });
+      expect(probe.argv).not.toContain("--session-owned");
+      expect(policyEntries(probe.seed!)).toHaveLength(0);
+      expect(parseLines(probe.seed!)[1]).toMatchObject({ type: "message", parentId: null });
+    });
+
+    it.skipIf(process.platform === "win32")("creates run directories closed to group and others", async () => {
+      const previous = process.umask(0o002);
+      try {
+        const probe = await launch("pi-durable", { sessionFile: path.join(temporary(), "actor.jsonl") });
+        expect(probe.runMode & 0o022).toBe(0);
+        expect(probe.argv).not.toContain("--session-owned");
+      } finally { process.umask(previous); }
+    });
   });
 
   it("keeps an unseeded explicit pi child without a session file", async () => {

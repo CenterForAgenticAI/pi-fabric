@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { assertWorkerRuntime, writeWorkerStartupFailure } from "./worker/startup.js";
-import { createDurableSessionFile, seedDurableWorkerRole } from "./durable/worker-role-seed.js";
+import { createDurableSessionFile } from "./durable/worker-role-seed.js";
 
 import { StringDecoder } from "node:string_decoder";
 import type { ImageContent } from "@earendil-works/pi-ai";
@@ -319,20 +319,13 @@ const main = async (): Promise<void> => {
     ? fs.readFileSync(options.schemaFile, "utf8")
     : undefined;
   const piArguments = ["--mode", "rpc"];
+  // The worker never edits a session file. A pi-durable child without a
+  // session file gets a new one that already carries the worker-role entry as
+  // its tree root (src/durable/worker-role-seed.ts); a fork or handoff seed
+  // already carries it (the manager asked the seed writer for it); a
+  // caller-supplied file is used as it is.
   const piSessionFile = options.sessionFile ??
     (options.runner === "pi-durable" ? durableSessionFile(options.statusFile, options.cwd) : undefined);
-  // Before Pi starts: mark a session Fabric created for this run as a worker
-  // session (pi-context-aware reads it). Provenance comes from the launcher
-  // (a fork or handoff seed) or from this process creating the durable-session
-  // file; a caller-supplied file is never edited, wherever it lives. A file
-  // that cannot be read as a Pi session throws here, before Pi starts.
-  if (options.runner === "pi-durable" && piSessionFile) {
-    seedDurableWorkerRole(piSessionFile, {
-      runDirectory: path.dirname(options.statusFile),
-      cwd: options.cwd,
-      owned: options.sessionFile === undefined || options.sessionOwned === true,
-    });
-  }
   if (piSessionFile) piArguments.push("--session", piSessionFile);
   else piArguments.push("--no-session");
   if (!options.extensions) piArguments.push("--no-extensions");

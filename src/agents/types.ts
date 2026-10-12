@@ -277,8 +277,6 @@ export interface AgentWorkerOptions {
   persistSession?: boolean;
   modelAdmission?: "strict" | "permissive";
   sessionFile?: string;
-  /** True only when Fabric itself wrote `sessionFile` for this run (a fork or handoff seed). */
-  sessionOwned?: boolean;
   sessionExportFile?: string;
   actorId?: string;
   actorName?: string;
