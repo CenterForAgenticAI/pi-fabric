@@ -47,12 +47,17 @@ describe("durable-session folder safety", () => {
     expect(fs.existsSync(path.join(run, "missing"))).toBe(false);
   });
 
-  it.skipIf(process.platform === "win32")("refuses a run directory that group or others can write, creating nothing", () => {
-    for (const mode of [0o770, 0o707, 0o702, 0o720]) {
+  it.skipIf(process.platform === "win32")("tightens a run directory that group or others can write, then creates the session with the policy root", () => {
+    const cases: Array<[number, number]> = [[0o770, 0o750], [0o707, 0o705], [0o702, 0o700], [0o720, 0o700]];
+    for (const [mode, expected] of cases) {
       const run = temporary();
       fs.chmodSync(run, mode);
-      expect(() => createDurableSessionFile(run, run)).toThrow(/writable by group or others/);
-      expect(fs.readdirSync(run)).toEqual([]);
+      const file = createDurableSessionFile(run, run);
+      expect(fs.statSync(run).mode & 0o7777).toBe(expected);
+      expect(file).toBe(path.join(run, "durable-session", "session.jsonl"));
+      const entries = parse(file);
+      expect(policies(entries)).toHaveLength(1);
+      expect(entries[1]).toMatchObject({ type: "custom", customType: "context-aware.policy.v1", parentId: null, data: workerPolicy });
     }
   });
 
@@ -64,10 +69,12 @@ describe("durable-session folder safety", () => {
 
   it.skipIf(process.platform === "win32")("refuses a run directory that is a link", () => {
     const real = temporary();
+    fs.chmodSync(real, 0o775);
     const link = path.join(temporary(), "run-link");
     fs.symlinkSync(real, link, "dir");
     expect(() => createDurableSessionFile(link, link)).toThrow(/real directory, not a link/);
     expect(fs.readdirSync(real)).toEqual([]);
+    expect(fs.statSync(real).mode & 0o7777).toBe(0o775); // not tightened through the link either
   });
 });
 
