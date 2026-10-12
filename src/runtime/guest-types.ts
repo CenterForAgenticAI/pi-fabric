@@ -773,7 +773,8 @@ interface FabricAgentsApi {
   }): Promise<FabricLifecycleSubscription>;
   subscriptions(args?: { from?: string; to?: string }): Promise<FabricLifecycleSubscription[]>;
   unsubscribe(args: FabricAgentTargetArgs): Promise<{ removed: boolean }>;
-  models(args?: { runner?: FabricAgentRunner; refresh?: boolean }): Promise<FabricModelInfo[]>;
+  /** With model, only entries whose key equals it exactly (no aliases or fuzzy matching); unknown keys give []. */
+  models(args?: { runner?: FabricAgentRunner; refresh?: boolean; model?: string }): Promise<FabricModelInfo[]>;
   stop(args: FabricAgentTargetArgs): Promise<FabricAgentResult | FabricActorInfo | FabricRemoteControlResult>;
   cleanup(args: FabricAgentTargetArgs & { deleteBranch?: boolean; delete_branch?: boolean }): Promise<{ cleaned: boolean }>;
   create(args: FabricActorRequest): Promise<FabricActorInfo>;

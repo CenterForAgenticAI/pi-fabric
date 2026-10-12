@@ -40,6 +40,7 @@ import {
 import { snapshotHandoffSession } from "../src/agents/handoff.js";
 import { AgentManager } from "../src/agents/manager.js";
 import type { AgentRunRecord } from "../src/agents/types.js";
+import { registerAgentRunner } from "../src/runners.js";
 
 const roots: string[] = [];
 const actorManagers: ActorManager[] = [];
@@ -1421,6 +1422,139 @@ describe("AgentsProvider runner support", () => {
       context,
     )) as { runner: string };
     expect(actor.runner).toBe("claude");
+  });
+});
+
+describe("AgentsProvider exact model lookup", () => {
+  const piKeys = visiblePiModels.map((model) => `${model.provider}/${model.id}`);
+
+  it("keeps the unfiltered Pi model list unchanged", async () => {
+    const { provider } = setup();
+    await expect(provider.invoke("models", { runner: "pi" }, context)).resolves.toEqual(
+      visiblePiModels.map((model) => ({
+        runner: "pi",
+        provider: model.provider,
+        id: model.id,
+        name: model.name ?? model.id,
+        key: `${model.provider}/${model.id}`,
+      })),
+    );
+    expect(piKeys).toContain("anthropic/executor");
+  });
+
+  it("returns only the Pi entry whose key equals the requested model", async () => {
+    const { provider } = setup();
+    await expect(
+      provider.invoke("models", { runner: "pi", model: "anthropic/executor" }, context),
+    ).resolves.toEqual([
+      { runner: "pi", provider: "anthropic", id: "executor", name: "Executor", key: "anthropic/executor" },
+    ]);
+  });
+
+  it.each([
+    ["a differently cased key", "Anthropic/Executor"],
+    ["an alias name", "budget"],
+    ["a near id", "anthropic/executr"],
+    ["a provider-only string", "anthropic"],
+    ["a bare id", "executor"],
+    ["an unknown key", "nobody/nothing"],
+    ["a whitespace-padded key", " anthropic/executor"],
+  ])("returns no Pi entries for %s", async (_label, model) => {
+    const { provider } = setup([], [], undefined, {
+      modelsConfig: { aliases: { budget: { targets: ["anthropic/executor"] } } },
+    });
+    await expect(provider.invoke("models", { runner: "pi", model }, context)).resolves.toEqual([]);
+  });
+
+  it("filters Claude runtime models by exact key", async () => {
+    const { provider } = setup();
+    const all = (await provider.invoke("models", { runner: "claude" }, context)) as Array<{ key: string }>;
+    const haiku = all.filter((model) => model.key === "claude/haiku");
+    expect(haiku).toHaveLength(1);
+    await expect(
+      provider.invoke("models", { runner: "claude", model: "claude/haiku" }, context),
+    ).resolves.toEqual(haiku);
+    await expect(
+      provider.invoke("models", { runner: "claude", model: "claude/Haiku" }, context),
+    ).resolves.toEqual([]);
+    await expect(
+      provider.invoke("models", { runner: "claude", model: "haiku" }, context),
+    ).resolves.toEqual([]);
+  });
+
+  it("filters a registered runner's model list by exact key", async () => {
+    const listed = [
+      { runner: "acme-lookup", provider: "acme", id: "large", name: "Acme Large", key: "acme/large" },
+      { runner: "acme-lookup", provider: "acme", id: "large-2", name: "Acme Large 2", key: "acme/large-2" },
+    ];
+    const unregister = registerAgentRunner({
+      kind: "worker",
+      id: "acme-lookup",
+      label: "Acme",
+      capabilities: {
+        recursiveFabric: false,
+        steer: false,
+        followUp: false,
+        persistentSessions: false,
+        kernels: false,
+        handoff: false,
+        modelDiscovery: true,
+        imageInput: false,
+        compaction: false,
+        questions: false,
+        sleep: false,
+        writePolicy: false,
+      },
+      models: () => listed,
+      launch: () => {
+        throw new Error("not launched");
+      },
+    });
+    try {
+      const { provider } = setup();
+      await expect(provider.invoke("models", { runner: "acme-lookup" }, context)).resolves.toEqual(listed);
+      await expect(
+        provider.invoke("models", { runner: "acme-lookup", model: "acme/large" }, context),
+      ).resolves.toEqual([listed[0]]);
+      await expect(
+        provider.invoke("models", { runner: "acme-lookup", model: "ACME/large" }, context),
+      ).resolves.toEqual([]);
+      await expect(
+        provider.invoke("models", { runner: "acme-lookup", model: "acme" }, context),
+      ).resolves.toEqual([]);
+    } finally {
+      unregister();
+    }
+  });
+
+  it("keeps Veda advisory-empty when a model is requested", async () => {
+    const { provider } = setup();
+    await expect(
+      provider.invoke("models", { runner: "veda", model: "anything/at-all" }, context),
+    ).resolves.toEqual([]);
+  });
+
+  it.each([
+    ["an empty string", ""],
+    ["a string over 256 characters", "a".repeat(257)],
+    ["a number", 42],
+    ["null", null],
+    ["an array", ["anthropic/executor"]],
+  ])("refuses %s as the model", async (_label, model) => {
+    const { provider } = setup();
+    await expect(provider.invoke("models", { runner: "pi", model }, context)).rejects.toThrow(
+      /agents\.models model must be a string of 1 to 256 characters/,
+    );
+  });
+
+  it("accepts a 256-character model and declares the bound in the schema", async () => {
+    const { provider } = setup();
+    await expect(
+      provider.invoke("models", { runner: "pi", model: "a".repeat(256) }, context),
+    ).resolves.toEqual([]);
+    const descriptor = await provider.describe("models", context);
+    const properties = (descriptor?.inputSchema as { properties: Record<string, unknown> }).properties;
+    expect(properties.model).toMatchObject({ type: "string", minLength: 1, maxLength: 256 });
   });
 });
 
