@@ -6,7 +6,7 @@ import path from "node:path";
 import { build } from "esbuild";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parseDurableWorkerOptions } from "../src/durable/worker-options.js";
-import { createDurableSessionFile, seedDurableWorkerRole } from "../src/durable/worker-role-seed.js";
+import { createDurableSessionFile } from "../src/durable/worker-role-seed.js";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-durable-host-"));
 const extension = path.resolve("tests/fixtures/durable-pi-extension.ts");
@@ -181,12 +181,13 @@ describe("durable native RPC worker", () => {
 
   it("opens a freshly created durable-session file as a valid Pi session and appends to it after a relaunch", async () => {
     const cwd = path.join(root, "role-seed"); const runDirectory = path.join(cwd, "run");
-    fs.mkdirSync(runDirectory, { recursive: true });
+    fs.mkdirSync(runDirectory, { recursive: true, mode: 0o700 });
     const file = createDurableSessionFile(runDirectory, cwd); // header and worker-role entry arrive together
     const lines = () => fs.readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
     const policy = (entries: any[]) => entries.filter(entry => entry.type === "custom" && entry.customType === "context-aware.policy.v1");
     const onDisk = lines();
     expect(onDisk.map(entry => entry.type)).toEqual(["session", "custom"]);
+    expect(onDisk[1].parentId).toBe(null);
     const first = await worker("role-seed", ["--no-tools"], {}, false, true, file);
     try {
       first.send({ type: "prompt", id: "role", message: "remember" });
@@ -199,7 +200,9 @@ describe("durable native RPC worker", () => {
     expect(afterTurn.filter(entry => entry.type === "session")).toHaveLength(1);
     expect(afterTurn.some(entry => entry.type === "message" && entry.message.role === "assistant")).toBe(true);
     expect(policy(afterTurn)).toHaveLength(1);
-    expect(seedDurableWorkerRole(file, { runDirectory, cwd, owned: true })).toBe("already-seeded");
+    // Real Pi opened the file, appended its turn after the policy, and the policy is on the branch from the new leaf.
+    expect(afterTurn.slice(2).every(entry => entry.parentId !== null)).toBe(true);
+    expect(afterTurn[2].parentId).toBe(onDisk[1].id);
     expect(fs.readFileSync(file, "utf8")).toBe(afterTurn.map(entry => JSON.stringify(entry)).join("\n") + "\n");
     const resumed = await worker("role-seed", ["--no-tools"], {}, false, true, file);
     try {
