@@ -37,8 +37,6 @@ interface RunRecordSummary {
   updatedAt?: number;
   transport?: string;
   sessionId?: string;
-  /** src/agents/types.ts FabricRunOutcome: "indeterminate" marks a terminal record that cannot vouch the work stopped. */
-  outcome?: string;
 }
 export interface RetentionSweepResult {
   removedRoots: string[];
@@ -107,21 +105,25 @@ const PID = "[1-9]\\d*";
  * extension forks the session. The timestamp is `new Date().toISOString()` with `:` and `.` turned into `-`
  * (pi-coding-agent dist/core/session-manager.js: `timestamp.replace(/[:.]/g, "-")`, `${fileTimestamp}_${newSessionId}.jsonl`).
  */
-const FORK_SESSION_FILE = new RegExp(
-  `^(?:handoff-${UUID_V4}|\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z_${UUID_V7})\\.jsonl$`,
-);
+const HANDOFF_FILE = new RegExp(`^handoff-${UUID_V4}\\.jsonl$`);
+const PI_BRANCH_FILE = new RegExp(`^(\\d{4}-\\d{2}-\\d{2})T(\\d{2})-(\\d{2})-(\\d{2})-(\\d{3})Z_${UUID_V7}\\.jsonl$`);
+/** The name part must be a real instant: map it back to an ISO string and require Date to reproduce it exactly (rejects 2026-02-30 and month 99). */
+const piBranchFile = (name: string): boolean => {
+  const match = PI_BRANCH_FILE.exec(name);
+  if (!match) return false;
+  const iso = `${match[1]}T${match[2]}:${match[3]}:${match[4]}.${match[5]}Z`;
+  const instant = new Date(iso);
+  return !Number.isNaN(instant.getTime()) && instant.toISOString() === iso;
+};
+const forkSessionFile = (name: string): boolean => HANDOFF_FILE.test(name) || piBranchFile(name);
 /**
  * A crash between a record's temp write and its rename leaves a temp file beside it, named by the writer:
  * the worker's writeRunRecord (src/worker/run-record.ts) `status.json.<pid>.tmp`, and writeFileAtomic
- * (src/core/atomic-write.ts, used for status.json by the manager and HostedRun, and for hosted.json)
- * `<name>.<pid>.<randomUUID>.tmp`. Nothing writes `hosted.json.<pid>.tmp`.
+ * (src/core/atomic-write.ts, used for status.json by the manager and HostedRun) `status.json.<pid>.<randomUUID>.tmp`.
  */
 const STATUS_TEMP_FILE = new RegExp(`^status\\.json\\.${PID}(?:\\.${UUID_V4})?\\.tmp$`);
-const HOSTED_TEMP_FILE = new RegExp(`^hosted\\.json\\.${PID}\\.${UUID_V4}\\.tmp$`);
 /** src/worker.ts failOversizedEvent saves the first characters of an oversized event line here. */
 const OVERSIZED_EVENT_FILE = "oversized-event-prefix.txt";
-/** src/agents/hosted-run.ts HOSTED_STATE_FILE: the recovery locator of an adapter-owned run. */
-const HOSTED_STATE_FILE = "hosted.json";
 const DURABLE_KEY = /^(?:initial|[0-9a-f]{64})$/;
 const DURABLE_LEASE_FILES = new Set(["lease.sqlite", "lease.sqlite-journal"]);
 const DURABLE_STORE_FILE = /^(?:main|(?:doc|task)-(?:0|[1-9]\d*))\.jsonl(?:\.reclaim)?$/;
@@ -149,7 +151,6 @@ const safeRunTree = (root: string, childrenStopped: boolean, owner?: RunRootOwne
     ? Number(record.sessionId) : undefined;
   if (pid !== undefined && childAlive(owner, pid)) return false;
   const terminal = !!record?.status && TERMINAL_STATUSES.has(record.status);
-  const hostedLocatorExpendable = terminal && record?.outcome === undefined;
   if (!terminal) {
     if (!childrenStopped && pid === undefined) return false;
     if (!ownedStat(path.join(root, "task.txt"))?.isFile()) return false;
@@ -160,13 +161,11 @@ const safeRunTree = (root: string, childrenStopped: boolean, owner?: RunRootOwne
       const stat = ownedStat(file);
       if (!stat) return false;
       if (stat.isFile() && (runFiles.has(name) || name === OVERSIZED_EVENT_FILE || STATUS_TEMP_FILE.test(name))) continue;
-      // The locator lets a restarted host re-attach a hosted run. A terminal record only proves the run stopped
-      // when it does not say otherwise: an "indeterminate" outcome (a failed start, an unconfirmed stop, a lost
-      // run) means the remote work may still be alive and need its locator. Any other outcome value keeps it too.
-      if (stat.isFile() && (name === HOSTED_STATE_FILE || HOSTED_TEMP_FILE.test(name)) && hostedLocatorExpendable) continue;
+      // hosted.json and its temp files are deliberately not accepted: no record proves the remote work stopped,
+      // so a run holding a hosted-run locator is always kept.
       if (stat.isDirectory() && name === "fork-session") {
         // Exclusively populated by writeForkSession: owned regular files of its one name shape.
-        if (!onlyOwnedFiles(file, (child) => FORK_SESSION_FILE.test(child))) return false;
+        if (!onlyOwnedFiles(file, (child) => forkSessionFile(child))) return false;
         continue;
       }
       if (stat.isDirectory() && name === "handoff-session") {
