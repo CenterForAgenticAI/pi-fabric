@@ -6,6 +6,14 @@ import { GlobalActorRegistry } from "../src/actors/global-registry.js";
 import { ActorStoreReadError } from "../src/actors/store-read.js";
 import type { FabricActorRequest } from "../src/actors/types.js";
 
+// Mode 000 does not stop the read on Windows or for root.
+const unreadableFileSkip =
+  process.platform === "win32"
+    ? "Windows does not deny reads by POSIX mode bits"
+    : process.getuid?.() === 0
+      ? "root reads a mode-000 file"
+      : undefined;
+
 const dirs: string[] = [];
 
 const setup = () => {
@@ -242,9 +250,10 @@ describe("GlobalActorRegistry read failures", () => {
     expect(fs.readFileSync(file, "utf8")).toBe(raw);
   });
 
-  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  it(
     "refuses to save over a registry it has no permission to read",
-    () => {
+    ({ skip }) => {
+      skip(unreadableFileSkip !== undefined, unreadableFileSkip);
       const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-global-actors-"));
       dirs.push(agentDir);
       const raw = JSON.stringify({ format: 1, actors: [savedTemplate] });

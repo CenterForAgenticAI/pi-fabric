@@ -9,6 +9,14 @@ import { AgentManager } from "../src/agents/manager.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import { MeshStore } from "../src/mesh/store.js";
 
+// Mode 000 does not stop the read on Windows or for root.
+const unreadableFileSkip =
+  process.platform === "win32"
+    ? "Windows does not deny reads by POSIX mode bits"
+    : process.getuid?.() === 0
+      ? "root reads a mode-000 file"
+      : undefined;
+
 const roots: string[] = [];
 const closers: Array<() => Promise<unknown>> = [];
 const setup = () => {
@@ -185,9 +193,10 @@ describe("ActorRegistryStore read failures", () => {
     expect(fs.readFileSync(registryPath, "utf8")).toBe(raw);
   });
 
-  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  it(
     "refuses to save over a registry it has no permission to read",
-    async () => {
+    async ({ skip }) => {
+      skip(unreadableFileSkip !== undefined, unreadableFileSkip);
       const { actors, actor, registryPath, store } = await ownerHost();
       const raw = JSON.stringify({ format: 1, actors: [remote, ...store.records()] }, null, 2);
       fs.writeFileSync(registryPath, raw);
