@@ -25,8 +25,8 @@ import path from "node:path";
  * already write every session file; same-user races (swapping a folder, adding
  * a hard link between a check and a write) are out of scope. This module guards
  * against other users and accidental links: before it creates anything it
- * requires the run directory to be a real directory owned by this user and not
- * writable by group or others, and it creates the folder without following links.
+ * requires the run directory to be a real directory owned by this user, removes
+ * group and other write from it, and creates the folder without following links.
  */
 export const DURABLE_WORKER_POLICY_ENTRY_TYPE = "context-aware.policy.v1";
 export const DURABLE_WORKER_DECLARED_BY = "pi-fabric/durable-worker";
@@ -80,16 +80,31 @@ const assertPrivateDirectory = (directory: string, label: string): fs.Stats => {
 };
 
 /**
- * The run directory must be a real directory owned by this user and closed to
- * group and others (mode & 0o022 === 0); otherwise the launch fails before any
- * session file or folder is created. The manager creates it 0700.
+ * The run directory must be a real directory (not a link) owned by this user, or
+ * the launch fails before anything is written. If group or others can write it
+ * (mode & 0o022), tighten it through a descriptor opened without following links
+ * and verified to be the directory just checked. The manager creates it 0700, but
+ * a run directory from an earlier Fabric or a test harness may not be. After
+ * tightening no other user can add or swap entries; anything already inside is
+ * refused by the owner and link checks on durable-session and by
+ * O_EXCL | O_NOFOLLOW on the temp file.
  */
-const assertPrivateRunDirectory = (runDirectory: string): void => {
+const securePrivateRunDirectory = (runDirectory: string): void => {
   const stat = assertPrivateDirectory(runDirectory, "Run directory");
-  if (process.platform !== "win32" && (stat.mode & 0o022) !== 0) {
-    throw new Error(
-      `Run directory is writable by group or others (mode ${(stat.mode & 0o777).toString(8)}); refusing to create a durable session in it: ${runDirectory}`,
-    );
+  if (process.platform === "win32" || (stat.mode & 0o022) === 0) return;
+  const fd = fs.openSync(runDirectory, fs.constants.O_RDONLY | DIRECTORY_FLAG | NO_FOLLOW);
+  try {
+    const opened = fs.fstatSync(fd);
+    const uid = currentUid();
+    if (!opened.isDirectory() || opened.ino !== stat.ino || opened.dev !== stat.dev || (uid !== undefined && opened.uid !== uid)) {
+      throw new Error(`Run directory changed while opening: ${runDirectory}`);
+    }
+    fs.fchmodSync(fd, (opened.mode & 0o7777) & ~0o022);
+    if ((fs.fstatSync(fd).mode & 0o022) !== 0) {
+      throw new Error(`Run directory is still writable by group or others after tightening: ${runDirectory}`);
+    }
+  } finally {
+    fs.closeSync(fd);
   }
 };
 
@@ -136,7 +151,7 @@ const reclaimLeftoverTemps = (folder: string, file: string): void => {
  * Create the durable child's private session file, or reuse the existing one.
  *
  * Nothing is created unless the run directory is a real directory owned by this
- * user and closed to group and others. The folder is created under the existing
+ * user; group and other write are removed from it first. The folder is created under the existing
  * run directory without following links. A new file appears already complete (Pi
  * header, then the worker-role entry as the tree root): the content goes to
  * `tmp-<uuid>.jsonl` in the same folder (exclusive create, no link following),
@@ -151,7 +166,7 @@ export const createDurableSessionFile = (
   cwd: string,
   hooks: { beforeLink?: () => void } = {},
 ): string => {
-  assertPrivateRunDirectory(runDirectory);
+  securePrivateRunDirectory(runDirectory);
   const folder = ensureSessionFolder(runDirectory, "durable-session");
   const file = path.join(folder, "session.jsonl");
   let exists = true;

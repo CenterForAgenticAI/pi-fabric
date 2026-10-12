@@ -119,9 +119,15 @@ between a check and a write) are therefore out of scope. The worker guards again
 other users and against accidental links:
 
 - Before it creates anything, the worker `lstat`s the run directory. It must be a
-  real directory (not a link), owned by the worker's user, with
-  `(mode & 0o022) === 0`. Otherwise the launch fails with a clear error before any
-  write. The manager creates run directories with mode `0700` for this reason.
+  real directory (not a link) owned by the worker's user; otherwise the launch fails
+  with a clear error before any write. If group or others can write it
+  (`mode & 0o022`), the worker removes that write itself through a descriptor opened
+  without following links and checked to be the same directory, then confirms the bit
+  is gone. A run directory from an earlier Fabric or a test harness may have mode
+  `0775`; the manager now creates run directories with mode `0700`. After the
+  tightening no other user can add or swap entries in the run directory, and
+  anything already there is refused by the owner and link checks on
+  `durable-session/` and by `O_EXCL | O_NOFOLLOW` on the temp file.
 - `durable-session/` is created without `recursive` (so the run directory must
   already exist), with mode `0700`; an existing one must be a real directory owned by
   the worker's user.
