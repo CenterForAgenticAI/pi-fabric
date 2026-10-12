@@ -3,7 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { createDurableSessionFile, seedDurableWorkerRole } from "../src/durable/worker-role-seed.js";
+import { writeForkSession, writeHandoffSession } from "../src/agents/handoff.js";
+import type { AgentToolResultMessage } from "../src/agents/types.js";
+import { createDurableSessionFile } from "../src/durable/worker-role-seed.js";
 
 // The literal payload pi-context-aware reads as the host-declared worker role.
 // Written out here on purpose: never imported from the code under test.
@@ -18,24 +20,11 @@ const temporary = () => {
 };
 afterAll(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); });
 
-const header = { type: "session", version: 3, id: "hdr", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/work" };
-const custom = (id: string, parentId: string | null, customType: string, data: unknown) =>
-  ({ type: "custom", customType, data, id, parentId, timestamp: "2026-01-01T00:00:01.000Z" });
-const text = (entries: unknown[]) => entries.map(entry => JSON.stringify(entry)).join("\n") + "\n";
 const parse = (file: string) => fs.readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
 const policies = (entries: any[]) => entries.filter(entry => entry.type === "custom" && entry.customType === "context-aware.policy.v1");
-/** The entries Pi itself puts on the active branch when it opens the file. */
-const piBranch = (file: string, cwd: string) => SessionManager.open(file, path.dirname(file), cwd).getBranch() as any[];
-const ownedFile = (entries: unknown[] | string) => {
-  const run = temporary();
-  const folder = path.join(run, "durable-session");
-  fs.mkdirSync(folder, { mode: 0o700 });
-  const file = path.join(folder, "session.jsonl");
-  fs.writeFileSync(file, typeof entries === "string" ? entries : text(entries), { mode: 0o600 });
-  return { run, file };
-};
+const isPolicy = (entry: any) => entry.type === "custom" && entry.customType === "context-aware.policy.v1";
 
-describe("durable worker-role seed: folder safety", () => {
+describe("durable-session folder safety", () => {
   it.skipIf(process.platform === "win32")("fails the launch when durable-session is a link, touching nothing behind it", () => {
     const run = temporary();
     const target = temporary();
@@ -57,135 +46,99 @@ describe("durable worker-role seed: folder safety", () => {
     expect(() => createDurableSessionFile(path.join(run, "missing", "run"), run)).toThrow();
     expect(fs.existsSync(path.join(run, "missing"))).toBe(false);
   });
-});
 
-describe("durable worker-role seed: provenance", () => {
-  it.each(["durable-session", "fork-session", "handoff-session"])("never edits a file the launcher did not mark as created by Fabric, even in %s/", folder => {
+  it.skipIf(process.platform === "win32")("refuses a run directory that group or others can write, creating nothing", () => {
+    for (const mode of [0o770, 0o707, 0o702, 0o720]) {
+      const run = temporary();
+      fs.chmodSync(run, mode);
+      expect(() => createDurableSessionFile(run, run)).toThrow(/writable by group or others/);
+      expect(fs.readdirSync(run)).toEqual([]);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("accepts a run directory that others can read but not write", () => {
     const run = temporary();
-    fs.mkdirSync(path.join(run, folder), { mode: 0o700 });
-    const file = path.join(run, folder, "caller.jsonl");
-    fs.writeFileSync(file, text([header]));
-    const before = fs.readFileSync(file, "utf8");
-    expect(seedDurableWorkerRole(file, { runDirectory: run, cwd: "/work", owned: false })).toBe("not-owned");
-    expect(fs.readFileSync(file, "utf8")).toBe(before);
+    fs.chmodSync(run, 0o755);
+    expect(fs.existsSync(createDurableSessionFile(run, run))).toBe(true);
   });
 
-  it("does not touch an owned-flagged file outside the run's session folders", () => {
+  it.skipIf(process.platform === "win32")("refuses a run directory that is a link", () => {
+    const real = temporary();
+    const link = path.join(temporary(), "run-link");
+    fs.symlinkSync(real, link, "dir");
+    expect(() => createDurableSessionFile(link, link)).toThrow(/real directory, not a link/);
+    expect(fs.readdirSync(real)).toEqual([]);
+  });
+});
+
+describe("a new durable-session file", () => {
+  it("is a Pi header, then the worker-role entry as the tree root with the literal payload", () => {
     const run = temporary();
-    const file = path.join(run, "elsewhere.jsonl");
-    fs.writeFileSync(file, text([header]));
-    expect(seedDurableWorkerRole(file, { runDirectory: run, cwd: "/work", owned: true })).toBe("not-owned");
-    expect(fs.readFileSync(file, "utf8")).toBe(text([header]));
+    const file = createDurableSessionFile(run, "/work");
+    const lines = fs.readFileSync(file, "utf8").split("\n");
+    expect(lines).toHaveLength(3); // header, policy, trailing newline
+    expect(lines[2]).toBe("");
+    const [header, policy] = parse(file);
+    expect(header).toMatchObject({ type: "session", version: 3, cwd: "/work" });
+    expect(Object.keys(policy).sort()).toEqual(["customType", "data", "id", "parentId", "timestamp", "type"]);
+    expect(policy).toMatchObject({ type: "custom", customType: "context-aware.policy.v1", parentId: null });
+    expect(policy.data).toEqual({
+      schemaVersion: 1, layer: "host", declaredBy: "pi-fabric/durable-worker", values: { sessionRole: "worker" },
+    });
+    expect(policy.id).toMatch(/^[0-9a-f]{8}$/);
   });
 
-  it.skipIf(process.platform === "win32")("refuses a hardlinked file and leaves the other name unchanged", () => {
-    const { run, file } = ownedFile([header]);
-    const other = path.join(run, "other-name.jsonl");
-    fs.linkSync(file, other);
-    const before = fs.readFileSync(other, "utf8");
-    expect(() => seedDurableWorkerRole(file, { runDirectory: run, cwd: "/work", owned: true })).toThrow(/exactly one name/);
-    expect(fs.readFileSync(other, "utf8")).toBe(before);
-    expect(fs.readFileSync(file, "utf8")).toBe(before);
+  it("is opened by real Pi, which appends after the policy so every branch from the new leaf includes it", () => {
+    const run = temporary();
+    const file = createDurableSessionFile(run, "/work");
+    const before = parse(file);
+    const pi = SessionManager.open(file, path.dirname(file), "/work");
+    expect(pi.getBranch().map(entry => entry.id)).toEqual([before[1].id]);
+    pi.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+    const leaf = pi.appendCustomEntry("test.after", { n: 1 });
+    expect(policies(pi.getBranch(leaf) as any[]).map(entry => entry.data)).toEqual([workerPolicy]);
+    expect(pi.getBranch(leaf).map(entry => entry.type)).toEqual(["custom", "message", "custom"]);
+    // A fresh open of what Pi wrote sees the same, and the first two lines are untouched.
+    const reopened = SessionManager.open(file, path.dirname(file), "/work");
+    expect(policies(reopened.getBranch() as any[]).map(entry => entry.data)).toEqual([workerPolicy]);
+    expect(parse(file).slice(0, 2)).toEqual(before);
   });
 
-  it.skipIf(process.platform === "win32")("refuses a session file that is itself a link", () => {
-    const { run, file } = ownedFile([header]);
-    const real = path.join(run, "real.jsonl");
-    fs.renameSync(file, real);
-    fs.symlinkSync(real, file);
-    expect(() => seedDurableWorkerRole(file, { runDirectory: run, cwd: "/work", owned: true })).toThrow();
-    expect(fs.readFileSync(real, "utf8")).toBe(text([header]));
-  });
-});
-
-describe("durable worker-role seed: the branch Pi opens", () => {
-  it("appends a policy on the active branch when the only valid entry is on another branch", () => {
-    // header, A (root), P (policy, child of A), B (sibling of P, child of A). Pi opens at B, the last entry.
-    const { run, file } = ownedFile([
-      header,
-      custom("A", null, "test.root", {}),
-      custom("P", "A", "context-aware.policy.v1", workerPolicy),
-      custom("B", "A", "test.sibling", {}),
-    ]);
+  it("leaves an existing file untouched on relaunch, byte for byte", () => {
+    const run = temporary();
+    const file = createDurableSessionFile(run, "/work");
+    const pi = SessionManager.open(file, path.dirname(file), "/work");
+    pi.appendMessage({ role: "user", content: "kept", timestamp: 1 });
     const before = fs.readFileSync(file, "utf8");
-    expect(piBranch(file, "/work").map(entry => entry.id)).toEqual(["A", "B"]); // Pi's own leaf rule, not ours
-    expect(seedDurableWorkerRole(file, { runDirectory: run, cwd: "/work", owned: true })).toBe("seeded");
-    const after = fs.readFileSync(file, "utf8");
-    expect(after.startsWith(before)).toBe(true);
-    const added = parse(file).at(-1);
-    expect(added).toMatchObject({ type: "custom", customType: "context-aware.policy.v1", parentId: "B" });
-    expect(added.data).toEqual(workerPolicy);
-    const branch = piBranch(file, "/work");
-    expect(branch.map(entry => entry.id)).toEqual(["A", "B", added.id]);
-    expect(policies(branch)).toHaveLength(1);
-    expect(seedDurableWorkerRole(file, { runDirectory: run, cwd: "/work", owned: true })).toBe("already-seeded");
-    expect(fs.readFileSync(file, "utf8")).toBe(after);
-  });
-
-  it.each([
-    ["wrong role", { ...workerPolicy, values: { sessionRole: "user" } }],
-    ["extra field", { ...workerPolicy, extra: true }],
-    ["missing layer", { schemaVersion: 1, declaredBy: "pi-fabric/durable-worker", values: { sessionRole: "worker" } }],
-    ["not an object", "pi-fabric/durable-worker"],
-  ])("appends a valid policy when a matching-declaredBy entry has an invalid payload: %s", (_name, data) => {
-    const { run, file } = ownedFile([header, custom("A", null, "context-aware.policy.v1", data)]);
-    expect(seedDurableWorkerRole(file, { runDirectory: run, cwd: "/work", owned: true })).toBe("seeded");
-    const added = parse(file).at(-1);
-    expect(added).toMatchObject({ parentId: "A" });
-    expect(added.data).toEqual(workerPolicy);
-    expect(policies(piBranch(file, "/work")).filter(entry => JSON.stringify(entry.data) === JSON.stringify(workerPolicy))).toHaveLength(1);
-  });
-
-  it("leaves a file alone when a valid entry is on the active branch below later history", () => {
-    const { run, file } = ownedFile([
-      header,
-      custom("A", null, "context-aware.policy.v1", workerPolicy),
-      custom("B", "A", "test.turn", {}),
-    ]);
-    const before = fs.readFileSync(file, "utf8");
-    expect(seedDurableWorkerRole(file, { runDirectory: run, cwd: "/work", owned: true })).toBe("already-seeded");
+    expect(createDurableSessionFile(run, "/other-cwd")).toBe(file);
     expect(fs.readFileSync(file, "utf8")).toBe(before);
+    expect(policies(parse(file))).toHaveLength(1);
   });
 
-  it("starts a new line when a crash left an unterminated last line", () => {
-    const { run, file } = ownedFile(text([header, custom("A", null, "test.root", {})]) + '{"type":"custom","cust');
-    expect(seedDurableWorkerRole(file, { runDirectory: run, cwd: "/work", owned: true })).toBe("seeded");
-    expect(policies(piBranch(file, "/work"))).toHaveLength(1);
-  });
-});
-
-describe("durable worker-role seed: unreadable files fail the launch", () => {
-  it.each([
-    ["a partial header", '{"type":"sess'],
-    ["no session header", text([custom("A", null, "test.root", {})])],
-    ["a header that is not first", text([custom("A", null, "test.root", {}), header])],
-  ])("throws a clear error and leaves the file unchanged: %s", (_name, content) => {
-    const { run, file } = ownedFile(content);
-    expect(() => seedDurableWorkerRole(file, { runDirectory: run, cwd: "/work", owned: true }))
-      .toThrow(/not a Pi session \(no session header\); refusing to launch/);
-    expect(fs.readFileSync(file, "utf8")).toBe(content);
+  it("reuses a file with any content as it is, without reading or editing it", () => {
+    const run = temporary();
+    fs.mkdirSync(path.join(run, "durable-session"), { mode: 0o700 });
+    const file = path.join(run, "durable-session", "session.jsonl");
+    for (const content of ["", "{\"type\":\"sess", "not json\n"]) {
+      fs.writeFileSync(file, content, { mode: 0o600 });
+      expect(createDurableSessionFile(run, "/work")).toBe(file);
+      expect(fs.readFileSync(file, "utf8")).toBe(content);
+    }
   });
 });
 
 describe("durable-session creation is atomic", () => {
   const leftovers = (folder: string) => fs.readdirSync(folder).filter(name => name !== "session.jsonl");
 
-  it("writes the header and exactly one policy entry in a file that never exists half-written", () => {
+  it("shows session.jsonl only complete, by link, with no temp name left", () => {
     const run = temporary();
     let seenAtLink: string[] = [];
     const file = createDurableSessionFile(run, "/work", {
-      beforeLink: () => {
-        const folder = path.join(run, "durable-session");
-        seenAtLink = fs.readdirSync(folder);
-      },
+      beforeLink: () => { seenAtLink = fs.readdirSync(path.join(run, "durable-session")); },
     });
     expect(seenAtLink.some(name => /^tmp-.*\.jsonl$/.test(name))).toBe(true);
-    expect(seenAtLink).not.toContain("session.jsonl"); // session.jsonl appears only complete, by link
-    const entries = parse(file);
-    expect(entries.map(entry => entry.type)).toEqual(["session", "custom"]);
-    expect(entries[0]).toMatchObject({ version: 3, cwd: "/work" });
-    expect(entries[1]).toMatchObject({ customType: "context-aware.policy.v1", parentId: null });
-    expect(entries[1].data).toEqual(workerPolicy);
+    expect(seenAtLink).not.toContain("session.jsonl");
+    expect(parse(file).map(entry => entry.type)).toEqual(["session", "custom"]);
     expect(leftovers(path.dirname(file))).toEqual([]);
     expect(fs.statSync(file).nlink).toBe(1);
   });
@@ -196,19 +149,15 @@ describe("durable-session creation is atomic", () => {
     let winnerBytes = "";
     // Creator A pauses just before its link; creator B runs to completion in that gap.
     const fileA = createDurableSessionFile(run, "/work-a", {
-      beforeLink: () => {
-        const fileB = createDurableSessionFile(run, "/work-b");
-        winnerBytes = fs.readFileSync(fileB, "utf8");
-      },
+      beforeLink: () => { winnerBytes = fs.readFileSync(createDurableSessionFile(run, "/work-b"), "utf8"); },
     });
     expect(winnerBytes).not.toBe("");
-    expect(fs.readFileSync(fileA, "utf8")).toBe(winnerBytes); // A did not overwrite or append to B's file
+    expect(fs.readFileSync(fileA, "utf8")).toBe(winnerBytes);
     const entries = parse(fileA);
     expect(entries.filter(entry => entry.type === "session")).toHaveLength(1);
     expect(policies(entries)).toHaveLength(1);
     expect(entries[0].cwd).toBe("/work-b");
     expect(leftovers(folder)).toEqual([]);
-    expect(seedDurableWorkerRole(fileA, { runDirectory: run, cwd: "/work-a", owned: true })).toBe("already-seeded");
   });
 
   it.skipIf(process.platform === "win32")("removes its own temp name when a crash left it linked next to session.jsonl", () => {
@@ -220,15 +169,106 @@ describe("durable-session creation is atomic", () => {
     createDurableSessionFile(run, "/work"); // the relaunch
     expect(fs.existsSync(stray)).toBe(false);
     expect(fs.statSync(file).nlink).toBe(1);
-    expect(seedDurableWorkerRole(file, { runDirectory: run, cwd: "/work", owned: true })).toBe("already-seeded");
+  });
+});
+
+// Seeds from the real writers. Entries come from a real Pi source session.
+const outerResult = (toolCallId: string): AgentToolResultMessage => ({
+  role: "toolResult", toolCallId, toolName: "fabric_exec", content: [{ type: "text", text: "done" }], isError: false, timestamp: 9,
+});
+const assistantTurn = (callId: string) => ({
+  role: "assistant", content: [
+    { type: "text", text: "working" },
+    { type: "toolCall", id: callId, name: "fabric_exec", arguments: { code: "1" } },
+  ],
+  api: "anthropic", provider: "anthropic", model: "frontier", stopReason: "toolUse", timestamp: 3,
+  usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+}) as unknown as Parameters<SessionManager["appendMessage"]>[0];
+
+/** Entry ids, session id and timestamps differ per write; map them to their order of appearance so two writes compare byte for byte otherwise. */
+const normalized = (file: string): string => {
+  const lines = fs.readFileSync(file, "utf8").split("\n");
+  const ids = parse(file).filter(entry => entry.type !== "session").map(entry => entry.id as string);
+  let text = lines.join("\n");
+  ids.forEach((id, index) => { text = text.split(JSON.stringify(id)).join(JSON.stringify("ID" + index)); });
+  return text
+    .replace(/"timestamp":"[^"]*"/g, '"timestamp":"T"')
+    .replace(/("type":"session","version":3,"id":)"[^"]*"/, '$1"H"')
+    .replace(/handoff-[0-9a-f-]{36}/g, "handoff-H")
+    .replace(/[^"]*fabric-role-seed-[A-Za-z0-9]+/g, "ROOT")
+    .replace(/(ROOT\/source\/)[^"]*\.jsonl/g, "$1S.jsonl");
+};
+
+type Kind = "fork" | "handoff in-memory" | "handoff persisted";
+const seedFile = (kind: Kind, workerRole: boolean | undefined) => {
+  const root = temporary();
+  const source = kind === "handoff persisted"
+    ? SessionManager.create(root, path.join(root, "source"))
+    : SessionManager.inMemory(root);
+  const first = source.appendMessage({ role: "user", content: "inherited question", timestamp: 1 });
+  source.appendMessage(assistantTurn(kind === "fork" ? "unused" : "outer-call"));
+  const options = workerRole === undefined ? undefined : { workerRole };
+  if (kind === "fork") {
+    const branch = source.getBranch();
+    return { first, root, file: writeForkSession({ sourceSessionId: "source", sourceBranch: branch }, root, path.join(root, "child"), undefined, options) };
+  }
+  const branch = source.getBranch();
+  const seed = {
+    sourceSessionId: "source", sourceBranchLeafId: branch.at(-1)!.id,
+    ...(kind === "handoff persisted" ? { sourceSessionFile: source.getSessionFile()! } : { sourceBranch: branch }),
+    outerToolResult: outerResult("outer-call"),
+  };
+  return { first, root, file: writeHandoffSession(seed, root, path.join(root, "child"), undefined, undefined, undefined, options) };
+};
+
+describe.each(["fork", "handoff in-memory", "handoff persisted"] as const)("a pi-durable %s seed", kind => {
+  it("puts the worker-role entry first as the root and hangs the seed's former root under it", () => {
+    const { first, file } = seedFile(kind, true);
+    const lines = parse(file);
+    expect(lines[0].type).toBe("session");
+    expect(lines.filter(isPolicy)).toHaveLength(1);
+    expect(isPolicy(lines[1])).toBe(true);
+    expect(lines[1].parentId).toBe(null);
+    expect(lines[1].data).toEqual(workerPolicy);
+    expect(lines[2]).toMatchObject({ id: first, type: "message", parentId: lines[1].id });
+    expect(lines.slice(1).filter(entry => entry.parentId === null)).toEqual([lines[1]]); // one root
   });
 
-  it("reuses an existing session file byte for byte", () => {
-    const run = temporary();
-    const file = createDurableSessionFile(run, "/work");
-    fs.appendFileSync(file, JSON.stringify(custom("zz", parse(file).at(-1).id, "test.turn", {})) + "\n");
-    const before = fs.readFileSync(file, "utf8");
-    expect(createDurableSessionFile(run, "/work")).toBe(file);
-    expect(fs.readFileSync(file, "utf8")).toBe(before);
+  it("is opened by real Pi, and every branch from the new leaf includes the policy", () => {
+    const { file, root } = seedFile(kind, true);
+    const pi = SessionManager.open(file, path.dirname(file), root);
+    const leaf = pi.appendMessage({ role: "user", content: "next task", timestamp: 5 });
+    const branch = pi.getBranch(leaf) as any[];
+    expect(branch[0].data).toEqual(workerPolicy);
+    expect(policies(branch)).toHaveLength(1);
+    expect(policies(pi.getBranch() as any[]).map(entry => entry.data)).toEqual([workerPolicy]);
+    // A branch reached by navigating back to the seed's first message still descends from the policy.
+    const lines = parse(file);
+    expect(policies(pi.getBranch(lines[2].id) as any[]).map(entry => entry.data)).toEqual([workerPolicy]);
+  });
+
+  it("leaves the inherited history unchanged: same messages as the same seed written without the option", () => {
+    const withRole = seedFile(kind, true);
+    const without = seedFile(kind, undefined);
+    const messages = (s: { file: string; root: string }) => SessionManager.open(s.file, path.dirname(s.file), s.root).buildSessionContext().messages;
+    const expected = messages(without);
+    expect(expected.map(message => message.role)).toEqual(
+      kind === "fork" ? ["user", "assistant"] : ["user", "assistant", "toolResult"],
+    );
+    expect(messages(withRole)).toEqual(expected);
+    // Everything but the root is the same entries in the same order.
+    const rest = (file: string) => parse(file).slice(1).filter(entry => !isPolicy(entry)).map(entry => entry.type);
+    expect(rest(withRole.file)).toEqual(rest(without.file));
+  });
+});
+
+describe.each(["fork", "handoff in-memory", "handoff persisted"] as const)("a plain pi %s seed", kind => {
+  it("is byte-identical to the writer output without the option, with no worker-role entry", () => {
+    const plain = seedFile(kind, undefined);
+    const explicitlyOff = seedFile(kind, false);
+    const absent = normalized(plain.file);
+    expect(normalized(explicitlyOff.file)).toBe(absent);
+    expect(policies(parse(plain.file))).toEqual([]);
+    expect(parse(plain.file)[1]).toMatchObject({ id: plain.first, parentId: null });
   });
 });
