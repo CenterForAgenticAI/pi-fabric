@@ -85,6 +85,7 @@ export type FabricProgramRunFieldV1 = "ref" | "input" | "requirePromoted" | "sig
  */
 export interface FabricProgramRunSnapshotV1 {
   readonly ref: unknown;
+  /** A JSON copy of the caller's `input`, never the caller's object. */
   readonly input: unknown;
   readonly requirePromoted: unknown;
   readonly signal: unknown;
@@ -103,6 +104,25 @@ export interface FabricProgramRunSnapshotV1 {
  * Throws when `reply` reads as something other than a function, as the event
  * has always done for a payload without a `reply` function.
  */
+// Stands in for input that is not JSON. It is not JSON either, so the run
+// refuses it with the error it always gave.
+const NOT_JSON_INPUT = Symbol("not JSON");
+
+/**
+ * A JSON copy of `input`, so a caller that changes the input's contents after
+ * emitting cannot change what runs.
+ */
+const copyProgramRunInput = (input: unknown): unknown => {
+  if (input === undefined) return undefined;
+  try {
+    const text = JSON.stringify(input);
+    if (text !== undefined) return JSON.parse(text) as unknown;
+  } catch {
+    // Not JSON-compatible.
+  }
+  return NOT_JSON_INPUT;
+};
+
 export const snapshotFabricProgramRunRequestV1 = (value: unknown): FabricProgramRunSnapshotV1 | undefined => {
   const request = value as Record<string, unknown> | null | undefined;
   let reply: unknown;
@@ -133,7 +153,7 @@ export const snapshotFabricProgramRunRequestV1 = (value: unknown): FabricProgram
   };
   return Object.freeze({
     ref: read("ref"),
-    input: read("input"),
+    input: copyProgramRunInput(read("input")),
     requirePromoted: read("requirePromoted"),
     signal: read("signal"),
     unreadable,

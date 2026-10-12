@@ -469,6 +469,30 @@ describe("host program runs", () => {
       expect(answered.calls()).toBe(1);
     });
 
+    it("runs the input's contents as they were when the request was read", async () => {
+      const f = fixture();
+      await f.store.save({ name: "hello", code: "return input;" }, "typescript");
+      const answered = nextReply();
+      const input = { who: "original", tags: ["a"], nested: { n: 1 } };
+      const snapshot = snapshotFabricProgramRunRequestV1({ ref: "hello", input, reply: answered.reply })!;
+      input.who = "EVIL";
+      input.tags.push("EVIL");
+      input.nested.n = 2;
+      await handleFabricProgramRunEvent(snapshot, { ...hostDeps(f).deps, context: f.context });
+      expect(await answered.done).toMatchObject({ ok: true, value: { who: "original", tags: ["a"], nested: { n: 1 } } });
+    });
+
+    it("refuses input that was not JSON when read, even if the caller makes it JSON afterwards", async () => {
+      const f = fixture();
+      await f.store.save({ name: "hello", code: "return input;" }, "typescript");
+      const answered = nextReply();
+      const input: Record<string, unknown> = { n: 1n };
+      const snapshot = snapshotFabricProgramRunRequestV1({ ref: "hello", input, reply: answered.reply })!;
+      input.n = 1;
+      await handleFabricProgramRunEvent(snapshot, { ...hostDeps(f).deps, context: f.context });
+      expect(await answered.done).toEqual({ ok: false, program: expect.stringMatching(/^hello@/), error: "Program input must be JSON-compatible" });
+    });
+
     describe("a named field whose getter throws", () => {
       const boom = (): never => { throw new Error("getter boom"); };
       // Adds (or replaces) an own, enumerable accessor that throws when read.
