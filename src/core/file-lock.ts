@@ -9,6 +9,7 @@ import path from "node:path";
 import {
   encodeOwnerIdentityLine,
   lockOwnerLiveness,
+  lockOwnerProvablyDead,
   reapLockByRenameClaim,
   SHORT_LOCK_MAX_HOLD_MS,
 } from "./atomic-write.js";
@@ -74,7 +75,9 @@ const ownerCanBeReaped = (owner: string, mtimeMs: number, staleMs: number): bool
   const since = created?.trim() && Number.isSafeInteger(timestamp) && timestamp >= 0 && timestamp <= Date.now()
     ? timestamp
     : mtimeMs;
-  return Date.now() - since > staleMs && lockOwnerLiveness(Number(pid), since, identity, {
+  // A fresh lock is reaped only when its local owner is provably dead.
+  if (Date.now() - since <= staleMs) return lockOwnerProvablyDead(Number(pid), identity);
+  return lockOwnerLiveness(Number(pid), since, identity, {
     legacyAlive: processAlive,
     maxHoldMs: Math.max(SHORT_LOCK_MAX_HOLD_MS, staleMs),
   }) === "dead";
