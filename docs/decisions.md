@@ -67,7 +67,7 @@ Python uses the same calls, for example `await decisions.raise(title="Deploy?", 
 | `decisions.escalate({id, reason?})` | agent | the record, now held by the next holder in its chain |
 | `decisions.cancel({id})` | agent | the cancelled record |
 
-`wait` polls the mesh and stops when the calling program is aborted. It is a default [human-wait ref](configuration.md#executor-timeouts-and-ceilings), so the program deadline is paused while it waits; the decision's own deadline and `timeoutMs` still apply. `holder` defaults to `"user"`.
+`wait` polls the mesh and stops when the calling program is aborted. It is a default [human-wait ref](configuration.md#executor-timeouts-and-ceilings), so the program deadline is paused while it waits. The wait ends when the decision is answered, expired, or cancelled, or when the call's `timeoutMs` passes. A decision raised without `timeoutMs` or `deadline`, waited on without `timeoutMs`, has no time bound: only an answer, a cancellation of the decision, or a cancelled program (Esc, an aborted signal, or a `fabric_exec` `timeout_ms` hard deadline) ends the wait. Set `executor.humanWaitRefs` to `["extensions.ask"]` to bound `wait` by the program deadline again. `holder` defaults to `"user"`.
 
 ## Who may answer
 
