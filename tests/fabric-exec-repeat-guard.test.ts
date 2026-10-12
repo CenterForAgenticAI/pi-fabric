@@ -39,7 +39,7 @@ const textOf = (result: { content: { type: string; text?: string }[] }): string 
 
 const WRAPPER = "return π.value;";
 
-describe("fabric_exec repeat guard and payloads (F-021)", () => {
+describe("fabric_exec repeat guard and payloads", () => {
   it("runs the same wrapper code with different payloads six or more times without warning or blocking", async () => {
     const tool = makeTool();
     for (let i = 1; i <= FABRIC_REPEAT_BLOCK + 2; i += 1) {

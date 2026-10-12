@@ -43,7 +43,7 @@ describe("FabricRepeatGuard", () => {
   });
 
   it("does not count the same wrapper code as a loop when the payloads differ", () => {
-    // F-021: a short wrapper whose payload is the real work.
+    // A short wrapper whose payload is the real work.
     const g = new FabricRepeatGuard(3, 6);
     const wrapper = "const r = await pi.bash({ cmd: π.cmd, settle: true }); return r.output;";
     for (let i = 1; i <= 12; i += 1) {
