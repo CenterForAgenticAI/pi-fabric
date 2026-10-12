@@ -185,7 +185,9 @@ const MAX_MODEL_KEY_CHARS = 256;
 /** agents.models({ model }): an exact, untrimmed key; undefined means the unfiltered list. */
 const checkedModelKey = (value: unknown): string | undefined => {
   if (value === undefined) return undefined;
-  if (typeof value !== "string" || value.length < 1 || value.length > MAX_MODEL_KEY_CHARS) {
+  // Count code points, as the schema's minLength/maxLength do, not UTF-16 units.
+  const chars = typeof value === "string" ? [...value].length : 0;
+  if (typeof value !== "string" || chars < 1 || chars > MAX_MODEL_KEY_CHARS) {
     throw new Error(
       `agents.models model must be a string of 1 to ${MAX_MODEL_KEY_CHARS} characters (an exact key from agents.models())`,
     );
@@ -361,6 +363,12 @@ const actorRequest = (
 // lexicon; no agents-specific table remains.
 export const normalizeAgentsArgs = actionArgNormalizer(() => AGENTS_ACTION_DESCRIPTORS);
 
+/** True when a null argument is model or a spelling the normalizer repairs to model. */
+const nullModelSpelling = (args: Record<string, unknown>): boolean =>
+  Object.entries(args).some(
+    ([key, value]) => value === null && "model" in normalizeAgentsArgs("models", { [key]: "" }),
+  );
+
 export class AgentsProvider implements FabricProvider {
   readonly #transcripts = new AgentTranscriptReader();
   readonly #router: AgentMessageRouter;
@@ -509,7 +517,13 @@ export class AgentsProvider implements FabricProvider {
     actionName: string,
     args: Record<string, unknown>,
   ): Record<string, unknown> {
-    return normalizeAgentsArgs(actionName, args);
+    const prepared = normalizeAgentsArgs(actionName, args);
+    // The shared normalizer drops a null declared field, which would turn
+    // agents.models({ model: null }) into the full list. Keep it so validation refuses it.
+    if (actionName === "models" && !("model" in prepared) && nullModelSpelling(args)) {
+      return { ...prepared, model: null };
+    }
+    return prepared;
   }
 
   async handoff(

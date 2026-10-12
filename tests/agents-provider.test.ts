@@ -34,6 +34,7 @@ import { snapshotHandoffSession } from "../src/agents/handoff.js";
 import { AgentManager } from "../src/agents/manager.js";
 import type { AgentRunRecord } from "../src/agents/types.js";
 import { registerAgentRunner } from "../src/runners.js";
+import { ActionRegistry } from "../src/core/action-registry.js";
 
 const roots: string[] = [];
 const actorManagers: ActorManager[] = [];
@@ -1543,6 +1544,94 @@ describe("AgentsProvider exact model lookup", () => {
     const descriptor = await provider.describe("models", context);
     const properties = (descriptor?.inputSchema as { properties: Record<string, unknown> }).properties;
     expect(properties.model).toMatchObject({ type: "string", minLength: 1, maxLength: 256 });
+  });
+
+  // The guest route prepares arguments before validating them; these go through it.
+  const registryRoute = (provider: AgentsProvider, models: unknown[] = visiblePiModels) => {
+    const registry = new ActionRegistry();
+    registry.register(provider);
+    const routeContext = {
+      ...context,
+      extensionContext: { modelRegistry: { getAvailable: () => models } } as unknown as ExtensionContext,
+      approve: async () => {},
+      audits: [],
+      maxResultChars: 100_000,
+    };
+    return {
+      invoke: (args: Record<string, unknown>) => registry.invoke("agents.models", args, routeContext),
+      close: () => registry.close(),
+    };
+  };
+
+  it.each(["pi", "pi-durable", "claude", "veda", "acme-null"])(
+    "refuses a null model through the action registry for the %s runner",
+    async (runner) => {
+      const unregister = registerAgentRunner({
+        kind: "worker",
+        id: "acme-null",
+        label: "Acme",
+        capabilities: {
+          recursiveFabric: false,
+          steer: false,
+          followUp: false,
+          persistentSessions: false,
+          kernels: false,
+          handoff: false,
+          modelDiscovery: true,
+          imageInput: false,
+          compaction: false,
+          questions: false,
+          sleep: false,
+          writePolicy: false,
+        },
+        models: () => [{ runner: "acme-null", provider: "acme", id: "large", name: "Large", key: "acme/large" }],
+        launch: () => {
+          throw new Error("not launched");
+        },
+      });
+      const route = registryRoute(setup().provider);
+      try {
+        await expect(route.invoke({ runner, model: null })).rejects.toThrow(
+          /Invalid arguments for agents\.models: must be string/,
+        );
+        // A spelling variant the normalizer repairs to model is refused the same way.
+        await expect(route.invoke({ runner, Model: null })).rejects.toThrow(
+          /Invalid arguments for agents\.models: must be string/,
+        );
+        // A supplied model still wins over a null spelling variant.
+        await expect(route.invoke({ runner, model: "acme/large", Model: null })).resolves.toBeInstanceOf(Array);
+        // Without model the call still lists.
+        await expect(route.invoke({ runner })).resolves.toBeInstanceOf(Array);
+      } finally {
+        unregister();
+        await route.close();
+      }
+    },
+  );
+
+  it("counts supplementary characters as one character each, like the schema", async () => {
+    const id256 = "😀".repeat(256 - "anthropic/".length);
+    const atBound = `anthropic/${id256}`;
+    const overBound = `${atBound}😀`;
+    expect([...atBound]).toHaveLength(256);
+    expect(atBound.length).toBeGreaterThan(256);
+    const unicodeModel = { provider: "anthropic", id: id256, name: "Unicode" };
+    const { provider } = setup();
+    const route = registryRoute(provider, [...visiblePiModels, unicodeModel]);
+    try {
+      await expect(route.invoke({ runner: "pi", model: atBound })).resolves.toEqual([
+        { runner: "pi", provider: "anthropic", id: id256, name: "Unicode", key: atBound },
+      ]);
+      await expect(route.invoke({ runner: "pi", model: overBound })).rejects.toThrow(
+        /must not have more than 256 characters/,
+      );
+      // The provider's own guard agrees with the schema on both sides of the bound.
+      await expect(provider.invoke("models", { runner: "pi", model: overBound }, context)).rejects.toThrow(
+        /agents\.models model must be a string of 1 to 256 characters/,
+      );
+    } finally {
+      await route.close();
+    }
   });
 });
 
