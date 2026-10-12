@@ -1059,7 +1059,7 @@ const processAlive = (pid: number): boolean => {
 };
 
 /** A durable agent record left non-terminal, as a host that died mid-run leaves it. */
-const seedRunningDurableAgent = (state: RootHarness): string => {
+const seedRunningDurableAgent = (state: RootHarness, options: { hosted: boolean }): string => {
   const id = "b".repeat(32);
   const runDirectory = path.join(state.config.residencyRoot, "runs", id);
   const agentsPath = path.join(state.config.residencyRoot, "agents");
@@ -1067,8 +1067,9 @@ const seedRunningDurableAgent = (state: RootHarness): string => {
   fs.mkdirSync(agentsPath, { recursive: true });
   const record = {
     id, name: "orphaned durable worker", status: "running", text: "", task: "work",
-    runner: "pi", transport: "process", cwd: state.root, startedAt: 1, updatedAt: 1,
+    runner: options.hosted ? "seeded-hosted" : "pi", transport: "process", cwd: state.root, startedAt: 1, updatedAt: 1,
     turns: 0, toolCalls: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    ...(options.hosted ? { hosted: { locator: { runDirectory } } } : {}),
   };
   fs.writeFileSync(path.join(runDirectory, "status.json"), JSON.stringify(record));
   fs.writeFileSync(path.join(agentsPath, `${id}.json`), JSON.stringify({
@@ -1077,8 +1078,15 @@ const seedRunningDurableAgent = (state: RootHarness): string => {
   return id;
 };
 
-describe.skipIf(!hasResidentHost || process.platform === "win32")("durable wait after the resident host dies", () => {
-  it("restarts the resident host once for concurrent waiters and returns the re-attached result", { timeout: 60_000 }, async () => {
+// These run a real resident host, so they need the build output and a POSIX host.
+const skipRealResidentHost = (skip: (condition: boolean, note?: string) => void): void => {
+  skip(!hasResidentHost, "needs dist/residency/launcher.js; run `bun run build` first");
+  skip(process.platform === "win32", "POSIX-only: on Windows spawnDetached does not detach the resident host, and the resident-host suites here are not verified there");
+};
+
+describe("durable wait after the resident host dies", () => {
+  it("restarts the resident host once for concurrent waiters and returns the re-attached result", { timeout: 60_000 }, async ({ skip }) => {
+    skipRealResidentHost(skip);
     const state = await rootHarness("resident-wait-dead-host");
     // The repository's own pi, with a scratch agent directory.
     state.config.piBinary = path.resolve("node_modules/.bin/pi");
@@ -1135,10 +1143,11 @@ describe.skipIf(!hasResidentHost || process.platform === "win32")("durable wait 
     }
   });
 
-  it("fails the wait with the start error when the resident host cannot start", { timeout: 30_000 }, async () => {
+  it("fails the wait with the start error when the resident host cannot start", { timeout: 30_000 }, async ({ skip }) => {
+    skipRealResidentHost(skip);
     const state = await rootHarness("resident-wait-unstartable-host");
     state.config.piBinary = path.join(state.root, "missing-pi-binary");
-    const id = seedRunningDurableAgent(state);
+    const id = seedRunningDurableAgent(state, { hosted: true });
     const client = new ResidencyClient({
       config: state.config,
       mesh: state.mesh,
@@ -1157,9 +1166,31 @@ describe.skipIf(!hasResidentHost || process.platform === "win32")("durable wait 
 });
 
 describe("durable wait against a resident host that keeps dying", () => {
+  it("fails at once, without starting a host, for a run a new host cannot re-attach", { timeout: 30_000 }, async () => {
+    const state = await rootHarness("resident-wait-unadoptable-run");
+    const id = seedRunningDurableAgent(state, { hosted: false });
+    const client = new ResidencyClient({
+      config: state.config,
+      mesh: state.mesh,
+      participants: state.participants,
+      mainAgent: state.mainAgent,
+      hostPath: crashingHostPath,
+    });
+    fs.writeFileSync(path.join(state.config.residencyRoot, "fake-host.json"), JSON.stringify({ hostId: client.hostId }));
+    try {
+      await expect(client.waitAgent(id, AbortSignal.timeout(20_000)))
+        .rejects.toThrow(`Durable Fabric agent ${id} (runner pi) cannot finish: its resident host ${client.hostId} stopped, and a new host re-attaches only hosted runs`);
+      expect(fs.existsSync(path.join(state.config.residencyRoot, "launches.log"))).toBe(false);
+      expect(client.statusAgent(id).status).toBe("running");
+    } finally {
+      await client.close();
+      await state.participants.close();
+    }
+  });
+
   it("restarts the host a bounded number of times, then fails the wait", { timeout: 30_000 }, async () => {
     const state = await rootHarness("resident-wait-crashing-host");
-    const id = seedRunningDurableAgent(state);
+    const id = seedRunningDurableAgent(state, { hosted: true });
     const client = new ResidencyClient({
       config: state.config,
       mesh: state.mesh,
