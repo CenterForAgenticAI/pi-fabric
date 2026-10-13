@@ -340,6 +340,27 @@ describe("temporal retention", () => {
       expect(fs.readFileSync(outside, "utf8")).toBe("outside bytes");
     });
 
+    it.skipIf(process.platform === "win32")("keeps a run whose session.jsonl and tmp name each have two links but are not the same file", () => {
+      const { run, sweep } = setup();
+      const kept = run("kept", { "session.jsonl": "{}\n", [`tmp-${UUID_A}.jsonl`]: "{}\n" });
+      const sessions = path.join(kept, "durable-session");
+      const outside = temporaryDirectory();
+      const outsideSession = path.join(outside, "session-twin.jsonl");
+      const outsideTemp = path.join(outside, "temp-twin.jsonl");
+      fs.linkSync(path.join(sessions, "session.jsonl"), outsideSession); // the second name is outside the run
+      fs.linkSync(path.join(sessions, `tmp-${UUID_A}.jsonl`), outsideTemp);
+      const session = fs.statSync(path.join(sessions, "session.jsonl"));
+      const temporary = fs.statSync(path.join(sessions, `tmp-${UUID_A}.jsonl`));
+      expect([session.nlink, temporary.nlink]).toEqual([2, 2]);
+      expect(session.ino).not.toBe(temporary.ino);
+      expect(sweep().removedRuns).toEqual([]);
+      expect(fs.existsSync(kept)).toBe(true);
+      expect(fs.readFileSync(outsideSession, "utf8")).toBe("{}\n");
+      expect(fs.readFileSync(outsideTemp, "utf8")).toBe("{}\n");
+      expect(fs.statSync(outsideSession).nlink).toBe(2);
+      expect(fs.statSync(outsideTemp).nlink).toBe(2);
+    });
+
     it.skipIf(process.platform === "win32")("keeps a run when a two-name file is not the session.jsonl plus one tmp pair", () => {
       const { run, sweep } = setup();
       const twoTemps = run("two-temps", { [`tmp-${UUID_A}.jsonl`]: "{}\n" });
