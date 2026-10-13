@@ -50,6 +50,8 @@ The 4,194,304-character guard still applies to other event data, including a sin
 
 Use `agents.models({ runner: "pi" })` and copy the returned `key` verbatim, or use an explicitly configured `models.aliases` name. Reuse the `model` returned by a successful spawn. Do not reconstruct it from an agent's display name. For example, an agent named “Sol” need not share the version number of one named “Astra”. Prior success with one key does not validate a different key.
 
+To check one known key without reading the whole list, pass it as `model`: `agents.models({ runner: "pi", model: "provider/id" })` returns only the entries whose `key` equals that string exactly and case-sensitively, so a missing model gives `[]`. This lookup does not resolve aliases or near matches, and it filters the Claude, Veda, and registered-runner lists the same way.
+
 `provider/model` selectors prefer an exact visible match. A near-miss ID resolves to the closest available model on the **same provider**, using Fabric's existing similarity ranking; ties prefer recent usage, then canonical key order. For example, `openai-codex/gpt-6-sol` resolves to `openai-codex/gpt-5.6-sol` when that is the closest visible model. The returned handle's `model` and the worker's `requestedModel` contain the canonical selection. Unknown providers and names without sufficient resemblance still fail before launch. Model IDs containing `/` stay provider-scoped. Configured aliases keep their ordered, exact-target fallback chains. To turn the alias and near-miss steps off, see [exact model match](#exact-model-match).
 
 ### Exact model match
