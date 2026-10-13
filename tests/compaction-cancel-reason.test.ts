@@ -18,30 +18,36 @@ const uiContext = () => ({ hasUI: true, ui: { notify: vi.fn() } }) as unknown as
   ui: { notify: ReturnType<typeof vi.fn> };
 };
 
-describe("Fabric compaction cancel reason (AUDIT-M40)", () => {
-  it("surfaces why Fabric could not produce a summary before cancelling", () => {
-    const context = uiContext();
-    const event = {
-      reason: "manual",
-      preparation: { tokensBefore: 50_000 },
-      branchEntries: [],
-    } as unknown as SessionBeforeCompactEvent;
+const emptyBranchEvent = (reason: SessionBeforeCompactEvent["reason"], extra: Record<string, unknown> = {}) => ({
+  reason,
+  preparation: { tokensBefore: 50_000 },
+  branchEntries: [],
+  ...extra,
+}) as unknown as SessionBeforeCompactEvent;
 
-    expect(compactHandler()(event, context)).toEqual({ cancel: true });
-    expect(context.ui.notify).toHaveBeenCalledOnce();
-    expect(context.ui.notify).toHaveBeenCalledWith("Fabric compaction cancelled: nothing to compact", "warning");
+describe("Fabric compaction cancel reason", () => {
+  it.each(["manual", "overflow"] as const)(
+    "surfaces why Fabric could not produce a summary when it cancels %s compaction",
+    (reason) => {
+      const context = uiContext();
+
+      expect(compactHandler()(emptyBranchEvent(reason), context)).toEqual({ cancel: true });
+      expect(context.ui.notify).toHaveBeenCalledOnce();
+      expect(context.ui.notify).toHaveBeenCalledWith("Fabric compaction cancelled: nothing to compact", "warning");
+    },
+  );
+
+  it("stays quiet when it cancels a threshold compaction, which Pi retries before every response", () => {
+    const context = uiContext();
+
+    expect(compactHandler()(emptyBranchEvent("threshold"), context)).toEqual({ cancel: true });
+    expect(context.ui.notify).not.toHaveBeenCalled();
   });
 
   it("stays quiet when it yields to a pi-vcc override instead of cancelling", () => {
     const context = uiContext();
-    const event = {
-      reason: "manual",
-      preparation: { tokensBefore: 50_000 },
-      branchEntries: [],
-      _piVccOverriding: true,
-    } as unknown as SessionBeforeCompactEvent;
 
-    expect(compactHandler()(event, context)).toBeUndefined();
+    expect(compactHandler()(emptyBranchEvent("manual", { _piVccOverriding: true }), context)).toBeUndefined();
     expect(context.ui.notify).not.toHaveBeenCalled();
   });
 });

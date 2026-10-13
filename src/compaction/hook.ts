@@ -955,6 +955,8 @@ const notifyInstructionError = (
 
 // Pi reports a cancelled compaction only as its generic "Compaction
 // cancelled"; name Fabric's reason the same way instruction errors are shown.
+// Threshold compaction stays quiet: Pi checks the threshold before every
+// assistant response, so a cancel there would repeat the warning each call.
 const notifyCompactionCancelled = (
   context: ExtensionContext | undefined,
   reason: string,
@@ -1026,7 +1028,7 @@ export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHook
         options.onYield?.();
         return;
       }
-      notifyCompactionCancelled(context, result.reason);
+      if (event.reason !== "threshold") notifyCompactionCancelled(context, result.reason);
       return { cancel: true };
     }
     (event as SessionBeforeCompactEvent & { _fabricCompaction?: boolean })._fabricCompaction = true;
