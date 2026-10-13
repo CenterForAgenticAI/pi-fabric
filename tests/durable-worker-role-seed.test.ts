@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { writeForkSession, writeHandoffSession } from "../src/agents/handoff.js";
 import type { AgentToolResultMessage } from "../src/agents/types.js";
@@ -25,6 +25,23 @@ const policies = (entries: any[]) => entries.filter(entry => entry.type === "cus
 const isPolicy = (entry: any) => entry.type === "custom" && entry.customType === "context-aware.policy.v1";
 
 describe("durable-session folder safety", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  // process.getuid is the id the code compares the directory owner with. Stubbing it makes this
+  // user's own directory look foreign; the assertions are on what the code does, never on the stub.
+  it.skipIf(process.platform === "win32")("refuses a run directory owned by another user and creates nothing", () => {
+    const run = temporary();
+    const owner = fs.statSync(run).uid;
+    fs.writeFileSync(path.join(run, "task.txt"), "keep");
+    const before = fs.readdirSync(run).sort();
+    vi.spyOn(process, "getuid").mockReturnValue(owner + 1);
+    expect(() => createDurableSessionFile(run, run)).toThrow(/Run directory is not owned by this user/);
+    expect(fs.readdirSync(run).sort()).toEqual(before);
+    expect(fs.existsSync(path.join(run, "durable-session"))).toBe(false);
+    vi.restoreAllMocks();
+    expect(fs.existsSync(createDurableSessionFile(run, run))).toBe(true); // same directory, same owner id: accepted
+  });
+
   it.skipIf(process.platform === "win32")("fails the launch when durable-session is a link, touching nothing behind it", () => {
     const run = temporary();
     const target = temporary();
@@ -203,7 +220,8 @@ const normalized = (file: string): string => {
     .replace(/("type":"session","version":3,"id":)"[^"]*"/, '$1"H"')
     .replace(/handoff-[0-9a-f-]{36}/g, "handoff-H")
     .replace(/[^"]*fabric-role-seed-[A-Za-z0-9]+/g, "ROOT")
-    .replace(/(ROOT\/source\/)[^"]*\.jsonl/g, "$1S.jsonl");
+    // parentSession is path.join(root, "source", <name>) as JSON text: "/" on POSIX, an escaped "\\" on Windows.
+    .replace(/(ROOT(?:\/|\\\\)source(?:\/|\\\\))[^"]*\.jsonl/g, "$1S.jsonl");
 };
 
 type Kind = "fork" | "handoff in-memory" | "handoff persisted";
