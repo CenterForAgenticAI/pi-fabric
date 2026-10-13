@@ -340,7 +340,9 @@ describe("temporal retention", () => {
       "2026-99-99T99-99-99-999Z_0190a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b.jsonl", // right shape, not an instant
       "2026-02-30T12-00-00-000Z_0190a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b.jsonl", // no 30 February
     ];
-    const kept = lookalikes.map((name, index) => {
+    // Windows cannot create a file name containing a colon; every other lookalike still runs there.
+    const creatable = lookalikes.filter((name) => process.platform !== "win32" || !name.includes(":"));
+    const kept = creatable.map((name, index) => {
       const run = forkRun(runRoot, `look-${index}`);
       fs.writeFileSync(path.join(run.fork, name), "{}\n");
       return run.run;
