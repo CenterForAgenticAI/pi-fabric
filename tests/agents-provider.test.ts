@@ -29,7 +29,8 @@ import type {
 import type { FabricInvocationContext } from "../src/protocol.js";
 import { FabricControlPlane } from "../src/topology/control-plane.js";
 import { AgentsProvider, collectAgentToolPreviewNodes } from "../src/providers/agents-provider.js";
-import type { ResidencyClient } from "../src/residency/client.js";
+import { ResidencyClient } from "../src/residency/client.js";
+import { RESIDENT_HOST_FORMAT, residentRoot } from "../src/residency/protocol.js";
 import { Value } from "typebox/value";
 import {
   EXACT_MODEL_FORM_ERROR,
@@ -2849,5 +2850,78 @@ describe("AgentsProvider switchModel", () => {
     await expect(
       provider.invoke("switchModel", { model: "  " }, modelContext()),
     ).rejects.toThrow(/requires a model selector/);
+  });
+});
+
+describe("AgentsProvider durable runs from an earlier session", () => {
+  it("waits for and reports a durable run that another root session of the project spawned", async () => {
+    const state = setup();
+    const meshRoot = path.join(state.root, "mesh");
+    // The earlier root session's resident host left a settled run in the project mesh.
+    const earlierRoot = residentRoot(meshRoot, "session:earlier");
+    const id = "9".repeat(32);
+    const runDirectory = path.join(earlierRoot, "runs", id);
+    fs.mkdirSync(runDirectory, { recursive: true });
+    fs.mkdirSync(path.join(earlierRoot, "agents"), { recursive: true });
+    const result = {
+      id, name: "earlier worker", status: "completed", text: "collected by a new session", task: "work",
+      runner: "pi", transport: "process", cwd: process.cwd(), startedAt: 1, updatedAt: 2, finishedAt: 2,
+      turns: 1, toolCalls: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    };
+    fs.writeFileSync(path.join(runDirectory, "status.json"), JSON.stringify(result));
+    fs.writeFileSync(path.join(earlierRoot, "agents", `${id}.json`), JSON.stringify({
+      format: RESIDENT_HOST_FORMAT, rootId: "session:earlier", id, runDirectory, handle: result, createdAt: 1, updatedAt: 2,
+    }));
+    const residency = new ResidencyClient({
+      config: {
+        format: RESIDENT_HOST_FORMAT,
+        rootId: state.identity.id,
+        sessionId: "test",
+        cwd: process.cwd(),
+        projectRoot: process.cwd(),
+        meshRoot,
+        actorRoot: path.join(state.root, "actors"),
+        residencyRoot: residentRoot(meshRoot, state.identity.id),
+        fullCodeMode: true,
+        agents: DEFAULT_FABRIC_CONFIG.agents,
+        mesh: DEFAULT_FABRIC_CONFIG.mesh,
+        retention: DEFAULT_FABRIC_CONFIG.retention,
+        workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+        fabricExtensionPath: path.resolve("dist/index.js"),
+        piBinary: "pi",
+        claudeBinary: "claude",
+        vedaBinary: "veda",
+      },
+      mesh: state.mesh,
+      participants: state.participants,
+      mainAgent: state.mainAgent,
+      callerScope: () => undefined,
+    });
+    const provider = new AgentsProvider(
+      state.agents,
+      state.actors,
+      state.globalActors,
+      state.mainAgent,
+      state.participants,
+      state.control,
+      state.lifecycle,
+      undefined,
+      residency,
+      undefined,
+      () => DEFAULT_FABRIC_CONFIG.models,
+    );
+    try {
+      await expect(provider.invoke("wait", { id }, context)).resolves.toMatchObject({
+        id, status: "completed", residency: "durable", text: "collected by a new session",
+      });
+      await expect(provider.invoke("status", { id }, context)).resolves.toMatchObject({
+        id, status: "completed", text: "collected by a new session",
+      });
+      await expect(provider.invoke("log", { id }, context)).resolves.toMatchObject({ id, runDirectory });
+      // A run outside this project's mesh stays unknown.
+      await expect(provider.invoke("wait", { id: "8".repeat(32) }, context)).rejects.toThrow(/Unknown Fabric agent/);
+    } finally {
+      await residency.close();
+    }
   });
 });
