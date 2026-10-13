@@ -108,6 +108,30 @@ Existing workers are not retroactively changed by rebuilding or reloading the pa
 
 Pi workers with extensions enabled also inherit the parent session's `pi-multiprovider` `/switch-account` pin, when that extension is installed. Fabric forwards the pin as `PI_MULTIPROVIDER_SESSION_PINS`; the child rebinds it to its own session id. This is host state, not a model argument. Claude and Veda runners, and `extensions: false` children, do not receive it.
 
+### Keep a provider extension in an `extensions: false` child
+
+Some models stream through an API that an extension registers at runtime, for example the `unified` provider from pi-multi-account. A child started with `extensions: false` does not load that extension, so it cannot call such a model. Name the extensions that the child still needs in `requiredExtensions` on `agents.run()` or `agents.spawn()`:
+
+```ts
+return agents.run({
+  task: "Review the diff and report findings.",
+  model: "unified/claude-opus-5-5",
+  extensions: false,
+  requiredExtensions: ["pi-multi-account"],
+});
+```
+
+Each entry is the package name of an extension that this session loaded, or the exact absolute path of one. A package name selects every loaded extension entry of that package. A scoped package such as `@hyphagroup/pi-multi-account` also matches its unscoped name, here `pi-multi-account`, when exactly one loaded package has that name; an ambiguous unscoped name fails. The worker starts Pi (or `pi-durable`) with `--no-extensions` and then one `-e <path>` for each selected extension. The paths come from the parent session's loaded set; Fabric never passes a path from the request itself. These requests fail before launch:
+
+- an entry that names no extension this session loaded, including relative paths and installed packages that this session did not load;
+- any entry when Fabric cannot read this session's loaded extensions;
+- Fabric itself (use `extensions: true` or `recursive: true`);
+- `requiredExtensions` with `extensions: true`, with `recursive: true`, or with a Claude, Veda, or custom runner.
+
+A durable spawn uses the same rule. The resident host runs Pi with `--no-extensions`, so the parent publishes its loaded extension paths in the resident host configuration and the host resolves entries against that list.
+
+Before launch, Fabric also checks the model of every `extensions: false` Pi child that has no `requiredExtensions`. If the model's API is not one of Pi's built-in APIs, the request fails with an error that names the model, its API, and its provider, and suggests `requiredExtensions`, `extensions: true`, or a model with a built-in API. With `requiredExtensions` set, Fabric does not check which extension provides the model.
+
 ### Choose the child's language
 
 `agents.run`, `agents.spawn`, `agents.create`, and `agents.handoff` accept `kernel: "typescript" | "python" | "inherit"`. Omit it or use `"inherit"` to inherit the caller's `executor.kernel`; use a concrete value so a skill or model can choose its strongest language for the task. Workflow agents, `rlm.query`, and council members/synthesis forward the same option. This selects the **child's** Fabric language, not the language of the current `fabric_exec` program; that program still uses its configured kernel.
