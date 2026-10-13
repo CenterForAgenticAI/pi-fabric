@@ -402,6 +402,19 @@ export class DecisionStore {
       .slice(0, limit);
   }
 
+  /**
+   * Open decisions that this store's identity raised, across processes that
+   * share the identity. Fabric rewrites an open record only to move it along an
+   * escalation chain, so the last writer of a non-escalating open record is its
+   * raiser; escalating records are left out.
+   */
+  async listOwnOpen(): Promise<DecisionRecord[]> {
+    return (await this.#entries())
+      .filter(({ entry, record }) =>
+        record.status === "open" && record.onExpire !== "escalate" && entry.updatedBy?.id === this.identity.id)
+      .map(({ record }) => record);
+  }
+
   /** CAS open -> answered. Fails when the decision is missing or no longer open. */
   // `authorize` runs against the exact record the compare-and-swap replaces,
   // so a holder that lost the decision to an escalation cannot still act.
