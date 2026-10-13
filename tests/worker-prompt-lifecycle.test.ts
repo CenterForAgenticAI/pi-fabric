@@ -55,6 +55,15 @@ describe("real worker initial prompt lifecycle", () => {
     expect(JSON.stringify(result)).not.toContain("PRIVATE_SENTINEL");
   });
 
+  it("carries the child's refusal notice into the handled-task failure", async () => {
+    const { root, manager } = setup("handled-notice", false, 20_000);
+    const result = await manager.run({ task: "synthetic task", extensions: false, transport: "process" });
+    expect(result).toMatchObject({ status: "failed", turns: 0, error:
+      "Pi handled the task without starting a turn; terminating child. Child notice: Synthetic refusal. Select in-group/model, then send again." });
+    expect(fs.readFileSync(path.join(root, "sends"), "utf8")).toBe("0");
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_SENTINEL");
+  });
+
   it("bounds a legacy ack through the real worker without replay", async () => {
     const { root, manager } = setup("legacy", true);
     const result = await manager.run({ task: "synthetic task", extensions: false, transport: "process" });

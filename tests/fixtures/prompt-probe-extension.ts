@@ -30,7 +30,11 @@ export default function (pi: ExtensionAPI) {
       return stream;
     },
   });
-  pi.on("input", () => {
+  pi.on("input", (_event, ctx) => {
+    if (mode === "handled-notice") {
+      ctx.ui.notify("Synthetic refusal. Select prompt-probe/offline, then send again.", "warning");
+      return { action: "handled" };
+    }
     if (mode === "handled") return { action: "handled" };
     if (mode === "throw") throw new Error("synthetic input hook error");
     return { action: "continue" };

@@ -34,6 +34,44 @@ describe("Pi task prompt lifecycle", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("names the child's last warning notice in a handled-task failure", () => {
+    const fail = vi.fn();
+    const task = new PiTaskPromptLifecycle(fail);
+    const notify = (message: unknown, notifyType: unknown) =>
+      task.observe({ type: "extension_ui_request", id: "ui", method: "notify", message, notifyType });
+    notify("before the task was sent", "warning");
+    task.sent("task");
+    notify("first warning", "warning");
+    notify("Refused: select\nopenai-codex/gpt-5.5\u202e now", "error");
+    // Neither an info notice nor a non-string message replaces the refusal.
+    notify("informational chatter", "info");
+    notify(42, "warning");
+    task.observe({ type: "response", command: "prompt", id: "task", success: true,
+      data: { disposition: "handled", headers: "PRIVATE_SENTINEL" }, error: "PRIVATE_SENTINEL" });
+    notify("after the response", "warning");
+    expect(fail).toHaveBeenCalledExactlyOnceWith(
+      "Pi handled the task without starting a turn; terminating child. Child notice: Refused: select openai-codex/gpt-5.5 now",
+    );
+  });
+
+  it("bounds an oversized notice and ignores notices once a turn started", () => {
+    const fail = vi.fn();
+    const task = new PiTaskPromptLifecycle(fail);
+    task.sent("task");
+    task.observe({ type: "extension_ui_request", method: "notify", notifyType: "warning", message: "x".repeat(2_000) });
+    task.observe({ type: "response", command: "prompt", id: "task", success: true, data: { disposition: "handled" } });
+    const error = String(fail.mock.calls[0]?.[0]);
+    expect(error).toBe(`Pi handled the task without starting a turn; terminating child. Child notice: ${"x".repeat(499)}…`);
+
+    const started = vi.fn();
+    const later = new PiTaskPromptLifecycle(started);
+    later.sent("task");
+    later.observe({ type: "agent_start" });
+    later.observe({ type: "extension_ui_request", method: "notify", notifyType: "warning", message: "late" });
+    later.observe({ type: "response", command: "prompt", id: "task", success: true, data: { disposition: "handled" } });
+    expect(started).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, "started", "queued"])("allows a delayed turn after %s acknowledgement", disposition => {
     vi.useFakeTimers();
     const fail = vi.fn();
