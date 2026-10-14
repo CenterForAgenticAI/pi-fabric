@@ -224,6 +224,12 @@ interface DurableToolFence {
   /** A crash journal for this call (QuickJS only); see runtime/exec-journal.ts. */
   journal?: FabricJournalOffer;
 }
+// Choices for a resumed call that may have run (see runtime/exec-journal.ts).
+const REPEAT_CHOICE = "Run it again";
+const STOP_CHOICE = "Stop here";
+// An unanswered question stops the program, so a missing person never holds it forever.
+const REPEAT_QUESTION_TIMEOUT_MS = 300_000;
+
 const journalOffer = (fence: DurableToolFence | undefined): FabricJournalOffer | undefined => {
   const offer = fence?.journal as Partial<FabricJournalOffer> | undefined;
   return offer && typeof offer.path === "string" && typeof offer.accept === "function" &&
@@ -1351,6 +1357,13 @@ export class FabricExecutionService {
           ...(options.strings ? { strings: options.strings } : {}),
           ...(options.signal ? { signal: options.signal } : {}),
           ...(journal ? { journal } : {}),
+          ...(journal?.resuming && options.context.hasUI ? {
+            confirmRepeat: {
+              ask: async (question: string, signal: AbortSignal) =>
+                await options.context.ui.select(question, [REPEAT_CHOICE, STOP_CHOICE], { signal, timeout: REPEAT_QUESTION_TIMEOUT_MS }) === REPEAT_CHOICE,
+              pausesDeadline: options.hardTimeoutMs === undefined,
+            },
+          } : {}),
         },
       );
       try {

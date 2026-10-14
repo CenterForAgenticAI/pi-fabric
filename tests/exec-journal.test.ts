@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openFabricExecJournal, type FabricExecJournal } from "../src/runtime/exec-journal.js";
-import type { FabricHostCall } from "../src/runtime/kernel.js";
+import type { FabricHostCall, FabricSandboxOptions } from "../src/runtime/kernel.js";
 import { QuickJsRuntime } from "../src/runtime/quickjs-runtime.js";
 
 const roots: string[] = [];
@@ -28,9 +28,9 @@ async function record(file: string, code: string, host: (journal: FabricExecJour
   } finally { journal.close(); }
 }
 
-async function resume(file: string, digest: string, code: string, host: FabricHostCall, resumeIdentity = identity) {
+async function resume(file: string, digest: string, code: string, host: FabricHostCall, resumeIdentity = identity, extra: Partial<FabricSandboxOptions> = {}) {
   const journal = await openFabricExecJournal({ path: file, digest, accept: async () => { throw new Error("resume must not accept"); } }, resumeIdentity, hooks);
-  try { return await new QuickJsRuntime().execute(code, host, { ...options, journal }); }
+  try { return await new QuickJsRuntime().execute(code, host, { ...options, ...extra, journal }); }
   finally { journal.close(); }
 }
 
@@ -104,6 +104,89 @@ describe("fabric_exec crash journal", () => {
     expect(again.error).toContain('demo.write({"n":2})');
     expect(again.error).toContain("1 earlier tool call finished before the interruption");
     expect(again.error).toContain("This call was not repeated.");
+  });
+
+  it("repeats a call that may have run only after a person answers yes", async () => {
+    const file = journalFile();
+    const controller = new AbortController();
+    const first = await record(file, twoCalls("demo.write"), crashingHost(2, controller, true), controller.signal);
+    expect(first.result.terminationReason).toBe("aborted");
+
+    const questions: string[] = [];
+    const live: string[] = [];
+    const again = await resume(file, first.digest, twoCalls("demo.write"), async (_ref, args) => {
+      live.push(target(args));
+      return (args.args as { n: number }).n * 10;
+    }, identity, { confirmRepeat: { pausesDeadline: true, ask: async (question) => { questions.push(question); return true; } } });
+    expect(again.terminationReason, again.error).toBe("completed");
+    expect(again.value).toEqual([10, 20]);
+    expect(live).toEqual(['demo.write:{"n":2}']);
+    expect(questions).toHaveLength(1);
+    expect(questions[0]).toContain('demo.write({"n":2})');
+    expect(questions[0]).toContain("Run it again? If it took effect, running it again repeats that effect.");
+
+    // The repeated result was journaled, so a later resume asks nobody and calls nothing.
+    const third = await resume(file, first.digest, twoCalls("demo.write"), neverCalled, identity, {
+      confirmRepeat: { pausesDeadline: true, ask: async () => { throw new Error("asked again"); } },
+    });
+    expect(third.value).toEqual([10, 20]);
+  });
+
+  it("keeps the stop when the person says no, dismisses the question, or it fails", async () => {
+    const answers: Array<() => Promise<boolean>> = [
+      async () => false,
+      async () => undefined as unknown as boolean,
+      async () => { throw new Error("dialog failed"); },
+    ];
+    for (const answer of answers) {
+      const file = journalFile();
+      const controller = new AbortController();
+      const first = await record(file, twoCalls("demo.write"), crashingHost(2, controller, true), controller.signal);
+      const again = await resume(file, first.digest, twoCalls("demo.write"), neverCalled, identity, { confirmRepeat: { pausesDeadline: true, ask: answer } });
+      expect(again.terminationReason).toBe("runtime_error");
+      expect(again.error).toContain("This call was not repeated.");
+    }
+  });
+
+  it("pauses the program deadline while it asks, unless the deadline is hard", async () => {
+    const slowYes = async (_question: string, signal: AbortSignal) => {
+      await new Promise(resolve => setTimeout(resolve, 400));
+      return !signal.aborted;
+    };
+    for (const pausesDeadline of [true, false]) {
+      const file = journalFile();
+      const controller = new AbortController();
+      const first = await record(file, twoCalls("demo.write"), crashingHost(2, controller, true), controller.signal);
+      const live: string[] = [];
+      const again = await resume(file, first.digest, twoCalls("demo.write"), async (_ref, args) => {
+        live.push(target(args));
+        return 0;
+      }, identity, { timeoutMs: 200, confirmRepeat: { pausesDeadline, ask: slowYes } });
+      // A hard deadline that expires mid-question cancels it, and the stop stands.
+      expect(again.terminationReason, again.error).toBe(pausesDeadline ? "completed" : "runtime_error");
+      if (!pausesDeadline) expect(again.error).toContain("This call was not repeated.");
+      expect(live).toEqual(pausesDeadline ? ['demo.write:{"n":2}'] : []);
+    }
+  });
+
+  it("asks nobody when more than one call may have run", async () => {
+    const file = journalFile();
+    const controller = new AbortController();
+    const code = 'return await Promise.all([tools.call({ ref: "demo.write", args: { n: 1 } }), tools.call({ ref: "demo.write", args: { n: 2 } })]);';
+    let started = 0;
+    const first = await record(file, code, (journal) => async (_ref, args, signal, _humanWait, call) => {
+      journal.intent(call!.seq, String(args.ref));
+      if (++started === 2) queueMicrotask(() => controller.abort());
+      return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+    }, controller.signal);
+    expect(first.result.terminationReason).toBe("aborted");
+    expect(started).toBe(2);
+
+    let asked = 0;
+    const again = await resume(file, first.digest, code, neverCalled, identity, { confirmRepeat: { pausesDeadline: true, ask: async () => { asked++; return true; } } });
+    expect(again.terminationReason).toBe("runtime_error");
+    expect(again.error).toContain("This call was not repeated.");
+    expect(asked).toBe(0);
   });
 
   it("refuses a resume whose program no longer repeats its recorded calls", async () => {

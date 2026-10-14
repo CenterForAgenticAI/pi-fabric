@@ -17,7 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32 } from "node:zlib";
 import { stableJsonHash } from "../core/stable-hash.js";
-import type { FabricJournalDelivery, FabricJournalDriver, FabricJournalOutcome } from "./kernel.js";
+import type { FabricJournalDelivery, FabricJournalDriver, FabricJournalOutcome, FabricJournalStop } from "./kernel.js";
 
 // Crash-replay journal for one durable fabric_exec call (QuickJS only).
 //
@@ -273,22 +273,29 @@ export class FabricExecJournal implements FabricJournalDriver {
     return this.#hooks.served(delivery, args);
   }
 
-  frontier(held: ReadonlyArray<{ seq: number; ref: string; args: Record<string, unknown> }>): string | undefined {
+  frontier(held: ReadonlyArray<{ seq: number; ref: string; args: Record<string, unknown> }>): FabricJournalStop | undefined {
     const waiting = new Set(held.map((call) => call.seq));
     for (const [seq, ref] of [...this.#intents].sort(([left], [right]) => left - right)) {
       if (!this.#completed.has(seq) && !waiting.has(seq)) {
-        return `fabric_exec could not resume after an interruption: the program did not repeat its recorded ${ref} call. No call after the divergence ran.`;
+        return { report: `fabric_exec could not resume after an interruption: the program did not repeat its recorded ${ref} call. No call after the divergence ran.` };
       }
     }
-    const uncertain = held.find((call) => this.#intents.has(call.seq));
-    if (!uncertain) return undefined;
+    const uncertain = held.filter((call) => this.#intents.has(call.seq));
+    const [first] = uncertain;
+    if (!first) return undefined;
     const replayed = this.replay.filter(isServedTool).length;
-    return [
+    const facts = [
       "fabric_exec was interrupted during this call, which may have run:",
-      `  ${preview(uncertain.ref, uncertain.args)}`,
+      `  ${preview(first.ref, first.args)}`,
       `${replayed} earlier tool ${replayed === 1 ? "call" : "calls"} finished before the interruption and ${replayed === 1 ? "was" : "were"} replayed from the journal without running again.`,
-      "This call was not repeated. Check whether it took effect before running the rest of the program.",
-    ].join("\n");
+    ];
+    return {
+      report: [...facts, "This call was not repeated. Check whether it took effect before running the rest of the program."].join("\n"),
+      // One answer covers one call: with several uncertain calls nobody is asked.
+      ...(uncertain.length === 1
+        ? { question: [...facts, "Run it again? If it took effect, running it again repeats that effect."].join("\n") }
+        : {}),
+    };
   }
 
   diverged(expected: FabricJournalDelivery, actual?: { ref: string; args: Record<string, unknown> }): string {

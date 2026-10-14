@@ -62,8 +62,15 @@ effect runs, Fabric records an intent and syncs it to disk. On recovery the same
 program runs again with the same clock and random seed. Recorded results are
 served from the journal, so no provider, approval, or prompt runs again. Calls
 after the last recorded result then run live. If a call has an intent but no
-result, it may have taken effect. The program stops and reports that call; it
-never repeats it. Fabric also refuses to resume, and runs nothing, when
+result, it may have taken effect. Fabric asks whether to run that call again
+as a `select` dialog, and pauses the program deadline while it waits (a
+`timeout_ms` hard deadline keeps running). Only "Run it again" repeats the
+call. "Stop here", a dismissed question, a question left unanswered for 5
+minutes, or more than one such call stops the program, which reports the call.
+The dialog goes to the worker's RPC client. A parent agent cancels it by
+default, so the program stops. With `agents.childQuestions: "route"`, a parent
+session asks its person or raises a root-held decision. Fabric also
+refuses to resume, and runs nothing, when
 the program or its settings changed, the runtime or a pinned engine version
 changed, the program stops repeating its recorded calls, the journal is missing
 or damaged, or a recorded result named work such as a child agent or background

@@ -258,6 +258,12 @@ describe("durable native RPC worker", () => {
     const resumed = await fabricWorker("fabric-uncertain", code);
     try {
       resumed.send({ type: "prompt", id: "uncertain", message: "fabric fixture" });
+      // The worker has an RPC UI, so it asks first. A dismissed question keeps the stop,
+      // as when a parent cancels a child's dialog.
+      const question = await resumed.wait(event => event.type === "extension_ui_request" && event.method === "select");
+      expect(question.title).toContain("Run it again?");
+      expect(question.options).toEqual(["Run it again", "Stop here"]);
+      resumed.send({ type: "extension_ui_response", id: question.id, cancelled: true });
       await resumed.wait(event => event.type === "agent_settled");
       expect(fs.readFileSync(effect, "utf8")).toBe("effect\n");
       expect(answer(resumed.messages)).toContain("fabric_exec was interrupted during this call, which may have run:");

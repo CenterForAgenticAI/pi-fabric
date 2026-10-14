@@ -44,6 +44,7 @@ function deferred() {
 function fixture(
   config: FabricConfig = structuredClone(DEFAULT_FABRIC_CONFIG),
   effect: (context: FabricInvocationContext) => Promise<unknown> = async () => "written",
+  select?: (title: string, options: string[]) => Promise<string | undefined>,
 ) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-fence-")); roots.push(cwd);
   fs.writeFileSync(path.join(cwd, "sample.txt"), "fabric works\n");
@@ -68,7 +69,10 @@ function fixture(
     ...(journal ? { journal } : {}),
   }, () => service.execute({
     code, signal, parentToolCallId: "call",
-    context: { cwd, hasUI: false } as ExtensionContext, onPartial() {},
+    context: (select
+      ? { cwd, hasUI: true, ui: new Proxy({ select }, { get: (target, key) => key in target ? target[key as "select"] : () => undefined }) }
+      : { cwd, hasUI: false }) as ExtensionContext,
+    onPartial() {},
   }));
   return { events, run, service, armStarted, hold: () => { holdArm = true; return armGate.resolve; } };
 }
@@ -198,6 +202,34 @@ describe("durable fabric_exec crash journal", () => {
     expect(JSON.stringify(again)).toContain("fabric_exec was interrupted during this call, which may have run:");
     expect(JSON.stringify(again)).toContain("demo.write({})");
     expect(resumed.events).toEqual([]);
+  });
+
+  it("asks before repeating an interrupted effect and repeats it only on yes", async () => {
+    for (const choice of ["Run it again", "Stop here", undefined]) {
+      const file = journalPath();
+      let digest: string | undefined;
+      const controller = new AbortController();
+      const first = fixture(undefined, async context => {
+        queueMicrotask(() => controller.abort());
+        return new Promise((_resolve, reject) => context.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+      });
+      await first.run(effectful, "call", { path: file, accept: async value => { digest = value; } }, controller.signal);
+
+      const asked: Array<[string, string[]]> = [];
+      const resumed = fixture(undefined, undefined, async (title, options) => { asked.push([title, options]); return choice; });
+      const again = await resumed.run(effectful, "call", resumeOffer(file, digest!));
+      expect(asked).toHaveLength(1);
+      expect(asked[0]![0]).toContain("demo.write({})");
+      expect(asked[0]![1]).toEqual(["Run it again", "Stop here"]);
+      if (choice === "Run it again") {
+        expect(again).toMatchObject({ success: true, value: "done" });
+        expect(resumed.events).toEqual(["invoke"]);
+      } else {
+        expect(again).toMatchObject({ success: false });
+        expect(JSON.stringify(again)).toContain("This call was not repeated.");
+        expect(resumed.events).toEqual([]);
+      }
+    }
   });
 
   it.skipIf(!availablePythonBackends.monty)("refuses a resume on a runtime that cannot journal", async () => {

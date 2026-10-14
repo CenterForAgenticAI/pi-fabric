@@ -41,6 +41,13 @@ export interface FabricJournalDelivery {
   local?: unknown;
 }
 
+/** Why a resume stops. `question`, when present, asks whether the one call
+ * that may have run should run again; only an explicit yes repeats it. */
+export interface FabricJournalStop {
+  report: string;
+  question?: string;
+}
+
 /**
  * Records and replays one QuickJS execution (see exec-journal.ts). The runtime
  * numbers host calls as the guest issues them, delivers results one at a time,
@@ -63,10 +70,10 @@ export interface FabricJournalDriver {
     outcome: FabricJournalOutcome,
   ): number;
   served(delivery: FabricJournalDelivery, args: Record<string, unknown>): void | Promise<void>;
-  /** After serving: a stop report, or undefined to run the waiting calls live. */
+  /** After serving: a stop, or undefined to run the waiting calls live. */
   frontier(
     held: ReadonlyArray<{ seq: number; ref: string; args: Record<string, unknown> }>,
-  ): string | undefined;
+  ): FabricJournalStop | undefined;
   diverged(
     expected: FabricJournalDelivery,
     actual?: { ref: string; args: Record<string, unknown> },
@@ -100,6 +107,13 @@ export interface FabricSandboxOptions {
   transpiledSourceMap?: string;
   /** Durable crash journal; QuickJS only. Absent means unchanged behavior. */
   journal?: FabricJournalDriver;
+  /** On resume, asks a person whether a call that may have run should run
+   * again. Only `true` repeats it; any other outcome keeps the stop. */
+  confirmRepeat?: {
+    ask(question: string, signal: AbortSignal): Promise<boolean>;
+    /** Pause the program deadline while asking. A hard deadline never pauses. */
+    pausesDeadline: boolean;
+  };
 }
 
 /** Runs a host-side wait for a person with the program deadline paused.

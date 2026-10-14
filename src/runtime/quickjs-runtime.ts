@@ -1141,8 +1141,22 @@ export class QuickJsRuntime {
       hostTasks.add(task);
       void task.finally(() => hostTasks.delete(task));
     };
+    // Ask whether a call that may have run should run again. Only a yes repeats
+    // it; a no, a dismissal, a failure, or a stopped program keeps the stop.
+    const confirmRepeat = async (question: string): Promise<boolean> => {
+      const confirm = options.confirmRepeat;
+      if (!confirm) return false;
+      if (confirm.pausesDeadline) humanWait.enter();
+      try {
+        return await confirm.ask(question, hostAbortController.signal) === true;
+      } catch {
+        return false;
+      } finally {
+        if (confirm.pausesDeadline) humanWait.leave();
+      }
+    };
     // Serve recorded results in their recorded order, then decide the calls
-    // still waiting: a report stops the program, otherwise they run live.
+    // still waiting: a stop ends the program, otherwise they run live.
     const replayJournal = async (driver: FabricJournalDriver): Promise<string | undefined> => {
       for (const delivery of driver.replay) {
         if (cancelled || timedOut || closing) return undefined;
@@ -1160,9 +1174,12 @@ export class QuickJsRuntime {
         pumpJobs();
       }
       const waiting = [...held.entries()].sort(([left], [right]) => left - right);
-      const report = driver.frontier(waiting.map(([seq, call]) => ({ seq, ref: call.ref, args: call.args })));
-      // A stopped run keeps holding: no call it issues from here reaches the host.
-      if (report !== undefined) return report;
+      const stop = driver.frontier(waiting.map(([seq, call]) => ({ seq, ref: call.ref, args: call.args })));
+      if (stop !== undefined) {
+        // A stopped run keeps holding: no call it issues from here reaches the host.
+        if (stop.question === undefined || !(await confirmRepeat(stop.question))) return stop.report;
+        if (cancelled || timedOut || closing) return undefined;
+      }
       replaying = false;
       held.clear();
       for (const [seq, call] of waiting) {
