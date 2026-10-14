@@ -45,20 +45,37 @@ Reopening the same run uses its initial run ID for idempotent submission and
 resumes checkpoints. Completed work is not repeated. An interrupted unsafe tool
 fails closed, including writes and shell commands.
 
-In the durable worker, an interrupted `fabric_exec` call reruns once if its
-program made no effect. The leaf adapter below does not do this. The worker
-offers the call a fence. Fabric accepts it only when every effect must cross the
-host bridge, which holds for the QuickJS and Monty runtimes but not for CPython
-or the Node and Bun processes. Before the first effect, Fabric arms the fence
-and the worker commits that mark. An effect is any call outside the read-only
-set: the tier that speculation may run early (`pi.read`, `pi.grep`,
-`pi.find`, `pi.ls`, and status and lookup actions such as `memory.recall` and
-`programs.get`), the native store load, discovery, and progress reporting. A
-read approval that would prompt or call the auto classifier also arms, and so
-does semantic search. On recovery, an accepted fence that was never armed reruns
-the program from the start. An armed fence, an unaccepted one, or a second crash
-fails closed as before. A rerun can read different file contents than the first
-attempt did.
+In the durable worker, an interrupted `fabric_exec` call can continue after a
+crash. The leaf adapter below does not do this. The worker offers the call a
+fence. Fabric accepts it only when every effect must cross the host bridge,
+which holds for the QuickJS and Monty runtimes but not for CPython or the Node
+and Bun processes. An effect is any call outside the read-only set: the tier
+that speculation may run early (`pi.read`, `pi.grep`, `pi.find`, `pi.ls`, and
+status and lookup actions such as `memory.recall` and `programs.get`), the
+native store load, discovery, and progress reporting. A read approval that
+would prompt or call the auto classifier is an effect, and so is semantic
+search.
+
+A QuickJS program writes a crash journal. Each tool result is recorded before
+the program sees it, and results reach the program one at a time. Before an
+effect runs, Fabric records an intent and syncs it to disk. On recovery the same
+program runs again with the same clock and random seed. Recorded results are
+served from the journal, so no provider, approval, or prompt runs again. Calls
+after the last recorded result then run live. If a call has an intent but no
+result, it may have taken effect. The program stops and reports that call; it
+never repeats it. Fabric also refuses to resume, and runs nothing, when
+the program or its settings changed, the runtime or a pinned engine version
+changed, the program stops repeating its recorded calls, the journal is missing
+or damaged, or a recorded result named work such as a child agent or background
+task that does not survive a restart. A call resumes at most three times. The
+journal holds tool results, so it is private to its owner (mode `0600`) and is
+deleted a day after its last write.
+
+Monty programs keep the earlier fence. Before the first effect, Fabric arms the
+fence and the worker commits that mark. On recovery, an accepted fence that was
+never armed reruns the program from the start. An armed fence, an unaccepted
+one, or a second crash fails closed as before. A rerun can read different file
+contents than the first attempt did.
 
 A worker's store lives in its run directory under `durable/`. Recovery never
 replays streaming updates, so each provider delta and tool progress update commits

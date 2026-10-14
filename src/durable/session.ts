@@ -21,7 +21,7 @@ const absolute = (path: string) => resolve(path === "~" ? homedir() : path.start
  * Storage is borrowed; close settles this host but does not close its storage.
  */
 export async function createDurableAgentSession(
-  options: CreateAgentSessionOptions & { storage: Storage; runId: string },
+  options: CreateAgentSessionOptions & { storage: Storage; runId: string; fabricJournalDirectory?: string },
 ): Promise<{ session: AgentSession; agent: DurableAgent; close(): Promise<void> }> {
   if (!options.runId.trim()) throw new Error("A durable session requires a non-empty runId");
   const cwd = absolute(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
@@ -136,7 +136,10 @@ export async function createDurableAgentSession(
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  const agent = new DurableAgent({ ...agentOptions, models: modelRuntime, storage: borrowedStorage, runId: options.runId });
+  const agent = new DurableAgent({
+    ...agentOptions, models: modelRuntime, storage: borrowedStorage, runId: options.runId,
+    ...(options.fabricJournalDirectory ? { fabricJournalDirectory: options.fabricJournalDirectory } : {}),
+  });
   try {
     if (!hasHistory) sessionManager.appendModelChange(model.provider, model.id);
     if (!hasHistory || !hasThinking) sessionManager.appendThinkingLevelChange(thinkingLevel);
