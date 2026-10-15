@@ -52,6 +52,99 @@ observers from memory after that commit. The journal grows with the transcript,
 not with the square of each streamed message. Run retention removes `durable/`
 with its run, and unknown or linked files inside it still preserve the run.
 
+Without a seeded session (`fork: true` or a handoff), the worker also keeps a
+private Pi session file at `durable-session/session.jsonl` in its run directory
+(mode `0600`, folder `0700`). The journal restores messages only; the session
+file restores what extensions saved in the session, such as custom entries,
+context edits, and compaction, when a relaunched attempt reopens it. Explicit
+`pi` children keep `--no-session`. Run retention removes `durable-session/`
+with its run; see "Retention" below for what it accepts.
+
+### Worker role
+
+A `pi-durable` child's session carries a worker-role entry, so pi-context-aware
+in the child knows it is a worker. The entry is one custom entry in the Pi
+session file:
+
+```json
+{ "type": "custom", "customType": "context-aware.policy.v1",
+  "data": { "schemaVersion": 1, "layer": "host", "declaredBy": "pi-fabric/durable-worker",
+            "values": { "sessionRole": "worker" } } }
+```
+
+This is the entry pi-delegate writes for its workers. Without it, pi-context-aware
+acts as a session with a user at a terminal: it can send a compaction seed as a new
+user message, rewrite it with a model, add the cache listing, and compact in the
+middle of a reply. Fabric does not import pi-context-aware; without that extension
+the entry is one unread line.
+
+**Create complete, never edit.** Fabric writes the entry only into a session file
+it creates, in the same write that creates the file. The worker never appends to,
+rewrites, or parses an existing session file, so a file that exists already (a
+relaunch, or a `sessionFile` the caller supplies) is used exactly as it is.
+
+The entry is the **root** of the tree: the first entry after the header, with
+`parentId: null`. Every entry Pi appends, and every branch a later navigation or
+Pi fork reaches, then descends from it. That is why the entry does not depend on
+which entry Pi treats as the leaf.
+
+- **New `durable-session/session.jsonl`.** Line 1 is a Pi session header (version
+  3), line 2 is the entry with `parentId: null`. The worker writes both to
+  `tmp-<uuid>.jsonl` in the same folder (exclusive create, no link following,
+  `0600`), syncs it, hard-links it to `session.jsonl` and unlinks the temp name.
+  Exactly one of two concurrent attempts wins the link; the other keeps the
+  winner's file. On relaunch an existing `session.jsonl` is reused untouched, and
+  a leftover `tmp-<uuid>.jsonl` that is a second name of it is removed.
+- **Fork and handoff seeds.** For a `pi-durable` child the manager passes the seed
+  writers (`writeForkSession`, `writeHandoffSession`) `{ workerRole: true }`.
+  The file they return has the header, then the entry as the root, then the seed's
+  entries unchanged except that the seed's former root has `parentId` set to the
+  entry's id. The inherited messages are identical. A seed Pi's own
+  `createBranchedSession` writes is rewritten once by the writer, before it
+  returns the path and before any worker can open the file.
+- **Plain `pi` and other runners.** No option is passed. Seeds are byte for byte
+  what the writers always produced, there is no entry, and a plain `pi` child with
+  no seed keeps `--no-session`.
+- **Caller-supplied `sessionFile`.** Never written. Such a child keeps whatever role
+  that file already declares.
+- **A later explicit declaration wins.** pi-context-aware replays policy entries in
+  order and a later entry wins per path, so a later host policy that declares another
+  `sessionRole` overrides the seeded one; Fabric does not fight it.
+
+#### Threat model
+
+A process running as the same user is trusted, because it can already write every
+session file. Same-user races (swapping a folder for a symlink, adding a hard link
+between a check and a write) are therefore out of scope. The worker guards against
+other users and against accidental links:
+
+- Before it creates anything, the worker `lstat`s the run directory. It must be a
+  real directory (not a link) owned by the worker's user; otherwise the launch fails
+  with a clear error before any write. If group or others can write it
+  (`mode & 0o022`), the worker removes that write itself through a descriptor opened
+  without following links and checked to be the same directory, then confirms the bit
+  is gone. A run directory from an earlier Fabric or a test harness may have mode
+  `0775`; the manager now creates run directories with mode `0700`. After the
+  tightening no other user can add or swap entries in the run directory, and
+  anything already there is refused by the owner and link checks on
+  `durable-session/` and by `O_EXCL | O_NOFOLLOW` on the temp file.
+- `durable-session/` is created without `recursive` (so the run directory must
+  already exist), with mode `0700`; an existing one must be a real directory owned by
+  the worker's user.
+- The temp file is created with `O_CREAT | O_EXCL | O_NOFOLLOW`.
+
+#### Retention
+
+Run retention accepts only `session.jsonl` and `tmp-<lowercase uuid v4>.jsonl` in
+`durable-session/`, each a regular file owned by this user. A file with two names is
+accepted only as the crash leftover between the worker's link and unlink: the folder
+holds exactly `session.jsonl` and one `tmp-<uuid>.jsonl` that share a device and
+inode. A link that leaves the run, an unknown name (including an uppercase or
+all-zero uuid), a symlink, or another owner keeps the run.
+
+Fabric does not read the `context-aware.worker-compaction.v1` advisories a worker
+writes.
+
 Durability **does not restore arbitrary JavaScript continuations**, promise
 general exactly-once external effects, or restart failed workers indefinitely.
 The standard process/actor lifecycle controls stop/retry/retention. A new run is
