@@ -2,6 +2,14 @@ import { isFabricThinking, type FabricThinking } from "../thinking.js";
 
 const PROVIDER_MODEL_RE = /^[^\s/]+\/[^\s]+$/;
 
+/** How a Pi `model` selector is matched. Omitted keeps alias, closest and fuzzy resolution. */
+export type FabricModelMatch = "exact";
+
+export const EXACT_MODEL_FORM_ERROR =
+  'modelMatch "exact" requires model in provider/id form, as listed by agents.models({ runner: "pi" }).';
+export const EXACT_MODEL_RUNNER_ERROR =
+  'modelMatch "exact" is supported only by the pi and pi-durable runners.';
+
 /** Minimal model view needed for resolution; satisfied by pi Model entries. */
 export interface FabricModelCandidate {
   provider: string;
@@ -371,4 +379,61 @@ export const resolveAvailablePiModel = (
     return resolution.model;
   }
   throw unavailablePiModelError(query, resolution);
+};
+
+/**
+ * Resolve a Pi participant selector with no alias, closest-match or fuzzy step.
+ * The selector must be a provider/id the visible registry lists. Matching keeps
+ * the case-insensitive rule of every other exact lookup here (an identical
+ * spelling is preferred), and the returned candidate carries the registry's own casing. Used when a request sets
+ * `modelMatch: "exact"`, where a model that is not listed must be refused rather
+ * than replaced by a different one.
+ */
+export const resolveExactAvailablePiModel = (
+  selector: string,
+  options: { available: readonly FabricModelCandidate[] },
+): FabricModelCandidate => {
+  const query = selector.trim();
+  if (!PROVIDER_MODEL_RE.test(query)) throw new Error(EXACT_MODEL_FORM_ERROR);
+  // An identical spelling wins, so registry entries that differ only by case never trade places.
+  const exact = options.available.find((model) => modelKey(model) === query)
+    ?? options.available.find((model) => modelKey(model).toLowerCase() === query.toLowerCase());
+  if (exact) return exact;
+  throw unavailablePiModelError(query);
+};
+
+/** Resolve a Pi selector by the request's match mode; omitted keeps alias, closest and fuzzy resolution. */
+export const resolvePiModelSelector = (
+  selector: string,
+  options: {
+    aliases: FabricModelAliases;
+    available: readonly FabricModelCandidate[];
+    lastUsed?: FabricModelUsage;
+  },
+  modelMatch?: FabricModelMatch,
+): FabricModelCandidate =>
+  modelMatch === "exact"
+    ? resolveExactAvailablePiModel(selector, options)
+    : resolveAvailablePiModel(selector, options);
+
+/**
+ * Structural checks for an exact-match request that need no model registry:
+ * only Pi runners resolve against the Pi registry, and the model must be a
+ * provider/id. Refusing a non-Pi runner is deliberate: its model string is
+ * forwarded verbatim to a backend that may apply its own aliases, so forwarding
+ * it could not honour "exactly this model".
+ */
+export const assertExactModelRequest = (request: {
+  modelMatch?: unknown;
+  runner: string;
+  model?: unknown;
+}): void => {
+  if (request.modelMatch === undefined) return;
+  if (request.modelMatch !== "exact") {
+    throw new Error(`Invalid Fabric agent modelMatch: ${JSON.stringify(request.modelMatch)}`);
+  }
+  if (request.runner !== "pi" && request.runner !== "pi-durable") throw new Error(EXACT_MODEL_RUNNER_ERROR);
+  if (typeof request.model !== "string" || !PROVIDER_MODEL_RE.test(request.model.trim())) {
+    throw new Error(EXACT_MODEL_FORM_ERROR);
+  }
 };
