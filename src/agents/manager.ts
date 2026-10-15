@@ -107,6 +107,7 @@ import type { BudgetLedgerDetail } from "./budget-ledger.js";
 import type { BudgetLedgerState } from "./budget-ledger.js";
 import { readJsonlPage } from "../log-tail.js";
 import {
+  FABRIC_RUN_ROOT_PREFIX,
   canRemoveManagedRunRoot,
   heartbeatRunRoot,
   markRunRootActive,
@@ -114,6 +115,7 @@ import {
   removeEmptyRunRoot,
   sweepTempRunRoots,
 } from "../storage/retention.js";
+import { resolveRunRootParent } from "../storage/run-root.js";
 import { resolveSessionExportDir, sessionExportFileFor } from "./session-export.js";
 import {
   isFabricLifecycleEventType,
@@ -511,6 +513,8 @@ export class AgentManager {
   readonly #worktrees = new WorktreeManager();
   readonly #runRoot: string;
   readonly #managedTempRoot: boolean;
+  /** Parent of a managed root; undefined for caller-owned roots. */
+  readonly #runRootParent: string | undefined;
   readonly #parentOwnedRunRoot: boolean;
   readonly #retention: FabricRetentionConfig;
   readonly #workerPath: string;
@@ -613,8 +617,11 @@ export class AgentManager {
   ) {
     this.#semaphore = new AgentAdmission(config.maxConcurrent, Infinity, config.maxDepth);
     this.#managedTempRoot = options.runRoot === undefined && process.env.PI_FABRIC_RUN_ROOT === undefined;
+    // A managed root is this session's own mkdtemp directory under a shared parent.
+    this.#runRootParent = this.#managedTempRoot ? resolveRunRootParent(config.runRootParent) : undefined;
     this.#runRoot =
-      options.runRoot ?? process.env.PI_FABRIC_RUN_ROOT ?? fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-runs-"));
+      options.runRoot ?? process.env.PI_FABRIC_RUN_ROOT ??
+      fs.mkdtempSync(path.join(this.#runRootParent!, FABRIC_RUN_ROOT_PREFIX));
     // Nested run artifacts belong to the enclosing run, not the short-lived Pi
     // child. Its owner removes them on cleanup/retention/root shutdown.
     this.#parentOwnedRunRoot = options.runRoot === undefined &&
@@ -1839,12 +1846,24 @@ export class AgentManager {
     if (this.#budgetOwned) clearOwnedBudgetEnv();
     if (this.#managedTempRoot) {
       await new Promise<void>((resolve) => setImmediate(resolve));
+      this.#sweepRunRootParents(Date.now());
+    }
+  }
+
+  /**
+   * Sweep other sessions' managed roots in this session's parent and in
+   * os.tmpdir(), where roots made before the parent was configured remain.
+   */
+  #sweepRunRootParents(now: number): void {
+    const parents = new Set([this.#runRootParent!, os.tmpdir()].map((parent) => path.resolve(parent)));
+    for (const tempRoot of parents) {
       try {
         sweepTempRunRoots({
-          tempRoot: os.tmpdir(),
+          tempRoot,
           currentRoot: this.#runRoot,
           orphanedTempRunRetentionMs: this.#retention.orphanedTempRunMs,
           oneShotRunRetentionMs: this.#retention.oneShotRunMs,
+          now,
         });
       } catch {}
     }
@@ -1861,13 +1880,7 @@ export class AgentManager {
   async #runRetentionSweep(now = Date.now()): Promise<void> {
     if (this.#managedTempRoot) {
       heartbeatRunRoot(this.#runRoot, now);
-      sweepTempRunRoots({
-        tempRoot: os.tmpdir(),
-        currentRoot: this.#runRoot,
-        orphanedTempRunRetentionMs: this.#retention.orphanedTempRunMs,
-        oneShotRunRetentionMs: this.#retention.oneShotRunMs,
-        now,
-      });
+      this.#sweepRunRootParents(now);
     }
     const expired = [...this.#runs.values()].filter((managed) => {
       if (!managed.settled || managed.actorId) return false;
