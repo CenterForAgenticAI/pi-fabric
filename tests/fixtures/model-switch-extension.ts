@@ -10,8 +10,9 @@ import { createAssistantMessageEventStream, Type, type AssistantMessage } from "
 //   between-turns at the end of the first turn (the first reply is a tool call)
 //   context       inside a context handler, right before a model call
 //   session-start at session_start, before Fabric's own set_model reaches the child
-//   manual-compact switch at before_agent_start, then compact the session (the summary
-//                 would run on the current model), then switch back
+//   manual-compact switch when the task prompt arrives (an input handler, while the
+//                 session is still idle), compact the session (the summary runs on
+//                 the current model), then switch back before the run starts
 //   rewrite       a before_provider_request handler rewrites the payload's model to `other`
 //   none          never
 // MODEL_SWITCH_TARGET names the model switched to (default `other`).
@@ -73,11 +74,15 @@ export default function (pi: ExtensionAPI) {
   if (phase === "context") pi.on("context", async (_event, ctx) => { await switchToOther(ctx); });
   if (phase === "session-start") pi.on("session_start", async (_event, ctx) => { await switchToOther(ctx); });
   if (phase === "manual-compact") {
-    pi.on("before_agent_start", async (_event, ctx) => {
+    // Pi 1.2 marks the session busy before before_agent_start, and compact() waits for
+    // the session to go idle, so compacting from that hook never finishes. The input
+    // handler runs before the run starts.
+    pi.on("input", async (_event, ctx) => {
       await switchToOther(ctx);
       // Only a default request gets here: an exact run has already ended.
       await new Promise<void>((resolve) => ctx.compact({ onComplete: () => resolve(), onError: () => resolve() }));
       await pi.setModel(ctx.modelRegistry.find("switch-probe", "requested") as Parameters<ExtensionAPI["setModel"]>[0]);
+      return { action: "continue" as const };
     });
   }
   if (phase === "rewrite") {
