@@ -1080,12 +1080,17 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
         content: defaultFabricExecutionGuidance(effectiveFullCodeMode, config.executor.kernel, config.executor.pythonRuntime, config.executor.codemodeProfile),
       }],
     });
+    // A child's prompt names only the tools its allowlist lets it call; the
+    // captured-tools provider refuses the rest as "not permitted by this
+    // child's tool allowlist".
+    const toolAllowlist = readChildToolAllowlist();
     const overrideGuidance = effectiveFullCodeMode
-      ? coreOverridePromptGuidance(capturedTools).trim()
+      ? coreOverridePromptGuidance(capturedTools, toolAllowlist).trim()
       : undefined;
     const extensionRoster = effectiveFullCodeMode
       ? extensionToolRosterGuidance(capturedTools.list().filter(entry =>
-          !state.config.mcp.enabled || !isSelectedNativeMcpTool(entry.definition, state.config.mcp.nativeServers),
+          (toolAllowlist === undefined || toolAllowlist.has(entry.name)) &&
+          (!config.mcp.enabled || !isSelectedNativeMcpTool(entry.definition, config.mcp.nativeServers)),
         ), new Set(PI_CORE_TOOL_NAMES), config.executor.kernel === "typescript" && config.executor.codemodeProfile === "native")
       : undefined;
     // Only turn-stable sections go into the system prompt. Anything derived
