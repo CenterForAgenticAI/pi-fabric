@@ -127,6 +127,8 @@ By default a child Pi run cancels every dialog (`select`, `confirm`, `input`, `e
 
 The deadline is the dialog's own timeout, or `agents.childQuestionTimeoutMs` (default 10 minutes). The worker owns that deadline and answers `cancelled` when it passes, so a child never waits on a parent that has gone away. A settled run cancels its open question decision. Only the `pi` runner routes dialogs.
 
+Routing forwards dialogs; it does not add tools. A Pi child may call only the tools in its `tools` list (default `agents.defaultTools`), so a caller that wants the child to use a question tool such as `ask` must name it in `tools`. A child's system prompt lists only the extension tools its allowlist permits, so a tool left out of `tools` is not offered and cannot be called.
+
 ## Extension questions
 
 Another extension in the same session can hand a question to a person through two host-local, versioned events on `pi.events`. A question tool uses them when it has no screen to ask on.
