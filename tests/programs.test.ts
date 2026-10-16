@@ -493,6 +493,17 @@ describe("host program runs", () => {
       expect(await answered.done).toEqual({ ok: false, program: expect.stringMatching(/^hello@/), error: "Program input must be JSON-compatible" });
     });
 
+    it("reads requirePromoted before the input's toJSON can change it", async () => {
+      const f = fixture();
+      await f.store.save({ name: "hello", code: "return 1;" }, "typescript");
+      const answered = nextReply();
+      const request: Record<string, unknown> = { ref: "hello", requirePromoted: true, reply: answered.reply };
+      request.input = { toJSON: () => { request.requirePromoted = false; return { who: "x" }; } };
+      const snapshot = snapshotFabricProgramRunRequestV1(request)!;
+      await handleFabricProgramRunEvent(snapshot, { ...hostDeps(f).deps, context: f.context });
+      expect(await answered.done).toMatchObject({ ok: false, error: expect.stringMatching(/no promoted version/) });
+    });
+
     describe("a named field whose getter throws", () => {
       const boom = (): never => { throw new Error("getter boom"); };
       // Adds (or replaces) an own, enumerable accessor that throws when read.

@@ -151,11 +151,17 @@ export const snapshotFabricProgramRunRequestV1 = (value: unknown): FabricProgram
       // A throwing listener must not turn into an unhandled rejection.
     }
   };
+  // Read the plain fields before `input`: copying `input` runs its `toJSON`
+  // and getters, which must not be able to change what else the request says.
+  const ref = read("ref");
+  const requirePromoted = read("requirePromoted");
+  const signal = read("signal");
+  const input = copyProgramRunInput(read("input"));
   return Object.freeze({
-    ref: read("ref"),
-    input: copyProgramRunInput(read("input")),
-    requirePromoted: read("requirePromoted"),
-    signal: read("signal"),
+    ref,
+    input,
+    requirePromoted,
+    signal,
     unreadable,
     respond,
   });
