@@ -1527,6 +1527,7 @@ export class FabricRuntimeState {
     this.#componentSupervisor = undefined;
     this.#componentLoader = undefined;
     this.#componentTransitionSignatures.clear();
+    this.#componentPublishFailureLogged = false;
     this.#componentTransitionPublications.clear();
     this.#sessionCapabilityLease = undefined;
     this.#unsubscribeCapturedCatalog?.();
@@ -1636,6 +1637,7 @@ export class FabricRuntimeState {
     this.#componentSupervisor = undefined;
     this.#componentLoader = undefined;
     this.#componentTransitionSignatures.clear();
+    this.#componentPublishFailureLogged = false;
     this.#componentTransitionPublications.clear();
     this.#sessionCapabilityLease = undefined;
     this.#unsubscribeCapturedCatalog?.();

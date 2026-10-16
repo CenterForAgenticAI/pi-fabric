@@ -31,16 +31,21 @@ const WAITING_COMPONENT = "needs-absent";
 const startRuntime = async (): Promise<{
   runtime: FabricRuntimeState;
   context: ExtensionContext;
+  config: ReturnType<typeof normalizeFabricConfig>;
 }> => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-mesh-publish-"));
   roots.push(cwd);
   fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+  let registered = false;
   vi.stubEnv("PI_CODING_AGENT_DIR", path.join(cwd, "agent"));
   vi.stubEnv("PI_FABRIC_PROJECT_ROOT", cwd);
   const pi = {
     events: {
       emit: vi.fn((event: string, payload: unknown) => {
         if (event !== FABRIC_COMPONENT_DISCOVER_EVENT) return;
+        // The catalog keeps a definition across a re-initialize, so register once.
+        if (registered) return;
+        registered = true;
         // Requires a capability nobody provides, so it stays "waiting" and
         // re-reports the same state on every provider change.
         (payload as FabricComponentDiscovery).register({
@@ -86,7 +91,7 @@ const startRuntime = async (): Promise<{
     paths: { extension: fixture, worker: fixture, residentHost: fixture, skills: cwd },
   });
   await runtime.initialize(context, config);
-  return { runtime, context };
+  return { runtime, context, config };
 };
 
 const provider = (name: string, actions: readonly string[] = []): FabricProvider => {
@@ -222,6 +227,42 @@ describe("Fabric runtime best-effort mesh publications", () => {
       await changeProviders("absent", ["capability"]);
       expect(runtime.components.status(WAITING_COMPONENT).state).toBe("active");
       expect(published.length).toBeGreaterThan(3);
+      expect(failureWarnings()).toBe(2);
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("logs the first publish failure again after the runtime is re-initialized", async () => {
+    const original = LifecycleBroker.prototype.publish;
+    let failing = false;
+    vi.spyOn(LifecycleBroker.prototype, "publish").mockImplementation(
+      function (this: LifecycleBroker, request: FabricLifecyclePublishRequest) {
+        // A fully broken mesh: every component publish fails, so no success
+        // can end the streak between the two lifecycles.
+        if (failing && request.event === "component.state") {
+          return Promise.reject(new Error("mesh lock timed out"));
+        }
+        return original.call(this, request);
+      },
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // The streak is runtime-wide, so count every component's publish warning.
+    const failureWarnings = (): number => warningsMatching(warn, "state publish failed", "mesh lock timed out");
+    const { runtime, context, config } = await startRuntime();
+    try {
+      await runtime.components.settle();
+      failing = true;
+      runtime.registerExternal(provider("alpha", ["cap"]));
+      await runtime.components.settle();
+      await flushPromiseReactions();
+      expect(failureWarnings()).toBe(1);
+
+      // A re-initialized runtime starts a new lifecycle: its first failure is
+      // logged, not hidden by the streak of the runtime it replaced.
+      await runtime.initialize(context, config);
+      await runtime.components.settle();
+      await flushPromiseReactions();
       expect(failureWarnings()).toBe(2);
     } finally {
       await runtime.shutdown();
