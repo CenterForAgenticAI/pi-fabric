@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import { MeshStore, type MeshIdentity } from "../src/mesh/store.js";
 import { DecisionStore } from "../src/decisions/store.js";
@@ -11,12 +11,17 @@ import {
   type ResolveFabricDecisions,
 } from "../src/decisions/events.js";
 import {
+  FABRIC_DECISION_REQUEST_EVENT,
   readFabricDecisionRequestV1,
   readFabricDecisionsCapabilityRequestV1,
   type FabricDecisionQuestionV1,
   type FabricDecisionResultV1,
   type FabricDecisionsCapabilityResultV1,
 } from "../src/protocol.js";
+import { registerFabricCommand } from "../src/commands/fabric.js";
+import type { CapturedToolCatalog } from "../src/capture/catalog.js";
+import type { FabricState } from "../src/fabric-state.js";
+import type { FabricUiController } from "../src/ui/controller.js";
 
 const roots: string[] = [];
 const main: MeshIdentity = { id: "session:main", name: "main", kind: "main", sessionId: "main" };
@@ -198,6 +203,47 @@ describe("decisions event channel", () => {
     controller.abort();
     await expect(pending.result).resolves.toEqual({ ok: false, id, error: "Decision request aborted" });
     expect((await store.get(id))?.status).toBe("cancelled");
+  });
+
+  it("aborts a waiting request and cancels its decision when the session shuts down", async () => {
+    const store = decisionStore();
+    const listeners = new Map<string, (value: unknown) => void>();
+    const shutdown: Array<() => void> = [];
+    const pi = {
+      events: {
+        on: (channel: string, handler: (value: unknown) => void) => {
+          listeners.set(channel, handler);
+          return () => listeners.delete(channel);
+        },
+      },
+      on: (name: string, handler: () => void) => {
+        if (name === "session_shutdown") shutdown.push(handler);
+      },
+      registerCommand: () => undefined,
+    } as unknown as ExtensionAPI;
+    const state = {
+      ensure: async () => undefined,
+      config: { mesh: { enabled: true } },
+      decisionStore: () => store,
+    } as unknown as FabricState;
+    registerFabricCommand(pi, {
+      state,
+      fabricUi: {} as FabricUiController,
+      capturedTools: {} as CapturedToolCatalog,
+      applyFabricMode: () => undefined,
+      suspendToolCapture: () => undefined,
+    });
+    const request = listeners.get(FABRIC_DECISION_REQUEST_EVENT);
+    expect(request).toBeDefined();
+    let markRaised!: (id: string) => void;
+    const raised = new Promise<string>((settle) => { markRaised = settle; });
+    const result = new Promise<FabricDecisionResultV1>((settle) => {
+      request?.({ version: 1, context, question: { title: "Name?" }, claim: () => true, respond: settle, onRaised: markRaised });
+    });
+    const id = await raised;
+    for (const handler of shutdown) handler();
+    await expect(result).resolves.toEqual({ ok: false, id, error: "Decision request aborted: the session shut down" });
+    expect((await stored(store, id)).status).toBe("cancelled");
   });
 
   it("rejects invalid questions without raising a decision", async () => {

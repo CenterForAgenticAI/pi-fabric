@@ -275,11 +275,14 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
       (error: unknown) => request.respond({ ok: false, error: `Fabric decisions unavailable: ${String(error)}` }),
     );
   });
+  // Aborted at session shutdown, so a request still waiting does not outlive
+  // the session that took it; the abort cancels its stored decision.
+  const decisionRequests = new AbortController();
   const unsubscribeDecisionRequest = pi.events?.on?.(FABRIC_DECISION_REQUEST_EVENT, (value) => {
     const request = readFabricDecisionRequestV1(value);
     if (!request || !request.claim()) return;
     void import("../decisions/events.js").then(
-      ({ answerFabricDecisionRequest }) => answerFabricDecisionRequest(request, resolveDecisions),
+      ({ answerFabricDecisionRequest }) => answerFabricDecisionRequest(request, resolveDecisions, decisionRequests.signal),
       (error: unknown) => request.respond({ ok: false, error: `Fabric decisions unavailable: ${String(error)}` }),
     );
   });
@@ -287,6 +290,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
     pi.on("session_shutdown", () => {
       unsubscribeDecisionsCapability?.();
       unsubscribeDecisionRequest?.();
+      decisionRequests.abort();
     });
   }
 

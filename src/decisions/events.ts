@@ -127,11 +127,14 @@ export const answerFabricDecisionsCapability = async (
 export const answerFabricDecisionRequest = async (
   request: FabricDecisionRequestV1,
   resolve: ResolveFabricDecisions,
+  lifetime?: AbortSignal,
 ): Promise<void> => {
   const respond = once(request.respond);
+  // The session's lifetime ends a wait as the caller's own signal does.
+  const signal = lifetime && request.signal ? AbortSignal.any([request.signal, lifetime]) : lifetime ?? request.signal;
   let raised: string | undefined;
   try {
-    request.signal?.throwIfAborted();
+    signal?.throwIfAborted();
     const raisedBy = raisedByFromSource(request.source);
     const target = await resolve(request.context);
     if ("reason" in target) {
@@ -142,7 +145,7 @@ export const answerFabricDecisionRequest = async (
       target.store,
       decisionInputFromQuestion(request.question),
       raisedBy,
-      request.signal,
+      signal,
       (id) => {
         raised = id;
         try {
@@ -156,7 +159,11 @@ export const answerFabricDecisionRequest = async (
   } catch (error) {
     respond({
       ok: false,
-      error: request.signal?.aborted ? "Decision request aborted" : message(error),
+      error: request.signal?.aborted
+        ? "Decision request aborted"
+        : lifetime?.aborted
+          ? "Decision request aborted: the session shut down"
+          : message(error),
       ...(raised ? { id: raised } : {}),
     });
   }
