@@ -454,7 +454,16 @@ export class HostedRun {
       settled.status = "failed";
       settled.error = `Structured agent output was invalid: ${truncated}`;
     } else {
+      const fromText = settled.value === undefined;
       validateAgentResult(settled, this.context.schema);
+      // A value parsed from the text output gets the same size limit as a
+      // structured one, so a large JSON answer is not persisted in full.
+      if (fromText && settled.status === "completed" && settled.value !== undefined &&
+          Buffer.byteLength(JSON.stringify(settled.value) ?? "") > MAX_STRUCTURED_BYTES) {
+        settled.status = "failed";
+        settled.value = { fabricTruncated: true };
+        settled.error = `Structured agent output was invalid: value parsed from the output was truncated at the ${MAX_STRUCTURED_BYTES}-byte limit`;
+      }
     }
     this.#settle(settled);
   }

@@ -349,6 +349,29 @@ describe("hosted runners", () => {
       expect(result.error).toMatch(/^Structured agent output was invalid: .* \(output: the answer is three\)$/);
     });
 
+    it("bounds a value parsed from oversized text output", async () => {
+      // Valid JSON for the schema, but just over 1 MiB (1,048,576 bytes).
+      finishing("text-oversized", undefined, JSON.stringify({ item: { n: 1 }, pad: "x".repeat(1024 * 1024) }));
+      const manager = managerFor(tempRoot());
+      const result = await manager.run({ task: "Big text", runner: "text-oversized", schema });
+      expect(result.status).toBe("failed");
+      expect(result.error).toBe(
+        "Structured agent output was invalid: value parsed from the output was truncated at the 1048576-byte limit",
+      );
+      expect(result.value).toEqual({ fabricTruncated: true });
+      expect(readStatus(manager, result.id)).toMatchObject({ status: "failed", value: { fabricTruncated: true } });
+    });
+
+    it("keeps an explicit null structured value instead of parsing the text", async () => {
+      finishing("null-structured", null, '{"item":{"n":3}}');
+      const manager = managerFor(tempRoot());
+      const result = await manager.run({
+        task: "Null", runner: "null-structured", schema: { anyOf: [{ type: "null" }, schema] },
+      });
+      expect(result.status).toBe("completed");
+      expect(result.value).toBeNull();
+    });
+
     it.each(["failed", "stopped"] as const)("does not validate a %s report", async (status) => {
       const id = `reported-${status}`;
       register(fakeHosted(id, {
