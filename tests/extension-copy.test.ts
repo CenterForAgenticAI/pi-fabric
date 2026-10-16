@@ -53,7 +53,7 @@ describe("commandLineFabricCopy", () => {
   it("resolves symlinks, relative paths, ~, --extension, and package directories", () => {
     const parentBuild = makeCopy("build-1");
     const profileBuild = makeCopy("build-2");
-    fs.symlinkSync(path.join(root, "build-1"), path.join(root, "current"));
+    fs.symlinkSync(path.join(root, "build-1"), path.join(root, "current"), process.platform === "win32" ? "junction" : "dir");
     vi.spyOn(os, "homedir").mockReturnValue(root);
 
     expect(commandLineFabricCopy(parentBuild, cli(path.join(root, "current/dist/extension-bootstrap.js")))).toBeUndefined();
