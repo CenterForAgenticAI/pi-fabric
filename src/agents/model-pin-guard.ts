@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import type { KnownApi } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { MODEL_PIN_ENV, MODEL_PIN_EXIT_CODE, MODEL_PIN_MARKER, type ModelPinViolation } from "./model-pin.js";
 
@@ -14,14 +15,15 @@ const identity = (model: unknown): string => {
 
 /**
  * Where an API's outgoing payload carries the model id, and the value Pi sends
- * there: the registry `id` of the model. Read from pi-ai 1.0.0 and 1.0.4
+ * there: the registry `id` of the model. Read from pi-ai 1.0.0, 1.0.4 and 1.3.0
  * `api/*.js` (`params = { model: model.id, ... }`, bedrock `modelId: model.id`).
  * Left out on purpose, so their payloads are never compared:
  * - `azure-openai-responses` sends a deployment name chosen from the environment;
  * - `pi-virtual` models route to a physical model at request time;
  * - any API an extension registers, whose payload shape is its own.
  */
-const PAYLOAD_MODEL_FIELD: Readonly<Record<string, string>> = {
+// Typed over every pi-ai API except Azure, so a pi-ai release that adds an API fails the typecheck here until someone reads its payload shape.
+const PAYLOAD_MODEL_FIELD: Readonly<Record<Exclude<KnownApi, "azure-openai-responses">, string>> = {
   "openai-completions": "model",
   "openai-responses": "model",
   "openai-codex-responses": "model",
@@ -29,8 +31,8 @@ const PAYLOAD_MODEL_FIELD: Readonly<Record<string, string>> = {
   "mistral-conversations": "model",
   "google-generative-ai": "model",
   "google-vertex": "model",
-  "bedrock-converse-stream": "modelId",
   "pi-messages": "model",
+  "bedrock-converse-stream": "modelId",
 };
 
 /** The model id Pi puts in the payload for `model`, or undefined where the shape is not known. */
@@ -39,7 +41,7 @@ const expectedPayloadModel = (model: unknown): { field: string; value: string } 
     if (typeof model !== "object" || model === null) return undefined;
     const { api, id } = model as { api?: unknown; id?: unknown };
     if (typeof api !== "string" || typeof id !== "string" || !id) return undefined;
-    const field = Object.hasOwn(PAYLOAD_MODEL_FIELD, api) ? PAYLOAD_MODEL_FIELD[api] : undefined;
+    const field = Object.hasOwn(PAYLOAD_MODEL_FIELD, api) ? PAYLOAD_MODEL_FIELD[api as keyof typeof PAYLOAD_MODEL_FIELD] : undefined;
     return field ? { field, value: id } : undefined;
   } catch {
     return undefined;
