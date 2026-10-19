@@ -1,13 +1,16 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { openFabricExecJournal, type FabricExecJournal } from "../src/runtime/exec-journal.js";
 import type { FabricHostCall, FabricSandboxOptions } from "../src/runtime/kernel.js";
 import { QuickJsRuntime } from "../src/runtime/quickjs-runtime.js";
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(() => {
+  vi.useRealTimers();
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
 
 const options = { timeoutMs: 5_000, memoryLimitBytes: 32 * 1024 * 1024 };
 const hooks = { served() {}, local: () => undefined };
@@ -34,6 +37,12 @@ async function resume(file: string, digest: string, code: string, host: FabricHo
   finally { journal.close(); }
 }
 
+function latch() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 const target = (args: Record<string, unknown>) => `${String(args.ref)}:${JSON.stringify(args.args)}`;
 const neverCalled: FabricHostCall = async (ref, args) => { throw new Error(`host called on resume: ${ref} ${JSON.stringify(args)}`); };
 // A first attempt whose call `stopAt` hangs until the run is aborted, as a crash would leave it.
@@ -52,11 +61,13 @@ const twoCalls = (second: string) => `const a = await tools.call({ ref: "demo.re
 describe("fabric_exec crash journal", () => {
   it("serves recorded results without the host and repeats the guest clock and randomness", async () => {
     const file = journalFile();
-    const code = `const r = Math.random(); const t0 = Date.now();\nconst x = await tools.call({ ref: "demo.read", args: { n: 1 } });\nawait new Promise(resolve => setTimeout(resolve, 5));\nconst t1 = Date.now();\nconst y = await tools.call({ ref: "demo.read", args: { n: 2 } });\nreturn [r, t0, x, t1, y, Math.random(), new Date(t1).toString(), new Date(0).getHours()];`;
+    // Only Date is virtual: each host call advances the clock by a fixed step.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const code = `const r = Math.random(); const t0 = Date.now();\nconst x = await tools.call({ ref: "demo.read", args: { n: 1 } });\nconst t1 = Date.now();\nconst y = await tools.call({ ref: "demo.read", args: { n: 2 } });\nreturn [r, t0, x, t1, y, Math.random(), new Date(t1).toString(), new Date(0).getHours()];`;
     const calls: string[] = [];
     const first = await record(file, code, () => async (_ref, args) => {
       calls.push(target(args));
-      await new Promise(resolve => setTimeout(resolve, 10));
+      vi.setSystemTime(Date.now() + 10);
       return (args.args as { n: number }).n * 10;
     });
     expect(first.result.terminationReason, first.result.error).toBe("completed");
@@ -149,19 +160,29 @@ describe("fabric_exec crash journal", () => {
   });
 
   it("pauses the program deadline while it asks, unless the deadline is hard", async () => {
-    const slowYes = async (_question: string, signal: AbortSignal) => {
-      await new Promise(resolve => setTimeout(resolve, 400));
-      return !signal.aborted;
-    };
     for (const pausesDeadline of [true, false]) {
       const file = journalFile();
       const controller = new AbortController();
       const first = await record(file, twoCalls("demo.write"), crashingHost(2, controller, true), controller.signal);
+      // The deadline clock is virtual from here. The question opens, the clock
+      // moves past the 200 ms deadline, and only then does the person answer.
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      const opened = latch();
+      const answer = latch();
       const live: string[] = [];
-      const again = await resume(file, first.digest, twoCalls("demo.write"), async (_ref, args) => {
+      const pending = resume(file, first.digest, twoCalls("demo.write"), async (_ref, args) => {
         live.push(target(args));
         return 0;
-      }, identity, { timeoutMs: 200, confirmRepeat: { pausesDeadline, ask: slowYes } });
+      }, identity, { timeoutMs: 200, confirmRepeat: { pausesDeadline, ask: async (_question, signal) => {
+        opened.resolve();
+        await answer.promise;
+        return !signal.aborted;
+      } } });
+      await opened.promise;
+      await vi.advanceTimersByTimeAsync(400);
+      answer.resolve();
+      const again = await pending;
+      vi.useRealTimers();
       // A hard deadline that expires mid-question cancels it, and the stop stands.
       expect(again.terminationReason, again.error).toBe(pausesDeadline ? "completed" : "runtime_error");
       if (!pausesDeadline) expect(again.error).toContain("This call was not repeated.");
@@ -249,6 +270,8 @@ describe("fabric_exec crash journal", () => {
   it("creates the journal private to its owner", async () => {
     const file = journalFile();
     await record(file, "return 1;", () => async () => undefined);
+    // Windows has no POSIX permission bits to read back.
+    if (process.platform === "win32") return;
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
     expect(fs.statSync(path.dirname(file)).mode & 0o777).toBe(0o700);
   });

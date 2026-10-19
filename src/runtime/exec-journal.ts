@@ -344,8 +344,11 @@ async function createJournal(offer: FabricJournalOffer, identity: string, hooks:
     fchmodSync(fd, 0o600);
     writeAll(fd, encode(header));
     fdatasyncSync(fd);
-    const directoryFd = openSync(directory, constants.O_RDONLY);
-    try { fsyncSync(directoryFd); } finally { closeSync(directoryFd); }
+    // Windows cannot open a directory for fsync; the file sync above still runs there.
+    if (process.platform !== "win32") {
+      const directoryFd = openSync(directory, constants.O_RDONLY);
+      try { fsyncSync(directoryFd); } finally { closeSync(directoryFd); }
+    }
     await offer.accept(sha256(JSON.stringify(header)));
     return new FabricExecJournal(fd, header, false, [], new Map(), hooks);
   } catch (error) {

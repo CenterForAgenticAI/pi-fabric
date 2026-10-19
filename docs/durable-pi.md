@@ -70,8 +70,7 @@ minutes, or more than one such call stops the program, which reports the call.
 The dialog goes to the worker's RPC client. A parent agent cancels it by
 default, so the program stops. With `agents.childQuestions: "route"`, a parent
 session asks its person or raises a root-held decision. Fabric also
-refuses to resume, and runs nothing, when
-the program or its settings changed, the runtime or a pinned engine version
+refuses to resume, and runs nothing, when the program or its settings changed, the runtime or a pinned engine version
 changed, the program stops repeating its recorded calls, the journal is missing
 or damaged, or a recorded result named work such as a child agent or background
 task that does not survive a restart. A call resumes at most three times. The

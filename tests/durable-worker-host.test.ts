@@ -248,8 +248,12 @@ describe("durable native RPC worker", () => {
 
   it("stops at an effect the crash interrupted and never repeats it", async () => {
     const effect = path.join(root, "fabric-uncertain", "effect.txt");
-    // The shell command records its effect, then hangs until the kill lands mid-call.
-    const code = `await pi.bash({ cmd: ${JSON.stringify(`echo effect >> '${effect}'; sleep 60`)}, timeout: 120 });\nreturn "program-done";`;
+    // A Node script records its effect, then hangs until the kill lands mid-call.
+    // It avoids shell syntax that differs between POSIX shells and Windows.
+    fs.mkdirSync(path.dirname(effect), { recursive: true });
+    const hang = path.join(path.dirname(effect), "hang.mjs");
+    fs.writeFileSync(hang, `import fs from "node:fs";\nfs.appendFileSync(${JSON.stringify(effect)}, "effect\\n");\nsetInterval(() => {}, 1000);\n`);
+    const code = `await pi.bash({ cmd: ${JSON.stringify(`"${process.execPath}" "${hang}"`)}, timeout: 120 });\nreturn "program-done";`;
     const first = await fabricWorker("fabric-uncertain", code);
     try {
       first.send({ type: "prompt", id: "uncertain", message: "fabric fixture" });
