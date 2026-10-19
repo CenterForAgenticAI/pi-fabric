@@ -97,7 +97,7 @@ Optional `generation` pins the withdrawal to one binding: a number matches the b
 
 ## Program globals and types
 
-A provider that another extension registers, directly, through discovery, or through a component's `context.provide()`, becomes a program global named after the provider. This applies in every kernel: QuickJS, Node, Bun, Monty and CPython. For the provider `context` with the action `task_add`:
+A Fabric capability provider (the actions a program calls, not a model provider) that another extension registers, directly, through discovery, or through a component's `context.provide()`, becomes a program global named after the provider. This applies in every kernel: QuickJS, Node, Bun, Monty and CPython. For the provider `context` with the action `task_add`:
 
 ```ts
 await context.task_add({ title: "Write tests" });
@@ -109,6 +109,8 @@ Python calls it as `await context.task_add(title="Write tests")`. The global is 
 
 **Types.** Each action's `inputSchema` is its declaration. Before a TypeScript program that uses the global (`context.` or `context[` in its source) runs, Fabric calls the provider's `list()` and renders the schemas into a typed declaration for the global, so an unknown property on a closed schema (`additionalProperties: false`) or a missing required argument fails type checking. Wrong value types follow the policy for `pi.*` and `mcp.*` calls: the type gate lets them through, and the registry validates them against the schema at dispatch. Jev programs type-check strictly and reject them before the program runs. Results are `any`, so moving a call from `tools.call` to the global never adds a type error. Python programs are not type-checked.
 
+**Where types apply.** Schema enforce types the global like any TypeScript program. The native codemode profile gets the global but no type check, because native scripts are plain JavaScript. The catalog read keys on the program text. A program that reaches the global by destructuring (`const { task_add } = context`) or by aliasing it skips the read and sees the loose type below. A local binding named `context` shadows the global, as in any TypeScript program.
+
 **A provider without declarations** still gets its global, typed loosely: any action, one argument object, validated at dispatch. This applies when the program does not use the global, when `list()` throws, takes longer than 500 ms, or returns no actions, and to actions beyond 128 per provider or beyond the 60,000-character declaration budget. The global must exist whenever the provider does, so a slow or cold catalog never changes whether a program compiles.
 
 **Names.** A global name is a lowercase identifier (`a-z`, `0-9`, `_`) of at most 64 characters. A provider never takes a name that is already used. Reserved names are:
@@ -118,7 +120,7 @@ Python calls it as `await context.task_add(title="Write tests")`. The global is 
 - the prelude names `input` (saved programs) and `program` (Jev)
 - TypeScript keywords, common JavaScript globals, and Python keywords and builtins
 
-`src/provider-globals.ts` holds the list, and a test derives it from the kernels. A provider with a hyphenated or reserved name gets no global. Fabric logs one warning per name when it mounts such a provider from a direct or discovery registration, for example `[pi-fabric] Fabric provider "workflow" gets no program global: the name clashes with the Fabric program global "workflow"`. `tools.call` still reaches the provider. A program gets at most 64 provider globals, in name order.
+`src/provider-globals.ts` holds the list, and a test derives it from the kernels. A provider with a hyphenated or reserved name gets no global. Fabric logs one warning per name when it mounts such a provider from a direct or discovery registration, for example `[pi-fabric] Fabric provider "workflow" gets no program global: the name clashes with the Fabric program global "workflow"`. `tools.call` still reaches the provider. A program gets at most 64 provider globals, in name order. A later Fabric release can add a global that an existing provider already uses. That provider then loses its global and keeps `tools.call`. New Fabric globals are added to the list in `src/provider-globals.ts`, and the test fails until they are, so the list does not drift from Fabric itself.
 
 **Lifetime.** Fabric takes the list of globals when a program starts. A registration or withdrawal applies from the next program. A provider mounted while a program runs is reachable only through `tools.call` in that program. Under a committed capability view, such as a Jev program's `requires`, only the providers that the view binds get globals, typed from the bound actions without a `list()` call. Speculative pre-launch does not cover provider globals.
 
