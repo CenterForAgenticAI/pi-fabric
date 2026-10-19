@@ -2444,6 +2444,21 @@ export class AgentManager {
     const extensions = request.recursive === true
       ? true
       : (request.extensions ?? this.config.extensions);
+    // agents.childQuestions "route" sends a child's dialogs to the parent, so a
+    // Pi child with extensions also gets the tool that opens them. A Pi tool
+    // list of +name/-name modifiers cannot take a plain name, and an inherited
+    // allowlist is never widened.
+    if (
+      this.config.childQuestions === "route" &&
+      (runner.id === "pi" || runner.id === "pi-durable") &&
+      runner.capabilities.questions &&
+      extensions &&
+      !tools.some((tool) => tool.startsWith("+") || tool.startsWith("-"))
+    ) {
+      for (const tool of this.config.childQuestionTools ?? ["ask"]) {
+        if (this.#inheritedToolAllowlist === undefined || this.#inheritedToolAllowlist.has(tool)) tools.push(tool);
+      }
+    }
     if (
       runner.capabilities.recursiveFabric &&
       (request.recursive || ((this.#fullCodeMode || requiresFabricKernel) && extensions))

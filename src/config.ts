@@ -230,6 +230,8 @@ export interface FabricAgentConfig {
   childQuestions?: "cancel" | "route";
   /** Routed child question deadline; absent means 10 minutes. */
   childQuestionTimeoutMs?: number;
+  /** Tools a routed Pi child gets for asking questions; absent means ["ask"], [] grants none. */
+  childQuestionTools?: string[];
 }
 
 export interface FabricToolCaptureConfig {
@@ -1269,6 +1271,10 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       ...(agents.childQuestionTimeoutMs === undefined ? {} : {
         childQuestionTimeoutMs: boundedInteger(agents.childQuestionTimeoutMs, 600_000, 1_000, 86_400_000),
       }),
+      ...(Array.isArray(agents.childQuestionTools) ? {
+        childQuestionTools: [...new Set(agents.childQuestionTools.flatMap((tool) =>
+          typeof tool === "string" && tool.trim() && tool.trim() !== "fabric_exec" ? [tool.trim()] : []))],
+      } : {}),
     },
     jev: normalizeJevConfig(input.jev),
     components: configuredComponents.map((entry) => structuredClone(entry)),

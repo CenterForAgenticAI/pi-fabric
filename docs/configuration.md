@@ -184,7 +184,8 @@ where absent values do not participate, and time spent inside a `humanWaitRefs` 
     "sessionExport": true,
     "sessionExportDir": "",
     "childQuestions": "cancel",
-    "childQuestionTimeoutMs": 600000
+    "childQuestionTimeoutMs": 600000,
+    "childQuestionTools": ["ask"]
   },
   "components": [
     {
@@ -635,6 +636,7 @@ Other agent settings:
 - `worktree.setup`: optional shell command (`/bin/sh`, or `cmd.exe` on Windows) run in each new `worktree: true` checkout before the child starts (unset by default; blank values are ignored). A per-request `worktreeSetup` overrides it, and a non-zero exit fails the launch. See [worktree results and setup](agents.md#transports).
 - `childQuestions`: `"cancel"` (default) cancels every dialog a Pi child opens; `"route"` forwards it to the parent's UI, or to a root-held [decision](decisions.md#routed-child-questions) when the parent has no UI.
 - `childQuestionTimeoutMs`: default deadline for a routed child dialog (default `600000`, bounded to 1 s..24 h); a dialog's own timeout wins.
+- `childQuestionTools`: tools a Pi child with extensions gets when `childQuestions` is `"route"` (default `["ask"]`; `[]` grants none). The grant never widens an inherited allowlist and is skipped for `+name`/`-name` tool lists.
 
 ### Usage tracking with external tools
 

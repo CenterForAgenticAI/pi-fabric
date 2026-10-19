@@ -339,6 +339,44 @@ describe("agent manager spawning primitives", () => {
     expect(readAgentLineage(secondArgs.lineage)).toMatchObject({ runId: second.id, childIndex: 1 });
   });
 
+  it("grants the routed question tool to Pi children only when dialogs route", async () => {
+    const cwd = tempRoot("pi-fabric-question-tool-");
+    const launchedTools = async (
+      config: Partial<typeof DEFAULT_FABRIC_CONFIG.agents>,
+      request: Partial<AgentRunRequest> = {},
+    ): Promise<string[]> => {
+      const { manager, runRoot } = createManager(cwd, {}, config);
+      const result = await manager.run({ task: "x", transport: "process", ...request });
+      return JSON.parse(launchArgs(runRoot, result.id).tools!) as string[];
+    };
+    const defaults = DEFAULT_FABRIC_CONFIG.agents.defaultTools;
+    expect(await launchedTools({})).toEqual(defaults);
+    expect(await launchedTools({ childQuestions: "route" })).toEqual([...defaults, "ask"]);
+    expect(await launchedTools({ childQuestions: "route" }, { tools: ["read"] })).toEqual(["read", "ask"]);
+    expect(await launchedTools({ childQuestions: "route" }, { tools: ["read", "ask"] })).toEqual(["read", "ask"]);
+    expect(await launchedTools({ childQuestions: "route" }, { tools: ["read"], runner: "pi-durable" }))
+      .toEqual(["read", "ask"]);
+    expect(await launchedTools({ childQuestions: "route", childQuestionTools: ["question"] }, { tools: ["read"] }))
+      .toEqual(["read", "question"]);
+    expect(await launchedTools({ childQuestions: "route", childQuestionTools: [] }, { tools: ["read"] }))
+      .toEqual(["read"]);
+    expect(await launchedTools({ childQuestions: "route" }, { tools: ["read"], extensions: false }))
+      .toEqual(["read"]);
+  });
+
+  it("never widens an inherited tool allowlist with the question tool", async () => {
+    const cwd = tempRoot("pi-fabric-question-tool-nested-");
+    const launchedTools = async (): Promise<string[]> => {
+      const { manager, runRoot } = createManager(cwd, {}, { childQuestions: "route" });
+      const result = await manager.run({ task: "x", transport: "process", tools: ["read"] });
+      return JSON.parse(launchArgs(runRoot, result.id).tools!) as string[];
+    };
+    vi.stubEnv("PI_FABRIC_TOOL_ALLOWLIST", JSON.stringify(["read"]));
+    expect(await launchedTools()).toEqual(["read"]);
+    vi.stubEnv("PI_FABRIC_TOOL_ALLOWLIST", JSON.stringify(["read", "ask"]));
+    expect(await launchedTools()).toEqual(["read", "ask"]);
+  });
+
   it("inherits lineage roots and the caller policy in nested managers", async () => {
     const cwd = tempRoot("pi-fabric-wp7-nested-");
     fs.mkdirSync(path.join(cwd, "inside"));

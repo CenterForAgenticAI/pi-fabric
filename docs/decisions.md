@@ -127,7 +127,7 @@ By default a child Pi run cancels every dialog (`select`, `confirm`, `input`, `e
 
 The deadline is the dialog's own timeout, or `agents.childQuestionTimeoutMs` (default 10 minutes). The worker owns that deadline and answers `cancelled` when it passes, so a child never waits on a parent that has gone away. A settled run cancels its open question decision. Only the `pi` runner routes dialogs.
 
-Routing forwards dialogs; it does not add tools. A Pi child may call only the tools in its `tools` list (default `agents.defaultTools`), so a caller that wants the child to use a question tool such as `ask` must name it in `tools`. A child's system prompt lists only the extension tools its allowlist permits, so a tool left out of `tools` is not offered and cannot be called.
+Routing also gives a Pi child with extensions the tools listed in `agents.childQuestionTools` (default `["ask"]`), so a caller does not have to name a question tool in `tools`. The grant never widens an allowlist the child inherited, and it is skipped when `tools` uses `+name`/`-name` modifiers or `extensions` is `false`. Set `childQuestionTools: []` to route dialogs without granting a tool; a caller then names the question tool in `tools`. A child's system prompt lists only the extension tools its allowlist permits, so a tool left out is not offered and cannot be called.
 
 ## Extension questions
 
@@ -154,5 +154,6 @@ Fabric copies only those question fields. The decision is always held by `"user"
 | `approvals.headlessTimeoutMs` | `300000` | headless approval deadline (1 s to 24 h) |
 | `agents.childQuestions` | `"cancel"` | `"route"` forwards child dialogs to the parent |
 | `agents.childQuestionTimeoutMs` | `600000` | default routed dialog deadline (1 s to 24 h) |
+| `agents.childQuestionTools` | `["ask"]` | tools a routed Pi child gets for asking; `[]` grants none |
 
 Decisions need `mesh.enabled`. Managed hosts do not expose `decisions.*`. Schema enforce mode allows `decisions.list` and blocks the other actions.
