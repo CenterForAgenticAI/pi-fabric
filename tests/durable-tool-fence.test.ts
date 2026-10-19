@@ -9,6 +9,7 @@ import { ActionRegistry } from "../src/core/action-registry.js";
 import { FabricExecutionService } from "../src/execution-service.js";
 import { PiToolsProvider } from "../src/providers/pi-tools-provider.js";
 import type { FabricActionDescriptor } from "../src/protocol.js";
+import { availablePythonBackends } from "./fixtures/python-backends.js";
 
 // The durable worker publishes the fence under this key; Fabric never imports the worker.
 type Fence = { toolCallId: string; accept(): Promise<void>; arm(): Promise<void> };
@@ -27,29 +28,44 @@ const writeAction: FabricActionDescriptor = {
   inputSchema: { type: "object", properties: {}, additionalProperties: false }, risk: "write",
 };
 
+// Read risk, but not on the read-only list: a provider may do anything behind it.
+const lookupAction: FabricActionDescriptor = {
+  name: "lookup", description: "read through a provider",
+  inputSchema: { type: "object", properties: {}, additionalProperties: false }, risk: "read",
+};
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
 function fixture(config: FabricConfig = structuredClone(DEFAULT_FABRIC_CONFIG)) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-fence-")); roots.push(cwd);
   fs.writeFileSync(path.join(cwd, "sample.txt"), "fabric works\n");
   const events: string[] = [];
+  // The durable mark is slow in a real worker. The test holds it open to show
+  // that nothing runs until it settles.
+  const armStarted = deferred();
+  const armGate = deferred(); let holdArm = false;
   const registry = new ActionRegistry(); registries.push(registry);
   registry.register(new PiToolsProvider(cwd, undefined, undefined));
   registry.register({
     name: "demo", description: "demo",
-    async list() { return [writeAction]; },
-    async describe(name) { return name === "write" ? writeAction : undefined; },
+    async list() { return [writeAction, lookupAction]; },
+    async describe(name) { return name === "write" ? writeAction : name === "lookup" ? lookupAction : undefined; },
     async invoke() { events.push("invoke"); return "written"; },
   });
   const service = new FabricExecutionService(registry, config);
   const run = (code: string, fenceId = "call") => fences.run({
     toolCallId: fenceId,
     accept: async () => { events.push("accept"); },
-    // A late arm proves the effect waits for the durable mark.
-    arm: async () => { await new Promise(resolve => setTimeout(resolve, 20)); events.push("arm"); },
+    arm: async () => { events.push("arm-start"); armStarted.resolve(); if (holdArm) await armGate.promise; events.push("arm"); },
   }, () => service.execute({
     code, signal: undefined, parentToolCallId: "call",
     context: { cwd, hasUI: false } as ExtensionContext, onPartial() {},
   }));
-  return { events, run };
+  return { events, run, service, armStarted, hold: () => { holdArm = true; return armGate.resolve; } };
 }
 
 const readOnly = 'const text = await pi.read({ path: "sample.txt" });\nreturn text.trim();';
@@ -64,17 +80,22 @@ describe("durable fabric_exec rerun fence", () => {
   });
 
   it("arms the fence durably before an effectful call runs", async () => {
-    const { events, run } = fixture();
-    const result = await run(effectful);
-    expect(result).toMatchObject({ success: true, value: "done" });
-    expect(events).toEqual(["accept", "arm", "invoke"]);
+    const { events, run, armStarted, hold } = fixture();
+    const release = hold();
+    const finished = run(effectful);
+    await armStarted.promise;
+    // The mark is still being written, so the effect has not run.
+    expect(events).toEqual(["accept", "arm-start"]);
+    release();
+    expect(await finished).toMatchObject({ success: true, value: "done" });
+    expect(events).toEqual(["accept", "arm-start", "arm", "invoke"]);
   });
 
   it("arms before semantic search reaches the network classifier", async () => {
     const { events, run } = fixture();
     const result = await run('try { await tools.search({ query: "read", searchMode: "semantic" }); } catch {}\nreturn "searched";');
     expect(result).toMatchObject({ success: true, value: "searched" });
-    expect(events).toEqual(["accept", "arm"]);
+    expect(events).toEqual(["accept", "arm-start", "arm"]);
   });
 
   it("arms before a read approval that would prompt or classify", async () => {
@@ -83,7 +104,22 @@ describe("durable fabric_exec rerun fence", () => {
     const { events, run } = fixture(config);
     const result = await run('try { await pi.read({ path: "sample.txt" }); } catch {}\nreturn "asked";');
     expect(result).toMatchObject({ success: true, value: "asked" });
-    expect(events).toEqual(["accept", "arm"]);
+    expect(events).toEqual(["accept", "arm-start", "arm"]);
+  });
+
+  it("does not arm for the script store load that every stored-state program performs", async () => {
+    const { events, run, service } = fixture();
+    service.nativeCodemode.setPersistence(() => undefined);
+    const result = await run(readOnly);
+    expect(result).toMatchObject({ success: true, value: "fabric works" });
+    expect(events).toEqual(["accept"]);
+  });
+
+  it("arms before a read-risk action outside the read-only set", async () => {
+    const { events, run } = fixture();
+    const result = await run('await tools.call({ ref: "demo.lookup", args: {} });\nreturn "looked";');
+    expect(result).toMatchObject({ success: true, value: "looked" });
+    expect(events).toEqual(["accept", "arm-start", "arm", "invoke"]);
   });
 
   it("never accepts the fence for a native runtime whose effects bypass the host bridge", async () => {
@@ -96,7 +132,7 @@ describe("durable fabric_exec rerun fence", () => {
     expect(events).toEqual([]);
   }, 30_000);
 
-  it("accepts the fence for a read-only Monty program", async () => {
+  it.skipIf(!availablePythonBackends.monty)("accepts the fence for a read-only Monty program", async () => {
     const config = normalizeFabricConfig({ executor: { kernel: "python", cpython: { binary: "/nonexistent/python3" }, memoryLimitBytes: 256 * 1024 * 1024 } });
     const { events, run } = fixture(config);
     const result = await run('text = await pi.read(path="sample.txt")\nreturn text.strip()');
