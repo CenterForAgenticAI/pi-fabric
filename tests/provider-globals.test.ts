@@ -29,6 +29,9 @@ import { NodeProcessRuntime } from "../src/runtime/node-process-runtime.js";
 import { QuickJsRuntime } from "../src/runtime/quickjs-runtime.js";
 import { typeCheckFabricCode } from "../src/runtime/type-checker.js";
 
+// Sources are read from the repository root, not the process working directory.
+const repoRoot = path.resolve(import.meta.dirname, "..");
+
 // Every name a provider could register that would also be a valid global.
 const IDENTIFIER = /^[a-z][a-z0-9_]*$/;
 const python = spawnSync("python3", ["-I", "-B", "-c", "import sys; print(sys.executable)"]);
@@ -87,15 +90,15 @@ return [...names];`;
   });
 
   it("reserves every Python root, namespace name and prelude name", () => {
-    const monty = fs.readFileSync("src/runtime/monty-bridge.ts", "utf8");
+    const monty = fs.readFileSync(path.join(repoRoot, "src/runtime/monty-bridge.ts"), "utf8");
     const montyRoots = [.../const ROOTS = \[([^\]]*)\]/.exec(monty)![1]!.matchAll(/"([^"]+)"/g)].map((match) => match[1]!);
     const cpythonRoots = [...CPYTHON_CHILD_SOURCE.matchAll(/for name in \(([^)]*)\)/g)]
       .flatMap((match) => [...match[1]!.matchAll(/"([^"]+)"/g)].map((name) => name[1]!));
     const cpythonNamespace = [...CPYTHON_CHILD_SOURCE.matchAll(/namespace\.update\(\{([^}]*)\}/g)]
       .flatMap((match) => [...match[1]!.matchAll(/"([^"]+)":/g)].map((name) => name[1]!));
     const prelude = [
-      ...fs.readFileSync("src/programs/source.ts", "utf8").matchAll(/const (\w+): any = /g),
-      ...fs.readFileSync("src/jev/manager.ts", "utf8").matchAll(/const (\w+) = (?:JSON\.parse|Object\.freeze)/g),
+      ...fs.readFileSync(path.join(repoRoot, "src/programs/source.ts"), "utf8").matchAll(/const (\w+): any = /g),
+      ...fs.readFileSync(path.join(repoRoot, "src/jev/manager.ts"), "utf8").matchAll(/const (\w+) = (?:JSON\.parse|Object\.freeze)/g),
     ].map((match) => match[1]!);
     expect(montyRoots).toContain("mesh");
     expect(cpythonRoots).toEqual(montyRoots);
@@ -136,7 +139,7 @@ return [...names];`;
 
   it("reserves every built-in Fabric provider", () => {
     const builtins = new Set<string>(["fabric", "components", ...FABRIC_COMPONENT_PROVIDER_NAMES]);
-    for (const file of sourceFiles("src")) {
+    for (const file of sourceFiles(path.join(repoRoot, "src"))) {
       const text = fs.readFileSync(file, "utf8");
       for (const match of text.matchAll(/createProviderComponent\(\{\s*provider:\s*"([a-z][a-z0-9_-]*)"/g)) builtins.add(match[1]!);
       if (text.includes("implements FabricProvider")) {
@@ -312,15 +315,19 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmTempSync(root);
 });
 
-const service = (kernel: "typescript" | FabricPythonRuntime) => {
+const service = (kernel: "typescript" | FabricPythonRuntime, overrides: Record<string, unknown> = {}) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-provider-globals-"));
   roots.push(cwd);
   const registry = new ActionRegistry();
   registries.push(registry);
   const config = normalizeFabricConfig({
-    executor: kernel === "typescript"
-      ? { kernel: "typescript" }
-      : { kernel: "python", pythonRuntime: kernel, ...(pythonBinary ? { cpython: { binary: pythonBinary } } : {}) },
+    ...overrides,
+    executor: {
+      ...(overrides.executor as Record<string, unknown> | undefined),
+      ...(kernel === "typescript"
+        ? { kernel: "typescript" }
+        : { kernel: "python", pythonRuntime: kernel, ...(pythonBinary ? { cpython: { binary: pythonBinary } } : {}) }),
+    },
   });
   const execution = new FabricExecutionService(registry, config);
   let sequence = 0;
@@ -364,6 +371,44 @@ describe("provider globals through the execution service", () => {
     expect(result.success).toBe(false);
     expect(result.typeErrors?.map((error) => error.message).join("\n")).toMatch(/'titel' does not exist/);
     expect(context.invoke).not.toHaveBeenCalled();
+  });
+
+  it("types a destructured member and lets a local binding shadow the global", async () => {
+    const { registry, run } = service("typescript");
+    const context = provider("context");
+    const list = vi.spyOn(context, "list");
+    registry.register(context);
+    const destructured = await run("const { task_list } = context; return await task_list();");
+    expect(destructured.success, destructured.error ?? JSON.stringify(destructured.typeErrors)).toBe(true);
+    expect(list).not.toHaveBeenCalled();
+    expect(destructured.value).toEqual({ action: "task_list", args: {} });
+    const shadowed = await run("const context = { task_list: () => 7 }; return context.task_list();");
+    expect(shadowed.success, shadowed.error ?? JSON.stringify(shadowed.typeErrors)).toBe(true);
+    expect(shadowed.value).toBe(7);
+  });
+
+  it("types the global under schema enforce", async () => {
+    const { registry, run, config } = service("typescript", { schema: { mode: "enforce" } });
+    expect(config.schema.mode).toBe("enforce");
+    const context = provider("context");
+    registry.register(context);
+    const typed = await run('return await context.task_add({ title: "a" });');
+    expect(typed.success, typed.error ?? JSON.stringify(typed.typeErrors)).toBe(true);
+    const wrong = await run('return await context.task_add({ titel: "a" });');
+    expect(wrong.success).toBe(false);
+    expect(wrong.typeErrors?.map((error) => error.message).join("\n")).toMatch(/'titel' does not exist/);
+    expect(context.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives the native codemode profile the global, untyped like the rest of its JavaScript", async () => {
+    const { registry, run, config } = service("typescript", { executor: { codemodeProfile: "native" } });
+    expect(config.executor.codemodeProfile).toBe("native");
+    const context = provider("context");
+    registry.register(context);
+    const result = await run('return await context.task_add({ title: "a" });');
+    expect(result.success, result.error ?? JSON.stringify(result.typeErrors)).toBe(true);
+    expect(result.value).toEqual({ action: "task_add", args: { title: "a" } });
+    expect(result.audits.map((audit) => audit.ref)).toEqual(["context.task_add"]);
   });
 
   it("gives a clashing provider no global; tools.call still reaches it", async () => {
