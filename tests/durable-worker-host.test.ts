@@ -210,7 +210,7 @@ describe("durable native RPC worker", () => {
   it("does not rerun an interrupted fabric_exec that reached an effect", async () => {
     const gate = path.join(root, "fabric-effect", "gate.txt");
     const effect = path.join(root, "fabric-effect", "effect.txt");
-    const code = `await pi.bash({ cmd: ${JSON.stringify(`echo effect >> '${effect}'`)} });\n${holdOnGate(gate)}`;
+    const code = `await pi.write({ path: ${JSON.stringify(effect)}, content: "effect\\n" });\n${holdOnGate(gate)}`;
     const first = await fabricWorker("fabric-effect", code);
     try {
       fs.writeFileSync(gate, "hold\n");
