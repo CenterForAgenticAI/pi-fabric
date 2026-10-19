@@ -6,7 +6,7 @@ import type {
   FabricProvider,
   FabricProviderListRequest,
 } from "../protocol.js";
-import { callerCodeProgram, programSourceWithInput, sha256Hex } from "../programs/source.js";
+import { callerCodeProgram, programSourceWithInput } from "../programs/source.js";
 import {
   MAX_PROGRAM_CODE_CHARS,
   MAX_PROGRAM_DESCRIPTION_CHARS,
@@ -152,9 +152,8 @@ export class ProgramsProvider implements FabricProvider {
     if (!runner) throw new Error("programs.run runs only inside a fabric_exec program or a host program run");
     const caller = runner.callerProgram;
     if (caller && args.ref === callerCodeProgram(caller.sha256)) {
-      // Verified caller code takes the saved-program path from here: same
-      // authorization and approval, nested trace operation, input and kernel rules.
-      if (sha256Hex(caller.code) !== caller.sha256) throw new Error("Caller-supplied code does not match its sha256");
+      // Caller code takes the saved-program path from here: same authorization
+      // and approval, nested trace operation, input and kernel rules.
       const label = callerCodeProgram(caller.sha256);
       const input = normalizeProgramInput(args.input);
       if (runner.kernel !== "typescript") {

@@ -38,7 +38,7 @@ export interface HostSavedProgramRunRequest extends HostProgramRunBase {
   requirePromoted?: boolean;
 }
 
-/** Caller-supplied TypeScript and its SHA-256, which the event handler has already verified. */
+/** Caller-supplied TypeScript and the SHA-256 that Fabric computed for it. */
 export interface HostCodeProgramRunRequest extends HostProgramRunBase {
   code: string;
   sha256: string;
@@ -166,12 +166,11 @@ export const handleFabricProgramRunEvent = async (
   request: FabricProgramRunSnapshotV1,
   deps: ProgramHostDeps & { context: ExtensionContext | undefined },
 ): Promise<void> => {
-  const { ref, code, kernel, sha256, input, requirePromoted, signal, unreadable, respond } = request;
+  const { ref, code, kernel, sha256: pinned, input, requirePromoted, signal, unreadable, respond } = request;
   const refuse = (reason: string): void => respond({ ok: false, error: `Invalid program run request: ${reason}` });
   try {
     // The first unreadable field, in read order, is refused by name before any other check.
     if (unreadable) return refuse(`${unreadable} could not be read`);
-    if (ref !== undefined && code !== undefined) return refuse("ref and code are mutually exclusive");
     let run: HostProgramRunRequest;
     if (code === undefined) {
       if (typeof ref !== "string" || !ref || ref.length > MAX_PROGRAM_REF_CHARS) {
@@ -191,10 +190,12 @@ export const handleFabricProgramRunEvent = async (
       if (typeof code !== "string" || !code.trim()) return refuse("code must be a non-empty string");
       if (code.length > MAX_PROGRAM_CODE_CHARS) return refuse(`code exceeds ${MAX_PROGRAM_CODE_CHARS} characters`);
       if (kernel !== undefined && kernel !== "typescript") return refuse('kernel must be "typescript"');
-      if (typeof sha256 !== "string" || !SHA256_PATTERN.test(sha256)) {
-        return refuse("sha256 must be 64 lowercase hex characters");
+      // Fabric computes the digest. A caller's `sha256` is only a pin on the text it meant to send.
+      const sha256 = sha256Hex(code);
+      if (pinned !== undefined) {
+        if (typeof pinned !== "string" || !SHA256_PATTERN.test(pinned)) return refuse("sha256 must be 64 lowercase hex characters");
+        if (pinned !== sha256) return refuse("sha256 does not match code");
       }
-      if (sha256Hex(code) !== sha256) return refuse("sha256 does not match code");
       if (signal !== undefined && !isAbortSignal(signal)) return refuse("signal must be an AbortSignal");
       run = { code, sha256, ...(input !== undefined ? { input } : {}), ...(signal ? { signal } : {}) };
     }

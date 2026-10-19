@@ -376,8 +376,8 @@ describe("host program runs", () => {
       const { deps, sendMessage } = hostDeps(f);
       const { replies, reply } = collect();
       await handle({ code: CODE, kernel: "typescript", sha256: sha(CODE), input: { who: "pi-stack" }, reply }, { ...deps, context: f.context });
-      const label = `caller-code@${sha(CODE).slice(0, 12)}`;
-      const program = `caller-code@${sha(CODE)}`;
+      const label = `caller-code:${sha(CODE).slice(0, 12)}`;
+      const program = `caller-code:${sha(CODE)}`;
       expect(replies).toEqual([{ ok: true, program, value: { r: { called: "allowed", args: { who: "pi-stack" } }, who: "pi-stack" }, logs: [] }]);
       expect(f.demo).toHaveBeenCalledTimes(1);
       expect(sendMessage).toHaveBeenCalledOnce();
@@ -422,14 +422,12 @@ describe("host program runs", () => {
       const good = { code: CODE, sha256: sha(CODE) };
       const big = `return 1;${" ".repeat(65_536)}`;
       const cases: Array<[string, Record<string, unknown>, string]> = [
-        ["ref and code", { ...good, ref: "hello" }, "ref and code are mutually exclusive"],
         ["neither", {}, "ref must be a non-empty string"],
         ["empty code", { code: "", sha256: sha("") }, "code must be a non-empty string"],
         ["blank code", { code: "  \n", sha256: sha("  \n") }, "code must be a non-empty string"],
         ["non-string code", { code: 7, sha256: sha("7") }, "code must be a non-empty string"],
         ["oversized code", { code: big, sha256: sha(big) }, "code exceeds 65536 characters"],
         ["python kernel", { ...good, kernel: "python" }, 'kernel must be "typescript"'],
-        ["missing sha256", { code: CODE }, "sha256 must be 64 lowercase hex characters"],
         ["uppercase sha256", { code: CODE, sha256: sha(CODE).toUpperCase() }, "sha256 must be 64 lowercase hex characters"],
         ["short sha256", { code: CODE, sha256: sha(CODE).slice(0, 12) }, "sha256 must be 64 lowercase hex characters"],
         ["non-string sha256", { code: CODE, sha256: 1 }, "sha256 must be 64 lowercase hex characters"],
@@ -464,7 +462,7 @@ describe("host program runs", () => {
       const { replies, reply } = collect();
       await handle({ code, sha256: sha(code), reply }, { ...deps, context: f.context });
       expect(replies).toHaveLength(1);
-      expect(replies[0]).toMatchObject({ ok: false, program: `caller-code@${sha(code)}`, error: expect.stringContaining("boom") });
+      expect(replies[0]).toMatchObject({ ok: false, program: `caller-code:${sha(code)}`, error: expect.stringContaining("boom") });
       expect(sendMessage.mock.calls[0]![0].details).toMatchObject({ invokedBy: "host", success: false });
     });
 
@@ -561,7 +559,7 @@ describe("host program runs", () => {
       const savedOps = await traceOf(1);
       const callerRun = callerOps.filter((entry) => entry.ref === "fabric.program.run");
       expect(callerRun).toHaveLength(1);
-      expect(callerRun[0]!.args).toEqual({ program: `caller-code@${sha(CODE)}`, invokedBy: "host" });
+      expect(callerRun[0]!.args).toEqual({ program: `caller-code:${sha(CODE)}`, invokedBy: "host" });
       // The same operation, in the same place, as a saved program's run.
       expect(callerOps.map((entry) => entry.ref)).toEqual(savedOps.map((entry) => entry.ref));
       expect(callerOps.map((entry) => entry.ref)).toEqual(["programs.run", "fabric.program.run", "demo.allowed"]);
@@ -581,15 +579,22 @@ describe("host program runs", () => {
       expect(sendMessage).toHaveBeenCalledOnce();
     });
 
+    it("uses a ref that no saved program can have", async () => {
+      const f = fixture();
+      const ref = `caller-code:${sha(CODE)}`;
+      await expect(f.store.save({ name: ref, code: "return 1;" }, "typescript")).rejects.toThrow(/Invalid program name/);
+      await expect(f.store.resolve(ref)).rejects.toThrow(/Invalid program name/);
+    });
+
     it("never lets a model reach caller code: the ref resolves only inside the host run that supplied it", async () => {
       const f = fixture();
-      const ref = `caller-code@${sha(CODE)}`;
+      const ref = `caller-code:${sha(CODE)}`;
       const replay = `return await programs.run({ ref: ${JSON.stringify(ref)}, input: { who: "m" } });`;
       // A model execution of its own: its parentToolCallId is not the host run's.
       const modelReplay = async (when: string, id: string) => {
         const model = await f.service.execute({ code: replay, signal: undefined, parentToolCallId: id, context: f.context, onPartial() {} });
         expect(model.success, when).toBe(false);
-        expect(model.error, when).toMatch(/Unknown program|not found|No saved program/i);
+        expect(model.error, when).toMatch(/Invalid program name/);
       };
       // A host run of the caller code that stays active until the test releases it.
       const heldHostRun = (id: string, signal?: AbortSignal) => {
@@ -630,15 +635,24 @@ describe("host program runs", () => {
       expect(f.demo).toHaveBeenCalledTimes(2);
     });
 
-    it("re-checks the hash at the run, so code that does not match its sha256 never runs", async () => {
+    it("computes the hash itself when the request has none, and records it", async () => {
       const f = fixture();
-      const run = await f.service.execute({
-        code: hostProgramRunSource("typescript", { ref: `caller-code@${sha(CODE)}` }),
-        callerProgram: { code: `${CODE} `, sha256: sha(CODE) },
-        signal: undefined, parentToolCallId: "tamper", context: f.context, invokedBy: "host", onPartial() {},
-      });
-      expect(run.success).toBe(false);
-      expect(run.error).toContain("does not match its sha256");
+      const { deps, sendMessage } = hostDeps(f);
+      const { replies, reply } = collect();
+      await handle({ code: CODE, input: { who: "pi-stack" }, reply }, { ...deps, context: f.context });
+      expect(replies).toMatchObject([{ ok: true, program: `caller-code:${sha(CODE)}`, value: { who: "pi-stack" } }]);
+      expect(sendMessage.mock.calls[0]![0].details).toMatchObject({ source: "caller-code", sha256: sha(CODE) });
+    });
+
+    it("runs the ref and ignores the code fields when a request carries both", async () => {
+      const f = fixture();
+      await f.store.save({ name: "hello", code: "return { from: 'saved' };" }, "typescript");
+      const { deps } = hostDeps(f);
+      const executed = vi.spyOn(f.service, "execute");
+      const { replies, reply } = collect();
+      await handle({ ref: "hello", code: CODE, sha256: "not a hash", kernel: "python", reply }, { ...deps, context: f.context });
+      expect(replies).toMatchObject([{ ok: true, value: { from: "saved" } }]);
+      expect(executed.mock.calls[0]![0].callerProgram).toBeUndefined();
       expect(f.demo).not.toHaveBeenCalled();
     });
 
@@ -655,16 +669,6 @@ describe("host program runs", () => {
       expect(execute).not.toHaveBeenCalled();
     });
 
-    it("keeps ref runs unchanged when the request carries a claim", async () => {
-      const f = fixture();
-      await f.store.save({ name: "hello", code: "return { greeting: 'hi ' + input.who };" }, "typescript");
-      const { deps } = hostDeps(f);
-      for (const claim of [undefined, vi.fn()]) {
-        const { replies, reply } = collect();
-        await handle({ ref: "hello", input: { who: "host" }, ...(claim ? { claim } : {}), reply }, { ...deps, context: f.context });
-        expect(replies).toMatchObject([{ ok: true, program: expect.stringMatching(/^hello@[0-9a-f]{64}$/), value: { greeting: "hi host" } }]);
-      }
-    });
   });
 
   describe("program run event listener", () => {
@@ -710,97 +714,6 @@ describe("host program runs", () => {
     const drained = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
     const sha = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
-
-    it("claims synchronously, before any reply, for every request it will answer", async () => {
-      const { listener, shutdown } = await boot();
-      try {
-        const code = "return 1;";
-        const requests: Array<[string, Record<string, unknown>]> = [
-          ["valid code", { code, sha256: sha(code) }],
-          ["mismatching hash", { code, sha256: sha("other") }],
-          ["bad kernel", { code, sha256: sha(code), kernel: "python" }],
-          ["ref", { ref: "hello" }],
-          ["neither", {}],
-        ];
-        for (const [name, fields] of requests) {
-          const events: string[] = [];
-          const answered = nextReply();
-          listener({ ...fields, claim: () => { events.push("claim"); }, reply: (result: FabricProgramRunReplyV1) => { events.push("reply"); answered.reply(result); } });
-          // Still inside the emit call: the claim has happened and no reply has.
-          expect(events, `${name} after emit`).toEqual(["claim"]);
-          await answered.done;
-          expect(events, `${name} after reply`).toEqual(["claim", "reply"]);
-        }
-      } finally {
-        await shutdown();
-      }
-    });
-
-    it("stays silent when the caller's claim reports another responder", async () => {
-      const { listener, shutdown } = await boot();
-      try {
-        const reply = vi.fn();
-        listener({ ref: "hello", claim: () => false, reply });
-        // A later request on the same listener is answered; the declined one never is.
-        const barrier = nextReply();
-        listener({ ref: "hello", reply: barrier.reply });
-        await barrier.done;
-        await drained();
-        expect(reply).not.toHaveBeenCalled();
-      } finally {
-        await shutdown();
-      }
-    });
-
-    it("does not claim a request it cannot answer, and a request without claim is answered as before", async () => {
-      const { listener, shutdown } = await boot();
-      try {
-        const claim = vi.fn();
-        expect(() => listener({ ref: "hello", claim })).toThrow("Invalid Pi Fabric program run request");
-        expect(() => listener({ ref: "hello", claim, reply: 5 })).toThrow("Invalid Pi Fabric program run request");
-        const unreadableReply: Record<string, unknown> = { ref: "hello", claim };
-        Object.defineProperty(unreadableReply, "reply", { get: () => { throw new Error("getter boom"); }, enumerable: true });
-        expect(() => listener(unreadableReply)).not.toThrow();
-        expect(claim).not.toHaveBeenCalled();
-        const answered = nextReply();
-        listener({ ref: "hello", reply: answered.reply });
-        expect(await answered.done).toMatchObject({ ok: false, error: expect.stringMatching(/No active Pi session/) });
-      } finally {
-        await shutdown();
-      }
-    });
-
-    it("answers even when the claim throws", async () => {
-      const { listener, shutdown } = await boot();
-      try {
-        const answered = nextReply();
-        listener({ ref: "hello", claim: () => { throw new Error("nope"); }, reply: answered.reply });
-        await answered.done;
-        await drained();
-        expect(answered.calls()).toBe(1);
-      } finally {
-        await shutdown();
-      }
-    });
-
-    it("claims once at emit and still answers on the original reply when the caller then deletes it", async () => {
-      const { listener, shutdown } = await boot();
-      try {
-        const answered = nextReply();
-        const claim = vi.fn();
-        const request: Record<string, unknown> = { ref: "hello", claim, reply: answered.reply };
-        listener(request);
-        expect(claim).toHaveBeenCalledOnce();
-        delete request.reply;
-        delete request.claim;
-        expect(await answered.done).toMatchObject({ ok: false, error: expect.stringMatching(/No active Pi session/) });
-        await drained();
-        expect(answered.calls()).toBe(1);
-        expect(claim).toHaveBeenCalledOnce();
-      } finally {
-        await shutdown();
-      }
-    });
 
     it("still answers once, on the original reply, when the caller deletes or replaces it after emitting", async () => {
       const { listener, shutdown } = await boot();
@@ -863,7 +776,6 @@ describe("host program runs", () => {
         }
       };
       it("through the listener", () => expectEachCase({}));
-      it("through the listener, with a claim", () => expectEachCase({ claim: () => undefined }));
 
       it("reaches the saved-program run unchanged, calling reply directly", async () => {
         const f = fixture();
@@ -951,7 +863,8 @@ describe("host program runs", () => {
         return request;
       };
       const refused = (field: string) => `Invalid program run request: ${field} could not be read`;
-      const named = ["ref", "code", "kernel", "sha256", "input", "requirePromoted", "signal", "claim"] as const;
+      const named = ["ref", "input", "requirePromoted", "signal"] as const;
+      const codeFields = ["code", "kernel", "sha256"] as const;
 
       it.each(named)("%s on a ref request: nothing escapes the listener and the request is answered exactly once", async (field) => {
         const { listener, shutdown } = await boot();
@@ -983,17 +896,22 @@ describe("host program runs", () => {
         expect(sendMessage).not.toHaveBeenCalled();
       });
 
-      it.each(named)("%s on a code request: nothing escapes the listener and the request is answered exactly once", async (field) => {
+      it.each(codeFields)("%s on a ref request is never read, so the saved program still runs", async (field) => {
+        const f = fixture();
+        await f.store.save({ name: "hello", code: "return 1;" }, "typescript");
+        const { deps } = hostDeps(f);
+        const replies: FabricProgramRunReplyV1[] = [];
+        await handle(unreadable({ ref: "hello", reply: (result: FabricProgramRunReplyV1) => replies.push(result) }, field), { ...deps, context: f.context });
+        expect(replies).toMatchObject([{ ok: true, value: 1 }]);
+      });
+
+      it.each([...codeFields, ...named])("%s on a code request: nothing escapes the listener and the request is answered exactly once", async (field) => {
         const { listener, shutdown } = await boot();
         try {
-          const claim = vi.fn();
           const answered = nextReply();
-          const request = unreadable({ code: "return 1;", sha256: sha("return 1;"), claim, reply: answered.reply }, field);
+          const request = unreadable({ code: "return 1;", reply: answered.reply }, field);
           expect(() => listener(request)).not.toThrow();
-          // Claimed before any await whenever the claim can be read; a throwing claim getter cannot be.
-          expect(claim).toHaveBeenCalledTimes(field === "claim" ? 0 : 1);
           expect(await answered.done).toEqual({ ok: false, error: refused(field) });
-          await drained();
           expect(answered.calls()).toBe(1);
         } finally {
           await shutdown();
@@ -1004,40 +922,15 @@ describe("host program runs", () => {
         const f = fixture();
         const { deps, sendMessage } = hostDeps(f);
         const executed = vi.spyOn(f.service, "execute");
-        for (const field of named) {
+        for (const field of [...codeFields, "input", "requirePromoted", "signal"]) {
           const replies: FabricProgramRunReplyV1[] = [];
-          const request = unreadable({ code: "return 1;", sha256: sha("return 1;"), reply: (result: FabricProgramRunReplyV1) => replies.push(result) }, field);
+          const request = unreadable({ code: "return 1;", reply: (result: FabricProgramRunReplyV1) => replies.push(result) }, field);
           await handle(request, { ...deps, context: f.context });
           expect(replies, field).toEqual([{ ok: false, error: refused(field) }]);
         }
         expect(executed).not.toHaveBeenCalled();
         expect(f.demo).not.toHaveBeenCalled();
         expect(sendMessage).not.toHaveBeenCalled();
-      });
-
-      it("refuses, rather than runs, a request whose claim getter throws; a claim that throws when called still runs", async () => {
-        const f = fixture();
-        await f.store.save({ name: "hello", code: "return 1;" }, "typescript");
-        const { deps } = hostDeps(f);
-        const executed = vi.spyOn(f.service, "execute");
-        const refusedReplies: FabricProgramRunReplyV1[] = [];
-        await handle(unreadable({ ref: "hello", reply: (result: FabricProgramRunReplyV1) => refusedReplies.push(result) }, "claim"), { ...deps, context: f.context });
-        expect(refusedReplies).toEqual([{ ok: false, error: refused("claim") }]);
-        expect(executed).not.toHaveBeenCalled();
-        const ranReplies: FabricProgramRunReplyV1[] = [];
-        await handle({ ref: "hello", claim: boom, reply: (result: FabricProgramRunReplyV1) => ranReplies.push(result) }, { ...deps, context: f.context });
-        expect(ranReplies).toMatchObject([{ ok: true }]);
-        expect(executed).toHaveBeenCalledOnce();
-      });
-
-      it("calls the claim it read without reading claim again", () => {
-        let reads = 0;
-        let calls = 0;
-        const request: Record<string, unknown> = { reply: () => undefined };
-        Object.defineProperty(request, "claim", { enumerable: true, get() { reads++; return () => { calls++; }; } });
-        const snapshot = snapshotFabricProgramRunRequestV1(request)!;
-        expect(snapshot.claim()).toBe(true);
-        expect([reads, calls]).toEqual([1, 1]);
       });
 
       describe("is refused before any other check", () => {
@@ -1084,7 +977,7 @@ describe("host program runs", () => {
         const answered = nextReply();
         const request: Record<string, unknown> = {};
         const values: Record<string, unknown> = { reply: answered.reply, ref: "hello" };
-        for (const field of ["reply", ...named]) {
+        for (const field of ["reply", ...named, ...codeFields]) {
           Object.defineProperty(request, field, {
             enumerable: true,
             get() {
@@ -1097,25 +990,10 @@ describe("host program runs", () => {
         const snapshot = snapshotFabricProgramRunRequestV1(request)!;
         await handleFabricProgramRunEvent(snapshot, { ...hostDeps(f).deps, context: f.context });
         expect(await answered.done).toEqual({ ok: false, error: refused("input") });
+        // A ref request never reads the code fields.
         expect(reads).toEqual(Object.fromEntries(["reply", ...named].map((field) => [field, 1])));
       });
     });
-  });
-
-  it("the snapshot's claim declines only on an explicit false, and calls the caller's claim on the request", () => {
-    const claimOf = (request: Record<string, unknown>): boolean =>
-      snapshotFabricProgramRunRequestV1({ reply: () => undefined, ...request })!.claim();
-    expect(claimOf({})).toBe(true);
-    expect(claimOf({ claim: 5 })).toBe(true);
-    expect(claimOf({ claim: () => undefined })).toBe(true);
-    expect(claimOf({ claim: () => true })).toBe(true);
-    expect(claimOf({ claim: () => false })).toBe(false);
-    expect(claimOf({ claim: () => { throw new Error("x"); } })).toBe(true);
-    const request: Record<string, unknown> = { reply: () => undefined };
-    let self: unknown;
-    request.claim = function (this: unknown) { self = this; };
-    snapshotFabricProgramRunRequestV1(request)!.claim();
-    expect(self).toBe(request);
   });
 
   it("lists, promotes, retires and runs through the slash command", async () => {

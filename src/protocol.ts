@@ -69,14 +69,6 @@ interface FabricProgramRunRequestBaseV1 {
   /** JSON, at most 64 KiB; reaches the program as `input`. */
   input?: unknown;
   signal?: AbortSignal;
-  /**
-   * Called synchronously, before the listener's first await, for every request
-   * it will answer. A caller that sees no call knows pi-fabric is absent or too
-   * old. Returning `false` means another responder already holds the request;
-   * pi-fabric then stays silent. Any other return value, or a throw, is ignored.
-   * A `claim` getter that throws cannot be called; Fabric refuses the request.
-   */
-  claim?: () => void | boolean;
   /** Called exactly once. */
   reply: (result: FabricProgramRunReplyV1) => void;
 }
@@ -92,15 +84,19 @@ export interface FabricProgramRunByRefRequestV1 extends FabricProgramRunRequestB
 }
 
 /**
- * Runs program text the caller built, without saving it anywhere. `sha256` is
- * the lowercase hex SHA-256 of the code's UTF-8 bytes; a mismatch runs nothing.
+ * Runs program text the caller built, without saving it anywhere. Fabric
+ * computes the SHA-256 of the code and records it in the trace.
  */
 export interface FabricProgramRunByCodeRequestV1 extends FabricProgramRunRequestBaseV1 {
   /** Non-empty, at most 65 536 characters. */
   code: string;
   /** Only `"typescript"` today; the default. */
   kernel?: "typescript";
-  sha256: string;
+  /**
+   * Optional pin: the lowercase hex SHA-256 of the code's UTF-8 bytes. Fabric
+   * checks it against its own digest and runs nothing on a mismatch.
+   */
+  sha256?: string;
   ref?: never;
   requirePromoted?: never;
 }
@@ -115,8 +111,7 @@ export type FabricProgramRunFieldV1 =
   | "sha256"
   | "input"
   | "requirePromoted"
-  | "signal"
-  | "claim";
+  | "signal";
 
 /**
  * Everything a program run listener keeps of a request. Read once, at the event
@@ -137,12 +132,6 @@ export interface FabricProgramRunSnapshotV1 {
    * request by name instead of letting the throw escape.
    */
   readonly unreadable: FabricProgramRunFieldV1 | undefined;
-  /**
-   * Acknowledges the request synchronously with the caller's `claim`. Returns
-   * false only when `claim` reports that another responder already holds the
-   * request. A missing, unreadable or throwing `claim` returns true.
-   */
-  readonly claim: () => boolean;
   /** Calls the caller's `reply` at most once, directly, and never throws. */
   readonly respond: (result: FabricProgramRunReplyV1) => void;
 }
@@ -190,15 +179,6 @@ export const snapshotFabricProgramRunRequestV1 = (value: unknown): FabricProgram
       return undefined;
     }
   };
-  const claimFunction = read("claim");
-  const claim = (): boolean => {
-    if (typeof claimFunction !== "function") return true;
-    try {
-      return Reflect.apply(claimFunction, value, []) !== false;
-    } catch {
-      return true;
-    }
-  };
   let replied = false;
   const respond = (result: FabricProgramRunReplyV1): void => {
     if (replied) return;
@@ -212,9 +192,12 @@ export const snapshotFabricProgramRunRequestV1 = (value: unknown): FabricProgram
   // Read the plain fields before `input`: copying `input` runs its `toJSON`
   // and getters, which must not be able to change what else the request says.
   const ref = read("ref");
-  const code = read("code");
-  const kernel = read("kernel");
-  const sha256 = read("sha256");
+  // A request with `ref` is a saved-program run, as it was before `code`
+  // existed: it never reads the code fields, so a getter on one cannot refuse it.
+  const byCode = ref === undefined && unreadable === undefined;
+  const code = byCode ? read("code") : undefined;
+  const kernel = byCode ? read("kernel") : undefined;
+  const sha256 = byCode ? read("sha256") : undefined;
   const requirePromoted = read("requirePromoted");
   const signal = read("signal");
   const input = copyProgramRunInput(read("input"));
@@ -227,7 +210,6 @@ export const snapshotFabricProgramRunRequestV1 = (value: unknown): FabricProgram
     requirePromoted,
     signal,
     unreadable,
-    claim,
     respond,
   });
 };

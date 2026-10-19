@@ -173,7 +173,7 @@ export interface FabricNestedProgramRun {
   call?: { ref: string; args: Record<string, unknown> };
 }
 
-/** Program text a host caller supplied, with the SHA-256 it was verified against. Never saved. */
+/** Program text a host caller supplied, with the SHA-256 Fabric computed for it. Never saved. */
 export interface FabricCallerProgram {
   code: string;
   sha256: string;
@@ -186,7 +186,7 @@ export interface FabricCallerProgram {
  */
 export interface FabricNestedProgramRunner {
   kernel: FabricKernel;
-  /** Verified caller-supplied code that `programs.run` may run in place of a saved program. */
+  /** Caller-supplied code that `programs.run` may run in place of a saved program. */
   callerProgram?: FabricCallerProgram;
   run(request: FabricNestedProgramRun, signal: AbortSignal | undefined): Promise<unknown>;
 }
