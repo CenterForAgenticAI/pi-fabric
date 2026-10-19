@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import type { FabricMainAgentTarget } from "../src/main-agent.js";
 import { MeshStore } from "../src/mesh/store.js";
@@ -175,6 +175,7 @@ const stopResidents = async (projectRoot: string): Promise<void> => {
 };
 
 afterEach(async () => {
+  vi.useRealTimers();
   for (const client of clients.splice(0)) await client.close();
   for (const root of roots.splice(0)) {
     await stopResidents(root);
@@ -212,12 +213,15 @@ describe("a durable run collected by a later session in the same project", () =>
     fakeLiveOwner(earlier);
     const later = sessionClient(sessionConfig(root, "later"));
 
+    // Only the poll timer is virtual, so the wait advances only when the test says so.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const waiting = later.waitProjectAgent(seeded.id);
     let settled = false;
     void waiting.then(() => { settled = true; }, () => { settled = true; });
-    await delay(300);
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(settled).toBe(false);
     fs.writeFileSync(seeded.statusPath, JSON.stringify({ ...seeded.result, status: "completed", text: "settled later" }));
+    await vi.advanceTimersByTimeAsync(1_000);
     await expect(waiting).resolves.toMatchObject({ status: "completed", text: "settled later" });
   });
 
@@ -227,11 +231,10 @@ describe("a durable run collected by a later session in the same project", () =>
     const seeded = seedRun(earlier, { status: "running" });
     const later = sessionClient(sessionConfig(root, "later"));
 
-    const outcome = await Promise.race([
-      later.waitProjectAgent(seeded.id).then(() => "resolved", (error: unknown) => String(error)),
-      delay(3_000).then(() => "still waiting"),
-    ]);
-    expect(outcome).toMatch(/resident host of the session that started it is not running/);
+    // With no live host the wait fails on its first read; it never sleeps, so a hang is a test timeout.
+    await expect(later.waitProjectAgent(seeded.id)).rejects.toThrow(
+      /resident host of the session that started it is not running/,
+    );
   });
 
   it("keeps a run from another project unknown", async () => {
