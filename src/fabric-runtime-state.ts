@@ -193,7 +193,7 @@ export interface FabricRuntimeStateOptions {
   /** Foreground tools declared beside fabric_exec; fences cache holds. */
   foregroundTools?: () => readonly string[];
   /** The extension holding the compaction owner claim; compact.* routes there. */
-  compactionOwner?: () => ActiveCompactionOwner | undefined;
+  compactionOwner?: (() => ActiveCompactionOwner | undefined) | undefined;
 }
 
 export class FabricRuntimeState {

@@ -18,6 +18,7 @@ import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CapturedToolCatalog } from "../src/capture/catalog.js";
 import { CompactionOwnerRegistry } from "../src/compaction/claim.js";
+import { readFabricCompactionOwnerMessageV1 } from "../src/compaction/claim-events.js";
 import { registerCompactionHook } from "../src/compaction/hook.js";
 import { normalizeFabricConfig } from "../src/config.js";
 import {
@@ -30,7 +31,6 @@ import { FabricRuntimeState } from "../src/fabric-runtime-state.js";
 import piFabric from "../src/index.js";
 import {
   FABRIC_COMPACTION_OWNER_EVENT,
-  readFabricCompactionOwnerMessageV1,
   type FabricCompactionOwnerActionsV1,
   type FabricCompactionOwnerCallV1,
   type FabricCompactionOwnerClaimResultV1,
@@ -95,7 +95,10 @@ const loadFabric = async () => {
     host.handlers.get("session_before_compact")![0]!(event, context);
   const tree = (event: SessionBeforeTreeEvent, context = {} as ExtensionContext) =>
     host.handlers.get("session_before_tree")![0]!(event, context);
-  const send = (message: unknown) => host.pi.events.emit(FABRIC_COMPACTION_OWNER_EVENT, message);
+  // The real bus returns nothing; this stub returns the listener's promise, which settles once the message is answered.
+  const send = async (message: unknown): Promise<void> => {
+    await (host.pi.events.emit(FABRIC_COMPACTION_OWNER_EVENT, message) as unknown);
+  };
   return { ...host, compact, tree, send, shutdown };
 };
 
@@ -148,9 +151,9 @@ const claimMessage = (overrides: Record<string, unknown> = {}) => {
   };
 };
 
-const claimed = (send: (message: unknown) => unknown, overrides: Record<string, unknown> = {}): FabricCompactionOwnerHandleV1 => {
+const claimed = async (send: (message: unknown) => Promise<void>, overrides: Record<string, unknown> = {}): Promise<FabricCompactionOwnerHandleV1> => {
   const claim = claimMessage(overrides);
-  send(claim.message);
+  await send(claim.message);
   const result = claim.result();
   if (!result?.ok) throw new Error(`claim failed: ${JSON.stringify(result)}`);
   return result.handle;
@@ -254,7 +257,7 @@ describe("compaction owner claim", () => {
     const session = longSession();
     expect(fabric.compact(compactEvent(session))).toMatchObject({ compaction: { summary: expect.any(String) } });
 
-    const handle = claimed(fabric.send);
+    const handle = await claimed(fabric.send);
     expect(handle.active).toBe(true);
     expect(fabric.compact(compactEvent(session))).toBeUndefined();
 
@@ -305,7 +308,7 @@ describe("compaction owner claim", () => {
     const fabric = await loadFabric();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const session = longSession();
-    const handle = claimed(fabric.send);
+    const handle = await claimed(fabric.send);
     // A pi-vcc sentinel compaction notes a deliberate yield, then is
     // cancelled: no session_compact consumes it.
     expect(fabric.compact({ ...compactEvent(session), customInstructions: "__pi_vcc__" } as SessionBeforeCompactEvent)).toBeUndefined();
@@ -323,11 +326,11 @@ describe("compaction owner claim", () => {
     const fabric = await loadFabric();
     const session = longSession();
 
-    const keeper = claimed(fabric.send);
+    const keeper = await claimed(fabric.send);
     expect(fabric.tree(treeEvent(session))).toMatchObject({ summary: { summary: expect.any(String) } });
     keeper.withdraw();
 
-    const taker = claimed(fabric.send, { branchSummary: true });
+    const taker = await claimed(fabric.send, { branchSummary: true });
     expect(fabric.tree(treeEvent(session))).toBeUndefined();
     taker.withdraw();
     expect(fabric.tree(treeEvent(session))).toMatchObject({ summary: { summary: expect.any(String) } });
@@ -336,10 +339,10 @@ describe("compaction owner claim", () => {
   it("refuses a second claim with a warning naming both owners", async () => {
     const fabric = await loadFabric();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const first = claimed(fabric.send);
+    const first = await claimed(fabric.send);
 
     const second = claimMessage({ owner: { name: "other-compactor", version: "0.2.0" } });
-    fabric.send(second.message);
+    await fabric.send(second.message);
 
     expect(second.result()).toMatchObject({ ok: false, holder: owner });
     const error = (second.result() as { error: string }).error;
@@ -350,32 +353,19 @@ describe("compaction owner claim", () => {
     expect(first.active).toBe(true);
   });
 
-  it("withdraws a claim whose reply throws, so Fabric keeps compaction", async () => {
-    const fabric = await loadFabric();
-    const session = longSession();
-
-    expect(() => fabric.send({
-      version: 1, type: "claim", owner, actions: {},
-      reply: () => { throw new Error("owner crashed in reply"); },
-    })).toThrow("owner crashed in reply");
-
-    expect(fabric.compact(compactEvent(session))).toMatchObject({ compaction: { summary: expect.any(String) } });
-    expect(claimed(fabric.send, { owner: { name: "next-owner", version: "1.0.0" } }).active).toBe(true);
-  });
-
   it("refuses a withdrawal from anyone but the holder", async () => {
     const fabric = await loadFabric();
     const session = longSession();
-    const handle = claimed(fabric.send);
+    const handle = await claimed(fabric.send);
 
     let refused: FabricCompactionOwnerWithdrawResultV1 | undefined;
-    fabric.send({ version: 1, type: "withdraw", token: "not-the-token", reply: (value: FabricCompactionOwnerWithdrawResultV1) => { refused = value; } });
+    await fabric.send({ version: 1, type: "withdraw", token: "not-the-token", reply: (value: FabricCompactionOwnerWithdrawResultV1) => { refused = value; } });
     expect(refused).toMatchObject({ ok: false });
     expect(handle.active).toBe(true);
     expect(fabric.compact(compactEvent(session))).toBeUndefined();
 
     let accepted: FabricCompactionOwnerWithdrawResultV1 | undefined;
-    fabric.send({ version: 1, type: "withdraw", token: handle.token, reply: (value: FabricCompactionOwnerWithdrawResultV1) => { accepted = value; } });
+    await fabric.send({ version: 1, type: "withdraw", token: handle.token, reply: (value: FabricCompactionOwnerWithdrawResultV1) => { accepted = value; } });
     expect(accepted).toEqual({ ok: true });
     expect(handle.active).toBe(false);
   });
@@ -387,7 +377,7 @@ describe("compaction owner claim", () => {
     // A model window brings Fabric's continuity budget, and with it the
     // target context ratio, into the result.
     const context = { model: { provider: "anthropic", id: "sonnet", contextWindow: 150_000 } } as unknown as ExtensionContext;
-    const handle = claimed(fabric.send);
+    const handle = await claimed(fabric.send);
 
     const fallback = handle.fallback(event, context);
     const withCarry = handle.fallback(event, context, { carry: ["Auth regression is still open"] });
@@ -414,7 +404,7 @@ describe("compaction owner claim", () => {
 
   it("clears the claim when Fabric's session shuts down", async () => {
     const fabric = await loadFabric();
-    const handle = claimed(fabric.send);
+    const handle = await claimed(fabric.send);
     await fabric.shutdown();
     expect(handle.active).toBe(false);
     expect(fabric.listeners.has(FABRIC_COMPACTION_OWNER_EVENT)).toBe(false);
@@ -422,7 +412,7 @@ describe("compaction owner claim", () => {
 
   it("clears the claim before Fabric's shutdown awaits anything", async () => {
     const fabric = await loadFabric();
-    const handle = claimed(fabric.send);
+    const handle = await claimed(fabric.send);
     // Start every shutdown handler without awaiting: only work done before
     // each handler's first await has run.
     const shutdowns = (fabric.handlers.get("session_shutdown") ?? []).map((handler) => handler({}, {} as ExtensionContext));
@@ -435,14 +425,93 @@ describe("compaction owner claim", () => {
     const fabric = await loadFabric();
     const session = longSession();
     const lifetime = new AbortController();
-    const handle = claimed(fabric.send, { signal: lifetime.signal });
+    const handle = await claimed(fabric.send, { signal: lifetime.signal });
     expect(fabric.compact(compactEvent(session))).toBeUndefined();
 
     lifetime.abort();
     expect(handle.active).toBe(false);
     expect(fabric.compact(compactEvent(session))).toMatchObject({ compaction: expect.anything() });
     // A new owner can claim once the old one is gone.
-    expect(claimed(fabric.send, { owner: { name: "next-owner", version: "1.0.0" } }).active).toBe(true);
+    expect((await claimed(fabric.send, { owner: { name: "next-owner", version: "1.0.0" } })).active).toBe(true);
+  });
+});
+
+describe("compaction owner claim, asynchronous reply", () => {
+  const nextOwner = { owner: { name: "next-owner", version: "1.0.0" } };
+
+  it("answers after emit returns, not during it", async () => {
+    const fabric = await loadFabric();
+    const claim = claimMessage();
+    const settled = fabric.pi.events.emit(FABRIC_COMPACTION_OWNER_EVENT, claim.message) as unknown as Promise<void>;
+    expect(claim.result()).toBeUndefined();
+    await settled;
+    expect(claim.result()).toMatchObject({ ok: true });
+  });
+
+  it("handles messages in the order they were emitted", async () => {
+    const fabric = await loadFabric();
+    const first = claimMessage();
+    const second = claimMessage({ owner: { name: "other-compactor", version: "0.2.0" } });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // Emitted back to back: the first wins, the second sees the first as holder.
+    await Promise.all([fabric.send(first.message), fabric.send(second.message)]);
+    expect(first.result()).toMatchObject({ ok: true });
+    expect(second.result()).toMatchObject({ ok: false, holder: owner });
+  });
+
+  it("orders a withdrawal behind the claim it follows", async () => {
+    const fabric = await loadFabric();
+    const handle = await claimed(fabric.send);
+    const second = claimMessage(nextOwner);
+    let withdrawn: FabricCompactionOwnerWithdrawResultV1 | undefined;
+    // Emitted back to back: the withdrawal frees the claim before the next owner is handled.
+    await Promise.all([
+      fabric.send({ version: 1, type: "withdraw", token: handle.token, reply: (value: FabricCompactionOwnerWithdrawResultV1) => { withdrawn = value; } }),
+      fabric.send(second.message),
+    ]);
+    expect(withdrawn).toEqual({ ok: true });
+    expect(second.result()).toMatchObject({ ok: true });
+  });
+
+  it("refuses a claim whose signal was aborted before Fabric handled it", async () => {
+    const fabric = await loadFabric();
+    const lifetime = new AbortController();
+    const claim = claimMessage({ signal: lifetime.signal });
+    const settled = fabric.send(claim.message);
+    lifetime.abort();
+    await settled;
+    expect(claim.result()).toMatchObject({ ok: false, error: expect.stringContaining("already aborted") });
+    // Nothing is held: a later claim is granted.
+    expect((await claimed(fabric.send, nextOwner)).active).toBe(true);
+  });
+
+  it("refuses a claim still queued at shutdown and grants nothing", async () => {
+    const fabric = await loadFabric();
+    const claim = claimMessage();
+    const settled = fabric.send(claim.message);
+    await fabric.shutdown();
+    await settled;
+    expect(claim.result()).toMatchObject({ ok: false, error: expect.stringContaining("shutting down") });
+  });
+
+  it("warns instead of throwing when a message cannot be answered", async () => {
+    const fabric = await loadFabric();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await expect(fabric.send({ version: 1, type: "claim", owner, actions: {} })).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("reply must be a function"));
+  });
+
+  it("withdraws a granted claim whose reply throws, and warns", async () => {
+    const fabric = await loadFabric();
+    const session = longSession();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await expect(fabric.send({
+      version: 1, type: "claim", owner, actions: {},
+      reply: () => { throw new Error("owner crashed in reply"); },
+    })).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("owner crashed in reply"));
+    expect(fabric.compact(compactEvent(session))).toMatchObject({ compaction: { summary: expect.any(String) } });
+    expect((await claimed(fabric.send, nextOwner)).active).toBe(true);
   });
 });
 
@@ -877,7 +946,7 @@ describe("claim cut-over", () => {
       { type: "custom", id: "c2", parentId: "c1", timestamp: "2026-10-07T00:00:01.000Z", customType: "pi-fabric-compact-carry", data: { version: 1, items: ["Auth regression is still open", "tests/auth.test.ts"] } },
     ]);
     const claim = claimMessage();
-    fabric.send(claim.message);
+    await fabric.send(claim.message);
 
     const result = claim.result() as { ok: true; carry?: readonly string[] };
     expect(result).toMatchObject({ ok: true, carry: ["Auth regression is still open", "tests/auth.test.ts"] });
@@ -887,7 +956,7 @@ describe("claim cut-over", () => {
   it("leaves carry out of the claim result before Fabric has started the session", async () => {
     const fabric = await loadFabric();
     const claim = claimMessage();
-    fabric.send(claim.message);
+    await fabric.send(claim.message);
     expect(claim.result()).toMatchObject({ ok: true });
     expect(claim.result()).not.toHaveProperty("carry");
   });
@@ -897,7 +966,7 @@ describe("threshold trigger under a claim", () => {
   it("skips Fabric's settled-boundary trigger while a claim is held", async () => {
     const { fabric, context } = await startFabric();
 
-    const handle = claimed(fabric.send);
+    const handle = await claimed(fabric.send);
     await fabric.emit("agent_settled", { type: "agent_settled" }, context);
     expect(context.compact).not.toHaveBeenCalled();
 

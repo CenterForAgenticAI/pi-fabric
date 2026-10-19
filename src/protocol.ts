@@ -266,6 +266,8 @@ export type {
  * `/tree` branch summaries stay with Fabric unless the claim sets
  * `branchSummary`. Fabric drops the claim on withdrawal, when `signal`
  * aborts, and at its own `session_shutdown` (reload, session switch, quit).
+ * Fabric loads its claim code on the first message, so the reply may come
+ * after `emit` returns.
  */
 export const FABRIC_COMPACTION_OWNER_EVENT = "pi-fabric:compaction-owner:v1";
 
@@ -414,7 +416,10 @@ export interface FabricCompactionOwnerClaimV1 {
   branchSummary?: boolean;
   /** Aborting releases the claim; bind it to the owner's own lifetime. */
   signal?: AbortSignal;
-  /** Called exactly once, synchronously. No call: Fabric is not loaded. */
+  /**
+   * Called once, possibly after `emit` returns. Wait with a timeout, abort
+   * `signal` when giving up, and withdraw a grant that arrives late.
+   */
   reply: (result: FabricCompactionOwnerClaimResultV1) => void;
 }
 
@@ -433,143 +438,6 @@ export interface FabricCompactionOwnerWithdrawV1 {
 export type FabricCompactionOwnerMessageV1 =
   | FabricCompactionOwnerClaimV1
   | FabricCompactionOwnerWithdrawV1;
-
-export type FabricCompactionOwnerReadResultV1 =
-  | { ok: true; message: FabricCompactionOwnerMessageV1 }
-  | { ok: false; error: string; reply?: (result: { ok: false; error: string }) => void };
-
-const COMPACTION_OWNER_TEXT = /^[^\u0000-\u001f\u007f]+$/;
-const ownerText = (value: unknown, max: number): value is string =>
-  typeof value === "string"
-  && value.length > 0
-  && value.length <= max
-  && value.trim() === value
-  && COMPACTION_OWNER_TEXT.test(value);
-
-const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-const unknownKey = (record: Record<string, unknown>, known: readonly string[]): string | undefined =>
-  Object.keys(record).find((key) => !known.includes(key));
-
-const readOwnerFields = <T extends string>(
-  value: unknown,
-  known: readonly T[],
-  action: string,
-): T[] | string => {
-  if (!Array.isArray(value) || value.length > known.length * 2) {
-    return `actions.${action}.fields must be an array of ${known.join(", ")}`;
-  }
-  const fields: T[] = [];
-  for (const field of value) {
-    if (typeof field !== "string" || !(known as readonly string[]).includes(field)) {
-      return `actions.${action}.fields has an unknown field: ${String(field).slice(0, 64)}`;
-    }
-    if (!fields.includes(field as T)) fields.push(field as T);
-  }
-  return fields;
-};
-
-const readOwnerActions = (value: unknown): FabricCompactionOwnerActionsV1 | string => {
-  if (!isPlainRecord(value)) return "actions must be an object";
-  const names: readonly FabricCompactionOwnerActionNameV1[] = ["request", "status", "pressure", "carry", "cancel"];
-  const unknown = unknownKey(value, names);
-  if (unknown !== undefined) return `actions has an unknown action: ${unknown.slice(0, 64)}`;
-  const actions: FabricCompactionOwnerActionsV1 = {};
-  for (const name of names) {
-    const entry = value[name];
-    if (entry === undefined) continue;
-    // Each caller field is read once: a getter cannot pass the check with
-    // one value and be stored with another.
-    const handler = isPlainRecord(entry) ? entry.handler : undefined;
-    if (!isPlainRecord(entry) || typeof handler !== "function") {
-      return `actions.${name} must be an object with a handler function`;
-    }
-    const extra = unknownKey(entry, name === "request" || name === "carry" ? ["fields", "handler"] : ["handler"]);
-    if (extra !== undefined) return `actions.${name} has an unknown key: ${extra.slice(0, 64)}`;
-    if (name === "request" || name === "carry") {
-      const declared = entry.fields;
-      const fields = name === "request"
-        ? readOwnerFields(declared, FABRIC_COMPACTION_OWNER_REQUEST_FIELDS, name)
-        : readOwnerFields(declared, FABRIC_COMPACTION_OWNER_CARRY_FIELDS, name);
-      if (typeof fields === "string") return fields;
-      (actions as Record<string, unknown>)[name] = { fields, handler };
-    } else {
-      (actions as Record<string, unknown>)[name] = { handler };
-    }
-  }
-  return actions;
-};
-
-const isAbortSignalLike = (value: unknown): value is AbortSignal =>
-  typeof value === "object"
-  && value !== null
-  && typeof (value as { aborted?: unknown }).aborted === "boolean"
-  && typeof (value as { addEventListener?: unknown }).addEventListener === "function"
-  && typeof (value as { removeEventListener?: unknown }).removeEventListener === "function";
-
-/**
- * Validates a compaction-owner message and returns a fresh copy built from
- * named fields only; the caller's object never reaches stored state.
- */
-export const readFabricCompactionOwnerMessageV1 = (value: unknown): FabricCompactionOwnerReadResultV1 => {
-  if (!isPlainRecord(value)) return { ok: false, error: "message must be an object" };
-  const rawReply = value.reply;
-  const reply = typeof rawReply === "function"
-    ? rawReply as (result: { ok: false; error: string }) => void
-    : undefined;
-  const fail = (error: string): FabricCompactionOwnerReadResultV1 => ({ ok: false, error, ...(reply ? { reply } : {}) });
-  if (value.version !== 1) return fail("version must be 1");
-  // Each caller field is read once into a local: a getter cannot pass a check
-  // with one value and be stored with another.
-  const type = value.type;
-  if (type === "withdraw") {
-    const extra = unknownKey(value, ["version", "type", "token", "reply"]);
-    if (extra !== undefined) return fail(`withdraw has an unknown key: ${extra.slice(0, 64)}`);
-    if (rawReply !== undefined && !reply) return fail("reply must be a function");
-    const token = value.token;
-    if (!ownerText(token, 128)) return fail("token must be the claim handle's token");
-    return {
-      ok: true,
-      message: {
-        version: 1,
-        type: "withdraw",
-        token,
-        ...(reply ? { reply: reply as NonNullable<FabricCompactionOwnerWithdrawV1["reply"]> } : {}),
-      },
-    };
-  }
-  if (type !== "claim") return fail('type must be "claim" or "withdraw"');
-  const extra = unknownKey(value, ["version", "type", "owner", "actions", "branchSummary", "signal", "reply"]);
-  if (extra !== undefined) return fail(`claim has an unknown key: ${extra.slice(0, 64)}`);
-  if (!reply) return fail("reply must be a function");
-  const owner = value.owner;
-  const name = isPlainRecord(owner) ? owner.name : undefined;
-  const ownerVersion = isPlainRecord(owner) ? owner.version : undefined;
-  if (!ownerText(name, 128) || !ownerText(ownerVersion, 64)) {
-    return fail("owner must be { name, version } with non-empty printable text");
-  }
-  const actions = readOwnerActions(value.actions);
-  if (typeof actions === "string") return fail(actions);
-  const branchSummary = value.branchSummary;
-  if (branchSummary !== undefined && typeof branchSummary !== "boolean") {
-    return fail("branchSummary must be a boolean");
-  }
-  const signal = value.signal;
-  if (signal !== undefined && !isAbortSignalLike(signal)) return fail("signal must be an AbortSignal");
-  return {
-    ok: true,
-    message: {
-      version: 1,
-      type: "claim",
-      owner: { name, version: ownerVersion },
-      actions,
-      ...(branchSummary === true ? { branchSummary: true } : {}),
-      ...(signal !== undefined ? { signal } : {}),
-      reply: reply as FabricCompactionOwnerClaimV1["reply"],
-    },
-  };
-};
 
 export const FABRIC_COMPONENT_REGISTER_EVENT = "pi-fabric:component:register:v1";
 export const FABRIC_COMPONENT_DISCOVER_EVENT = "pi-fabric:component:discover:v1";

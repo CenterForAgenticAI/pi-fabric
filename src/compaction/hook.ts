@@ -893,9 +893,9 @@ export interface CompactionHookOptions {
 }
 
 export interface FabricEventCompactionOptions {
-  targetContextRatio?: number;
-  enrichers?: readonly CompactionEnricher[];
-  carryItems?: readonly string[];
+  targetContextRatio?: number | undefined;
+  enrichers?: readonly CompactionEnricher[] | undefined;
+  carryItems?: readonly string[] | undefined;
 }
 
 /**
@@ -1015,10 +1015,7 @@ export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHook
     }
     if (options.getEngine() !== "fabric") return;
     const targetContextRatio = options.getTargetContextRatio?.();
-    const result = compileFabricCompactionForEvent(event, context, {
-      ...(targetContextRatio !== undefined ? { targetContextRatio } : {}),
-      ...(options.enrichers ? { enrichers: options.enrichers } : {}),
-    });
+    const result = compileFabricCompactionForEvent(event, context, { targetContextRatio, enrichers: options.enrichers });
     if ("cancel" in result) {
       if (result.instructionError) {
         notifyInstructionError(context, result.instructionError);

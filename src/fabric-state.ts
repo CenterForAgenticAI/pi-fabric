@@ -561,7 +561,7 @@ export class FabricState {
         ...(this.#options.paths ? { paths: this.#options.paths } : {}),
         ...(this.#entryIdentity ? { entryIdentity: this.#entryIdentity } : {}),
         foregroundTools: () => this.foregroundTools().tools,
-        ...(this.#options.compactionOwner ? { compactionOwner: this.#options.compactionOwner } : {}),
+        compactionOwner: this.#options.compactionOwner,
       },
     );
   }

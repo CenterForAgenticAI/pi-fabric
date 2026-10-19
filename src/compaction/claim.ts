@@ -69,11 +69,7 @@ export const deterministicCompactionFallback = (
     }
   }
   const ratio = targetContextRatio();
-  const result = compileFabricCompactionForEvent(event, context, {
-    ...(ratio !== undefined ? { targetContextRatio: ratio } : {}),
-    ...(enrichers ? { enrichers } : {}),
-    ...(carryItems !== undefined ? { carryItems } : {}),
-  });
+  const result = compileFabricCompactionForEvent(event, context, { targetContextRatio: ratio, enrichers, carryItems });
   return "cancel" in result
     ? { ok: false, reason: result.reason }
     : { ok: true, compaction: result.compaction };
