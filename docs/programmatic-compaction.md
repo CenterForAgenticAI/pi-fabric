@@ -265,6 +265,8 @@ import {
 let claim: FabricCompactionOwnerHandleV1 | undefined;
 const lifetime = new AbortController();
 pi.on("session_start", (_event, ctx) => {
+  // Fabric may answer after emit returns, so wait for the reply with a timeout.
+  const giveUp = setTimeout(() => lifetime.abort(), 5_000); // no reply: Fabric is not loaded
   pi.events.emit(FABRIC_COMPACTION_OWNER_EVENT, {
     version: 1,
     type: "claim",
@@ -279,17 +281,32 @@ pi.on("session_start", (_event, ctx) => {
     // branchSummary: true, // also take /tree summaries
     signal: lifetime.signal,
     reply: (result) => {
+      clearTimeout(giveUp);
       if (!result.ok) {
         ctx.ui.notify(result.error, "warning");
+        return;
+      }
+      if (lifetime.signal.aborted) {
+        result.handle.withdraw(); // granted after the claimant gave up
         return;
       }
       claim = result.handle;
       if (result.carry) adoptCarry(result.carry); // Fabric's list at cut-over
     },
   } satisfies FabricCompactionOwnerClaimV1);
-  // No reply: Fabric is not loaded.
 });
 ```
+
+The first message loads Fabric's claim code, so `reply` is called once, after
+`emit` returns (a Fabric that answers during `emit` is also valid; accept
+both). If it never comes, Fabric is not loaded: abort the claim's `signal` and
+carry on without it. If `{ ok: true }` arrives after you gave up, call
+`handle.withdraw()`. Fabric refuses a claim whose `signal` is already aborted
+when it handles it. It handles messages in the order they were emitted and reads
+each field when it handles the message, so do not change the message after
+emitting it. A message still queued at Fabric's `session_shutdown` is refused:
+a claim gets `{ ok: false, error }` saying Fabric is shutting down. If the
+claim code fails to load, the reply is `{ ok: false, error }` naming the failure.
 
 A successful reply is `{ ok: true, handle, carry? }`. `carry` is a frozen
 copy of Fabric's carry-forward items when the claim was made: the list the
@@ -363,8 +380,10 @@ held.
 
 One claim at a time. A second claim gets `{ ok: false, error, holder }`,
 and Fabric shows a warning that names both owners. If the claimant's
-`reply` throws, Fabric withdraws the claim it just granted and rethrows,
-because the owner never received its token. The claim ends when:
+`reply` throws, Fabric withdraws the claim it just granted and reports the
+error as a warning (UI notice, else `console.warn`), because the owner never
+received its token. A message with no usable `reply` is also reported as a
+warning and dropped; nothing throws from `emit`. The claim ends when:
 
 - the holder calls `handle.withdraw()` or emits
   `{ version: 1, type: "withdraw", token: handle.token, reply? }`. Any other
