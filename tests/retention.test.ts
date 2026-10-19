@@ -308,7 +308,7 @@ describe("temporal retention", () => {
     const outsideDirectory = temporaryDirectory();
     const sentinel = path.join(outsideDirectory, "sentinel.jsonl");
     fs.writeFileSync(sentinel, "keep directory");
-    fs.symlinkSync(outsideDirectory, linkedDirectory.fork);
+    fs.symlinkSync(outsideDirectory, linkedDirectory.fork, "junction");
     markRunRootClosed(runRoot, DAY, true);
 
     const result = sweepAt(tempRoot, 2 * DAY + 1);
