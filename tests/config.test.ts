@@ -404,6 +404,27 @@ describe("Fabric configuration", () => {
     ).toMatchObject({ showAgentToolPreview: true, updateDebounceMs: 100 });
   });
 
+  it("defaults the session label to the footer only and drops invalid label settings", () => {
+    expect(DEFAULT_FABRIC_CONFIG.ui.sessionLabel).toEqual({
+      footer: true,
+      herdr: "off",
+      herdrPosition: "prefix",
+    });
+    expect(
+      normalizeFabricConfig({
+        ui: { sessionLabel: { footer: false, herdr: "both", herdrPosition: "suffix" } },
+      }).ui.sessionLabel,
+    ).toEqual({ footer: false, herdr: "both", herdrPosition: "suffix" });
+    expect(
+      normalizeFabricConfig({
+        ui: { sessionLabel: { footer: "no", herdr: "window", herdrPosition: "middle" } },
+      }).ui.sessionLabel,
+    ).toEqual({ footer: true, herdr: "off", herdrPosition: "prefix" });
+    expect(normalizeFabricConfig({ ui: { sessionLabel: "tab" } }).ui.sessionLabel).toEqual(
+      DEFAULT_FABRIC_CONFIG.ui.sessionLabel,
+    );
+  });
+
   it("defaults, validates, merges, and persists tool display independently of full code mode", () => {
     expect(DEFAULT_FABRIC_CONFIG.ui.toolDisplay).toBe("compact");
     expect(normalizeFabricConfig({ ui: { toolDisplay: "full" } }).ui.toolDisplay).toBe("full");

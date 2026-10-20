@@ -203,7 +203,12 @@ where absent values do not participate, and time spent inside a `humanWaitRefs` 
     "haltOnEscape": true,
     "showAgentToolPreview": true,
     "toolDisplay": "compact",
-    "updateDebounceMs": 100
+    "updateDebounceMs": 100,
+    "sessionLabel": {
+      "footer": true,
+      "herdr": "off",
+      "herdrPosition": "prefix"
+    }
   },
   "compaction": {
     "engine": "fabric",
@@ -707,6 +712,11 @@ See the [TypeScript MCP reference](../skillsets/typescript/fabric-exec/reference
 - `ui.showAgentToolPreview` defaults to `true` and controls the child-agent and actor tool rows in both the parent `fabric_exec` card and the widget. Recursive agents render their full descendant tree, bounded by the preview depth/node budget. The version 2 config migration renamed this key from `ui.showNestedToolCalls`.
 - `ui.toolDisplay` is `"compact"` (default) or `"full"`. Compact elevates the declared display name and description and keeps bounded nested tool detail visible; full retains the outer Fabric program transcript. Pi's tool-expand keybinding (`ctrl+o` by default) expands a compact card to the full transcript and collapses it again. Invalid values fall back to `"compact"`. If configuration fails to load, rendering falls back to full so a degraded startup never hides the transcript. Change it under `/fabric settings` → **UI**; successful changes apply immediately to live and completed cards.
 - `ui.updateDebounceMs` defaults to `100`. It applies one execution-wide coalescing interval to every live `fabric_exec` card update: nested calls, progress text, and agent tool previews. Continuous streams emit at most once per interval, so a long call no longer postpones every render until completion. Set it to `0` to emit every update. Accepted values clamp to `0..2000`. The version 3 config migration renamed this key from `ui.nestedToolDebounceMs`.
+- `ui.sessionLabel` controls where a root Pi session shows its Fabric [peer label](agents.md#peer-labels-and-queue-gates), such as `FAB-3`. Child agents and actors never show one.
+  - `footer` defaults to `true` and shows `Fabric FAB-3` in the Pi footer.
+  - `herdr` is `"off"` (default), `"tab"`, `"pane"`, or `"both"`. When Pi runs interactively inside Herdr, Fabric adds the label to that tab or pane name. It reads the live name before each change, so a rename by Herdr, by you, or by Pi's own name sync keeps its new text, and Fabric adds its label back within a few seconds. On shutdown, or when you turn the setting off, Fabric removes only its own label word. A pane with no name of its own goes back to having none.
+  - `herdrPosition` is `"prefix"` (default) or `"suffix"`: whether the label goes before or after the existing name.
+  - Labels exist only while `mesh.enabled` is `true`. Change these settings with `/fabric label` or under `/fabric settings` → **UI**.
 - The widget renders above the chat, like `pi-supervisor`. Set `ui.enabled` to `false` to disable both the widget and the dashboard controller.
 
 See the [interface reference](interface.md).

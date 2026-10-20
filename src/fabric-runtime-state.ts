@@ -137,6 +137,7 @@ import {
 import { AgentManager } from "./agents/manager.js";
 import { AgentCompletionInbox } from "./agents/completion-inbox.js";
 import { PeerPresenceNotifier } from "./topology/peer-presence.js";
+import { SessionLabelPresenter, type SessionLabelStatus } from "./topology/session-label.js";
 import { ShellEventInbox } from "./core/shell-inbox.js";
 import { FabricShellTimingBridge } from "./core/shell-timing.js";
 import { readFabricBashMiddleware } from "./core/shell-middleware.js";
@@ -174,6 +175,8 @@ import { captureLoadedFileIdentity, type FabricLoadedFileIdentity } from "./buil
 // captured at activation is the ground truth a reload-freshness check compares
 // the current disk file against.
 const FABRIC_RUNTIME_MODULE_IDENTITY = captureLoadedFileIdentity(import.meta.url);
+/** Longest shutdown waits for Fabric to remove its label from Herdr names. */
+const SESSION_LABEL_CLOSE_TIMEOUT_MS = 2_000;
 
 export interface FabricRuntimeStateOptions {
   managedHost?: FabricManagedHost;
@@ -197,6 +200,7 @@ export class FabricRuntimeState {
   #agents: AgentManager | undefined;
   #completionInbox: AgentCompletionInbox | undefined;
   #peerPresence: PeerPresenceNotifier | undefined;
+  #sessionLabel: SessionLabelPresenter | undefined;
   #shellInbox: ShellEventInbox | undefined;
   #shellTiming: FabricShellTimingBridge | undefined;
   #actors: ActorDirectory | undefined;
@@ -334,6 +338,16 @@ export class FabricRuntimeState {
 
   peerInfos(): FabricPeerInfo[] {
     return this.#participants?.peers() ?? [];
+  }
+
+  /** Where this session's Fabric label shows, for `/fabric label`; undefined in a child. */
+  sessionLabelStatus(): SessionLabelStatus | undefined {
+    return this.#sessionLabel?.status();
+  }
+
+  /** Apply changed label settings now instead of on the next timer tick. */
+  async syncSessionLabel(): Promise<void> {
+    await this.#sessionLabel?.sync();
   }
 
   /** The project decision store, or undefined when the mesh is disabled. */
@@ -961,6 +975,14 @@ export class FabricRuntimeState {
         cwd: context.cwd,
       });
     }
+    // Only a root shows its label; a child's label belongs to its parent's view.
+    if (mainAgent.local) {
+      this.#sessionLabel = new SessionLabelPresenter(this.pi, context, {
+        label: () => this.#participants?.self().label,
+        settings: () => (this.#config ?? DEFAULT_FABRIC_CONFIG).ui.sessionLabel,
+      });
+      void this.#sessionLabel.sync();
+    }
     this.#lifecycle.start();
     this.#residency?.start();
     await builtins.install(createProviderComponent({
@@ -1150,6 +1172,7 @@ export class FabricRuntimeState {
     const previousComponents = structuredClone(this.#config.components);
     deepAssign(this.#config as unknown as Record<string, unknown>, next as unknown as Record<string, unknown>);
     this.#configureSpeculation();
+    void this.#sessionLabel?.sync();
     // The persisted master switch wins over any live arm: disabling prewalk
     // via /fabric settings (or an external config edit followed by a reload)
     // cancels the arm so no later boundary can claim behind the user's back.
@@ -1490,6 +1513,7 @@ export class FabricRuntimeState {
     this.#completionInbox = undefined;
     this.#peerPresence?.close();
     this.#peerPresence = undefined;
+    await this.#closeSessionLabel();
     this.#shellInbox?.close();
     this.#shellInbox = undefined;
     this.#shellTiming?.close();
@@ -1613,9 +1637,29 @@ export class FabricRuntimeState {
     await repairs?.flush();
   }
 
+  /**
+   * Remove the label from the footer and Herdr names. Herdr gets a short
+   * bound so a stuck socket cannot hold up shutdown.
+   */
+  async #closeSessionLabel(): Promise<void> {
+    const presenter = this.#sessionLabel;
+    this.#sessionLabel = undefined;
+    if (!presenter) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      presenter.close().catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, SESSION_LABEL_CLOSE_TIMEOUT_MS);
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+  }
+
   async #closeInternal(): Promise<void> {
     this.#completionInbox?.close();
     this.#completionInbox = undefined;
+    await this.#closeSessionLabel();
     this.#shellInbox?.close();
     this.#shellInbox = undefined;
     this.#shellTiming?.close();

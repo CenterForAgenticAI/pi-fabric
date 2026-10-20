@@ -531,7 +531,7 @@ An owner keeps its host ID across restarts (a Pi session's Main ID, or a residen
 
 ### Peer labels and queue gates
 
-Every root participant mints a project-scoped label such as `FAB-1` when it first publishes: the prefix derives from the project directory basename (initials for multi-word names, up to three letters for single-word names) and the number comes from a mesh-wide monotonic counter, so retired labels are never reused. Labels appear on participant records, peer projections, and the dashboard, giving other sessions' tooling a stable handle to show users in place of raw session ids.
+Every root participant mints a project-scoped label such as `FAB-1` when it first publishes: the prefix derives from the project directory basename (initials for multi-word names, up to three letters for single-word names) and the number comes from a mesh-wide monotonic counter, so retired labels are never reused. Labels appear on participant records, peer projections, and the dashboard, giving other sessions' tooling a stable handle to show users in place of raw session ids. A root session also shows its own label in the Pi footer and, when configured, in its Herdr tab or pane name, so you can tell which terminal is `FAB-3`; see `ui.sessionLabel` in [UI configuration](configuration.md#ui).
 
 Two host-local, versioned events on `pi.events` let queue extensions coordinate with peers:
 
