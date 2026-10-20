@@ -140,7 +140,9 @@ describe("session label footer", () => {
   });
 });
 
-describe("session label in Herdr", () => {
+// The fake Herdr server listens on a Unix socket path; on Windows the client
+// dials a named pipe instead, as in tests/herdr-transport.test.ts.
+describe.skipIf(process.platform === "win32")("session label in Herdr", () => {
   it("leaves Herdr untouched while the integration is off", async () => {
     const herdr = await startHerdr();
     const { presenter } = present({ settings: () => settings(), environment: herdr.environment });
