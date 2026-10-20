@@ -104,6 +104,11 @@ export const buildUiSection = (
             "Show full Fabric TypeScript or a compact intent-and-tools transcript; the tool-expand key (ctrl+o) expands a compact card to full.",
           values: TOOL_DISPLAY_MODES,
         }),
+        setting("ui.herdrStatus", "Herdr agent status", config.ui.herdrStatus ? "true" : "false", {
+          description:
+            "Inside Herdr, show running Fabric agents on this pane and mark it blocked while a child question waits.",
+          values: BOOLEANS,
+        }),
         setting(
           "ui.showAgentToolPreview",
           "Agent tool preview",

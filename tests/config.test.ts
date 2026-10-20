@@ -383,6 +383,12 @@ describe("Fabric configuration", () => {
     expect(invalid.ui.haltOnEscape).toBe(true);
   });
 
+  it("normalizes the Herdr agent status toggle", () => {
+    expect(DEFAULT_FABRIC_CONFIG.ui.herdrStatus).toBe(true);
+    expect(normalizeFabricConfig({ ui: { herdrStatus: false } }).ui.herdrStatus).toBe(false);
+    expect(normalizeFabricConfig({ ui: { herdrStatus: "off" } }).ui.herdrStatus).toBe(true);
+  });
+
   it("normalizes agent-preview visibility and the global debounce", () => {
     expect(DEFAULT_FABRIC_CONFIG.ui.showAgentToolPreview).toBe(true);
     expect(DEFAULT_FABRIC_CONFIG.ui.updateDebounceMs).toBe(100);

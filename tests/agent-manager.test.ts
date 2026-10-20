@@ -133,6 +133,28 @@ describe("AgentManager", () => {
     expect(listener).toHaveBeenCalledTimes(beforeCleanup);
   });
 
+  it("lists unsettled runs as activity and notifies when one settles", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+    });
+    managers.push(manager);
+    expect(manager.activity()).toEqual([]);
+    const done = await manager.run({ task: "Finish at once", transport: "process" });
+    expect(done.status).toBe("completed");
+    expect(manager.activity()).toEqual([]);
+    const listener = vi.fn();
+    manager.subscribeUi(listener);
+    const handle = await manager.spawn({ name: "scout", task: "HANG", transport: "process" });
+    expect(manager.activity()).toEqual([{ id: handle.id, name: "scout" }]);
+    listener.mockClear();
+    await manager.stop(handle.id);
+    expect(listener).toHaveBeenCalled();
+    expect(manager.activity()).toEqual([]);
+  });
+
   it("runs a worker through the direct process transport", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);

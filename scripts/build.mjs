@@ -43,6 +43,8 @@ const primaryEntryPoints = [
 // after the installed package is replaced, while preserving lazy evaluation.
 const lazyEntryPoints = [
   "src/extension-copy.ts",
+  // Herdr agent status; loaded at the first agent run inside Herdr.
+  "src/agents/herdr-status.ts",
   "src/durable/worker-host.ts",
   "src/type-error-guidance.ts",
   "src/native-discovery.ts",

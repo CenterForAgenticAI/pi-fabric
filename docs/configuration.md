@@ -201,6 +201,7 @@ where absent values do not participate, and time spent inside a `humanWaitRefs` 
     "refreshMs": 500,
     "eventHistory": 80,
     "haltOnEscape": true,
+    "herdrStatus": true,
     "showAgentToolPreview": true,
     "toolDisplay": "compact",
     "updateDebounceMs": 100
@@ -707,6 +708,7 @@ See the [TypeScript MCP reference](../skillsets/typescript/fabric-exec/reference
 - `ui.showAgentToolPreview` defaults to `true` and controls the child-agent and actor tool rows in both the parent `fabric_exec` card and the widget. Recursive agents render their full descendant tree, bounded by the preview depth/node budget. The version 2 config migration renamed this key from `ui.showNestedToolCalls`.
 - `ui.toolDisplay` is `"compact"` (default) or `"full"`. Compact elevates the declared display name and description and keeps bounded nested tool detail visible; full retains the outer Fabric program transcript. Pi's tool-expand keybinding (`ctrl+o` by default) expands a compact card to the full transcript and collapses it again. Invalid values fall back to `"compact"`. If configuration fails to load, rendering falls back to full so a degraded startup never hides the transcript. Change it under `/fabric settings` → **UI**; successful changes apply immediately to live and completed cards.
 - `ui.updateDebounceMs` defaults to `100`. It applies one execution-wide coalescing interval to every live `fabric_exec` card update: nested calls, progress text, and agent tool previews. Continuous streams emit at most once per interval, so a long call no longer postpones every render until completion. Set it to `0` to emit every update. Accepted values clamp to `0..2000`. The version 3 config migration renamed this key from `ui.nestedToolDebounceMs`.
+- `ui.herdrStatus` defaults to `true`. In an interactive root session inside a Herdr pane (`HERDR_ENV=1` with `HERDR_PANE_ID` and `HERDR_SOCKET_PATH`), Fabric tells Herdr about the agents this session runs. Herdr's Pi integration reports the pane idle when the turn ends, so Fabric replaces the pane's idle, done, and working text with a count such as `⏳ 2 Fabric agents · scout, reviewer` through `pane.report_metadata`. That metadata is display-only and expires after two minutes unless refreshed, so a crashed session does not leave it behind. While a routed child question waits on the user, Fabric emits `herdr:blocked`, which Herdr's Pi integration shows as a blocked pane. Fabric also emits `herdr:busy` while agents run; Herdr does not act on that event yet. Child agents and headless sessions report nothing. The presenter loads at the first agent run, so other sessions pay nothing for it. Turn it off under `/fabric settings` → **UI**.
 - The widget renders above the chat, like `pi-supervisor`. Set `ui.enabled` to `false` to disable both the widget and the dashboard controller.
 
 See the [interface reference](interface.md).

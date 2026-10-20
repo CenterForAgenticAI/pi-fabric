@@ -75,8 +75,10 @@ describe("routed child questions (worker round trip)", () => {
       decisionId: "dec_testdecision01",
       since: expect.any(Number),
     });
+    expect(manager.activity()).toEqual([{ id: handle.id, name: handle.name, question: "Pick" }]);
     release!();
     const result = await manager.wait(handle.id);
+    expect(manager.activity()).toEqual([]);
     expect(responses(log)).toEqual([{ type: "extension_ui_response", id: "ui-1", value: "B" }]);
     expect(result.blockedOn).toBeUndefined();
     expect(result.status).toBe("completed");

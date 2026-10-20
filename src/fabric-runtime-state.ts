@@ -137,6 +137,7 @@ import {
 import { AgentManager } from "./agents/manager.js";
 import { AgentCompletionInbox } from "./agents/completion-inbox.js";
 import { PeerPresenceNotifier } from "./topology/peer-presence.js";
+import type { HerdrAgentStatus } from "./agents/herdr-status.js";
 import { ShellEventInbox } from "./core/shell-inbox.js";
 import { FabricShellTimingBridge } from "./core/shell-timing.js";
 import { readFabricBashMiddleware } from "./core/shell-middleware.js";
@@ -174,6 +175,15 @@ import { captureLoadedFileIdentity, type FabricLoadedFileIdentity } from "./buil
 // captured at activation is the ground truth a reload-freshness check compares
 // the current disk file against.
 const FABRIC_RUNTIME_MODULE_IDENTITY = captureLoadedFileIdentity(import.meta.url);
+/** Longest shutdown waits for Fabric to clear its agent status from Herdr. */
+const HERDR_STATUS_CLOSE_TIMEOUT_MS = 2_000;
+
+/** An interactive root session in a Herdr pane, where Herdr shows its state. */
+const herdrStatusAvailable = (context: ExtensionContext): boolean =>
+  context.mode === "tui" &&
+  process.env.HERDR_ENV === "1" &&
+  Boolean(process.env.HERDR_PANE_ID) &&
+  Boolean(process.env.HERDR_SOCKET_PATH);
 
 export interface FabricRuntimeStateOptions {
   managedHost?: FabricManagedHost;
@@ -197,6 +207,9 @@ export class FabricRuntimeState {
   #agents: AgentManager | undefined;
   #completionInbox: AgentCompletionInbox | undefined;
   #peerPresence: PeerPresenceNotifier | undefined;
+  #herdrStatus: HerdrAgentStatus | undefined;
+  #herdrStatusLoad: Promise<void> | undefined;
+  #herdrStatusWanted = false;
   #shellInbox: ShellEventInbox | undefined;
   #shellTiming: FabricShellTimingBridge | undefined;
   #actors: ActorDirectory | undefined;
@@ -334,6 +347,55 @@ export class FabricRuntimeState {
 
   peerInfos(): FabricPeerInfo[] {
     return this.#participants?.peers() ?? [];
+  }
+
+  /** Publish agent activity to Herdr, or withdraw it when ui.herdrStatus is off. */
+  #syncHerdrStatus(): void {
+    if (!this.#herdrStatusWanted) return;
+    if (this.#config?.ui.herdrStatus === false) {
+      const status = this.#herdrStatus;
+      this.#herdrStatus = undefined;
+      void status?.close();
+      return;
+    }
+    if (this.#herdrStatus) {
+      this.#herdrStatus.sync();
+      return;
+    }
+    if (this.#herdrStatusLoad || (this.#agents?.activity().length ?? 0) === 0) return;
+    const load = import("./agents/herdr-status.js")
+      .then(({ HerdrAgentStatus }) => {
+        if (this.#herdrStatusLoad !== load) return;
+        this.#herdrStatus = new HerdrAgentStatus({
+          events: this.pi.events,
+          activity: () => this.#agents?.activity() ?? [],
+        });
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.#herdrStatusLoad !== load) return;
+        this.#herdrStatusLoad = undefined;
+        this.#syncHerdrStatus();
+      });
+    this.#herdrStatusLoad = load;
+  }
+
+  /** Release Herdr holds and clear the pane metadata, bounded so shutdown never hangs. */
+  async #closeHerdrStatus(): Promise<void> {
+    this.#herdrStatusWanted = false;
+    this.#herdrStatusLoad = undefined;
+    const status = this.#herdrStatus;
+    this.#herdrStatus = undefined;
+    if (!status) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      status.close(),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, HERDR_STATUS_CLOSE_TIMEOUT_MS);
+        timer.unref?.();
+      }),
+    ]);
+    clearTimeout(timer);
   }
 
   /** The project decision store, or undefined when the mesh is disabled. */
@@ -917,6 +979,13 @@ export class FabricRuntimeState {
       ),
     );
     this.#agents.subscribeUi(() => this.#participants?.scheduleRefresh());
+    // Herdr reports this pane idle when the root turn ends; tell it about the
+    // agents still running. Only a root shows them, and the presenter loads on
+    // the first run so sessions outside Herdr never pay for it.
+    if (mainAgent.local && herdrStatusAvailable(context)) {
+      this.#herdrStatusWanted = true;
+      this.#agents.subscribeUi(() => this.#syncHerdrStatus());
+    }
     this.#actors.subscribe(() => this.#participants?.scheduleRefresh());
     const providerParticipants = this.#providerParticipants;
     this.#participants.registerSource(() =>
@@ -1150,6 +1219,7 @@ export class FabricRuntimeState {
     const previousComponents = structuredClone(this.#config.components);
     deepAssign(this.#config as unknown as Record<string, unknown>, next as unknown as Record<string, unknown>);
     this.#configureSpeculation();
+    this.#syncHerdrStatus();
     // The persisted master switch wins over any live arm: disabling prewalk
     // via /fabric settings (or an external config edit followed by a reload)
     // cancels the arm so no later boundary can claim behind the user's back.
@@ -1486,6 +1556,7 @@ export class FabricRuntimeState {
   }
 
   async shutdown(): Promise<void> {
+    await this.#closeHerdrStatus();
     this.#completionInbox?.close();
     this.#completionInbox = undefined;
     this.#peerPresence?.close();
@@ -1620,6 +1691,7 @@ export class FabricRuntimeState {
     this.#shellInbox = undefined;
     this.#shellTiming?.close();
     this.#shellTiming = undefined;
+    await this.#closeHerdrStatus();
     await this.shellJobs.close();
     await this.#deactivateRepairs();
     if (!this.#registry) return;

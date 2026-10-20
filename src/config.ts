@@ -264,6 +264,8 @@ interface FabricUiConfig {
   refreshMs: number;
   eventHistory: number;
   haltOnEscape: boolean;
+  /** Tell Herdr about running agents in an interactive root session. */
+  herdrStatus: boolean;
   showAgentToolPreview: boolean;
   toolDisplay: FabricToolDisplayMode;
   updateDebounceMs: number;
@@ -572,6 +574,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     refreshMs: 500,
     eventHistory: 80,
     haltOnEscape: true,
+    herdrStatus: true,
     showAgentToolPreview: true,
     toolDisplay: "compact",
     updateDebounceMs: 100,
@@ -1294,6 +1297,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         500,
       ),
       haltOnEscape: booleanValue(ui.haltOnEscape, DEFAULT_FABRIC_CONFIG.ui.haltOnEscape),
+      herdrStatus: booleanValue(ui.herdrStatus, DEFAULT_FABRIC_CONFIG.ui.herdrStatus),
       // Renamed from ui.showNestedToolCalls; the v2 migration rewrites persisted
       // files, and this fallback covers configs normalized without migration.
       showAgentToolPreview: booleanValue(

@@ -426,6 +426,8 @@ This is the host-level equivalent of the `pi-model-switch` extension's `switch_m
 
 Herdr uses its local socket API to create an argv-backed background tab as one atomic operation. It does not change focus or require shell quoting. Automatic selection works only when the parent Pi process already runs in Herdr. This requires `HERDR_ENV=1` with an injected workspace and socket. Select `transport: "herdr"` under the same conditions. Use the attach command in the handle to open a child directly.
 
+Inside Herdr, a root session also shows its running agents on its own pane, whatever transport they use, and marks the pane blocked while a child question waits on the user. See `ui.herdrStatus` in the [configuration reference](configuration.md#ui).
+
 LocalTerm provides the required primitives that match tmux: detached creation, pinning, listing, capture, exec, attach, and kill. Pi Fabric requires no LocalTerm patch. Start the daemon before you select this transport:
 
 ```bash
