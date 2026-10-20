@@ -181,3 +181,20 @@ it.skipIf(process.platform === "win32")("exposes the task id of a detached nativ
   expect(value.id).toMatch(/^[0-9a-f-]{36}$/);
   expect(value.r.output).toContain(`[Task ${value.id};`);
 });
+
+it("resolves an overridden core tool to the single active definition", () => {
+  const read = {name: "read", label: "Read", description: "override", parameters: {type: "object", properties: {}}} as any;
+  const actions = [
+    {provider: "pi", ref: "pi.read", name: "read", description: "core", inputSchema: {}, risk: "read" as const},
+    {provider: "extensions", ref: "extensions.read", name: "read", description: "override", inputSchema: {}, risk: "read" as const},
+  ];
+  const entries = nativeToolCatalog(actions, [read], nativeMcpIdentity);
+  expect(entries.map(entry => entry.ref)).toEqual(["pi.read"]);
+  expect(resolveNativeTool(entries, "read").ref).toBe("pi.read");
+});
+
+it("keeps a non-core extension tool whose name matches no core tool", () => {
+  const actions = [{provider: "extensions", ref: "extensions.echo", name: "echo", description: "e", inputSchema: {}, risk: "read" as const}];
+  expect(resolveNativeTool(nativeToolCatalog(actions, [], nativeMcpIdentity), "echo").ref).toBe("extensions.echo");
+});
+
