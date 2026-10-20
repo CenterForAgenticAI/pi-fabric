@@ -64,7 +64,7 @@ const descriptors: FabricActionDescriptor[] = [
 type Opened = { id: string; lifetime: "session" | "durable"; label?: string; owner?: string; shell: boolean };
 
 /** Runs the shell `tool_call` preflight for one command; throws when a hook blocks it. */
-export type ShellPreflight = (input: Record<string, unknown>, context: FabricInvocationContext) => Promise<void>;
+export type ShellPreflight = (input: Record<string, unknown>, context: Pick<FabricInvocationContext, "signal" | "nestedToolCallId" | "parentToolCallId">) => Promise<void>;
 
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "ash", "csh", "tcsh"]);
 const isShellArgv = (argv: string[]): boolean => SHELLS.has(path.basename(argv[0] ?? "").replace(/^-/, ""));
@@ -149,7 +149,8 @@ export class SessionsProvider implements FabricProvider {
   async #preflight(command: string, cwd: string | undefined, what: string, context: FabricInvocationContext, rewritable = false): Promise<string> {
     if (!this.options.preflight) return command;
     const input: Record<string, unknown> = { command, ...(cwd ? { cwd } : {}) };
-    await this.options.preflight(input, context);
+    // Pass only the call identity: the hook input is not this call's arguments, so it must not replace them in the audit record.
+    await this.options.preflight(input, { signal: context.signal, nestedToolCallId: context.nestedToolCallId, parentToolCallId: context.parentToolCallId });
     if (input.command === command) return command;
     if (!rewritable || typeof input.command !== "string") throw new Error(`A tool_call hook cannot rewrite ${what}; block it or allow it unchanged`);
     return input.command;
@@ -167,8 +168,9 @@ export class SessionsProvider implements FabricProvider {
       ? args.argv as string[]
       : [bash, "-c", await this.#preflight(args.cmd as string, cwd, "argv", context, true)];
     if (Array.isArray(args.argv)) await this.#preflight(argv.map(shellQuote).join(" "), cwd, "argv", context);
+    else if (argv[2] !== args.cmd) context.updateArguments?.({ ...args, cmd: argv[2] });
     // Text written later to a shell is itself a command; other children get their stdin as data.
-    const shell = Array.isArray(args.argv) ? isShellArgv(argv) : isShellCmd(args.cmd as string);
+    const shell = Array.isArray(args.argv) ? isShellArgv(argv) : isShellCmd(argv[2] ?? "");
     const durable = args.durable === true;
     const serve = await this.#connect();
     const fields = { argv, cwd, ...pick(args, ["timeoutMs", "label"]) };

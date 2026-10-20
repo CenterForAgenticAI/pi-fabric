@@ -30,9 +30,10 @@ const setup = (hook: Hook) => {
   });
   cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
   cleanups.push(() => provider.close());
+  const updateArguments = vi.fn();
   const call = (name: string, args: Record<string, unknown>) =>
-    provider.invoke(name, args, { parentToolCallId: "fabric_exec_7", nestedToolCallId: "nested_1", signal: new AbortController().signal } as unknown as FabricInvocationContext) as Promise<Record<string, any>>;
-  return { root, provider, call, emitToolCall };
+    provider.invoke(name, args, { parentToolCallId: "fabric_exec_7", nestedToolCallId: "nested_1", signal: new AbortController().signal, updateArguments } as unknown as FabricInvocationContext) as Promise<Record<string, any>>;
+  return { root, provider, call, emitToolCall, updateArguments };
 };
 
 describe.skipIf(process.platform === "win32")("sessions run the shell tool_call preflight", () => {
@@ -91,5 +92,16 @@ describe.skipIf(process.platform === "win32")("sessions run the shell tool_call 
     emitToolCall.mockClear();
     await call("write", { id: cat.id, text: "data\n" });
     expect(emitToolCall).not.toHaveBeenCalled();
+  });
+
+  it("keeps the call's own arguments in the audit record, and records a command the hook rewrote", async () => {
+    const plain = setup(async () => undefined);
+    const shell = await plain.call("open", { argv: ["sh"] });
+    await plain.call("write", { id: shell.id, text: "echo fine\n" });
+    expect(plain.updateArguments).not.toHaveBeenCalled();
+    const rewrite = setup(async event => { event.input.command = "echo guarded"; return undefined; });
+    await rewrite.call("open", { cmd: "echo original", label: "job" });
+    expect(rewrite.updateArguments).toHaveBeenCalledOnce();
+    expect(rewrite.updateArguments).toHaveBeenCalledWith({ cmd: "echo guarded", label: "job" });
   });
 });
