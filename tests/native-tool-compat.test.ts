@@ -172,3 +172,12 @@ it("normalizes the opt-in profile without changing existing defaults", () => {
   expect(normalizeFabricConfig({executor:{codemodeProfile:"native"}}).executor.codemodeProfile).toBe("native");
   expect(normalizeFabricConfig({executor:{codemodeProfile:"invalid"}}).executor.codemodeProfile).toBe("additive");
 });
+
+it.skipIf(process.platform === "win32")("exposes the task id of a detached native shell call", async () => {
+  const f = fixture("native");
+  const result = await f.run('const r = await tools.bash({command:"printf hi", background:true}); return {r, id: typeof r === "object" && r ? r.taskId : undefined};');
+  expect(result.success, result.error ?? JSON.stringify(result.typeErrors)).toBe(true);
+  const value = result.value as {r: {output: string; taskId: string}; id: string};
+  expect(value.id).toMatch(/^[0-9a-f-]{36}$/);
+  expect(value.r.output).toContain(`[Task ${value.id};`);
+});
