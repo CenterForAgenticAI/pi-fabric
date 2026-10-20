@@ -355,8 +355,7 @@ While the claim is held:
 - Every handler receives `{ context, signal }` (`FabricCompactionOwnerCallV1`):
   `request` and `carry` as the second argument, the others as the only
   one. `context` is the invoking session's extension context when Fabric
-  has one. Fabric bounds each handler call at 30 seconds
-  (`FABRIC_COMPACTION_OWNER_HANDLER_TIMEOUT_MS`). When the calling program
+  has one. Fabric bounds each handler call at 30 seconds. When the calling program
   is cancelled or the bound passes, Fabric aborts `signal` and fails the
   program call at once with `compaction owner <name>@<version>:
   compact.<action> was cancelled by the calling program` or

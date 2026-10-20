@@ -18,7 +18,13 @@ import {
   type CompactionCarryEntryData,
   type CompactionCarryUpdate,
 } from "../compaction/carry.js";
-import { compactionOwnerLabel, type ActiveCompactionOwner } from "../compaction/claim.js";
+import {
+  COMPACTION_OWNER_CARRY_FIELDS,
+  COMPACTION_OWNER_HANDLER_TIMEOUT_MS,
+  COMPACTION_OWNER_REQUEST_FIELDS,
+  compactionOwnerLabel,
+  type ActiveCompactionOwner,
+} from "../compaction/claim.js";
 import { ownerFromContext } from "../compaction/owner.js";
 import { compactionPressure } from "../compaction/pressure.js";
 import { DEFAULT_FABRIC_CONFIG, type FabricConfig } from "../config.js";
@@ -29,9 +35,6 @@ import {
   type CompactPendingIntent,
 } from "../core/compact-controller.js";
 import {
-  FABRIC_COMPACTION_OWNER_CARRY_FIELDS,
-  FABRIC_COMPACTION_OWNER_HANDLER_TIMEOUT_MS,
-  FABRIC_COMPACTION_OWNER_REQUEST_FIELDS,
   type FabricActionDescriptor,
   type FabricCompactionOwnerActionNameV1,
   type FabricCompactionOwnerCallV1,
@@ -416,8 +419,8 @@ export class CompactProvider implements FabricProvider {
           reject(error);
         };
         timer = setTimeout(
-          () => stop(`did not finish within ${FABRIC_COMPACTION_OWNER_HANDLER_TIMEOUT_MS / 1000} s`),
-          FABRIC_COMPACTION_OWNER_HANDLER_TIMEOUT_MS,
+          () => stop(`did not finish within ${COMPACTION_OWNER_HANDLER_TIMEOUT_MS / 1000} s`),
+          COMPACTION_OWNER_HANDLER_TIMEOUT_MS,
         );
         onProgramAbort = () => stop("was cancelled by the calling program");
         programSignal?.addEventListener("abort", onProgramAbort, { once: true });
@@ -448,7 +451,7 @@ export class CompactProvider implements FabricProvider {
         const action = claim.actions.request;
         if (!action) throw unsupported("request");
         const request: FabricCompactionOwnerRequestV1 = {};
-        for (const field of FABRIC_COMPACTION_OWNER_REQUEST_FIELDS) {
+        for (const field of COMPACTION_OWNER_REQUEST_FIELDS) {
           const value = input[field];
           if (value === undefined) continue;
           if (!action.fields.includes(field)) throw unsupported("request", field);
@@ -506,7 +509,7 @@ export class CompactProvider implements FabricProvider {
         const action = claim.actions.carry;
         if (!action) throw unsupported("carry");
         const update: FabricCompactionOwnerCarryUpdateV1 = {};
-        for (const field of FABRIC_COMPACTION_OWNER_CARRY_FIELDS) {
+        for (const field of COMPACTION_OWNER_CARRY_FIELDS) {
           const value = input[field];
           if (value === undefined) continue;
           if (!action.fields.includes(field)) throw unsupported("carry", field);

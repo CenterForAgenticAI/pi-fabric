@@ -10,10 +10,21 @@ import type {
   FabricCompactionOwnerClaimResultV1,
   FabricCompactionOwnerClaimV1,
   FabricCompactionOwnerHandleV1,
+  FabricCompactionOwnerCarryFieldV1,
   FabricCompactionOwnerIdentityV1,
   FabricCompactionOwnerMessageV1,
+  FabricCompactionOwnerRequestFieldV1,
   FabricCompactionOwnerWithdrawResultV1,
 } from "../protocol.js";
+
+// The fields `compact.request` and `compact.carry` accept from an owner. They
+// live here, in the lazily loaded claim code, not in the startup graph.
+export const COMPACTION_OWNER_REQUEST_FIELDS: readonly FabricCompactionOwnerRequestFieldV1[] =
+  ["reason", "instructions", "preserve", "requestedBy", "seed"];
+/** Upper bound on one owner handler call; past it Fabric aborts the call's signal and fails the program call. */
+export const COMPACTION_OWNER_HANDLER_TIMEOUT_MS = 30_000;
+export const COMPACTION_OWNER_CARRY_FIELDS: readonly FabricCompactionOwnerCarryFieldV1[] =
+  ["items", "add", "remove", "clear"];
 
 // One extension at a time may claim compaction from Fabric through
 // `pi-fabric:compaction-owner:v1` (see protocol.ts). The registry holds only
@@ -69,7 +80,7 @@ export const deterministicCompactionFallback = (
     }
   }
   const ratio = targetContextRatio();
-  const result = compileFabricCompactionForEvent(event, context, { targetContextRatio: ratio, enrichers, carryItems });
+  const result = compileFabricCompactionForEvent(event, context, ratio, enrichers, carryItems);
   return "cancel" in result
     ? { ok: false, reason: result.reason }
     : { ok: true, compaction: result.compaction };

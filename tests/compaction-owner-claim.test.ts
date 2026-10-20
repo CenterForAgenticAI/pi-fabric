@@ -494,6 +494,17 @@ describe("compaction owner claim, asynchronous reply", () => {
     expect(claim.result()).toMatchObject({ ok: false, error: expect.stringContaining("shutting down") });
   });
 
+  it("answers with the load error when the claim code cannot load, and loads it again for the next message", async () => {
+    const fabric = await loadFabric();
+    vi.doMock("../src/compaction/claim-events.js", () => { throw new Error("claim code unavailable"); });
+    const failed = claimMessage();
+    await fabric.send(failed.message);
+    vi.doUnmock("../src/compaction/claim-events.js");
+    expect(failed.result()).toMatchObject({ ok: false, error: expect.stringContaining("support failed to load") });
+
+    expect((await claimed(fabric.send)).active).toBe(true);
+  });
+
   it("warns instead of throwing when a message cannot be answered", async () => {
     const fabric = await loadFabric();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);

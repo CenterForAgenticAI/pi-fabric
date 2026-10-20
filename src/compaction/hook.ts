@@ -892,12 +892,6 @@ export interface CompactionHookOptions {
   getOwnerClaim?: () => { readonly branchSummary: boolean } | undefined;
 }
 
-export interface FabricEventCompactionOptions {
-  targetContextRatio?: number | undefined;
-  enrichers?: readonly CompactionEnricher[] | undefined;
-  carryItems?: readonly string[] | undefined;
-}
-
 /**
  * Fabric's deterministic compaction for one `session_before_compact` event:
  * the budget the hook derives from the event and model, then the summary
@@ -906,11 +900,12 @@ export interface FabricEventCompactionOptions {
 export const compileFabricCompactionForEvent = (
   event: Pick<SessionBeforeCompactEvent, "preparation" | "branchEntries" | "customInstructions" | "reason">,
   context: Pick<ExtensionContext, "model"> | undefined,
-  options: FabricEventCompactionOptions = {},
+  targetContextRatio?: number,
+  enrichers?: readonly CompactionEnricher[],
+  carryItems?: readonly string[],
 ): ReturnType<typeof compileFabricSummary> => {
   const { preparation, branchEntries } = event;
   const contextWindow = context?.model?.contextWindow;
-  const targetContextRatio = options.targetContextRatio;
   const settings = preparation.settings ?? DEFAULT_COMPACTION_SETTINGS;
   const tokensBefore = preparation.tokensBefore;
   const evidenceWindow = event.reason === "overflow"
@@ -938,10 +933,10 @@ export const compileFabricCompactionForEvent = (
   return compileFabricSummary(
     branchEntries ?? [],
     preparation.tokensBefore,
-    options.enrichers,
+    enrichers,
     event.customInstructions,
     budget,
-    options.carryItems,
+    carryItems,
   );
 };
 
@@ -1015,7 +1010,7 @@ export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHook
     }
     if (options.getEngine() !== "fabric") return;
     const targetContextRatio = options.getTargetContextRatio?.();
-    const result = compileFabricCompactionForEvent(event, context, { targetContextRatio, enrichers: options.enrichers });
+    const result = compileFabricCompactionForEvent(event, context, targetContextRatio, options.enrichers);
     if ("cancel" in result) {
       if (result.instructionError) {
         notifyInstructionError(context, result.instructionError);

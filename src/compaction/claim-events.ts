@@ -6,9 +6,11 @@ import type {
   FabricCompactionOwnerMessageV1,
   FabricCompactionOwnerWithdrawV1,
 } from "../protocol.js";
-import { FABRIC_COMPACTION_OWNER_CARRY_FIELDS, FABRIC_COMPACTION_OWNER_REQUEST_FIELDS } from "../protocol.js";
+import { DEFAULT_FABRIC_CONFIG, type FabricConfig } from "../config.js";
 import { latestCarryItems } from "./carry.js";
 import {
+  COMPACTION_OWNER_CARRY_FIELDS,
+  COMPACTION_OWNER_REQUEST_FIELDS,
   CompactionOwnerRegistry,
   deterministicCompactionFallback,
   type ActiveCompactionOwner,
@@ -74,8 +76,8 @@ const readOwnerActions = (value: unknown): FabricCompactionOwnerActionsV1 | stri
     if (name === "request" || name === "carry") {
       const declared = entry.fields;
       const fields = name === "request"
-        ? readOwnerFields(declared, FABRIC_COMPACTION_OWNER_REQUEST_FIELDS, name)
-        : readOwnerFields(declared, FABRIC_COMPACTION_OWNER_CARRY_FIELDS, name);
+        ? readOwnerFields(declared, COMPACTION_OWNER_REQUEST_FIELDS, name)
+        : readOwnerFields(declared, COMPACTION_OWNER_CARRY_FIELDS, name);
       if (typeof fields === "string") return fields;
       (actions as Record<string, unknown>)[name] = { fields, handler };
     } else {
@@ -164,19 +166,46 @@ export interface CompactionOwnerHostOptions {
 }
 
 /** What Fabric's extension shares with the claim code; the code fills `host` on the first message. */
-export interface CompactionOwnerSlot extends CompactionOwnerHostOptions {
+export interface CompactionOwnerSlot {
   host?: CompactionOwnerHost;
   /** Set at session_shutdown: no claim is granted from then on. */
   closed: boolean;
+  /**
+   * A deliberate yield the compaction hook noted for the ownership observer.
+   * One noted while the owner held compaction, and never consumed, is
+   * cleared when the claim ends so it cannot hide the next foreign compaction.
+   */
+  yielded: boolean;
 }
 
-/** Answers one queued message once the claim code has loaded. */
-export const handleCompactionOwnerMessage = (slot: CompactionOwnerSlot, value: unknown): void => {
+/** The part of Fabric's state the claim code reads. */
+export interface CompactionOwnerConfigSource {
+  readonly cwd: string | undefined;
+  readonly config: FabricConfig;
+}
+
+/** Answers one message once the claim code has loaded; messages arrive in emit order. */
+export const handleCompactionOwnerMessage = (
+  slot: CompactionOwnerSlot,
+  value: unknown,
+  source: CompactionOwnerConfigSource,
+  context: () => ExtensionContext | undefined,
+): void => {
+  const options: CompactionOwnerHostOptions = {
+    context,
+    targetContextRatio: () =>
+      source.cwd
+        ? source.config.compaction.targetContextRatio
+        : DEFAULT_FABRIC_CONFIG.compaction.targetContextRatio,
+    onRelease: () => {
+      slot.yielded = false;
+    },
+  };
   if (slot.closed) {
-    new CompactionOwnerHost(slot).refuse(value, "Fabric is shutting down and holds no compaction owner claims");
+    new CompactionOwnerHost(options).refuse(value, "Fabric is shutting down and holds no compaction owner claims");
     return;
   }
-  (slot.host ??= new CompactionOwnerHost(slot)).handle(value);
+  (slot.host ??= new CompactionOwnerHost(options)).handle(value);
 };
 
 /**

@@ -271,12 +271,8 @@ export type {
  */
 export const FABRIC_COMPACTION_OWNER_EVENT = "pi-fabric:compaction-owner:v1";
 
-export const FABRIC_COMPACTION_OWNER_REQUEST_FIELDS = [
-  "reason", "instructions", "preserve", "requestedBy", "seed",
-] as const;
-export const FABRIC_COMPACTION_OWNER_CARRY_FIELDS = ["items", "add", "remove", "clear"] as const;
-export type FabricCompactionOwnerRequestFieldV1 = typeof FABRIC_COMPACTION_OWNER_REQUEST_FIELDS[number];
-export type FabricCompactionOwnerCarryFieldV1 = typeof FABRIC_COMPACTION_OWNER_CARRY_FIELDS[number];
+export type FabricCompactionOwnerRequestFieldV1 = "reason" | "instructions" | "preserve" | "requestedBy" | "seed";
+export type FabricCompactionOwnerCarryFieldV1 = "items" | "add" | "remove" | "clear";
 export type FabricCompactionOwnerActionNameV1 = "request" | "status" | "pressure" | "carry" | "cancel";
 
 export interface FabricCompactionOwnerIdentityV1 {
@@ -321,21 +317,14 @@ export interface FabricCompactionOwnerPressureV1 {
 
 type FabricCompactionOwnerResult<T> = T | Promise<T>;
 
-/**
- * Upper bound on one owner handler call. Past it Fabric aborts the call's
- * signal and fails the program call with an error naming the owner and
- * the action.
- */
-export const FABRIC_COMPACTION_OWNER_HANDLER_TIMEOUT_MS = 30_000;
-
 /** Passed to every owner handler. */
 export interface FabricCompactionOwnerCallV1 {
   /** The invoking session's extension context, when Fabric has one. */
   context: ExtensionContext | undefined;
   /**
-   * Aborts when the calling program is cancelled or the handler exceeds
-   * `FABRIC_COMPACTION_OWNER_HANDLER_TIMEOUT_MS`. Fabric has already failed
-   * the program call by then; stop the work.
+   * Aborts when the calling program is cancelled or the handler runs longer
+   * than 30 seconds. Fabric has already failed the program call by then,
+   * naming the owner and the action; stop the work.
    */
   signal: AbortSignal;
 }
