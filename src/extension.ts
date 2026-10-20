@@ -114,6 +114,16 @@ export const FABRIC_MANAGED_HOST_VERSION = 1;
 export type { FabricManagedHostOptions } from "./managed-host.js";
 import type { FabricManagedHostOptions } from "./managed-host.js";
 
+// Pi 1.2 also fires before_agent_start for a run that a custom message starts
+// (pi.sendMessage(..., { triggerTurn: true }) while idle). That event carries
+// messageType "custom" and the message, but no prompt; a Pi 1.1 event carries
+// only the prompt. Returns the user's prompt, or undefined when no user prompt
+// started the run, so additions derived from the prompt skip that run.
+const userPromptText = (
+  event: { readonly messageType?: unknown; readonly prompt?: unknown },
+): string | undefined =>
+  event.messageType === "custom" || typeof event.prompt !== "string" ? undefined : event.prompt;
+
 export function createFabricExtension(entryUrl: string) {
 // Absolute path to the Fabric skills bundled with this extension. Resolved
 // relative to the extension entry so it works both in development (src/) and
@@ -1012,6 +1022,11 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
   });
   pi.on("before_agent_start", async (event, context) => {
     if (!extractiveConfig()?.enabled) { invalidateExtractive(true); return; }
+    // A custom message has no prompt to rank against, and the view anchors
+    // before the last user message, which here is an earlier turn. Drop any
+    // prepared view but keep the annotation cache for the next user run.
+    const prompt = userPromptText(event);
+    if (prompt === undefined) { invalidateExtractive(); return; }
     const epoch = ++extractiveEpoch;
     const sessionId = context.sessionManager.getSessionId();
     const leaf = context.sessionManager.getLeafId();
@@ -1019,7 +1034,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     if (epoch !== extractiveEpoch || !extractiveConfig()?.enabled || context.signal?.aborted ||
       context.sessionManager.getSessionId() !== sessionId || context.sessionManager.getLeafId() !== leaf) return;
     extractiveHistory ??= new ExtractiveHistory(extractiveConfig);
-    await extractiveHistory.prepare(context, event.messageType !== "custom" ? event.prompt : "");
+    await extractiveHistory.prepare(context, prompt);
   });
 
   pi.on("context", async (event, context) => {
@@ -1095,8 +1110,10 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     // mode preserves Pi's progressive skill loading without exposing read.
     // Turn-derived: delivered via the message channel (below), never the
     // system prompt, so the cached system prefix stays byte-stable.
-    const skillReferenceGuidance = effectiveFullCodeMode
-      ? buildSkillReferenceGuidance(event.messageType !== "custom" ? event.prompt : "", skills)
+    // A run that a custom message starts has no prompt and gets none.
+    const prompt = userPromptText(event);
+    const skillReferenceGuidance = effectiveFullCodeMode && prompt !== undefined
+      ? buildSkillReferenceGuidance(prompt, skills)
       : undefined;
     const currentModel = context.model
       ? `${context.model.provider}/${context.model.id}`
@@ -1151,6 +1168,9 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
   // spending hint budget, echoing tokens, or burning ash.
   pi.on("before_agent_start", (event) => {
     if (!pi.getActiveTools().includes("fabric_exec")) return;
+    // A run that a custom message starts has no prompt; remind on a user run.
+    const prompt = userPromptText(event);
+    if (prompt === undefined) return;
     const captureSnapshot = state.cwd ? capturePolicy() : undefined;
     if (
       !captureSnapshot?.enabled ||
@@ -1162,7 +1182,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     const names = rewritableHiddenCapturedToolNames(hiddenCapturedToolNames());
     if (names.length === 0) return;
     const mentioned = proxyContractMentionsInSkills(
-      event.messageType !== "custom" ? event.prompt : "",
+      prompt,
       event.systemPrompt,
       names,
     );
