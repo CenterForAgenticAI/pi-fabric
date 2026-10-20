@@ -140,9 +140,10 @@ Fabric copies only those question fields. The decision is always held by `"user"
 
 ## Human surfaces
 
-- `/fabric decisions [id]` lists open decisions, then answers the picked one through native dialogs (`select` for options, with a "Cancel this decision" entry, and `input` or `editor` for text). Answers record `via: "tui"`.
+- `/fabric decisions [id]` lists open decisions, then answers the picked one through native dialogs (`select` for options, and `input` or `editor` for text). Both kinds offer a "Cancel this decision" entry. A text or editor decision first asks "Answer this question" or "Cancel this decision", so an empty answer and a cancel never look the same. Answers and cancels record `via: "tui"`.
 - `pi-fabric decisions list --root <meshRoot> [--status open|answered|expired|cancelled|all] [--holder h] [--limit n] [--json]` prints decisions from outside any Pi session. `--root` defaults to `$PI_FABRIC_MESH_ROOT`. The project mesh root is `.pi/fabric/mesh` unless `mesh.root` says otherwise.
 - `pi-fabric decisions answer --root <meshRoot> <id> (--option <id> | --text <t>) [--json]` answers one decision with `via: "cli"` and the OS user name as `answeredBy`. Exit code 1 reports a refused answer (not open, unknown option), and 2 reports a usage error.
+- `pi-fabric decisions cancel --root <meshRoot> <id> [--json]` cancels one open decision with `via: "cli"` and the OS user name as `answeredBy`. Use it to clear a decision whose asker has gone away, such as a `pi -p` run stopped with Ctrl+C. Cancelling a decision that is not open exits 1, like answering one twice.
 
 ## Configuration
 
