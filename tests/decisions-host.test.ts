@@ -182,7 +182,8 @@ describe("/fabric decisions", () => {
 
     const text = await store.raise({ title: "Why?" });
     const input = vi.fn(async () => "because");
-    await openFabricDecisions(store.mesh, { hasUI: true, ui: { input, notify } } as unknown as ExtensionContext, text.id.slice(-6));
+    const answerFirst = vi.fn(async (_title: string, labels: string[]) => labels[0]);
+    await openFabricDecisions(store.mesh, { hasUI: true, ui: { select: answerFirst, input, notify } } as unknown as ExtensionContext, text.id.slice(-6));
     expect((await store.get(text.id))?.answer?.text).toBe("because");
     await openFabricDecisions(store.mesh, context);
     expect(notify).toHaveBeenLastCalledWith("No open Fabric decisions", "info");
