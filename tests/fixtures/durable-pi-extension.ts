@@ -18,6 +18,8 @@ export default async function (pi: ExtensionAPI) {
     if (text === "hold effect") return fauxAssistantMessage([fauxToolCall("hold_effect", {})]);
     return fauxAssistantMessage(JSON.stringify({ reply: text, images: typeof last?.content === "string" ? 0 : last?.content.filter(part => part.type === "image").length ?? 0 }));
   }));
+  // An input hook that consumes the task, like a quota or account gate.
+  if (process.env.DURABLE_TEST_HANDLE_INPUT) pi.on("input", () => ({ action: "handled" }));
   pi.registerTool({ name: "hold_effect", label: "Hold effect", description: "Offline crash-safety fixture", parameters: Type.Object({}),
     async execute(_id, _args, signal) {
       fs.appendFileSync(process.env.DURABLE_TEST_EFFECT!, "effect\n");
