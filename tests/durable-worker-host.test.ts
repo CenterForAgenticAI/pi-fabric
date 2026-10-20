@@ -1,13 +1,17 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { build } from "esbuild";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { durableExtensionLoadError } from "../src/durable/extension-load-error.js";
 import { parseDurableWorkerOptions } from "../src/durable/worker-options.js";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-durable-host-"));
+// Extensions outside `root` cannot reach the checkout's node_modules through an ancestor.
+const outside = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-durable-outside-"));
 const extension = path.resolve("tests/fixtures/durable-pi-extension.ts");
 let entry: string;
 beforeAll(async () => {
@@ -16,7 +20,7 @@ beforeAll(async () => {
   entry = path.join(root, "build", "worker.js");
   await build({ entryPoints: ["src/durable/worker.ts"], outdir: path.dirname(entry), bundle: true, packages: "external", platform: "node", format: "esm", splitting: true, target: "node24", logLevel: "silent" });
 }, 30000);
-afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+afterAll(() => { for (const directory of [root, outside]) fs.rmSync(directory, { recursive: true, force: true }); });
 
 async function worker(name: string, extra: string[] = [], environment: NodeJS.ProcessEnv = {}, discover = false) {
   const cwd = path.join(root, name); fs.mkdirSync(cwd, { recursive: true });
@@ -74,6 +78,15 @@ describe("durable native RPC worker", () => {
     expect(() => parseDurableWorkerOptions([...args, "--unsafe"])).toThrow("Unsupported");
     expect(() => parseDurableWorkerOptions([...args, "--model"])).toThrow("Missing");
     expect(() => parseDurableWorkerOptions([...args, "--no-tools"])).toThrow("mutually exclusive");
+  });
+
+  it("names the typebox alias cause and workaround only for alias-rewritten typebox paths", () => {
+    const aliased = [{ path: "/x/ext.ts", error: "Failed to load extension: Cannot find module '/app/node_modules/typebox/build/index.mjs/does-not-exist'\nRequire stack:\n- /x/ext.ts" }];
+    const aliasMessage = durableExtensionLoadError(aliased).message;
+    expect(aliasMessage.startsWith(`Durable worker extension loading failed: ${JSON.stringify(aliased)}`)).toBe(true);
+    expect(aliasMessage).toMatch(/typebox[\s\S]*"typebox" root[\s\S]*runner "pi"/);
+    const missing = [{ path: "/x/ext.ts", error: "Failed to load extension: Cannot find module 'left-pad'\nRequire stack:\n- /x/ext.ts" }];
+    expect(durableExtensionLoadError(missing).message).toBe(`Durable worker extension loading failed: ${JSON.stringify(missing)}`);
   });
 
   it("runs real SDK tools, exports history, and reopens completed work without repeating it", async () => {
@@ -177,4 +190,43 @@ describe("durable native RPC worker", () => {
       expect(resumed.messages.some(event => JSON.stringify(event).match(/unsafe|interrupted|replay|failed/i))).toBe(true);
     } finally { await resumed.stop(); }
   }, 40000);
+
+  // The pinned SDK's jiti aliases "typebox" (and "@sinclair/typebox") to one file and treats an
+  // alias as a path prefix, so "typebox/type" reaches resolution as "<entry>/type".
+  // Keep the extension outside `root` so only the SDK's alias, not an ancestor node_modules, can resolve typebox.
+  const typeboxProbe = (name: string, source: (marker: string) => string) => {
+    const directory = path.join(outside, name); fs.mkdirSync(directory, { recursive: true });
+    const marker = path.join(directory, "typebox-loaded.json");
+    const file = path.join(directory, "typebox-probe.ts");
+    fs.writeFileSync(file, source(marker));
+    expect(() => createRequire(file).resolve("typebox")).toThrow();
+    return { file, marker };
+  };
+
+  it("loads extensions that import exported typebox subpaths through the SDK alias", async () => {
+    const probe = typeboxProbe("typebox-subpath", marker => `import fs from "node:fs";
+import { Object as TObject, String as TString } from "typebox/type";
+import { Number as SNumber } from "@sinclair/typebox/type";
+export default function () {
+  fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify(TObject({ name: TString(), size: SNumber() })));
+}
+`);
+    const host = await worker("typebox-subpath", ["--no-tools", "-e", probe.file]);
+    try {
+      expect(JSON.parse(fs.readFileSync(probe.marker, "utf8"))).toMatchObject({
+        type: "object", properties: { name: { type: "string" }, size: { type: "number" } },
+      });
+    } finally { await host.stop(); }
+  }, 30000);
+
+  it("keeps unexported typebox subpaths fatal and names the cause and workaround", async () => {
+    const probe = typeboxProbe("typebox-unexported", marker => `import fs from "node:fs";
+import * as missing from "typebox/does-not-exist";
+export default function () { fs.writeFileSync(${JSON.stringify(marker)}, String(Object.keys(missing).length)); }
+`);
+    await expect(worker("typebox-unexported", ["--no-tools", "-e", probe.file])).rejects.toThrow(
+      /Durable worker extension loading failed[\s\S]*index\.mjs\/does-not-exist[\s\S]*"typebox" root[\s\S]*runner "pi"/,
+    );
+    expect(fs.existsSync(probe.marker)).toBe(false);
+  }, 30000);
 });
