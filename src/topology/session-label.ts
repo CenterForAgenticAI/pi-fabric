@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { herdrSocketRequest } from "../agents/transports/herdr-socket.js";
-import type { FabricSessionLabelConfig, FabricSessionLabelHerdrTarget } from "../config.js";
+import type { FabricSessionLabelConfig, FabricSessionLabelHerdrTarget } from "./session-label-settings.js";
 
 /** Footer status key; Pi sorts extension statuses by key. */
 export const SESSION_LABEL_STATUS_KEY = "fabric-label";
@@ -30,6 +30,13 @@ export interface SessionLabelStatus {
     applied: string[];
     error?: string;
   };
+}
+
+/** What `/fabric label` needs from a root session's presenter. */
+export interface SessionLabelControl {
+  status(): SessionLabelStatus;
+  /** Apply changed settings now instead of on the next timer tick. */
+  sync(): Promise<void>;
 }
 
 export interface SessionLabelPresenterOptions {

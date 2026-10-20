@@ -51,19 +51,6 @@ export type FabricAgentRunner = "pi-durable" | "pi" | "claude" | "veda" | (strin
  * backend at stream time. */
 export type FabricModelAdmission = "strict" | "permissive";
 export type FabricUiWidgetMode = "auto" | "always" | "hidden";
-/** Which Herdr name, if any, carries this session's Fabric peer label. */
-export type FabricSessionLabelHerdrTarget = "off" | "tab" | "pane" | "both";
-export type FabricSessionLabelPosition = "prefix" | "suffix";
-
-/** Where a root session shows its Fabric peer label, such as `FAB-3`. */
-export interface FabricSessionLabelConfig {
-  /** Show the label as a Pi footer status. */
-  footer: boolean;
-  /** Add the label to the Herdr tab, the pane, both, or neither. */
-  herdr: FabricSessionLabelHerdrTarget;
-  /** Put the label before or after the existing Herdr name. */
-  herdrPosition: FabricSessionLabelPosition;
-}
 type FabricToolDisplayMode = "full" | "compact";
 export type FabricResultFormat = "auto" | "yaml" | "json" | "text";
 export type FabricPrewalkMode = "in-place" | "trajectory";
@@ -280,7 +267,12 @@ interface FabricUiConfig {
   showAgentToolPreview: boolean;
   toolDisplay: FabricToolDisplayMode;
   updateDebounceMs: number;
-  sessionLabel: FabricSessionLabelConfig;
+  /**
+   * Raw `ui.sessionLabel`, passed through unchecked: sessionLabelSettings() in
+   * topology/session-label-settings.ts checks it at first use, which keeps the
+   * check out of the startup graph.
+   */
+  sessionLabel?: unknown;
 }
 
 export interface FabricCompactionPressureBands {
@@ -589,11 +581,6 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     showAgentToolPreview: true,
     toolDisplay: "compact",
     updateDebounceMs: 100,
-    sessionLabel: {
-      footer: true,
-      herdr: "off",
-      herdrPosition: "prefix",
-    },
   },
   compaction: {
     engine: "fabric",
@@ -804,22 +791,6 @@ const objectValue = (value: unknown): Record<string, unknown> =>
 
 const widgetModeValue = (value: unknown, fallback: FabricUiWidgetMode): FabricUiWidgetMode =>
   value === "auto" || value === "always" || value === "hidden" ? value : fallback;
-
-const sessionLabelConfigValue = (value: unknown): FabricSessionLabelConfig => {
-  const label = objectValue(value);
-  const fallback = DEFAULT_FABRIC_CONFIG.ui.sessionLabel;
-  return {
-    footer: booleanValue(label.footer, fallback.footer),
-    herdr:
-      label.herdr === "off" || label.herdr === "tab" || label.herdr === "pane" || label.herdr === "both"
-        ? label.herdr
-        : fallback.herdr,
-    herdrPosition:
-      label.herdrPosition === "prefix" || label.herdrPosition === "suffix"
-        ? label.herdrPosition
-        : fallback.herdrPosition,
-  };
-};
 
 const toolDisplayModeValue = (
   value: unknown,
@@ -1347,7 +1318,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         0,
         2_000,
       ),
-      sessionLabel: sessionLabelConfigValue(ui.sessionLabel),
+      sessionLabel: ui.sessionLabel,
     },
     compaction: {
       engine: compactionEngineValue(compaction.engine, DEFAULT_FABRIC_CONFIG.compaction.engine),

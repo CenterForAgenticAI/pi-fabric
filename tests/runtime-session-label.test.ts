@@ -66,7 +66,7 @@ const startRuntime = async (
     paths: { extension: fixture, worker: fixture, residentHost: fixture, skills: cwd },
   });
   await runtime.initialize(context, config);
-  await runtime.syncSessionLabel();
+  await runtime.sessionLabel()?.sync();
   return { runtime, setStatus };
 };
 
@@ -77,7 +77,7 @@ describe("Fabric runtime session label", () => {
   it("shows a root session's minted label in the footer and clears it on shutdown", async () => {
     const { runtime, setStatus } = await startRuntime();
     try {
-      const status = runtime.sessionLabelStatus();
+      const status = runtime.sessionLabel()?.status();
       expect(status?.label).toMatch(/^[A-Z]+-\d+$/);
       expect(labelStatuses(setStatus)).toEqual([`Fabric ${status!.label}`]);
     } finally {
@@ -90,7 +90,7 @@ describe("Fabric runtime session label", () => {
   it("keeps the footer empty when the footer setting is off", async () => {
     const { runtime, setStatus } = await startRuntime({ footer: false });
     try {
-      expect(runtime.sessionLabelStatus()?.footer).toBe(false);
+      expect(runtime.sessionLabel()?.status()?.footer).toBe(false);
       expect(labelStatuses(setStatus)).toEqual([]);
     } finally {
       await runtime.shutdown();
@@ -102,7 +102,7 @@ describe("Fabric runtime session label", () => {
     vi.stubEnv("PI_FABRIC_AGENT_NAME", "worker");
     const { runtime, setStatus } = await startRuntime();
     try {
-      expect(runtime.sessionLabelStatus()).toBeUndefined();
+      expect(runtime.sessionLabel()?.status()).toBeUndefined();
       expect(labelStatuses(setStatus)).toEqual([]);
     } finally {
       await runtime.shutdown();

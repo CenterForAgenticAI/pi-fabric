@@ -137,7 +137,8 @@ import {
 import { AgentManager } from "./agents/manager.js";
 import { AgentCompletionInbox } from "./agents/completion-inbox.js";
 import { PeerPresenceNotifier } from "./topology/peer-presence.js";
-import { SessionLabelPresenter, type SessionLabelStatus } from "./topology/session-label.js";
+import { SessionLabelPresenter, type SessionLabelControl } from "./topology/session-label.js";
+import { sessionLabelSettings } from "./topology/session-label-settings.js";
 import { ShellEventInbox } from "./core/shell-inbox.js";
 import { FabricShellTimingBridge } from "./core/shell-timing.js";
 import { readFabricBashMiddleware } from "./core/shell-middleware.js";
@@ -340,14 +341,9 @@ export class FabricRuntimeState {
     return this.#participants?.peers() ?? [];
   }
 
-  /** Where this session's Fabric label shows, for `/fabric label`; undefined in a child. */
-  sessionLabelStatus(): SessionLabelStatus | undefined {
-    return this.#sessionLabel?.status();
-  }
-
-  /** Apply changed label settings now instead of on the next timer tick. */
-  async syncSessionLabel(): Promise<void> {
-    await this.#sessionLabel?.sync();
+  /** This session's Fabric label, for `/fabric label`; undefined in a child. */
+  sessionLabel(): SessionLabelControl | undefined {
+    return this.#sessionLabel;
   }
 
   /** The project decision store, or undefined when the mesh is disabled. */
@@ -979,7 +975,7 @@ export class FabricRuntimeState {
     if (mainAgent.local) {
       this.#sessionLabel = new SessionLabelPresenter(this.pi, context, {
         label: () => this.#participants?.self().label,
-        settings: () => (this.#config ?? DEFAULT_FABRIC_CONFIG).ui.sessionLabel,
+        settings: () => sessionLabelSettings((this.#config ?? DEFAULT_FABRIC_CONFIG).ui.sessionLabel),
       });
       void this.#sessionLabel.sync();
     }

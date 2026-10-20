@@ -19,8 +19,6 @@ export const RUNNERS = ["pi-durable", "pi", "claude", "veda"] as const;
 export const TRANSPORTS = ["auto", "process", "tmux", "screen", "localterm", "herdr"] as const;
 export const WIDGET_MODES = ["auto", "always", "hidden"] as const;
 export const TOOL_DISPLAY_MODES = ["full", "compact"] as const;
-export const SESSION_LABEL_HERDR_TARGETS = ["off", "tab", "pane", "both"] as const;
-export const SESSION_LABEL_POSITIONS = ["prefix", "suffix"] as const;
 export const RESULT_FORMATS = ["auto", "yaml", "json", "text"] as const;
 export const EXECUTOR_KERNELS = ["typescript", "python"] as const;
 export const PYTHON_RUNTIMES = ["monty", "cpython"] as const;
@@ -222,8 +220,11 @@ export const coerceValue = (id: string, value: string, config: FabricConfig): un
   }
   const current = getPath(config, id);
   // prewalk.enabled is enabled by default and omitted from normalized
-  // configs unless false, so its control still needs an explicit boolean type.
-  if (typeof current === "boolean" || id === "prewalk.enabled") return value === "true";
+  // configs unless false, and ui.sessionLabel stays raw until first use, so
+  // their controls still need an explicit boolean type.
+  if (typeof current === "boolean" || id === "prewalk.enabled" || id === "ui.sessionLabel.footer") {
+    return value === "true";
+  }
   if (typeof current === "number") return parseFormattedNumericValue(value);
   // The model picker stores the canonical "provider/id" string, or "Inherit"
   // for no override; persist an empty string so normalizeFabricConfig drops it.

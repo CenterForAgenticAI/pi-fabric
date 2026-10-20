@@ -705,8 +705,7 @@ describe("/fabric command", () => {
         ensure: vi.fn().mockResolvedValue(undefined),
         initialized: false,
         reloadConfig,
-        syncSessionLabel,
-        sessionLabelStatus,
+        sessionLabel: () => ({ status: sessionLabelStatus, sync: syncSessionLabel }),
       } as unknown as FabricState;
       const context = {
         cwd: root,

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { FabricSessionLabelConfig } from "../src/config.js";
+import type { FabricSessionLabelConfig } from "../src/topology/session-label-settings.js";
 import { SESSION_LABEL_STATUS_KEY, SessionLabelPresenter } from "../src/topology/session-label.js";
 
 interface HerdrRequest {

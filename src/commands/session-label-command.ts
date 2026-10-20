@@ -4,14 +4,15 @@ import { resolveAgentDir } from "../core/agent-dir.js";
 import { saveFabricConfig } from "../config.js";
 import type { FabricState } from "../fabric-state.js";
 import type { SessionLabelStatus } from "../topology/session-label.js";
+import { SESSION_LABEL_HERDR_TARGETS, SESSION_LABEL_POSITIONS } from "../topology/session-label-settings.js";
 
 // Loaded on first use of `/fabric label`, so the command's parsing and text
 // stay out of the startup graph.
 
 const SESSION_LABEL_SETTINGS = {
   footer: { key: "footer", values: ["on", "off"] },
-  herdr: { key: "herdr", values: ["off", "tab", "pane", "both"] },
-  position: { key: "herdrPosition", values: ["prefix", "suffix"] },
+  herdr: { key: "herdr", values: SESSION_LABEL_HERDR_TARGETS },
+  position: { key: "herdrPosition", values: SESSION_LABEL_POSITIONS },
 } as const;
 
 type SessionLabelSetting = keyof typeof SESSION_LABEL_SETTINGS;
@@ -84,7 +85,7 @@ export const runSessionLabelCommand = async (
   argumentsList: string[],
 ): Promise<void> => {
   if (argumentsList.length === 0) {
-    context.ui.notify(formatSessionLabelStatus(state.sessionLabelStatus()), "info");
+    context.ui.notify(formatSessionLabelStatus(state.sessionLabel()?.status()), "info");
     return;
   }
   const change = parseSessionLabelChange(argumentsList);
@@ -104,7 +105,7 @@ export const runSessionLabelCommand = async (
       { ui: { sessionLabel: { [change.key]: change.value } } },
     );
     state.reloadConfig(context);
-    await state.syncSessionLabel();
+    await state.sessionLabel()?.sync();
     context.ui.notify(
       `Fabric label ${change.setting}: ${change.shown} (${saved.scope}: ${saved.path})`,
       "info",

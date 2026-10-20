@@ -568,9 +568,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         return;
       }
       if (command === "label") {
-        const { runSessionLabelCommand } = await import("./session-label-command.js");
-        await runSessionLabelCommand(state, context, argumentsList);
-        return;
+        return (await import("./session-label-command.js")).runSessionLabelCommand(state, context, argumentsList);
       }
       if (command === "prewalk") {
         const option = argumentsList[0];
