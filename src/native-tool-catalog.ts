@@ -27,7 +27,10 @@ export function nativeToolCatalog(actions: ResolvedFabricAction[], definitions: 
     const fallbackOutput = action.provider === "pi" && action.name === "read"
       ? {anyOf: [{type: "string"}, {type: "object", properties: {type: {const: "image"}, data: {type: "string"}, mimeType: {type: "string"}, note: {type: "string"}}, required: ["type", "data", "mimeType", "note"]}]}
       : {type: "string"};
-    const declaration = describeFabricActionDeclaration(name, action.inputSchema, (definition?.outputSchema ?? action.outputSchema ?? fallbackOutput) as Record<string, unknown>);
+    const baseOutput = (definition?.outputSchema ?? action.outputSchema ?? fallbackOutput) as Record<string, unknown>;
+    const detachedOutput = {type: "object", properties: {output: {type: "string"}, taskId: {type: "string"}}, required: ["output", "taskId"]};
+    const output = action.provider === "pi" && (action.name === "bash" || action.name === "powershell") ? {anyOf: [baseOutput, detachedOutput]} : baseOutput;
+    const declaration = describeFabricActionDeclaration(name, action.inputSchema, output);
     const searchDescription = definition?.description ?? action.description;
     const description = `${searchDescription}\n${declaration}`;
     entries.push({name, rawName, ref: action.ref, description, searchDescription, declaration, inputSchema: action.inputSchema, ...(namespace ? {namespace} : {})});
