@@ -130,7 +130,7 @@ Pi loads advanced patterns after direct user invocation. Run `/skill:fabric-guid
 | A persistent watcher for one measurable goal | `/skill:fabric-supervisor Watch this migration until it is complete and tested.` |
 | A strict auditor for one feature design spec | `/skill:fabric-spec Implement docs/specs/checkout.md to the tee; nothing missing, nothing extra.` |
 | A quiet decision-point reviewer | `/skill:fabric-advisor Focus on migration correctness.` |
-| Same-model independent reviewers and one decision | `/skill:fabric-council Review this design for correctness, security, and operability.` |
+| Independent reviewers, optionally one model per seat, and one decision | `/skill:fabric-council Review this design for correctness, security, and operability.` |
 | Multi-model compare-not-merge deliberation or act mode | `/skill:fabric-fusion Deliberate this design across models.` |
 | One command that chooses advisor or supervisor | `/skill:fabric-ambient advisor Focus on migration correctness.` |
 | A durable team coordinating through versioned tasks | `/skill:fabric-swarm Coordinate this migration across owned task partitions.` |
