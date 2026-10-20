@@ -61,7 +61,18 @@ const descriptors: FabricActionDescriptor[] = [
   { name: "list", description: "Interactive children opened by this Pi session, with lifetime and state.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, risk: "read", effect: { kind: "none", ordering: "commutative" } },
 ];
 
-type Opened = { id: string; lifetime: "session" | "durable"; label?: string; owner?: string };
+type Opened = { id: string; lifetime: "session" | "durable"; label?: string; owner?: string; shell: boolean };
+
+/** Runs the shell `tool_call` preflight for one command; throws when a hook blocks it. */
+export type ShellPreflight = (input: Record<string, unknown>, context: FabricInvocationContext) => Promise<void>;
+
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "ash", "csh", "tcsh"]);
+const isShellArgv = (argv: string[]): boolean => SHELLS.has(path.basename(argv[0] ?? "").replace(/^-/, ""));
+const isShellCmd = (cmd: string): boolean => {
+  const [first, second] = cmd.trim().split(/\s+/);
+  return isShellArgv([first === "exec" ? second ?? "" : first ?? ""]);
+};
+const shellQuote = (word: string): string => /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
 
 /**
  * Interactive children through jev-fabric's serve protocol: the same verbs,
@@ -78,7 +89,7 @@ export class SessionsProvider implements FabricProvider {
 
   constructor(
     readonly bridge: DurableShellBridge,
-    readonly options: { cwd: string; shellOverride: () => boolean },
+    readonly options: { cwd: string; shellOverride: () => boolean; preflight?: ShellPreflight },
   ) {}
 
   async list(request: FabricProviderListRequest): Promise<FabricActionDescriptor[]> {
@@ -114,7 +125,11 @@ export class SessionsProvider implements FabricProvider {
     const serve = await this.#connect();
     const job = args.id as string;
     switch (name) {
-      case "write": return serve.request("write", { job, text: args.text }, context.signal);
+      case "write": {
+        // Text written to a shell is a command. A session this provider did not open is unknown: treat it as a shell.
+        if (this.#opened.get(job)?.shell !== false) await this.#preflight(String(args.text).replace(/\r?\n$/, ""), undefined, "text written to a session", context);
+        return serve.request("write", { job, text: args.text }, context.signal);
+      }
       case "closeInput": return serve.request("closeInput", { job }, context.signal);
       case "read": return serve.request("read", { job, stream: args.stream ?? "stdout",
         ...pick(args, ["offset", "max", "waitMs", "encoding"]) }, context.signal);
@@ -126,19 +141,40 @@ export class SessionsProvider implements FabricProvider {
     throw new Error(`Unknown sessions action: ${name}`);
   }
 
+  /**
+   * Show a hook-based shell guard the command, as `pi.bash` would, and return the command to run.
+   * A hook may block it. It may rewrite it only when `rewritable`; otherwise a rewrite is refused,
+   * because argv and stdin text cannot be replaced after the guard has judged them.
+   */
+  async #preflight(command: string, cwd: string | undefined, what: string, context: FabricInvocationContext, rewritable = false): Promise<string> {
+    if (!this.options.preflight) return command;
+    const input: Record<string, unknown> = { command, ...(cwd ? { cwd } : {}) };
+    await this.options.preflight(input, context);
+    if (input.command === command) return command;
+    if (!rewritable || typeof input.command !== "string") throw new Error(`A tool_call hook cannot rewrite ${what}; block it or allow it unchanged`);
+    return input.command;
+  }
+
   async #open(args: Record<string, unknown>, context: FabricInvocationContext): Promise<unknown> {
     // Sessions run outside pi.bash: never let them bypass an extension's shell gate.
     if (this.options.shellOverride()) throw new Error("Interactive sessions are unavailable while an extension overrides bash; they would bypass its shell protection");
     if ((args.argv === undefined) === (args.cmd === undefined)) throw new Error("sessions.open needs exactly one of argv or cmd");
     const cwd = path.resolve(this.options.cwd, typeof args.cwd === "string" ? args.cwd : ".");
     if (!fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`Working directory does not exist: ${cwd}`);
-    const argv = Array.isArray(args.argv) ? args.argv as string[] : [fs.existsSync("/bin/bash") ? "/bin/bash" : "bash", "-c", args.cmd as string];
+    // A hook-based shell guard judges the command before the serve starts anything; `cmd` may be rewritten by it, argv may not.
+    const bash = fs.existsSync("/bin/bash") ? "/bin/bash" : "bash";
+    const argv = Array.isArray(args.argv)
+      ? args.argv as string[]
+      : [bash, "-c", await this.#preflight(args.cmd as string, cwd, "argv", context, true)];
+    if (Array.isArray(args.argv)) await this.#preflight(argv.map(shellQuote).join(" "), cwd, "argv", context);
+    // Text written later to a shell is itself a command; other children get their stdin as data.
+    const shell = Array.isArray(args.argv) ? isShellArgv(argv) : isShellCmd(args.cmd as string);
     const durable = args.durable === true;
     const serve = await this.#connect();
     const fields = { argv, cwd, ...pick(args, ["timeoutMs", "label"]) };
     const result = await serve.request<Record<string, unknown>>(durable ? "start" : "spawn", durable ? { ...fields, input: "pipe" } : fields, context.signal);
     const opened: Opened = {
-      id: String(result.id), lifetime: durable ? "durable" : "session",
+      id: String(result.id), lifetime: durable ? "durable" : "session", shell,
       ...(typeof args.label === "string" ? { label: args.label } : {}),
       // A Jev program's session children end with the program; fabric_exec ones stay with Pi.
       ...(!durable && context.parentToolCallId.startsWith("jev:") ? { owner: context.parentToolCallId } : {}),
