@@ -56,6 +56,7 @@ const lazyEntryPoints = [
   "src/compaction/claim-events.ts",
   "src/compaction/orphan-repair.ts",
   "src/decisions/command.ts",
+  "src/commands/session-label-command.ts",
   "src/decisions/events.ts",
   "src/programs/host.ts",
   "src/core/provider-operations.ts",

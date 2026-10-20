@@ -48,6 +48,7 @@ import type {
   FabricProvider,
 } from "./protocol.js";
 import type { FabricRuntimeState } from "./fabric-runtime-state.js";
+import type { SessionLabelControl } from "./topology/session-label.js";
 import type { DecisionStore } from "./decisions/store.js";
 import type { FabricRuntimePaths } from "./runtime-paths.js";
 import type { FabricLoadedFileIdentity } from "./build-identity.js";
@@ -275,6 +276,7 @@ export class FabricState {
 
   mainAgentInfo(context?: ExtensionContext): FabricMainAgentInfo { return this.#required().mainAgentInfo(context); }
   peerInfos(): FabricPeerInfo[] { return this.#current()?.peerInfos() ?? []; }
+  sessionLabel(): SessionLabelControl | undefined { return this.#current()?.sessionLabel(); }
   /** Managed hosts do not expose decisions, matching the `decisions.*` provider. */
   decisionStore(): DecisionStore | undefined {
     return this.#managedHost ? undefined : this.#current()?.decisionStore();

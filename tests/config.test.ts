@@ -13,6 +13,7 @@ import {
   normalizeFabricConfig,
   saveFabricConfig,
 } from "../src/config.js";
+import { sessionLabelSettings } from "../src/topology/session-label-settings.js";
 
 const temporaryDirectories: string[] = [];
 const originalCompactionEngineEnv = process.env.PI_FABRIC_COMPACTION_ENGINE;
@@ -412,6 +413,26 @@ describe("Fabric configuration", () => {
         ui: { showAgentToolPreview: "off", updateDebounceMs: "fast" },
       }).ui,
     ).toMatchObject({ showAgentToolPreview: true, updateDebounceMs: 100 });
+  });
+
+  it("defaults the session label to the footer only and drops invalid label settings", () => {
+    const label = (value: unknown) => sessionLabelSettings(normalizeFabricConfig({ ui: { sessionLabel: value } }).ui.sessionLabel);
+    expect(sessionLabelSettings(DEFAULT_FABRIC_CONFIG.ui.sessionLabel)).toEqual({
+      footer: true,
+      herdr: "off",
+      herdrPosition: "prefix",
+    });
+    expect(label({ footer: false, herdr: "both", herdrPosition: "suffix" }))
+      .toEqual({ footer: false, herdr: "both", herdrPosition: "suffix" });
+    expect(label({ footer: true, herdr: "tab", herdrPosition: "prefix" }))
+      .toEqual({ footer: true, herdr: "tab", herdrPosition: "prefix" });
+    expect(label({ herdr: "pane" })).toEqual({ footer: true, herdr: "pane", herdrPosition: "prefix" });
+    expect(label({ footer: "no", herdr: "window", herdrPosition: "middle" }))
+      .toEqual({ footer: true, herdr: "off", herdrPosition: "prefix" });
+    expect(label({ herdr: "toString", herdrPosition: "constructor" }))
+      .toEqual({ footer: true, herdr: "off", herdrPosition: "prefix" });
+    expect(label("tab")).toEqual({ footer: true, herdr: "off", herdrPosition: "prefix" });
+    expect(label(["tab"])).toEqual({ footer: true, herdr: "off", herdrPosition: "prefix" });
   });
 
   it("defaults, validates, merges, and persists tool display independently of full code mode", () => {

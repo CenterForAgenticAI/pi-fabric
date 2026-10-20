@@ -212,9 +212,12 @@ async invoke(actionName, args, context) {
 /fabric decisions [id]
 /fabric programs [promote <ref>|retire <ref>]
 /fabric run <ref> [json input]
+/fabric label [footer on|off | herdr off|tab|pane|both | position prefix|suffix]
 ```
 
 `/fabric decisions` lists open [durable decisions](decisions.md) and answers the picked one through native dialogs.
+
+`/fabric label` shows this session's Fabric peer label and where it appears. With a setting and a value, it saves that `ui.sessionLabel` setting to the project config (the global config when the project is untrusted) and applies it at once. See [UI configuration](configuration.md#ui).
 
 `/fabric programs` lists [saved programs](programs.md) with their status; `promote` and `retire` are the only way to change one. `/fabric run` executes a saved program without the model, with the same approval policy as a model call, and shows the result in the transcript.
 
