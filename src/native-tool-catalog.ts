@@ -1,7 +1,7 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { nativeMcpIdentity } from "./core/native-mcp-identity.js";
 import type { ResolvedFabricAction } from "./core/action-registry.js";
-import { nativeToolIdentifier, nativeToolRef } from "./core/native-tool-names.js";
+import { NATIVE_CORE_TOOLS, nativeToolIdentifier, nativeToolRef } from "./core/native-tool-names.js";
 import { describeFabricActionDeclaration } from "./runtime/dynamic-guest-types.js";
 
 export interface NativeToolEntry {
@@ -19,6 +19,9 @@ export function nativeToolCatalog(actions: ResolvedFabricAction[], definitions: 
   for (const action of actions) {
     if (!["pi", "mcp", "extensions"].includes(action.provider)) continue;
     if (action.name.startsWith("$") || ["codemode", "fabric_exec"].includes(action.name)) continue;
+    // An extension override of a core tool runs through the pi.* action, so the
+    // pi entry is the one callable definition; a second entry would be ambiguous.
+    if (action.provider === "extensions" && NATIVE_CORE_TOOLS.has(action.name) && actions.some(other => other.provider === "pi" && other.name === action.name)) continue;
     const definition = definitions.find(tool => nativeToolRef(tool, identify) === action.ref || (action.provider === "extensions" && tool.name === action.name));
     if (definition && (definition.exposure === "hidden" || definition.exposure === "model-only")) continue;
     const rawName = definition?.name ?? (action.provider === "mcp" ? `mcp__${action.name.replace(".", "__")}` : action.name);
