@@ -133,9 +133,9 @@ A durable run's decision lives in the project mesh, so it outlives the session t
 
 ### Holding a question for a person
 
-A run spawned with `holdQuestions: true` (`agents.run` or `agents.spawn`) holds its routed questions for a person with no deadline. This is for a workflow that must wait for an operator who may be away, without stopping the rest of its work:
+A run spawned with `holdQuestions: true` (`agents.run` or `agents.spawn`) holds its routed questions for a person, with the longest deadline the store allows. This is for a workflow that must wait for an operator who may be away, without stopping the rest of its work:
 
-- Each question becomes a `kind: "question"` decision held by `"root"` with no `deadline`, so it never expires. The parent raises a decision even when it has an interactive UI, and only notifies the UI that the decision is waiting, so a blocking dialog never stalls the session. A parent with a UI but no decision store asks through the UI dialog with no timeout.
+- Each question becomes a `kind: "question"` decision held by `"root"` whose `deadline` is 30 days after it was raised (`MAX_DECISION_DEADLINE_MS`). The deadline is a backstop: if the session that raised the decision dies without a clean shutdown, nothing else cancels it, and answering it would reach no one. When it passes, the decision expires and the child's question is cancelled. The parent raises a decision even when it has an interactive UI, and only notifies the UI that the decision is waiting, so a blocking dialog never stalls the session. A parent with a UI but no decision store asks through the UI dialog with no timeout.
 - The worker sets no timer on the question and marks the lifecycle record `hold: true`. Only that run waits; other runs and the calling program continue.
 - Answer it with `/fabric decisions`, `pi-fabric decisions answer`, or `decisions.answer({ id, optionId | text })` from a main-session program. The run's `blockedOn.decisionId` names it.
 - A dialog that sets its own `timeout` keeps it. The run's own `timeoutMs` still applies, and a settled or stopped run cancels the decision as usual.
