@@ -65,8 +65,8 @@ export interface AgentRunRequest {
   transport?: FabricAgentTransport;
   model?: string;
   /**
-   * A routed question from this run waits for an answer with no deadline: it is
-   * raised as a root-held decision that never expires, and only this run waits.
+   * A routed question from this run waits for a person: it is raised as a
+   * root-held decision with the store's longest deadline (30 days), and only this run waits.
    * A dialog that sets its own timeout keeps it. Needs agents.childQuestions
    * "route" and a runner that declares questions; the run's own timeoutMs still applies.
    */
@@ -403,7 +403,7 @@ export interface AgentChildQuestionRequest {
   question: Record<string, unknown>;
   /**
    * Set by the manager, never by the child: the run asked to hold questions and
-   * this one has no deadline. The router raises a decision with no expiry.
+   * this one has no deadline. The router raises a decision with the longest deadline.
    */
   hold?: true;
   /** Aborted when the run settles; the router must stop asking. */
