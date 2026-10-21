@@ -226,7 +226,7 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
   // timed_out verdict if the run deadline lands mid-retry.
   lastRetriedTransportFailure?: AgentRunResult;
   model?: string;
-  /** holdQuestions: routed questions without their own deadline wait for a person with none. */
+  /** holdQuestions: routed questions without their own deadline are held for a person. */
   holdQuestions?: true;
   thinking?: AgentRunRequest["thinking"];
   requestedThinking?: AgentRunRequest["thinking"];

@@ -519,7 +519,7 @@ const lineage = await agents.list({ scope: "lineage" });
 return { self: await agents.self(), lineage };
 ```
 
-Child dialogs (`select`, `confirm`, `input`, `editor`) are cancelled by default. With `agents.childQuestions: "route"` they reach the parent's UI, or a root-held [durable decision](decisions.md#routed-child-questions) when the parent is headless or the run is durable; the run record shows `blockedOn`, with the decision's `decisionId`, while one waits. A run spawned with `holdQuestions: true` raises each question as a root-held decision with no deadline instead, even when the parent has a UI; see [Holding a question for a person](decisions.md#holding-a-question-for-a-person).
+Child dialogs (`select`, `confirm`, `input`, `editor`) are cancelled by default. With `agents.childQuestions: "route"` they reach the parent's UI, or a root-held [durable decision](decisions.md#routed-child-questions) when the parent is headless or the run is durable; the run record shows `blockedOn`, with the decision's `decisionId`, while one waits. A run spawned with `holdQuestions: true` raises each question as a root-held decision with a 30-day deadline instead, even when the parent has a UI; see [Holding a question for a person](decisions.md#holding-a-question-for-a-person).
 
 For Main and one-shot agents, `steer` arrives after the tool calls in the current turn and before the next model call. `followUp` waits until the current run settles. For actors, both operations add a message to the serial mailbox. `agents.status({ id })` accepts any participant ID. It returns complete details for a local run or actor and a bounded directory summary for a remote participant. `agents.setSteeringMode` and `setFollowUpMode` continue to control local one-shot runs.
 

@@ -4,7 +4,7 @@ import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MeshStore, type MeshIdentity } from "../src/mesh/store.js";
-import { DecisionStore, type DecisionRecord } from "../src/decisions/store.js";
+import { DecisionStore, MAX_DECISION_DEADLINE_MS, type DecisionRecord } from "../src/decisions/store.js";
 import { cancelOrphanedChildQuestions, requestHeadlessApproval, routeChildQuestion } from "../src/decisions/host.js";
 import { ApprovalController } from "../src/core/approval-controller.js";
 import type { ResolvedFabricAction } from "../src/core/action-registry.js";
@@ -113,7 +113,7 @@ describe("routeChildQuestion", () => {
     expect((await store.get(open.id))?.status).toBe("cancelled");
   });
 
-  it("holds a question as a root decision with no deadline, even with a parent UI", async () => {
+  it("holds a question as a root decision with the longest deadline, even with a parent UI", async () => {
     let now = 1_000_000;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-decision-host-"));
     roots.push(root);
@@ -127,11 +127,32 @@ describe("routeChildQuestion", () => {
     expect(select).not.toHaveBeenCalled();
     expect(notify).toHaveBeenCalledWith(expect.stringContaining(open.id), "info");
     expect(open).toMatchObject({ kind: "question", holder: "root", title: "worker: Pick" });
-    expect(open.deadline).toBeUndefined();
+    expect(open.deadline).toBe(now + MAX_DECISION_DEADLINE_MS);
     now += 2 * 60 * 60 * 1_000;
     expect((await store.get(open.id))?.status).toBe("open");
     await store.answer(open.id, { optionId: "o2" }, human);
     expect(await pending).toEqual({ value: "Beta" });
+  });
+
+  it("bounds a held decision so a session that died without shutdown cannot leave it open forever", async () => {
+    // The raising session crashes: nothing aborts its wait or cancels the decision.
+    let now = 1_000_000;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-decision-host-"));
+    roots.push(root);
+    const crashed = new DecisionStore(new MeshStore(root, 64 * 1024, 500), main, () => now);
+    const routed = { ...request({ method: "select", title: "Pick", options: ["Alpha", "Beta"] }), hold: true as const };
+    const pending = routeChildQuestion(routed, { store: crashed });
+    const open = await waitForOpen(crashed);
+    // A later session, with a different identity, reads the same mesh.
+    const other: MeshIdentity = { id: "session:later", name: "main", kind: "main", sessionId: "later" };
+    const later = new DecisionStore(new MeshStore(root, 64 * 1024, 500), other, () => now);
+    now += 2 * 60 * 60 * 1_000;
+    expect((await later.get(open.id))?.status).toBe("open");
+    now += MAX_DECISION_DEADLINE_MS;
+    expect((await later.get(open.id))?.status).toBe("expired");
+    expect(await later.list({ status: "open" })).toEqual([]);
+    // Had the raiser lived, its child would have been released with a cancellation.
+    expect(await pending).toEqual({ cancelled: true });
   });
 
   it("holds through the UI with no timeout when there is no decision store", async () => {

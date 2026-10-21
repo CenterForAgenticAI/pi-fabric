@@ -3,6 +3,7 @@ import type { AgentChildQuestionRequest, AgentChildQuestionResponse } from "../a
 import type { ResolvedFabricAction } from "../core/action-registry.js";
 import {
   MAX_DECISION_BODY_CHARS,
+  MAX_DECISION_DEADLINE_MS,
   MAX_DECISION_OPTIONS,
   MAX_DECISION_TITLE_CHARS,
   type DecisionRaiseInput,
@@ -178,9 +179,11 @@ export const cancelOrphanedChildQuestions = async (store: DecisionStore): Promis
  * UI at all (the resident host) omits `context` and only ever raises a decision.
  *
  * A held request (`request.hold`, set by the manager for a holdQuestions run)
- * always becomes a root-held decision with no deadline, even with a UI, so a
+ * always becomes a root-held decision with the store's longest deadline
+ * (MAX_DECISION_DEADLINE_MS, 30 days), even with a UI, so a
  * blocking dialog never stalls the session: the UI is only told the decision is
- * waiting. It stays open until answered or until the run settles. Without a
+ * waiting. It stays open until answered, until the run settles, or until the
+ * deadline passes and the child's question is cancelled. Without a
  * decision store it falls back to the UI dialog, with no timeout.
  */
 export const routeChildQuestion = async (
@@ -209,14 +212,16 @@ export const routeChildQuestion = async (
         }
       : { input: question.method === "input" ? "text" : question.method }),
     holder: "root",
-    ...(hold ? {} : { timeoutMs: Math.max(1_000, question.timeout) }),
+    // A held decision gets the longest deadline the store allows, not none: if the
+    // session that raised it dies without shutdown, nothing else cancels it.
+    timeoutMs: hold ? MAX_DECISION_DEADLINE_MS : Math.max(1_000, question.timeout),
     onExpire: "cancel",
   };
   const onRaised = hold && deps.context?.hasUI
     ? (id: string): void => {
         request.onDecision(id);
         try {
-          deps.context!.ui.notify(`${label}: decision ${id} is waiting with no deadline; answer it with /fabric decisions`, "info");
+          deps.context!.ui.notify(`${label}: decision ${id} is held for you (up to 30 days); answer it with /fabric decisions`, "info");
         } catch {
           // A notice is best-effort; the decision is already durable.
         }
