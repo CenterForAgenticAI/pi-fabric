@@ -482,7 +482,7 @@ const main = async (): Promise<void> => {
           else record.blockedOn = { since, ...(decisionId ? { decisionId } : {}) };
           update();
         },
-      })
+      }, Date.now, { hold: options.childQuestionHold === true })
     : undefined;
   let killTimer: NodeJS.Timeout | undefined;
   let closeTimer: NodeJS.Timeout | undefined;
