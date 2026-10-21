@@ -678,4 +678,137 @@ describe("/fabric command", () => {
     expect(notify).toHaveBeenCalledWith(expect.stringContaining("prewalk is disabled"), "error");
   });
 
+  describe("/fabric label", () => {
+    const setup = (root: string, trusted = true) => {
+      let handler: ((argumentsText: string, context: ExtensionContext) => Promise<void>) | undefined;
+      let completions:
+        | ((prefix: string) => Array<{ value: string }> | null | Promise<Array<{ value: string }> | null>)
+        | undefined;
+      const pi = {
+        registerCommand: vi.fn((_name: string, definition: {
+          handler: typeof handler;
+          getArgumentCompletions: typeof completions;
+        }) => {
+          handler = definition.handler;
+          completions = definition.getArgumentCompletions;
+        }),
+      } as unknown as ExtensionAPI;
+      const reloadConfig = vi.fn();
+      const syncSessionLabel = vi.fn(async () => {});
+      const sessionLabelStatus = vi.fn(() => ({
+        label: "FAB-3",
+        footer: true,
+        herdr: { available: true, target: "tab", position: "prefix", applied: ["tab w1:t1"] },
+      }));
+      const notify = vi.fn();
+      const state = {
+        ensure: vi.fn().mockResolvedValue(undefined),
+        initialized: false,
+        reloadConfig,
+        sessionLabel: () => ({ status: sessionLabelStatus, sync: syncSessionLabel }),
+      } as unknown as FabricState;
+      const context = {
+        cwd: root,
+        isProjectTrusted: () => trusted,
+        ui: { notify },
+      } as unknown as ExtensionContext;
+      registerFabricCommand(pi, {
+        state,
+        fabricUi: {} as FabricUiController,
+        capturedTools: {} as CapturedToolCatalog,
+        applyFabricMode: vi.fn(),
+        suspendToolCapture: vi.fn(),
+        autoArmPrewalk: vi.fn(async () => {}),
+      });
+      return { handler: handler!, completions: completions!, context, notify, reloadConfig, syncSessionLabel };
+    };
+
+    const savedLabel = async (root: string): Promise<Record<string, unknown> | undefined> => {
+      const saved = JSON.parse(await readFile(path.join(root, ".pi", "fabric.json"), "utf8")) as {
+        ui?: { sessionLabel?: Record<string, unknown> };
+      };
+      return saved.ui?.sessionLabel;
+    };
+
+    it("reports where the session label shows", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "fabric-command-label-"));
+      try {
+        const { handler, context, notify, reloadConfig } = setup(root);
+        await handler("label", context);
+        const [text, level] = notify.mock.calls[0]!;
+        expect(level).toBe("info");
+        expect(text).toContain("FAB-3");
+        expect(text).toContain("footer: on");
+        expect(text).toContain("herdr: tab (prefix)");
+        expect(text).toContain("tab w1:t1");
+        expect(reloadConfig).not.toHaveBeenCalled();
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it("saves each setting to project config, reloads, and applies it now", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "fabric-command-label-"));
+      try {
+        const { handler, context, notify, reloadConfig, syncSessionLabel } = setup(root);
+        await handler("label herdr both", context);
+        expect(await savedLabel(root)).toEqual({ herdr: "both" });
+        await handler("label position suffix", context);
+        await handler("label footer off", context);
+        expect(await savedLabel(root)).toEqual({ herdr: "both", herdrPosition: "suffix", footer: false });
+        expect(reloadConfig).toHaveBeenCalledTimes(3);
+        expect(reloadConfig).toHaveBeenCalledWith(context);
+        expect(syncSessionLabel).toHaveBeenCalledTimes(3);
+        expect(notify).toHaveBeenCalledWith(
+          expect.stringContaining(`Fabric label footer: off (project: ${path.join(root, ".pi", "fabric.json")})`),
+          "info",
+        );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects an unknown value without saving", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "fabric-command-label-"));
+      try {
+        const { handler, context, notify, reloadConfig } = setup(root);
+        await handler("label herdr window", context);
+        await handler("label footer maybe", context);
+        await handler("label color red", context);
+        expect(notify).toHaveBeenCalledTimes(3);
+        for (const [text, level] of notify.mock.calls) {
+          expect(level).toBe("warning");
+          expect(text).toContain("Usage: /fabric label");
+        }
+        expect(reloadConfig).not.toHaveBeenCalled();
+        await expect(readFile(path.join(root, ".pi", "fabric.json"), "utf8")).rejects.toThrow();
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it("completes settings and values as whole arguments before Fabric starts", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "fabric-command-label-"));
+      try {
+        const { completions } = setup(root);
+        expect((await completions("lab"))?.map((item) => item.value)).toEqual(["label"]);
+        expect((await completions("label "))?.map((item) => item.value)).toEqual([
+          "label footer",
+          "label herdr",
+          "label position",
+        ]);
+        expect((await completions("label herdr "))?.map((item) => item.value)).toEqual([
+          "label herdr off",
+          "label herdr tab",
+          "label herdr pane",
+          "label herdr both",
+        ]);
+        expect((await completions("label position s"))?.map((item) => item.value)).toEqual(["label position suffix"]);
+        expect(await completions("label footer x")).toBeNull();
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  });
+
 });

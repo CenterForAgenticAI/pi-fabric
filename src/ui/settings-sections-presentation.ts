@@ -25,6 +25,11 @@ import {
   CODE_PREVIEW_EDIT_LINES_ID,
   CODE_PREVIEW_ALL_LINES,
 } from "./settings-values.js";
+import {
+  SESSION_LABEL_HERDR_TARGETS,
+  SESSION_LABEL_POSITIONS,
+  sessionLabelSettings,
+} from "../topology/session-label-settings.js";
 
 export const buildCaptureSection = (
   { config, theme, options, apply, persist }: Pick<SettingsSectionContext<"keepVisibleCandidates">, "config" | "theme" | "options" | "apply" | "persist">,
@@ -84,6 +89,7 @@ export const buildCaptureSection = (
 export const buildUiSection = (
   { config, theme, persist }: Pick<SettingsSectionContext, "config" | "theme" | "persist">,
 ): SettingItem => {
+  const sessionLabel = sessionLabelSettings(config.ui.sessionLabel);
   return setting("ui", "UI", summaryFor("ui", config), {
     description: "Fabric activity widget and dashboard.",
     submenu: sectionSubmenu(
@@ -127,6 +133,29 @@ export const buildUiSection = (
               "Update debounce",
               "One global coalescing window for live card updates — nested calls, progress, agent previews. Off emits every update.",
             ),
+          },
+        ),
+        setting(
+          "ui.sessionLabel.footer",
+          "Session label in footer",
+          sessionLabel.footer ? "true" : "false",
+          {
+            description: "Show this session's Fabric peer label, such as FAB-3, in the Pi footer.",
+            values: BOOLEANS,
+          },
+        ),
+        setting("ui.sessionLabel.herdr", "Session label in Herdr", sessionLabel.herdr, {
+          description:
+            "Add this session's Fabric peer label to the Herdr tab, the pane, both, or neither. Applies only when Pi runs inside Herdr.",
+          values: SESSION_LABEL_HERDR_TARGETS,
+        }),
+        setting(
+          "ui.sessionLabel.herdrPosition",
+          "Herdr label position",
+          sessionLabel.herdrPosition,
+          {
+            description: "Put the Fabric label before (prefix) or after (suffix) the existing Herdr name.",
+            values: SESSION_LABEL_POSITIONS,
           },
         ),
         setting("ui.maxRows", "Max rows", String(config.ui.maxRows), {
