@@ -173,6 +173,12 @@ export interface FabricNestedProgramRun {
   call?: { ref: string; args: Record<string, unknown> };
 }
 
+/** Program text a host caller supplied, with the SHA-256 it was verified against. Never saved. */
+export interface FabricCallerProgram {
+  code: string;
+  sha256: string;
+}
+
 /**
  * Runs a program through the enclosing execution's own host bridge: the same
  * capability view, approval controller, agent budget, signal and trace. It
@@ -180,6 +186,8 @@ export interface FabricNestedProgramRun {
  */
 export interface FabricNestedProgramRunner {
   kernel: FabricKernel;
+  /** Verified caller-supplied code that `programs.run` may run in place of a saved program. */
+  callerProgram?: FabricCallerProgram;
   run(request: FabricNestedProgramRun, signal: AbortSignal | undefined): Promise<unknown>;
 }
 
@@ -207,6 +215,8 @@ export interface FabricExecutionOptions {
   display?: FabricRunDisplay;
   /** Host-invoked program runs (`/fabric run`, the program run event). */
   invokedBy?: "host";
+  /** The code a host caller supplied; `programs.run` runs it as `callerCodeProgram(sha256)`. */
+  callerProgram?: FabricCallerProgram;
   onPartial(snapshot: FabricExecutionPartial): void;
 }
 
@@ -822,6 +832,7 @@ export class FabricExecutionService {
     };
     this.#nestedRunners.set(options.parentToolCallId, {
       kernel: python ? "python" : "typescript",
+      ...(options.callerProgram ? { callerProgram: options.callerProgram } : {}),
       run: runNestedProgram,
     });
     try {

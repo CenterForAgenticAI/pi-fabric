@@ -71,18 +71,58 @@ export type FabricProgramRunReplyV1 =
   | { ok: true; program: string; value: unknown; logs: string[] }
   | { ok: false; error: string; program?: string };
 
-export interface FabricProgramRunRequestV1 {
-  /** name, name@<digest prefix >= 12>, or a full digest. */
-  ref: string;
+interface FabricProgramRunRequestBaseV1 {
+  /** JSON, at most 64 KiB; reaches the program as `input`. */
   input?: unknown;
-  requirePromoted?: boolean;
   signal?: AbortSignal;
+  /**
+   * Called synchronously, before the listener's first await, for every request
+   * it will answer. A caller that sees no call knows pi-fabric is absent or too
+   * old. Returning `false` means another responder already holds the request;
+   * pi-fabric then stays silent. Any other return value, or a throw, is ignored.
+   * A `claim` getter that throws cannot be called; Fabric refuses the request.
+   */
+  claim?: () => void | boolean;
   /** Called exactly once. */
   reply: (result: FabricProgramRunReplyV1) => void;
 }
 
+/** Runs a saved program. Exactly one of `ref` or `code` is allowed. */
+export interface FabricProgramRunByRefRequestV1 extends FabricProgramRunRequestBaseV1 {
+  /** name, name@<digest prefix >= 12>, or a full digest. */
+  ref: string;
+  requirePromoted?: boolean;
+  code?: never;
+  kernel?: never;
+  sha256?: never;
+}
+
+/**
+ * Runs program text the caller built, without saving it anywhere. `sha256` is
+ * the lowercase hex SHA-256 of the code's UTF-8 bytes; a mismatch runs nothing.
+ */
+export interface FabricProgramRunByCodeRequestV1 extends FabricProgramRunRequestBaseV1 {
+  /** Non-empty, at most 65 536 characters. */
+  code: string;
+  /** Only `"typescript"` today; the default. */
+  kernel?: "typescript";
+  sha256: string;
+  ref?: never;
+  requirePromoted?: never;
+}
+
+export type FabricProgramRunRequestV1 = FabricProgramRunByRefRequestV1 | FabricProgramRunByCodeRequestV1;
+
 /** The request fields Fabric reads, once, when a program run event arrives. */
-export type FabricProgramRunFieldV1 = "ref" | "input" | "requirePromoted" | "signal";
+export type FabricProgramRunFieldV1 =
+  | "ref"
+  | "code"
+  | "kernel"
+  | "sha256"
+  | "input"
+  | "requirePromoted"
+  | "signal"
+  | "claim";
 
 /**
  * Everything a program run listener keeps of a request. Read once, at the event
@@ -91,6 +131,9 @@ export type FabricProgramRunFieldV1 = "ref" | "input" | "requirePromoted" | "sig
  */
 export interface FabricProgramRunSnapshotV1 {
   readonly ref: unknown;
+  readonly code: unknown;
+  readonly kernel: unknown;
+  readonly sha256: unknown;
   /** A JSON copy of the caller's `input`, never the caller's object. */
   readonly input: unknown;
   readonly requirePromoted: unknown;
@@ -100,6 +143,12 @@ export interface FabricProgramRunSnapshotV1 {
    * request by name instead of letting the throw escape.
    */
   readonly unreadable: FabricProgramRunFieldV1 | undefined;
+  /**
+   * Acknowledges the request synchronously with the caller's `claim`. Returns
+   * false only when `claim` reports that another responder already holds the
+   * request. A missing, unreadable or throwing `claim` returns true.
+   */
+  readonly claim: () => boolean;
   /** Calls the caller's `reply` at most once, directly, and never throws. */
   readonly respond: (result: FabricProgramRunReplyV1) => void;
 }
@@ -147,6 +196,15 @@ export const snapshotFabricProgramRunRequestV1 = (value: unknown): FabricProgram
       return undefined;
     }
   };
+  const claimFunction = read("claim");
+  const claim = (): boolean => {
+    if (typeof claimFunction !== "function") return true;
+    try {
+      return Reflect.apply(claimFunction, value, []) !== false;
+    } catch {
+      return true;
+    }
+  };
   let replied = false;
   const respond = (result: FabricProgramRunReplyV1): void => {
     if (replied) return;
@@ -160,15 +218,22 @@ export const snapshotFabricProgramRunRequestV1 = (value: unknown): FabricProgram
   // Read the plain fields before `input`: copying `input` runs its `toJSON`
   // and getters, which must not be able to change what else the request says.
   const ref = read("ref");
+  const code = read("code");
+  const kernel = read("kernel");
+  const sha256 = read("sha256");
   const requirePromoted = read("requirePromoted");
   const signal = read("signal");
   const input = copyProgramRunInput(read("input"));
   return Object.freeze({
     ref,
+    code,
+    kernel,
+    sha256,
     input,
     requirePromoted,
     signal,
     unreadable,
+    claim,
     respond,
   });
 };
