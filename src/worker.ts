@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { assertWorkerRuntime, writeWorkerStartupFailure } from "./worker/startup.js";
+import { explainMissingInstall } from "./worker/missing-install.js";
 
 import { StringDecoder } from "node:string_decoder";
 import type { ImageContent } from "@earendil-works/pi-ai";
@@ -1520,8 +1521,9 @@ const main = async (): Promise<void> => {
   process.exitCode = record.status === "completed" ? 0 : 1;
 };
 
-main().catch((error) => {
-  console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
+main().catch((caught) => {
+  const error = explainMissingInstall(caught, import.meta.url);
+  console.error(error instanceof Error ? (error === caught ? (error.stack ?? error.message) : error.message) : String(error));
   writeCrashStatus(error);
   process.exit(1);
 });
