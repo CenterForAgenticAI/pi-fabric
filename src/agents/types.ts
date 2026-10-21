@@ -64,6 +64,13 @@ export interface AgentRunRequest {
   pythonRuntime?: FabricPythonRuntime;
   transport?: FabricAgentTransport;
   model?: string;
+  /**
+   * A routed question from this run waits for an answer with no deadline: it is
+   * raised as a root-held decision that never expires, and only this run waits.
+   * A dialog that sets its own timeout keeps it. Needs agents.childQuestions
+   * "route" and a runner that declares questions; the run's own timeoutMs still applies.
+   */
+  holdQuestions?: true;
   /** Veda persona name; only used when runner is "veda". */
   persona?: string;
   thinking?: FabricThinking;
@@ -291,6 +298,8 @@ export interface AgentWorkerOptions {
   steerFile?: string;
   /** Present when agents.childQuestions is "route": child dialogs go to the parent with this default deadline. */
   childQuestionTimeoutMs?: number;
+  /** With childQuestionTimeoutMs: a question with no timeout of its own never times out in the worker. */
+  childQuestionHold?: true;
   transport: FabricAgentTransport;
   sessionId?: string;
   attachCommand?: string;
@@ -381,6 +390,11 @@ export interface AgentChildQuestionRequest {
   name: string;
   actorId?: string;
   question: Record<string, unknown>;
+  /**
+   * Set by the manager, never by the child: the run asked to hold questions and
+   * this one has no deadline. The router raises a decision with no expiry.
+   */
+  hold?: true;
   /** Aborted when the run settles; the router must stop asking. */
   signal: AbortSignal;
   /** Report the durable decision backing a headless question. */

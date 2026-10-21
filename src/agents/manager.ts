@@ -226,6 +226,8 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
   // timed_out verdict if the run deadline lands mid-retry.
   lastRetriedTransportFailure?: AgentRunResult;
   model?: string;
+  /** holdQuestions: routed questions without their own deadline wait for a person with none. */
+  holdQuestions?: true;
   thinking?: AgentRunRequest["thinking"];
   requestedThinking?: AgentRunRequest["thinking"];
   actorId?: string;
@@ -881,6 +883,12 @@ export class AgentManager {
       throw new Error("worktreeSetup must be a shell command of at most 8192 characters");
     }
     // Fail closed before admission or budget side effects.
+    if (request.holdQuestions !== undefined) {
+      if (request.holdQuestions !== true) throw new Error("holdQuestions must be true when given");
+      if (this.config.childQuestions !== "route" || !capabilities.questions) {
+        throw new Error('holdQuestions requires agents.childQuestions "route" and a runner that declares questions');
+      }
+    }
     const scope = launchScope(request.scope, request.inheritedScope);
     checkedTraceContext(request);
     const thinkingBounds = this.childThinkingBounds(request.thinkingBounds);
@@ -1162,7 +1170,11 @@ export class AgentManager {
         "--steer-file",
         steerFile,
         ...(this.config.childQuestions === "route" && capabilities.questions
-          ? ["--child-questions", String(this.config.childQuestionTimeoutMs ?? DEFAULT_CHILD_QUESTION_TIMEOUT_MS)]
+          ? [
+              "--child-questions",
+              String(this.config.childQuestionTimeoutMs ?? DEFAULT_CHILD_QUESTION_TIMEOUT_MS),
+              ...(request.holdQuestions === true ? ["--child-questions-hold", "1"] : []),
+            ]
           : []),
         ...(schemaFile ? ["--schema-file", schemaFile] : []),
         ...(branch ? ["--branch", branch] : []),
@@ -1235,6 +1247,7 @@ export class AgentManager {
         abortSignal: signal,
         abortHandler: undefined,
         ...(model ? { model } : {}),
+        ...(request.holdQuestions === true ? { holdQuestions: true as const } : {}),
         ...(thinking ? { thinking } : {}),
         ...(clampedFrom ? { requestedThinking: clampedFrom } : {}),
         ...(request.actorId ? { actorId: request.actorId } : {}),
@@ -1319,7 +1332,7 @@ export class AgentManager {
       { ...context, idempotencyKey: context.id },
       { ...launch.files, stateFile: path.join(context.runDirectory, HOSTED_STATE_FILE) },
       record,
-      this.#hostedHooks(() => managed),
+      this.#hostedHooks(() => managed, launch.request.holdQuestions === true),
     );
     if (launch.signal?.aborted || this.#closing) {
       hosted.abandon("Agent launch aborted before the hosted run was submitted");
@@ -1336,9 +1349,10 @@ export class AgentManager {
     return this.#handleInfo(managed, "running");
   }
 
-  #hostedHooks(managed: () => ManagedAgent | undefined): HostedRunHooks {
+  #hostedHooks(managed: () => ManagedAgent | undefined, holdQuestions = false): HostedRunHooks {
     return {
       questionTimeoutMs: this.config.childQuestionTimeoutMs ?? DEFAULT_CHILD_QUESTION_TIMEOUT_MS,
+      ...(holdQuestions ? { holdQuestions: true } : {}),
       ...(this.config.childQuestions === "route" && this.#onChildQuestion
         ? {
             ask: (question: Record<string, unknown>, onDecision: (decisionId: string) => void) => {
@@ -1390,6 +1404,7 @@ export class AgentManager {
       ...(options.requestedThinking ? { requestedThinking: options.requestedThinking } : {}),
       ...(record.branch ? { branch: record.branch } : {}),
       ...(record.worktree ? { worktree: record.worktree } : {}),
+      ...(hosted.hooks.holdQuestions ? { holdQuestions: true as const } : {}),
       settled: false,
       background: recovered,
       lastLivenessCheckAt: 0,
@@ -1472,7 +1487,7 @@ export class AgentManager {
           stateFile: path.join(runDirectory, HOSTED_STATE_FILE),
         },
         record,
-        this.#hostedHooks(() => managed),
+        this.#hostedHooks(() => managed, state.holdQuestions === true),
       );
       managed = this.#adoptHosted(hosted, { release: () => {}, recovered: true });
       await hosted.attach();
@@ -2368,6 +2383,8 @@ export class AgentManager {
       runId: managed.id,
       name: managed.actorName ?? managed.name,
       ...(managed.actorId ? { actorId: managed.actorId } : {}),
+      // Both sides must agree: the run asked to hold, and this question carries no deadline of its own.
+      ...(managed.holdQuestions && question.hold === true ? { hold: true as const } : {}),
       question,
       signal: managed.questions.signal,
       onDecision: (decisionId) => {
