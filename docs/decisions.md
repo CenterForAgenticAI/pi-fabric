@@ -120,7 +120,7 @@ The decision path covers actions called through `fabric_exec`. Direct native too
 
 By default a child Pi run cancels every dialog (`select`, `confirm`, `input`, `editor`) that its extensions open. With `agents.childQuestions: "route"`, the child's worker forwards the dialog to the parent:
 
-1. The worker writes a lifecycle record `{ event: "question", data: { requestId, method, title, message?, options?, placeholder?, prefill?, timeout } }` and sets `blockedOn: { since }` on the run record.
+1. The worker writes a lifecycle record `{ event: "question", data: { requestId, method, title, message?, options?, placeholder?, prefill?, timeout, hold? } }` and sets `blockedOn: { since }` on the run record.
 2. The parent AgentManager asks through its own interactive UI when it has one, with the child's name prefixed to the title. A parent that is itself an RPC child asks through its own UI channel, so questions climb to the first session with a person or a headless root.
 3. Without an interactive UI, the parent raises a `kind: "question"` decision held by `"root"`. A `residency: "durable"` run's parent is the resident host, which has no UI, so its dialogs always become decisions. `select` options become `o1`, `o2`, … (the first 12), and `confirm` becomes `yes`/`no`. The run record then shows `blockedOn: { decisionId, since }`, in the run's status file too, so a session reading a durable run sees which decision blocks it. With several questions open, `decisionId` names the decision of the oldest question that has one, and moves on when that question is answered or cancelled.
 4. The parent names the decision to the worker with a steer line `{ type: "ui_decision", requestId, decisionId }`; a worker that does not know this command ignores it and leaves `blockedOn.decisionId` out. The answer goes back through the same steer channel as `{ type: "ui_response", requestId, value? | confirmed? | cancelled? }`, and the worker forwards it to the child as `extension_ui_response`.
@@ -130,6 +130,16 @@ The deadline is the dialog's own timeout, or `agents.childQuestionTimeoutMs` (de
 Routing also gives a Pi child with extensions the tools listed in `agents.childQuestionTools` (default `["ask"]`), so a caller does not have to name a question tool in `tools`. The grant never widens an allowlist the child inherited, and it is skipped when `tools` is empty, uses `+name`/`-name` modifiers, or `extensions` is `false`. Set `childQuestionTools: []` to route dialogs without granting a tool; a caller then names the question tool in `tools`. A child's system prompt lists only the extension tools its allowlist permits, so a tool left out is not offered and cannot be called.
 
 A durable run's decision lives in the project mesh, so it outlives the session that spawned the run. Any root session on the same mesh, `/fabric decisions`, or `pi-fabric decisions answer` can answer it until its deadline.
+
+### Holding a question for a person
+
+A run spawned with `holdQuestions: true` (`agents.run` or `agents.spawn`) holds its routed questions for a person with no deadline. This is for a workflow that must wait for an operator who may be away, without stopping the rest of its work:
+
+- Each question becomes a `kind: "question"` decision held by `"root"` with no `deadline`, so it never expires. The parent raises a decision even when it has an interactive UI, and only notifies the UI that the decision is waiting, so a blocking dialog never stalls the session. A parent with a UI but no decision store asks through the UI dialog with no timeout.
+- The worker sets no timer on the question and marks the lifecycle record `hold: true`. Only that run waits; other runs and the calling program continue.
+- Answer it with `/fabric decisions`, `pi-fabric decisions answer`, or `decisions.answer({ id, optionId | text })` from a main-session program. The run's `blockedOn.decisionId` names it.
+- A dialog that sets its own `timeout` keeps it. The run's own `timeoutMs` still applies, and a settled or stopped run cancels the decision as usual.
+- Fabric refuses `holdQuestions` unless `agents.childQuestions` is `"route"` and the runner declares `questions`. A hosted run keeps the setting in its persisted state, so a re-attached run still holds.
 
 Only the resident host that raised a decision can deliver its answer, so a decision does not outlive that host:
 

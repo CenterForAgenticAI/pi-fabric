@@ -48,6 +48,8 @@ export interface HostedRunState {
   runner: string;
   locator: unknown;
   context: FabricHostedRunContext;
+  /** The run holds routed questions with no deadline; recovery keeps it. */
+  holdQuestions?: true;
 }
 
 export interface HostedRunFiles {
@@ -67,6 +69,8 @@ export interface HostedRunHooks {
     onDecision: (decisionId: string) => void,
   ) => Promise<AgentChildQuestionResponse>;
   questionTimeoutMs: number;
+  /** holdQuestions: a question with no timeoutMs of its own waits with no deadline. */
+  holdQuestions?: boolean;
 }
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -181,7 +185,13 @@ export class HostedRun {
   ): Promise<HostedRun> {
     const locator = checkedLocator(adapter.id, await withTimeout(() => adapter.prepare(context), `${adapter.id}.prepare`));
     const run = new HostedRun(adapter, locator, context, files, { ...record, hosted: { locator } }, hooks);
-    const state: HostedRunState = { version: 1, runner: adapter.id, locator, context };
+    const state: HostedRunState = {
+      version: 1,
+      runner: adapter.id,
+      locator,
+      context,
+      ...(hooks.holdQuestions ? { holdQuestions: true as const } : {}),
+    };
     writeJsonAtomic(files.stateFile, state, { space: 2 });
     run.#write();
     return run;
@@ -415,10 +425,10 @@ export class HostedRun {
     if (method === "select" && !options?.length) throw new Error("A select question needs options");
     if (this.#detached) return unanswered();
     if (this.#closed || this.terminal || !this.hooks.ask) return { cancelled: true };
-    const timeout = Math.min(
-      typeof question.timeoutMs === "number" && question.timeoutMs > 0 ? Math.floor(question.timeoutMs) : this.hooks.questionTimeoutMs,
-      MAX_QUESTION_TIMEOUT_MS,
-    );
+    const requested = typeof question.timeoutMs === "number" && question.timeoutMs > 0 ? Math.floor(question.timeoutMs) : undefined;
+    // A held question waits until answered or until the run settles.
+    const hold = this.hooks.holdQuestions === true && requested === undefined;
+    const timeout = hold ? MAX_QUESTION_TIMEOUT_MS : Math.min(requested ?? this.hooks.questionTimeoutMs, MAX_QUESTION_TIMEOUT_MS);
     const messageText = questionText(question.message, MAX_QUESTION_TEXT_CHARS);
     const placeholder = questionText(question.placeholder, MAX_QUESTION_TEXT_CHARS);
     const prefill = questionText(question.prefill, MAX_QUESTION_TEXT_CHARS);
@@ -426,7 +436,7 @@ export class HostedRun {
     this.#questions.push(pending);
     this.#writeBlockedOn();
     try {
-      const response = await withTimeout(() => this.hooks.ask!({
+      const ask = (): Promise<AgentChildQuestionResponse> => this.hooks.ask!({
         requestId: randomUUID(),
         method,
         title: questionText(question.title, MAX_QUESTION_TITLE_CHARS) ?? "",
@@ -435,10 +445,13 @@ export class HostedRun {
         ...(placeholder !== undefined ? { placeholder } : {}),
         ...(prefill !== undefined ? { prefill } : {}),
         timeout,
+        ...(hold ? { hold: true } : {}),
       }, (decisionId) => {
         pending.decisionId = decisionId;
         this.#writeBlockedOn();
-      }), "Hosted runner question", timeout + 1_000).catch((): AgentChildQuestionResponse => ({ cancelled: true }));
+      });
+      const response = await (hold ? ask() : withTimeout(ask, "Hosted runner question", timeout + 1_000))
+        .catch((): AgentChildQuestionResponse => ({ cancelled: true }));
       // The host let go of this run: its decision was cancelled, not answered.
       if (this.#detached) return unanswered();
       if (method === "confirm") return "confirmed" in response ? response : { cancelled: true };

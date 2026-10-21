@@ -102,8 +102,10 @@ const askViaUi = async (
   label: string,
   question: ChildQuestion,
   signal: AbortSignal,
+  hold = false,
 ): Promise<AgentChildQuestionResponse> => {
-  const dialog = { signal, timeout: question.timeout };
+  // A held question has no deadline: the dialog waits until answered or the run settles.
+  const dialog = hold ? { signal } : { signal, timeout: question.timeout };
   if (question.method === "select") {
     const value = await ui.select(label, question.options!, dialog);
     return value !== undefined && question.options!.includes(value) ? { value } : CANCELLED;
@@ -119,7 +121,7 @@ const askViaUi = async (
   let timer: NodeJS.Timeout | undefined;
   let onAbort: (() => void) | undefined;
   const stop = new Promise<undefined>((resolve) => {
-    timer = setTimeout(() => resolve(undefined), question.timeout);
+    if (!hold) timer = setTimeout(() => resolve(undefined), question.timeout);
     onAbort = () => resolve(undefined);
     signal.addEventListener("abort", onAbort, { once: true });
   });
@@ -174,6 +176,12 @@ export const cancelOrphanedChildQuestions = async (store: DecisionStore): Promis
  * has one, otherwise through a root-held decision. Missing UI and store, a
  * malformed request, or any failure cancels the child's dialog. A host with no
  * UI at all (the resident host) omits `context` and only ever raises a decision.
+ *
+ * A held request (`request.hold`, set by the manager for a holdQuestions run)
+ * always becomes a root-held decision with no deadline, even with a UI, so a
+ * blocking dialog never stalls the session: the UI is only told the decision is
+ * waiting. It stays open until answered or until the run settles. Without a
+ * decision store it falls back to the UI dialog, with no timeout.
  */
 export const routeChildQuestion = async (
   request: AgentChildQuestionRequest,
@@ -182,7 +190,10 @@ export const routeChildQuestion = async (
   const question = parseChildQuestion(request.question);
   if (!question || request.signal.aborted) return CANCELLED;
   const label = `${request.name}: ${question.title || "question"}`;
-  if (deps.context?.hasUI) return askViaUi(deps.context.ui, label, question, request.signal);
+  const hold = request.hold === true;
+  if (deps.context?.hasUI && (!hold || !deps.store)) {
+    return askViaUi(deps.context.ui, label, question, request.signal, hold);
+  }
   if (!deps.store) return CANCELLED;
   const input: DecisionRaiseInput = {
     kind: "question",
@@ -198,15 +209,25 @@ export const routeChildQuestion = async (
         }
       : { input: question.method === "input" ? "text" : question.method }),
     holder: "root",
-    timeoutMs: Math.max(1_000, question.timeout),
+    ...(hold ? {} : { timeoutMs: Math.max(1_000, question.timeout) }),
     onExpire: "cancel",
   };
+  const onRaised = hold && deps.context?.hasUI
+    ? (id: string): void => {
+        request.onDecision(id);
+        try {
+          deps.context!.ui.notify(`${label}: decision ${id} is waiting with no deadline; answer it with /fabric decisions`, "info");
+        } catch {
+          // A notice is best-effort; the decision is already durable.
+        }
+      }
+    : request.onDecision;
   const decision = await raiseAndWait(
     deps.store,
     input,
     { participantId: request.actorId ?? request.runId, runId: request.runId },
     request.signal,
-    request.onDecision,
+    onRaised,
   );
   return responseFromDecision(question, decision);
 };
