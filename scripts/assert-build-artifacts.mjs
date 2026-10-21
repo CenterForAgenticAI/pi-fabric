@@ -49,6 +49,7 @@ const lazy = [
   "agents/result.js",
   "agents/veda-cli.js",
   "agents/provider-bridge.js",
+  "agents/model-pin-guard.js",
   "core/host-sdk.js",
   "fabric-runtime-state.js",
   "components/configuration.js",
@@ -247,7 +248,7 @@ if ([...startupFiles].some(file => /class ProviderOperations|Fabric provider ope
 const initialSource = [...startupFiles]
   .map((file) => readFileSync(file, "utf8"))
   .join("\n");
-for (const forbidden of ["src/extension-copy.ts", "src/native-discovery.ts", "src/memory/extractive-history.ts", "src/memory/extractive-index.ts", "src/entropy/compiler.ts", "src/entropy/trial.ts", "src/fabric-runtime-state.ts", "src/core/host-sdk-runtime.ts", "src/prewalk/handoff.ts", "src/jev/client.ts", "src/ui/languages/bend.ts", "src/ui/settings.ts", "src/ui/conversation.ts", "src/ui/conversation-chrome.ts", "src/ui/image-overlays.ts", "src/ui/word-diff/line-emphasis.ts", "src/compaction/projections.ts", "src/commands/fabric-handler.ts", "src/core/system-guidance.ts", "src/audit/trace.ts", "src/ui/kitty-viewport.ts", 'from "mcporter"']) {
+for (const forbidden of ["src/extension-copy.ts", "src/native-discovery.ts", "src/memory/extractive-history.ts", "src/memory/extractive-index.ts", "src/entropy/compiler.ts", "src/entropy/trial.ts", "src/fabric-runtime-state.ts", "src/core/model-resolution.ts", "src/core/host-sdk-runtime.ts", "src/prewalk/handoff.ts", "src/jev/client.ts", "src/ui/languages/bend.ts", "src/ui/settings.ts", "src/ui/conversation.ts", "src/ui/conversation-chrome.ts", "src/ui/image-overlays.ts", "src/ui/word-diff/line-emphasis.ts", "src/compaction/projections.ts", "src/commands/fabric-handler.ts", "src/core/system-guidance.ts", "src/audit/trace.ts", "src/ui/kitty-viewport.ts", 'from "mcporter"']) {
   if (initialSource.includes(forbidden)) {
     throw new Error(`Startup static graph contains lazy module marker: ${forbidden}`);
   }

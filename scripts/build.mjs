@@ -76,6 +76,8 @@ const lazyEntryPoints = [
   "src/agents/provider-bridge.ts",
   // The running Pi CLI's own SDK entry, for the bridge and the conversation UI.
   "src/core/host-sdk.ts",
+  // Loaded by the worker as a Pi extension (-e) for exact-model children.
+  "src/agents/model-pin-guard.ts",
   "src/fabric-runtime-state.ts",
   "src/components/configuration.ts",
   "src/providers/jev-provider.ts",
