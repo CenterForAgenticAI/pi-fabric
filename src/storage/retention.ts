@@ -92,6 +92,38 @@ const childAlive = (owner: RunRootOwner | undefined, pid: number): boolean => {
 const recordAgeReference = (record: RunRecordSummary, fallback: number): number =>
   time(record.finishedAt) ? record.finishedAt : time(record.updatedAt) ? record.updatedAt : fallback;
 const runFiles = new Set(["task.txt", "status.json", "events.jsonl", "lifecycle.jsonl", "steer.jsonl", "schema.json", "images.json"]);
+/** node:crypto randomUUID(): lowercase, version 4, variant 10xx. */
+const UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+/** pi-ai uuidv7(), which Pi's SessionManager uses for session ids: lowercase, version 7, variant 10xx. */
+const UUID_V7 = "[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+/** process.pid: positive and unpadded. */
+const PID = "[1-9]\\d*";
+/**
+ * Files writeForkSession (src/agents/handoff.ts) and Pi create in `<run>/fork-session/`:
+ * materializeBranch's `handoff-<randomUUID>.jsonl`, appended to in place, and the
+ * `<timestamp>_<uuidv7>.jsonl` SessionManager.createBranchedSession writes beside it when a child
+ * extension forks the session. The timestamp is `new Date().toISOString()` with `:` and `.` turned into `-`
+ * (pi-coding-agent dist/core/session-manager.js: `timestamp.replace(/[:.]/g, "-")`, `${fileTimestamp}_${newSessionId}.jsonl`).
+ */
+const HANDOFF_FILE = new RegExp(`^handoff-${UUID_V4}\\.jsonl$`);
+const PI_BRANCH_FILE = new RegExp(`^(\\d{4}-\\d{2}-\\d{2})T(\\d{2})-(\\d{2})-(\\d{2})-(\\d{3})Z_${UUID_V7}\\.jsonl$`);
+/** The name part must be a real instant: map it back to an ISO string and require Date to reproduce it exactly (rejects 2026-02-30 and month 99). */
+const piBranchFile = (name: string): boolean => {
+  const match = PI_BRANCH_FILE.exec(name);
+  if (!match) return false;
+  const iso = `${match[1]}T${match[2]}:${match[3]}:${match[4]}.${match[5]}Z`;
+  const instant = new Date(iso);
+  return !Number.isNaN(instant.getTime()) && instant.toISOString() === iso;
+};
+const forkSessionFile = (name: string): boolean => HANDOFF_FILE.test(name) || piBranchFile(name);
+/**
+ * A crash between a record's temp write and its rename leaves a temp file beside it, named by the writer:
+ * the worker's writeRunRecord (src/worker/run-record.ts) `status.json.<pid>.tmp`, and writeFileAtomic
+ * (src/core/atomic-write.ts, used for status.json by the manager and HostedRun) `status.json.<pid>.<randomUUID>.tmp`.
+ */
+const STATUS_TEMP_FILE = new RegExp(`^status\\.json\\.${PID}(?:\\.${UUID_V4})?\\.tmp$`);
+/** src/worker.ts failOversizedEvent saves the first characters of an oversized event line here. */
+const OVERSIZED_EVENT_FILE = "oversized-event-prefix.txt";
 const DURABLE_KEY = /^(?:initial|[0-9a-f]{64})$/;
 const DURABLE_LEASE_FILES = new Set(["lease.sqlite", "lease.sqlite-journal"]);
 const DURABLE_STORE_FILE = /^(?:main|(?:doc|task)-(?:0|[1-9]\d*))\.jsonl(?:\.reclaim)?$/;
@@ -145,7 +177,8 @@ const safeRunTree = (root: string, childrenStopped: boolean, owner?: RunRootOwne
   const pid = record?.transport === "process" && typeof record.sessionId === "string" && /^\d+$/.test(record.sessionId)
     ? Number(record.sessionId) : undefined;
   if (pid !== undefined && childAlive(owner, pid)) return false;
-  if (!record?.status || !TERMINAL_STATUSES.has(record.status)) {
+  const terminal = !!record?.status && TERMINAL_STATUSES.has(record.status);
+  if (!terminal) {
     if (!childrenStopped && pid === undefined) return false;
     if (!ownedStat(path.join(root, "task.txt"))?.isFile()) return false;
   }
@@ -154,7 +187,14 @@ const safeRunTree = (root: string, childrenStopped: boolean, owner?: RunRootOwne
       const file = path.join(root, name);
       const stat = ownedStat(file);
       if (!stat) return false;
-      if (stat.isFile() && runFiles.has(name)) continue;
+      if (stat.isFile() && (runFiles.has(name) || name === OVERSIZED_EVENT_FILE || STATUS_TEMP_FILE.test(name))) continue;
+      // hosted.json and its temp files are deliberately not accepted: no record proves the remote work stopped,
+      // so a run holding a hosted-run locator is always kept.
+      if (stat.isDirectory() && name === "fork-session") {
+        // Exclusively populated by writeForkSession: owned regular files of its one name shape.
+        if (!onlyOwnedFiles(file, (child) => forkSessionFile(child))) return false;
+        continue;
+      }
       if (stat.isDirectory() && name === "handoff-session") {
         // This directory is exclusively populated by Fabric's session fork writer.
         if (fs.readdirSync(file).some((child) => !child.endsWith(".jsonl") || !ownedStat(path.join(file, child))?.isFile())) return false;
