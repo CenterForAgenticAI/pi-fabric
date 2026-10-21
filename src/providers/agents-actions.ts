@@ -63,6 +63,13 @@ const runProperties = {
       "Optional longer wall-clock limit in milliseconds. Omit to use agents.timeoutMs (60 minutes by default); values below the configured default are ignored.",
   },
   extensions: { type: "boolean" },
+  requiredExtensions: {
+    type: "array",
+    items: { type: "string", minLength: 1, maxLength: 4096 },
+    maxItems: 16,
+    description:
+      "Pi only, with extensions: false: extensions the child still loads, such as the extension that provides its model's provider. Each entry is the package name or the exact absolute path of an extension this session loaded; anything else is refused before launch. Fabric itself cannot be named.",
+  },
   recursive: { type: "boolean" },
   cwd: {
     type: "string",
