@@ -75,6 +75,16 @@ describe("child prompt tool roster", () => {
     expect(prompt).not.toContain("anchored line edits");
   });
 
+  it("honours * patterns in the allowlist for the roster and the overrides", async () => {
+    vi.stubEnv("PI_FABRIC_TOOL_ALLOWLIST", JSON.stringify(["web_*", "r*"]));
+    mockCatalog();
+    const prompt = await systemPrompt();
+    expect(prompt).toContain("- pi-web-access: web_search");
+    expect(prompt).not.toContain("pi-question");
+    expect(prompt).toContain("structure-aware reads");
+    expect(prompt).not.toContain("anchored line edits");
+  });
+
   it("names no extension tool when the inherited allowlist is malformed", async () => {
     vi.stubEnv("PI_FABRIC_TOOL_ALLOWLIST", "not json");
     mockCatalog();

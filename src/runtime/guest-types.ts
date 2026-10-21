@@ -670,6 +670,7 @@ type FabricActorRequest = FabricActorRequestBase & (
   | { delivery: "nextTurn"; triggerTurn?: false }
   | { delivery: "steer" | "followUp"; triggerTurn: boolean }
 );
+type FabricGlobalActorTemplate = FabricActorRequest & { id: string; createdAt: number; updatedAt: number };
 interface FabricActorInfo {
   kernel?: FabricKernel;
   pythonRuntime?: "cpython" | "monty";
@@ -800,7 +801,9 @@ interface FabricAgentsApi {
   /** Advisory compaction of a running Pi-runner child at its next safe turn boundary. */
   compact(args: { id: string; instructions?: string }): Promise<{ queued: true; messageId: string }>;
   actorStatus(args: FabricAgentTargetArgs): Promise<FabricActorInfo>;
-  actors(): Promise<FabricActorInfo[]>;
+  /** Live actors in this Fabric session by default; scope "global" lists the project-independent templates. */
+  actors(args?: { scope?: "project" }): Promise<FabricActorInfo[]>;
+  actors(args: { scope: "global" }): Promise<FabricGlobalActorTemplate[]>;
   messages(args: { id: string; limit?: number }): Promise<FabricActorMessage[]>;
   remove(args: { id: string }): Promise<{ removed: boolean }>;
   /** Drop an actor's mailbox history without stopping the actor. */
@@ -808,7 +811,7 @@ interface FabricAgentsApi {
   /** Stamp a global template into the current project as a fresh live actor with no inherited history. */
   "import"(args: { id?: string; name?: string; as?: string }): Promise<FabricActorInfo>;
   /** Export a live project actor's definition to the global registry as a project-independent template. */
-  "export"(args: { id: string; overwrite?: boolean }): Promise<FabricActorRequest & { id: string; createdAt: number; updatedAt: number }>;
+  "export"(args: { id: string; overwrite?: boolean }): Promise<FabricGlobalActorTemplate>;
   log(args: {
     id: string;
     type?: "session" | "run" | "all";
