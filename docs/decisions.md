@@ -137,6 +137,8 @@ Only the resident host that raised a decision can deliver its answer, so a decis
 
 A parent waiting on the old decision sees it settle `cancelled`, with `via: "abort"` after a clean shutdown. `via: "restart"` means the host died. If the run still needs an answer, it reads the run's `blockedOn.decisionId` or lists open decisions once the next resident host re-attaches the run. Until then, no decision is open for that question.
 
+Routing also gives a Pi child with extensions the tools listed in `agents.childQuestionTools` (default `["ask"]`), so a caller does not have to name a question tool in `tools`. The grant never widens an allowlist the child inherited, and it is skipped when `tools` uses `+name`/`-name` modifiers or `extensions` is `false`. Set `childQuestionTools: []` to route dialogs without granting a tool; a caller then names the question tool in `tools`. A child's system prompt lists only the extension tools its allowlist permits, so a tool left out is not offered and cannot be called.
+
 ## Extension questions
 
 Another extension in the same session can hand a question to a person through two host-local, versioned events on `pi.events`. A question tool uses them when it has no screen to ask on.
@@ -162,5 +164,6 @@ Fabric copies only those question fields. The decision is always held by `"user"
 | `approvals.headlessTimeoutMs` | `300000` | headless approval deadline (1 s to 24 h) |
 | `agents.childQuestions` | `"cancel"` | `"route"` forwards child dialogs to the parent |
 | `agents.childQuestionTimeoutMs` | `600000` | default routed dialog deadline (1 s to 24 h) |
+| `agents.childQuestionTools` | `["ask"]` | tools a routed Pi child gets for asking; `[]` grants none |
 
 Decisions need `mesh.enabled`. Managed hosts do not expose `decisions.*`. Schema enforce mode allows `decisions.list` and blocks the other actions.
