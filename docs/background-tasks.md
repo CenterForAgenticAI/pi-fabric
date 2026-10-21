@@ -200,7 +200,10 @@ Subscribed actors, including durable actors on the resident host, wake on it.
 
 The default store is `<cwd>/.jev-fabric-native`, the same one Claude Code,
 Codex or a shell uses for `jev-fabric` in that project, so it doubles as a
-process registry across harnesses. `tasks.external` lists jobs there that no
+process registry across harnesses. Fabric writes a `.gitignore` containing `*`
+into the default store before its first use, so the store never shows as
+untracked files in a Git checkout; a configured `home` is left as it is.
+`tasks.external` lists jobs there that no
 task of this session tracks (id, state, label, start time). `tasks.adopt({jobId,
 description?})` attaches one as a durable task of this session: output,
 completion notification, wait/watch/stop and an inspector row. Adoption never
