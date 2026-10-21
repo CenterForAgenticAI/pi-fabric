@@ -95,6 +95,17 @@ describe("standalone worker without Pi host peers", () => {
     expect(record?.error).toContain("22.22.2");
   });
 
+  it("names the build and the remedy when the build has no installed dependencies", async () => {
+    const { root, run } = installation();
+    fs.rmSync(path.join(root, "node_modules"), { recursive: true });
+    const { child, record } = await run();
+    expect(child.exitCode).toBe(1);
+    expect(record, child.stderr).toMatchObject({ status: "failed", turns: 0, toolCalls: 0 });
+    expect(record?.error).toContain(`Fabric build at ${root} cannot start a worker: its dependency "cross-spawn" is not installed (the build has no node_modules)`);
+    expect(record?.error).toContain("restart Pi");
+    expect(record?.error).toContain("Cannot find package 'cross-spawn'");
+  });
+
   it("reports a missing runtime dependency instead of losing stderr", async () => {
     const { root, run } = installation();
     fs.rmSync(path.join(root, "node_modules/cross-spawn"));

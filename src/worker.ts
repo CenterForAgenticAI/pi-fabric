@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { assertWorkerRuntime, writeWorkerStartupFailure } from "./worker/startup.js";
+import { explainMissingInstall } from "./worker/missing-install.js";
 import { MODEL_PIN_ENV, MODEL_PIN_EXIT_CODE, modelPinFailure, parseModelPinViolation } from "./agents/model-pin.js";
 
 import { createDurableSessionFile } from "./durable/worker-role-seed.js";
@@ -1585,8 +1586,9 @@ const main = async (): Promise<void> => {
   process.exitCode = record.status === "completed" ? 0 : 1;
 };
 
-main().catch((error) => {
-  console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
+main().catch((caught) => {
+  const error = explainMissingInstall(caught, import.meta.url);
+  console.error(error instanceof Error ? (error === caught ? (error.stack ?? error.message) : error.message) : String(error));
   writeCrashStatus(error);
   process.exit(1);
 });
