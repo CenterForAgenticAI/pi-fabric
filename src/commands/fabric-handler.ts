@@ -11,6 +11,7 @@ import { formatForeground } from "../core/foreground-tools.js";
 import fs from "node:fs";
 import path from "node:path";
 import type { FabricCommandDeps, FabricCommandHost } from "./fabric.js";
+import { runSessionLabelCommand } from "./session-label-command.js";
 
 const extractContentText = (content: unknown): string => {
   if (typeof content === "string") return content;
@@ -261,6 +262,9 @@ export async function runFabricCommand(
       "info",
     );
     return;
+  }
+  if (command === "label") {
+    return runSessionLabelCommand(state, context, argumentsList);
   }
   if (command === "prewalk") {
     const option = argumentsList[0];

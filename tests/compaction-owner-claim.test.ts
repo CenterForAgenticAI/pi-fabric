@@ -255,15 +255,15 @@ describe("compaction owner claim", () => {
   it("makes Fabric yield compaction to the owner, and withdrawal restores Fabric", async () => {
     const fabric = await loadFabric();
     const session = longSession();
-    expect(fabric.compact(compactEvent(session))).toMatchObject({ compaction: { summary: expect.any(String) } });
+    expect(await fabric.compact(compactEvent(session))).toMatchObject({ compaction: { summary: expect.any(String) } });
 
     const handle = await claimed(fabric.send);
     expect(handle.active).toBe(true);
-    expect(fabric.compact(compactEvent(session))).toBeUndefined();
+    expect(await fabric.compact(compactEvent(session))).toBeUndefined();
 
     expect(handle.withdraw()).toBe(true);
     expect(handle.active).toBe(false);
-    expect(fabric.compact(compactEvent(session))).toMatchObject({ compaction: { summary: expect.any(String) } });
+    expect(await fabric.compact(compactEvent(session))).toMatchObject({ compaction: { summary: expect.any(String) } });
   });
 
   it("turns off Fabric's threshold deferral under a claim", () => {
@@ -311,7 +311,7 @@ describe("compaction owner claim", () => {
     const handle = await claimed(fabric.send);
     // A pi-vcc sentinel compaction notes a deliberate yield, then is
     // cancelled: no session_compact consumes it.
-    expect(fabric.compact({ ...compactEvent(session), customInstructions: "__pi_vcc__" } as SessionBeforeCompactEvent)).toBeUndefined();
+    expect(await fabric.compact({ ...compactEvent(session), customInstructions: "__pi_vcc__" } as SessionBeforeCompactEvent)).toBeUndefined();
     handle.withdraw();
 
     // Pi's own summarizer then wins a compaction under Fabric's engine.
@@ -327,13 +327,13 @@ describe("compaction owner claim", () => {
     const session = longSession();
 
     const keeper = await claimed(fabric.send);
-    expect(fabric.tree(treeEvent(session))).toMatchObject({ summary: { summary: expect.any(String) } });
+    expect(await fabric.tree(treeEvent(session))).toMatchObject({ summary: { summary: expect.any(String) } });
     keeper.withdraw();
 
     const taker = await claimed(fabric.send, { branchSummary: true });
-    expect(fabric.tree(treeEvent(session))).toBeUndefined();
+    expect(await fabric.tree(treeEvent(session))).toBeUndefined();
     taker.withdraw();
-    expect(fabric.tree(treeEvent(session))).toMatchObject({ summary: { summary: expect.any(String) } });
+    expect(await fabric.tree(treeEvent(session))).toMatchObject({ summary: { summary: expect.any(String) } });
   });
 
   it("refuses a second claim with a warning naming both owners", async () => {
@@ -362,7 +362,7 @@ describe("compaction owner claim", () => {
     await fabric.send({ version: 1, type: "withdraw", token: "not-the-token", reply: (value: FabricCompactionOwnerWithdrawResultV1) => { refused = value; } });
     expect(refused).toMatchObject({ ok: false });
     expect(handle.active).toBe(true);
-    expect(fabric.compact(compactEvent(session))).toBeUndefined();
+    expect(await fabric.compact(compactEvent(session))).toBeUndefined();
 
     let accepted: FabricCompactionOwnerWithdrawResultV1 | undefined;
     await fabric.send({ version: 1, type: "withdraw", token: handle.token, reply: (value: FabricCompactionOwnerWithdrawResultV1) => { accepted = value; } });
@@ -383,7 +383,7 @@ describe("compaction owner claim", () => {
     const withCarry = handle.fallback(event, context, { carry: ["Auth regression is still open"] });
     const invalidCarry = handle.fallback(event, context, { carry: [""] });
     handle.withdraw();
-    const fabricOwn = fabric.compact(compactEvent(session), context) as { compaction: { details: object } };
+    const fabricOwn = (await fabric.compact(compactEvent(session), context)) as { compaction: { details: object } };
 
     // Exactly what Fabric's own engine produces for the same event, budgeted
     // at the default compaction.targetContextRatio of 0.65, and marked as
@@ -426,11 +426,11 @@ describe("compaction owner claim", () => {
     const session = longSession();
     const lifetime = new AbortController();
     const handle = await claimed(fabric.send, { signal: lifetime.signal });
-    expect(fabric.compact(compactEvent(session))).toBeUndefined();
+    expect(await fabric.compact(compactEvent(session))).toBeUndefined();
 
     lifetime.abort();
     expect(handle.active).toBe(false);
-    expect(fabric.compact(compactEvent(session))).toMatchObject({ compaction: expect.anything() });
+    expect(await fabric.compact(compactEvent(session))).toMatchObject({ compaction: expect.anything() });
     // A new owner can claim once the old one is gone.
     expect((await claimed(fabric.send, { owner: { name: "next-owner", version: "1.0.0" } })).active).toBe(true);
   });
@@ -521,7 +521,7 @@ describe("compaction owner claim, asynchronous reply", () => {
       reply: () => { throw new Error("owner crashed in reply"); },
     })).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("owner crashed in reply"));
-    expect(fabric.compact(compactEvent(session))).toMatchObject({ compaction: { summary: expect.any(String) } });
+    expect(await fabric.compact(compactEvent(session))).toMatchObject({ compaction: { summary: expect.any(String) } });
     expect((await claimed(fabric.send, nextOwner)).active).toBe(true);
   });
 });
