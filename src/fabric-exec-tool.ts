@@ -22,7 +22,7 @@ import { Type } from "typebox";
 import {
   createFabricPersistedExecutionDetails,
   readFabricExecutionRenderDetails,
-} from "./audit/index.js";
+} from "./audit/details.js";
 import { DEFAULT_FABRIC_CONFIG } from "./config.js";
 import type { FabricState } from "./fabric-state.js";
 import { formatFailureProgress } from "./failure-progress.js";

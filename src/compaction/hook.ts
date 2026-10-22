@@ -3,7 +3,9 @@ import type {
   ExtensionAPI,
   ExtensionContext,
   SessionBeforeCompactEvent,
+  SessionBeforeCompactResult,
   SessionBeforeTreeEvent,
+  SessionBeforeTreeResult,
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { acceptCompactionCut, acceptSummaryBounds } from "../verified/policy.js";
@@ -963,8 +965,13 @@ const notifyCompactionCancelled = (
   );
 };
 
-export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHookOptions): void => {
-  pi.on("session_before_compact", (event: SessionBeforeCompactEvent, context: ExtensionContext) => {
+export interface CompactionHandlers {
+  beforeCompact: (event: SessionBeforeCompactEvent, context: ExtensionContext) => SessionBeforeCompactResult | undefined;
+  beforeTree: (event: SessionBeforeTreeEvent, context: ExtensionContext) => SessionBeforeTreeResult | undefined;
+}
+
+export const compactionHandlers = (options: CompactionHookOptions): CompactionHandlers => ({
+  beforeCompact: (event, context) => {
     if (event.customInstructions === "__pi_vcc__") {
       options.onYield?.();
       return;
@@ -1025,9 +1032,9 @@ export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHook
     }
     (event as SessionBeforeCompactEvent & { _fabricCompaction?: boolean })._fabricCompaction = true;
     return { compaction: result.compaction };
-  });
+  },
 
-  pi.on("session_before_tree", (event: SessionBeforeTreeEvent, context: ExtensionContext) => {
+  beforeTree: (event, context) => {
     // A claim takes /tree summaries only when it says so; otherwise they stay
     // with Fabric's configured engine.
     if (options.getOwnerClaim?.()?.branchSummary) return;
@@ -1051,5 +1058,11 @@ export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHook
     );
     if (!compiled) return;
     return { summary: compiled };
-  });
+  },
+});
+
+export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHookOptions): void => {
+  const handlers = compactionHandlers(options);
+  pi.on("session_before_compact", handlers.beforeCompact);
+  pi.on("session_before_tree", handlers.beforeTree);
 };
