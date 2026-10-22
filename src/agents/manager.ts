@@ -988,7 +988,8 @@ export class AgentManager {
     const id = randomUUID().replaceAll("-", "");
     const name = runName(request);
     const runDirectory = path.join(this.#runRoot, id);
-    fs.mkdirSync(runDirectory, { recursive: true });
+    // 0700: the pi-durable worker refuses a run directory that group or others can write.
+    fs.mkdirSync(runDirectory, { recursive: true, mode: 0o700 });
     if (this.#managedTempRoot && !this.#retentionTimer) {
       this.#retentionTimer = setInterval(() => this.#scheduleRetentionSweep(), RETENTION_SWEEP_INTERVAL_MS);
       this.#retentionTimer.unref();
@@ -1049,8 +1050,10 @@ export class AgentManager {
         childIndex: this.#childIndex++,
         worker: true,
       };
+      // Only a pi-durable child gets the worker-role entry, written into the seed in the same write that creates it.
+      const seedOptions = runner === "pi-durable" ? { workerRole: true } : {};
       const sessionFile = request.forkSeed
-        ? writeForkSession(request.forkSeed, agentCwd, path.join(runDirectory, "fork-session"), request.thinkingTransfer)
+        ? writeForkSession(request.forkSeed, agentCwd, path.join(runDirectory, "fork-session"), request.thinkingTransfer, seedOptions)
         : request.sessionSeed
         ? writeHandoffSession(
             request.sessionSeed,
@@ -1059,6 +1062,7 @@ export class AgentManager {
             request.thinkingTransfer,
             request.handoffCompact,
             request.handoffCompact ? await this.#resolveHandoffCompactionBudget?.(model, agentCwd) : undefined,
+            seedOptions,
           )
         : request.sessionFile;
       const timeoutMs = effectiveAgentTimeoutMs(
