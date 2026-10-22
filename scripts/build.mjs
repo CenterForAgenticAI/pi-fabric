@@ -65,6 +65,7 @@ const lazyEntryPoints = [
   // System prompt builders; loaded at the first agent start.
   "src/core/prompt-guidance.ts",
   "src/decisions/command.ts",
+  "src/commands/session-label-command.ts",
   "src/decisions/events.ts",
   "src/programs/host.ts",
   "src/core/provider-operations.ts",
