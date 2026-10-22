@@ -28,6 +28,26 @@ const rejected = (dir: string, reason: string): void => {
 };
 
 describe("published build artifact guards", () => {
+  it("checks a staged build named by --dist, with no dist/ beside it", () => {
+    // scripts/build-dist.mjs verifies the staged copy before it replaces dist/.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-build-artifacts-"));
+    temporary.push(dir);
+    fs.cpSync(path.join(root, "dist"), path.join(dir, ".dist-build-1"), { recursive: true });
+    for (const file of ["package.json", "scripts/assert-build-artifacts.mjs", "src/verified/generated/manifest.json"]) {
+      fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+      fs.copyFileSync(path.join(root, file), path.join(dir, file));
+    }
+    fs.symlinkSync(path.join(root, "node_modules"), path.join(dir, "node_modules"), "junction");
+    const check = () => spawnSync(process.execPath, [path.join(dir, "scripts/assert-build-artifacts.mjs"), "--dist", ".dist-build-1"], { encoding: "utf8", timeout: 60_000 });
+    const passed = check();
+    expect(passed.stderr).toBe("");
+    expect(passed.status).toBe(0);
+    fs.rmSync(path.join(dir, ".dist-build-1", "extension-bootstrap.js"));
+    const missing = check();
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain("Missing build artifacts:\nextension-bootstrap.js");
+  }, 90_000);
+
   it("uses host-only wildcard peers and exact Pi development dependencies", () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
     expect(manifest.dependencies["pi-fabric-worker-sdk"]).toBe(`npm:@earendil-works/pi-coding-agent@${manifest.devDependencies["@earendil-works/pi-coding-agent"]}`);
