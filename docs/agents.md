@@ -793,7 +793,7 @@ return agents.create({
 });
 
 // List the templates. Then create a new actor from one in the current project.
-const [template] = agents.actors({ scope: "global" });
+const [template] = await agents.actors({ scope: "global" });
 return agents.import({ name: template.name });                       // create it without inherited history
 return agents.import({ name: "security-reviewer", as: "security-reviewer-2" }); // rename it if the name exists
 

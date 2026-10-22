@@ -32,7 +32,7 @@ import {
   DEFAULT_FABRIC_CONFIG,
   effectiveToolCaptureConfig,
 } from "./config.js";
-import { registerCompactionHook } from "./compaction/hook.js";
+import type { CompactionHandlers } from "./compaction/hook.js";
 import { compactAtConfiguredThreshold, type AutoCompactionTrigger } from "./compaction/threshold.js";
 import type { CompactionOwnerObserver } from "./compaction/owner.js";
 import { unregisteredRunnerNotice } from "./agents/runner-notice.js";
@@ -50,14 +50,7 @@ import {
   expandSkillDirMarkersForRead,
   expandSkillDirMarkersInSkillBlock,
 } from "./core/skill-dir.js";
-import { coreOverridePromptGuidance } from "./core/core-override-guidance.js";
 import { PI_CORE_TOOL_NAMES, PI_CORE_TOOL_NAME_SET } from "./core/pi-tools.js";
-import {
-  fabricExecutionKernelGuidance,
-  defaultFabricExecutionGuidance,
-  fabricSchemaGuidance,
-  extensionToolRosterGuidance,
-} from "./core/system-guidance.js";
 import {
   FABRIC_EXECUTION_GUIDANCE_SLOT,
   resolveFabricModelGuidance,
@@ -75,7 +68,6 @@ import {
   FabricDirectToolApproval,
   mergeFabricApprovalUsage,
 } from "./core/direct-tool-approval.js";
-import { buildSkillReferenceGuidance } from "./core/skill-references.js";
 import { createFabricExecTool } from "./fabric-exec-tool.js";
 import { FabricState } from "./fabric-state.js";
 import { FABRIC_THINKING_BOUNDS_ENV } from "./thinking.js";
@@ -931,8 +923,10 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
 
   // Deterministic, LLM-free compaction is registered unconditionally and is
   // active by default. The documented "pi" escape hatch returns early so
-  // pi-core's own summarization proceeds normally.
-  registerCompactionHook(pi, {
+  // pi-core's own summarization proceeds normally. The compiler loads at the
+  // first compaction or tree summary Pi asks for, not while registering.
+  let compaction: Promise<CompactionHandlers> | undefined;
+  const compactionHandlers = (): Promise<CompactionHandlers> => compaction ??= import("./compaction/hook.js").then((module) => module.compactionHandlers({
     getEngine: () =>
       state.cwd
         ? state.config.compaction.engine
@@ -956,7 +950,9 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     onYield: () => {
       compactionYieldPending = true;
     },
-  });
+  }));
+  pi.on("session_before_compact", async (event, context) => (await compactionHandlers()).beforeCompact(event, context));
+  pi.on("session_before_tree", async (event, context) => (await compactionHandlers()).beforeTree(event, context));
 
   // No extractive module import, branch read or model call until explicit opt-in
   // reaches a real agent boundary. Context replay only reads the prepared view.
@@ -1043,12 +1039,22 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     const projected = extractiveHistory?.inject(context, messages) ?? messages;
     return projected !== messages || messages.length !== event.messages.length ? { messages: projected } : undefined;
   });
+  // Prompt guidance builders load at the first agent start, not while registering.
+  let promptGuidance: Promise<typeof import("./core/prompt-guidance.js")> | undefined;
   pi.on("before_agent_start", async (event, context) => {
     const config = state.bootstrapped ? state.config : DEFAULT_FABRIC_CONFIG;
     const fullCodeMode = config.fullCodeMode;
     const schemaMode = config.schema.mode;
     const effectiveFullCodeMode = fullCodeMode || schemaMode === "enforce";
     if (!pi.getActiveTools().includes("fabric_exec")) return;
+    const {
+      buildSkillReferenceGuidance,
+      coreOverridePromptGuidance,
+      defaultFabricExecutionGuidance,
+      extensionToolRosterGuidance,
+      fabricExecutionKernelGuidance,
+      fabricSchemaGuidance,
+    } = await (promptGuidance ??= import("./core/prompt-guidance.js"));
     const skills = event.systemPromptOptions.skills ?? [];
     const captureSnapshot = state.bootstrapped ? capturePolicy() : undefined;
     // Pi omits its entire skill catalog when the active tool set lacks a tool
