@@ -4,7 +4,9 @@
 // as extension_ui_response. A `ui_decision` steer line names the decision that
 // backs a headless question, so the run record can name it too. The worker
 // owns the deadline: when the parent never answers (gone, headless without
-// decisions, or slow) the child gets a cancelled response, never a hang.
+// decisions, or slow) the child gets a cancelled response, never a hang. A run
+// that holds its questions (holdQuestions) sets no deadline on a dialog that has
+// none of its own; the run's wall clock and settlement still end the wait.
 
 export type ChildQuestionMethod = "select" | "confirm" | "input" | "editor";
 
@@ -16,7 +18,10 @@ export interface ChildQuestionEvent {
   options?: string[];
   placeholder?: string;
   prefill?: string;
+  /** Nominal for a held question, which has no deadline. */
   timeout: number;
+  /** The run holds this question for a person with no deadline. */
+  hold?: true;
 }
 
 export type ChildQuestionFrame =
@@ -38,7 +43,7 @@ const text = (value: unknown, max: number): string | undefined =>
 interface PendingQuestion {
   method: ChildQuestionMethod;
   options?: string[];
-  timer: NodeJS.Timeout;
+  timer?: NodeJS.Timeout;
   decisionId?: string;
 }
 
@@ -57,6 +62,7 @@ export class ChildQuestionRelay {
       blocked(since: number | undefined, decisionId?: string): void;
     },
     readonly now: () => number = Date.now,
+    readonly options: { hold?: boolean } = {},
   ) {}
 
   get pending(): number {
@@ -79,10 +85,14 @@ export class ChildQuestionRelay {
     const requested = typeof event.timeout === "number" && Number.isFinite(event.timeout) && event.timeout > 0
       ? Math.floor(event.timeout)
       : undefined;
-    const timeout = Math.min(requested ?? this.defaultTimeoutMs, MAX_TIMEOUT_MS);
-    const timer = setTimeout(() => this.#finish(id, { type: "extension_ui_response", id, cancelled: true }), timeout);
-    timer.unref?.();
-    this.#pending.set(id, { method, ...(options ? { options } : {}), timer });
+    const hold = this.options.hold === true && requested === undefined;
+    const timeout = hold ? MAX_TIMEOUT_MS : Math.min(requested ?? this.defaultTimeoutMs, MAX_TIMEOUT_MS);
+    let timer: NodeJS.Timeout | undefined;
+    if (!hold) {
+      timer = setTimeout(() => this.#finish(id, { type: "extension_ui_response", id, cancelled: true }), timeout);
+      timer.unref?.();
+    }
+    this.#pending.set(id, { method, ...(options ? { options } : {}), ...(timer ? { timer } : {}) });
     const message = text(event.message, MAX_TEXT_CHARS);
     const placeholder = text(event.placeholder, MAX_TEXT_CHARS);
     const prefill = text(event.prefill, MAX_TEXT_CHARS);
@@ -95,6 +105,7 @@ export class ChildQuestionRelay {
       ...(placeholder !== undefined ? { placeholder } : {}),
       ...(prefill !== undefined ? { prefill } : {}),
       timeout,
+      ...(hold ? { hold: true as const } : {}),
     });
     if (this.#pending.size === 1) {
       this.#since = this.now();
