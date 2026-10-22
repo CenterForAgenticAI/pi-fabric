@@ -5,7 +5,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MeshStore, type MeshIdentity } from "../src/mesh/store.js";
 import { DecisionStore, type DecisionRecord } from "../src/decisions/store.js";
-import { requestHeadlessApproval, routeChildQuestion } from "../src/decisions/host.js";
+import { cancelOrphanedChildQuestions, requestHeadlessApproval, routeChildQuestion } from "../src/decisions/host.js";
 import { ApprovalController } from "../src/core/approval-controller.js";
 import type { ResolvedFabricAction } from "../src/core/action-registry.js";
 import type { AgentChildQuestionRequest } from "../src/agents/types.js";
@@ -186,5 +186,37 @@ describe("/fabric decisions", () => {
     expect((await store.get(text.id))?.answer?.text).toBe("because");
     await openFabricDecisions(store.mesh, context);
     expect(notify).toHaveBeenLastCalledWith("No open Fabric decisions", "info");
+  });
+});
+
+describe("cancelOrphanedChildQuestions", () => {
+  const routed = { kind: "question", title: "worker: Pick", input: "text", holder: "root", timeoutMs: 60_000 };
+
+  it("cancels only the open routed questions its own identity raised", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-decision-orphans-"));
+    roots.push(root);
+    const mesh = new MeshStore(root, 64 * 1024, 500);
+    const host = new DecisionStore(mesh, { id: "resident:abc", name: "host", kind: "agent", sessionId: "s" });
+    // The durable child itself runs Fabric under the run id and may raise its own decisions.
+    const child = new DecisionStore(mesh, { id: "run-1", name: "child", kind: "agent", sessionId: "c" });
+    const otherHost = new DecisionStore(mesh, { id: "resident:def", name: "other", kind: "agent", sessionId: "o" });
+
+    const orphan = await host.raise(routed, { participantId: "run-1", runId: "run-1" });
+    const childOwn = await child.raise(routed, { runId: "run-1" });
+    const elsewhere = await otherHost.raise(routed, { participantId: "run-2", runId: "run-2" });
+    const approval = await host.raise({ ...routed, kind: "approval" }, { participantId: "run-1", runId: "run-1" });
+    const runless = await host.raise(routed, {});
+    const answered = await host.raise(routed, { participantId: "run-3", runId: "run-3" });
+    await host.answer(answered.id, { text: "done" }, human);
+
+    expect(await cancelOrphanedChildQuestions(host)).toEqual([orphan.id]);
+    expect(await host.get(orphan.id)).toMatchObject({
+      status: "cancelled",
+      answer: { answeredBy: "resident:abc", via: "restart" },
+    });
+    for (const untouched of [childOwn, elsewhere, approval, runless]) {
+      expect(await host.get(untouched.id)).toMatchObject({ status: "open" });
+    }
+    expect(await host.get(answered.id)).toMatchObject({ status: "answered" });
   });
 });
