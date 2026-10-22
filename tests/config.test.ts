@@ -257,6 +257,16 @@ describe("Fabric configuration", () => {
     expect(DEFAULT_FABRIC_CONFIG.agents.budgetUsd).toBe(0);
   });
 
+  it("normalizes the routed child question tools", () => {
+    expect(DEFAULT_FABRIC_CONFIG.agents.childQuestionTools).toBeUndefined();
+    expect(normalizeFabricConfig({}).agents.childQuestionTools).toBeUndefined();
+    expect(normalizeFabricConfig({
+      agents: { childQuestionTools: [" ask ", "question", "", 7, "ask", "fabric_exec"] },
+    }).agents.childQuestionTools).toEqual(["ask", "question"]);
+    expect(normalizeFabricConfig({ agents: { childQuestionTools: [] } }).agents.childQuestionTools).toEqual([]);
+    expect(normalizeFabricConfig({ agents: { childQuestionTools: "ask" } }).agents.childQuestionTools).toBeUndefined();
+  });
+
   it("normalizes the agent default model and drops empty values", () => {
     expect(DEFAULT_FABRIC_CONFIG.agents.model).toBeUndefined();
     const set = normalizeFabricConfig({ agents: { model: "claude-sonnet-4-5" } });
