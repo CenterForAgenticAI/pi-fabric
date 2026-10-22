@@ -380,7 +380,7 @@ Veda children do not have recursive Fabric capabilities. Fabric rejects `recursi
 
 ### Custom runners
 
-The default `pi-durable` runner uses the full isolated Pi/Fabric worker host; explicit `pi` selects the legacy CLI. See [Durable Pi runner](durable-pi.md) for recovery boundaries and the separate `pi-durable-leaf` hosted factory. Neither restores arbitrary `fabric_exec` continuations.
+The default `pi-durable` runner uses the full isolated Pi/Fabric worker host; explicit `pi` selects the legacy CLI. See [Durable Pi runner](durable-pi.md) for recovery boundaries and the separate `pi-durable-leaf` hosted factory. The default runner reruns an interrupted `fabric_exec` once when its program made no effect. Neither restores arbitrary `fabric_exec` continuations.
 
 A Pi extension can add a runner through the `pi-fabric/runners` subpath. The subpath is never loaded by the Fabric extension at startup.
 
