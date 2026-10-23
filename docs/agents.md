@@ -455,6 +455,8 @@ This is the host-level equivalent of the `pi-model-switch` extension's `switch_m
 
 Herdr uses its local socket API to create an argv-backed background tab as one atomic operation. It does not change focus or require shell quoting. Automatic selection works only when the parent Pi process already runs in Herdr. This requires `HERDR_ENV=1` with an injected workspace and socket. Select `transport: "herdr"` under the same conditions. Use the attach command in the handle to open a child directly.
 
+Inside Herdr, a root session also shows its running agents on its own pane, whatever transport they use, and marks the pane blocked while a child question waits on the user. See `ui.herdrStatus` in the [configuration reference](configuration.md#ui).
+
 LocalTerm provides the required primitives that match tmux: detached creation, pinning, listing, capture, exec, attach, and kill. Pi Fabric requires no LocalTerm patch. Start the daemon before you select this transport:
 
 ```bash
@@ -550,6 +552,8 @@ return { self: await agents.self(), lineage };
 
 Child dialogs (`select`, `confirm`, `input`, `editor`) are cancelled by default. With `agents.childQuestions: "route"` they reach the parent's UI, or a root-held [durable decision](decisions.md#routed-child-questions) when the parent is headless; the run record shows `blockedOn` while one waits.
 
+Routing also gives a Pi child with extensions the tools in `agents.childQuestionTools` (default `["ask"]`), so the caller does not have to name them in `tools`. A child's system prompt lists only the extension tools its `tools` allowlist permits.
+
 For Main and one-shot agents, `steer` arrives after the tool calls in the current turn and before the next model call. `followUp` waits until the current run settles. For actors, both operations add a message to the serial mailbox. `agents.status({ id })` accepts any participant ID. It returns complete details for a local run or actor and a bounded directory summary for a remote participant. `agents.setSteeringMode` and `setFollowUpMode` continue to control local one-shot runs.
 
 Local routing returns `"main"` or `"local"`. For cross-process `steer`, `followUp`, and `stop`, Fabric resolves the exact owner of the target. It sends a control command addressed to that owner and waits for an acknowledgement that matches the version, target, and owner identity. Success returns `routed: "mesh", acknowledged: true` after this verified acknowledgement. Unknown IDs, stale owners, rejection, and timeout throw an error. The dashboard actions `s`, `u`, and `x` use the same route. Set `mesh.enabled` to use cross-process control. See [`references/agents.md`](../skillsets/typescript/fabric-exec/references/agents.md).
@@ -560,7 +564,7 @@ An owner keeps its host ID across restarts (a Pi session's Main ID, or a residen
 
 ### Peer labels and queue gates
 
-Every root participant mints a project-scoped label such as `FAB-1` when it first publishes: the prefix derives from the project directory basename (initials for multi-word names, up to three letters for single-word names) and the number comes from a mesh-wide monotonic counter, so retired labels are never reused. Labels appear on participant records, peer projections, and the dashboard, giving other sessions' tooling a stable handle to show users in place of raw session ids.
+Every root participant mints a project-scoped label such as `FAB-1` when it first publishes: the prefix derives from the project directory basename (initials for multi-word names, up to three letters for single-word names) and the number comes from a mesh-wide monotonic counter, so retired labels are never reused. Labels appear on participant records, peer projections, and the dashboard, giving other sessions' tooling a stable handle to show users in place of raw session ids. A root session also shows its own label in the Pi footer and, when configured, in its Herdr tab or pane name, so you can tell which terminal is `FAB-3`; see `ui.sessionLabel` in [UI configuration](configuration.md#ui).
 
 Two host-local, versioned events on `pi.events` let queue extensions coordinate with peers:
 
@@ -822,7 +826,7 @@ return agents.create({
 });
 
 // List the templates. Then create a new actor from one in the current project.
-const [template] = agents.actors({ scope: "global" });
+const [template] = await agents.actors({ scope: "global" });
 return agents.import({ name: template.name });                       // create it without inherited history
 return agents.import({ name: "security-reviewer", as: "security-reviewer-2" }); // rename it if the name exists
 

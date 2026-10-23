@@ -21,6 +21,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmTempSync(root);
   delete process.env.FAKE_PI_QUESTION_LOG;
   delete process.env.FAKE_PI_QUESTION;
+  delete process.env.FAKE_PI_QUESTION_COUNT;
 });
 
 const waitFor = async (predicate: () => boolean, timeoutMs = 10_000): Promise<void> => {
@@ -75,11 +76,33 @@ describe("routed child questions (worker round trip)", () => {
       decisionId: "dec_testdecision01",
       since: expect.any(Number),
     });
+    expect(manager.activity()).toEqual([{ id: handle.id, name: handle.name, question: "Pick" }]);
     release!();
     const result = await manager.wait(handle.id);
+    expect(manager.activity()).toEqual([]);
     expect(responses(log)).toEqual([{ type: "extension_ui_response", id: "ui-1", value: "B" }]);
     expect(result.blockedOn).toBeUndefined();
     expect(result.status).toBe("completed");
+  }, 30_000);
+
+  it("keeps a run waiting in activity until its last open question is answered", async () => {
+    process.env.FAKE_PI_QUESTION_COUNT = "2";
+    const gates = new Map<string, () => void>();
+    const { manager } = setup({ childQuestions: "route", childQuestionTimeoutMs: 30_000 }, async (request) => {
+      const requestId = String(request.question.requestId);
+      await new Promise<void>((resolve) => gates.set(requestId, resolve));
+      return { value: "A" };
+    });
+    const handle = await manager.spawn({ task: "ASK", transport: "process" });
+    await waitFor(() => gates.size === 2);
+    expect(manager.activity()).toEqual([{ id: handle.id, name: handle.name, question: "Pick" }]);
+    // Both questions share a title; answering one must not clear the other.
+    gates.get("ui-2")!();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(manager.activity()).toEqual([{ id: handle.id, name: handle.name, question: "Pick" }]);
+    gates.get("ui-1")!();
+    await manager.wait(handle.id);
+    expect(manager.activity()).toEqual([]);
   }, 30_000);
 
   it("cancels at the worker deadline when the parent never answers", async () => {

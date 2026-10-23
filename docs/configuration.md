@@ -184,7 +184,8 @@ where absent values do not participate, and time spent inside a `humanWaitRefs` 
     "sessionExport": true,
     "sessionExportDir": "",
     "childQuestions": "cancel",
-    "childQuestionTimeoutMs": 600000
+    "childQuestionTimeoutMs": 600000,
+    "childQuestionTools": ["ask"]
   },
   "components": [
     {
@@ -201,9 +202,14 @@ where absent values do not participate, and time spent inside a `humanWaitRefs` 
     "refreshMs": 500,
     "eventHistory": 80,
     "haltOnEscape": true,
+    "herdrStatus": true,
     "showAgentToolPreview": true,
     "toolDisplay": "compact",
-    "updateDebounceMs": 100
+    "updateDebounceMs": 100,
+    "sessionLabel": {
+      "footer": true,
+      "herdr": "off"
+    }
   },
   "compaction": {
     "engine": "fabric",
@@ -635,6 +641,7 @@ Other agent settings:
 - `worktree.setup`: optional shell command (`/bin/sh`, or `cmd.exe` on Windows) run in each new `worktree: true` checkout before the child starts (unset by default; blank values are ignored). A per-request `worktreeSetup` overrides it, and a non-zero exit fails the launch. See [worktree results and setup](agents.md#transports).
 - `childQuestions`: `"cancel"` (default) cancels every dialog a Pi child opens; `"route"` forwards it to the parent's UI, or to a root-held [decision](decisions.md#routed-child-questions) when the parent has no UI.
 - `childQuestionTimeoutMs`: default deadline for a routed child dialog (default `600000`, bounded to 1 s..24 h); a dialog's own timeout wins.
+- `childQuestionTools`: exact tool names a Pi child with extensions gets when `childQuestions` is `"route"` (default `["ask"]`; `[]` grants none). Entries with `*`, a leading `+` or `-`, and `fabric_exec` are dropped. The grant never widens an inherited allowlist and is skipped for an empty `tools` list and for `+name`/`-name` tool lists.
 
 ### Usage tracking with external tools
 
@@ -672,7 +679,7 @@ Run `/fabric reload` after changing this selection. Configuring or enabling a na
 
 Selected servers keep Fabric's `mcp.<server>.<tool>` names, sanitizer aliases, discovery, static argument checking, normalized `{ text, content, structuredContent }` results, and `display: { name, description }` execution metadata. Raw MCP identity comes from Pi's namespace/label metadata, not its potentially hashed tool identifier. Tool descriptions and input schemas come from the live native registration; Pi's `CallToolResult` output-schema envelope is unwrapped. Schema differences invalidate old normal-form plans; Fabric does not conceal them. Other servers keep the existing mcporter behavior. Selected tools are advertised once under `mcp.*`; existing `extensions.mcp__...` references remain callable when extension capture is enabled, but are not repeated in discovery or the extension roster.
 
-Both Fabric policy and Pi's tool middleware apply. Native redactions, progress, nested usage and cancellation remain authoritative; one Fabric invocation emits one Fabric trace operation. Read-only MCP annotations do not change Fabric's conservative network risk. Pi-owned tools remain subject to hidden/deferred exposure and child tool allowlists. A missing, withdrawn, blocked or failed native tool never falls back to mcporter, even if mcporter has a server with the same name. Fabric does not connect or revalidate that duplicate. Ambiguous sanitized names require exact names via `mcp.call` (an exact legacy server name retains precedence over a native alias). Resolving a native server alias may load mcporter's configuration names to check ambiguity, but does not connect those servers.
+Both Fabric policy and Pi's tool middleware apply. Native redactions, progress, nested usage and cancellation remain authoritative; one Fabric invocation emits one Fabric trace operation. Read-only MCP annotations do not change Fabric's conservative network risk. Pi-owned tools remain subject to hidden/deferred exposure and child tool allowlists. A child allowlist accepts `*` patterns with the semantics of Pi's `--tools`, so `tools: ["read", "mcp__docs__*"]` admits one server and `agents.defaultTools: [..., "mcp__*"]` admits every Pi-owned MCP tool. A child that receives no `tools` gets `agents.defaultTools`, whose default holds only core tools, so it sees no Pi-owned MCP tools until an entry names them. A missing, withdrawn, blocked or failed native tool never falls back to mcporter, even if mcporter has a server with the same name. Fabric does not connect or revalidate that duplicate. Ambiguous sanitized names require exact names via `mcp.call` (an exact legacy server name retains precedence over a native alias). Resolving a native server alias may load mcporter's configuration names to check ambiguity, but does not connect those servers.
 
 Fabric still owns its call deadline. Reload/shutdown cancels its borrowed calls without disconnecting Pi's shared servers. `mcp.servers()` includes selected native servers with `transport: "pi"` (an ownership marker, not a wire protocol), tool counts, and `stale: true` when no callable tools are currently registered. `mcp.reload()` only reloads mcporter; it does not reconnect Pi servers. `mcp.register()` cannot replace a Pi-owned name. Native resource tools remain on Pi's existing captured surface; they are not renamed into per-server tool namespaces.
 
@@ -707,6 +714,11 @@ See the [TypeScript MCP reference](../skillsets/typescript/fabric-exec/reference
 - `ui.showAgentToolPreview` defaults to `true` and controls the child-agent and actor tool rows in both the parent `fabric_exec` card and the widget. Recursive agents render their full descendant tree, bounded by the preview depth/node budget. The version 2 config migration renamed this key from `ui.showNestedToolCalls`.
 - `ui.toolDisplay` is `"compact"` (default) or `"full"`. Compact elevates the declared display name and description and keeps bounded nested tool detail visible; full retains the outer Fabric program transcript. Pi's tool-expand keybinding (`ctrl+o` by default) expands a compact card to the full transcript and collapses it again. Invalid values fall back to `"compact"`. If configuration fails to load, rendering falls back to full so a degraded startup never hides the transcript. Change it under `/fabric settings` → **UI**; successful changes apply immediately to live and completed cards.
 - `ui.updateDebounceMs` defaults to `100`. It applies one execution-wide coalescing interval to every live `fabric_exec` card update: nested calls, progress text, and agent tool previews. Continuous streams emit at most once per interval, so a long call no longer postpones every render until completion. Set it to `0` to emit every update. Accepted values clamp to `0..2000`. The version 3 config migration renamed this key from `ui.nestedToolDebounceMs`.
+- `ui.sessionLabel` controls where a root Pi session shows its Fabric [peer label](agents.md#peer-labels-and-queue-gates), such as `FAB-3`. Child agents and actors never show one.
+  - `footer` defaults to `true` and shows `Fabric FAB-3` in the Pi footer.
+  - `herdr` is `"off"` (default), `"tab"`, `"pane"`, or `"both"`. When Pi runs interactively inside Herdr, Fabric puts the label in front of that tab or pane name. It reads the live name before each change, so a rename by Herdr, by you, or by Pi's own name sync keeps its new text, and Fabric adds its label back within a few seconds. On shutdown, or when you turn the setting off, Fabric removes only its own label word. A pane with no name of its own goes back to having none.
+  - Labels exist only while `mesh.enabled` is `true`. Change these settings under `/fabric settings` → **UI**; a change applies at once.
+- `ui.herdrStatus` defaults to `true`. In an interactive root session inside a Herdr pane (`HERDR_ENV=1` with `HERDR_PANE_ID` and `HERDR_SOCKET_PATH`), Fabric tells Herdr about the agents this session runs. Herdr's Pi integration reports the pane idle when the turn ends, so Fabric replaces the pane's idle, done, and working text with a count such as `⏳ 2 Fabric agents · scout, reviewer` through `pane.report_metadata`. That metadata is display-only and expires after two minutes unless refreshed, so a crashed session does not leave it behind. While a routed child question waits on the user, Fabric emits `herdr:blocked`, which Herdr's Pi integration shows as a blocked pane. Fabric also emits `herdr:busy` while agents run; Herdr does not act on that event yet. Child agents and headless sessions report nothing. The presenter loads at the first agent run, so other sessions pay nothing for it. Turn it off under `/fabric settings` → **UI**.
 - The widget renders above the chat, like `pi-supervisor`. Set `ui.enabled` to `false` to disable both the widget and the dashboard controller.
 
 See the [interface reference](interface.md).

@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
+import net, { type AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { build } from "esbuild";
@@ -120,6 +122,48 @@ async function restart(directory: string, first: Pick<AgentRunRecord, "id" | "na
 const events = (file: string) => fs.readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
 
 describe("AgentManager real durable parent worker", () => {
+  it("routes worker fetches through Pi's proxy dispatcher and keeps NO_PROXY hosts direct (#270)", async () => {
+    const origin = http.createServer((request, response) => response.end(request.headers.host?.split(":")[0]));
+    const tunnels: string[] = [];
+    const proxy = http.createServer();
+    proxy.on("connect", (request, client, head) => {
+      tunnels.push(request.url ?? "");
+      const upstream = net.connect((origin.address() as AddressInfo).port, "127.0.0.1", () => {
+        client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        if (head.length) upstream.write(head);
+        client.pipe(upstream);
+        upstream.pipe(client);
+      });
+      upstream.on("error", () => client.destroy());
+      client.on("error", () => upstream.destroy());
+    });
+    await new Promise<void>(resolve => origin.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>(resolve => proxy.listen(0, "127.0.0.1", resolve));
+    try {
+      const { manager } = setup();
+      const port = (origin.address() as AddressInfo).port;
+      // The proxy reaches the worker only through Pi's global httpProxy setting.
+      for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NODE_USE_ENV_PROXY"]) vi.stubEnv(key, undefined);
+      const settingsFile = path.join(process.env.PI_CODING_AGENT_DIR!, "settings.json");
+      fs.writeFileSync(settingsFile, JSON.stringify({
+        ...JSON.parse(fs.readFileSync(settingsFile, "utf8")),
+        httpProxy: `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`,
+      }));
+      vi.stubEnv("NO_PROXY", "localhost");
+      vi.stubEnv("no_proxy", "localhost");
+      vi.stubEnv("DURABLE_TEST_FETCH_URLS", JSON.stringify([`http://127.0.0.1:${port}/`, `http://localhost:${port}/`]));
+      const result = await manager.run({ task: "fetch fixture", tools: ["fetch_probe"] });
+      expect(result.status, result.error).toBe("completed");
+      expect(result.text).toBe("result:127.0.0.1,localhost");
+      expect(tunnels).toEqual([`127.0.0.1:${port}`]);
+    } finally {
+      origin.closeAllConnections();
+      proxy.closeAllConnections();
+      await new Promise(resolve => origin.close(resolve));
+      await new Promise(resolve => proxy.close(resolve));
+    }
+  }, 30000);
+
   it("recovers a completed journal after the parent dies before saving completion", async () => {
     const entry = path.join(path.dirname(workerPath), "completion-crash-worker.js");
     fs.writeFileSync(entry, String.raw`
