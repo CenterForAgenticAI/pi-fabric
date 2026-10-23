@@ -94,6 +94,72 @@ describe("FabricToolResultProxy", () => {
     await expect(proxy.proxy(request(original))).resolves.toBe(original);
   });
 
+  it.each([
+    ["array", Array.from({ length: 3 }, (_, index) => ({ id: `agent-${index}` }))],
+    ["object", { rows: [1, 2, 3] }],
+    ["number", 42],
+    ["boolean", true],
+    ["null", null],
+  ])("keeps a structured %s when middleware patches only content", async (_kind, original) => {
+    // A generic tool_result output cap rewrites the JSON text of a large
+    // result. Applying that text would hand the program a truncated string
+    // where it expects the value, so `agents.list().filter` would throw.
+    const emitToolResult = vi.fn(async () => ({
+      content: [{ type: "text" as const, text: '[{"id":"agent-0"},{"i\n[output capped at 50KB]' }],
+    }));
+    const proxy = new FabricToolResultProxy(() => runnerWith(emitToolResult));
+
+    await expect(proxy.proxy(request(original))).resolves.toBe(original);
+    expect(emitToolResult).toHaveBeenCalledOnce();
+  });
+
+  it("applies a content patch that keeps a structured value valid JSON", async () => {
+    // A redactor rewrites a secret inside the serialized value. The text still
+    // parses, so the program gets the redacted value, not the raw one.
+    const emitToolResult = vi.fn(async (event: ToolResultEvent) => ({
+      content: [{
+        type: "text" as const,
+        text: (event.content[0] as { text: string }).text.replace("hunter2", "[redacted]"),
+      }],
+    }));
+    const proxy = new FabricToolResultProxy(() => runnerWith(emitToolResult));
+
+    await expect(proxy.proxy(request({ user: "ada", password: "hunter2" }))).resolves.toEqual({
+      user: "ada",
+      password: "[redacted]",
+    });
+    await expect(proxy.proxy(request(["hunter2", "ok"]))).resolves.toEqual(["[redacted]", "ok"]);
+  });
+
+  it("keeps a structured value when the patched text does not parse or changes nothing", async () => {
+    const original = { token: "hunter2" };
+    for (const content of [
+      [{ type: "text" as const, text: "[REDACTED]" }],
+      [{ type: "text" as const, text: JSON.stringify(original) }],
+      [
+        { type: "text" as const, text: "{}" },
+        { type: "image" as const, data: "AAAA", mimeType: "image/png" },
+      ],
+    ]) {
+      const emitToolResult = vi.fn(async () => ({ content }));
+      const proxy = new FabricToolResultProxy(() => runnerWith(emitToolResult));
+
+      await expect(proxy.proxy(request(original))).resolves.toBe(original);
+    }
+  });
+
+  it("still fails a structured value that middleware marks as an error", async () => {
+    const emitToolResult = vi.fn(async () => ({
+      content: [{ type: "text" as const, text: "blocked: result holds a credential" }],
+      isError: true,
+    }));
+    const proxy = new FabricToolResultProxy(() => runnerWith(emitToolResult));
+
+    await expect(proxy.proxy(request({ token: "secret" }))).rejects.toThrow(
+      "blocked: result holds a credential",
+    );
+  });
+
   it.each(["pi", "extensions"])(
     "does not duplicate the native %s lifecycle",
     async (provider) => {
