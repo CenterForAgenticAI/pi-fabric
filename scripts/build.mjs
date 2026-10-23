@@ -46,6 +46,8 @@ const primaryEntryPoints = [
 // after the installed package is replaced, while preserving lazy evaluation.
 const lazyEntryPoints = [
   "src/extension-copy.ts",
+  // Herdr agent status; loaded at the first agent run inside Herdr.
+  "src/agents/herdr-status.ts",
   "src/durable/worker-host.ts",
   "src/type-error-guidance.ts",
   "src/native-discovery.ts",
@@ -57,6 +59,12 @@ const lazyEntryPoints = [
   "src/thinking-control.ts",
   "src/compaction/owner.ts",
   "src/compaction/orphan-repair.ts",
+  // /fabric subcommands; the command registers without them.
+  "src/commands/fabric-handler.ts",
+  // Peer queuing protocol; loaded at the first peer request.
+  "src/topology/peer-settle.ts",
+  // System prompt builders; loaded at the first agent start.
+  "src/core/prompt-guidance.ts",
   "src/decisions/command.ts",
   "src/decisions/events.ts",
   "src/programs/host.ts",
@@ -103,6 +111,8 @@ const lazyEntryPoints = [
   "src/ui/conversation-chrome.ts",
   "src/ui/conversation-native-reader.ts",
   "src/ui/model-picker.ts",
+  // Word-diff matcher; core tool rendering loads it at the first diff.
+  "src/ui/word-diff/line-emphasis.ts",
   "src/ui/settings.ts",
   "src/worker/event-projection.ts",
   "src/worker/model-control.ts",

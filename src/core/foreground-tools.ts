@@ -55,7 +55,7 @@ export const resolveForegroundTools = (input: {
   managedHost?: boolean;
   registered: readonly { name: string; exposure?: string; sourceInfo?: { source: string } }[];
   active: ReadonlySet<string>;
-  allowlist?: ReadonlySet<string> | undefined;
+  allowlist?: { has(name: string): boolean } | undefined;
 }): FabricForegroundResolution => {
   const { policy } = input;
   // Orchestration already declares Pi's active set; the policy has nothing to add.

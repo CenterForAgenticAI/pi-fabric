@@ -42,6 +42,9 @@ const lazy = [
   "memory/extractive-history.js",
   "cli/mesh.js",
   "cli/decisions.js",
+  "commands/fabric-handler.js",
+  "topology/peer-settle.js",
+  "core/prompt-guidance.js",
   "agents/claude-cli.js",
   "agents/compact-control.js",
   "agents/result.js",
@@ -74,6 +77,7 @@ const lazy = [
   "ui/conversation-chrome.js",
   "ui/conversation-native-reader.js",
   "ui/model-picker.js",
+  "ui/word-diff/line-emphasis.js",
   "ui/settings.js",
   "worker/event-projection.js",
   "worker/options.js",
@@ -196,7 +200,7 @@ const startupBytes = [...startupFiles].reduce((sum, file) => sum + Buffer.byteLe
 if (startupBytes > 1000 * 1024 || startupFiles.size > 41) {
   throw new Error(`Startup static graph grew beyond its budget: ${startupBytes} bytes in ${startupFiles.size} files`);
 }
-const optionalPackages = ["yaml", "@lezer/python", "shiki", "@shikijs/langs", "@shikijs/themes", "typescript", "mcporter", "jev-fabric", "@earendil-works/pi-durable", "@earendil-works/chord", "pi-fabric-worker-sdk"];
+const optionalPackages = ["diff", "yaml", "@lezer/python", "shiki", "@shikijs/langs", "@shikijs/themes", "typescript", "mcporter", "jev-fabric", "@earendil-works/pi-durable", "@earendil-works/chord", "pi-fabric-worker-sdk"];
 for (const file of startupFiles) {
   for (const match of readFileSync(file, "utf8").matchAll(staticImport)) {
     if (optionalPackages.some(name => match[1] === name || match[1]?.startsWith(`${name}/`))) {
@@ -244,7 +248,7 @@ if ([...startupFiles].some(file => /class ProviderOperations|Fabric provider ope
 const initialSource = [...startupFiles]
   .map((file) => readFileSync(file, "utf8"))
   .join("\n");
-for (const forbidden of ["src/extension-copy.ts", "src/native-discovery.ts", "src/memory/extractive-history.ts", "src/memory/extractive-index.ts", "src/entropy/compiler.ts", "src/entropy/trial.ts", "src/fabric-runtime-state.ts", "src/core/host-sdk-runtime.ts", "src/prewalk/handoff.ts", "src/jev/client.ts", "src/ui/languages/bend.ts", "src/ui/settings.ts", "src/ui/conversation.ts", "src/ui/conversation-chrome.ts", "src/ui/image-overlays.ts", "src/ui/kitty-viewport.ts", "src/durable-host.ts", "src/durable/session.ts", 'from "mcporter"']) {
+for (const forbidden of ["src/extension-copy.ts", "src/native-discovery.ts", "src/memory/extractive-history.ts", "src/memory/extractive-index.ts", "src/entropy/compiler.ts", "src/entropy/trial.ts", "src/fabric-runtime-state.ts", "src/core/host-sdk-runtime.ts", "src/prewalk/handoff.ts", "src/jev/client.ts", "src/ui/languages/bend.ts", "src/ui/settings.ts", "src/ui/conversation.ts", "src/ui/conversation-chrome.ts", "src/ui/image-overlays.ts", "src/ui/word-diff/line-emphasis.ts", "src/compaction/projections.ts", "src/commands/fabric-handler.ts", "src/core/system-guidance.ts", "src/audit/trace.ts", "src/ui/kitty-viewport.ts", "src/durable-host.ts", "src/durable/session.ts", 'from "mcporter"']) {
   if (initialSource.includes(forbidden)) {
     throw new Error(`Startup static graph contains lazy module marker: ${forbidden}`);
   }
