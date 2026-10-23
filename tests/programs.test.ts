@@ -144,6 +144,29 @@ describe("content-addressed program store", () => {
     expect((await store.resolve("after-crash")).name).toBe("after-crash");
   });
 
+  it("waits out a lock directory still pending deletion on Windows", async () => {
+    const { store } = fixture();
+    const mkdir = fs.promises.mkdir;
+    let rejected = 0;
+    const spy = vi.spyOn(fs.promises, "mkdir").mockImplementation(async (target, options) => {
+      if (String(target).endsWith(".lock") && rejected++ === 0) {
+        throw Object.assign(new Error("EPERM: operation not permitted, mkdir"), { code: "EPERM" });
+      }
+      return mkdir(target, options);
+    });
+    try {
+      const save = store.save({ name: "pending", code: "return 1;" }, "typescript");
+      if (process.platform === "win32") {
+        expect((await save).record.name).toBe("pending");
+        expect(rejected).toBe(2);
+      } else {
+        await expect(save).rejects.toThrow(/EPERM/);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("fails closed on a record whose content no longer matches its digest", async () => {
     const { store } = fixture();
     const { record } = await store.save({ name: "safe", code: "return 1;" }, "typescript");

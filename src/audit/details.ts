@@ -4,7 +4,7 @@ import {
   isFabricExecutionTraceV1,
   type FabricExecutionTraceOperationV1,
   type FabricExecutionTraceV1,
-} from "./trace.js";
+} from "./trace-schema.js";
 
 export const FABRIC_EXECUTION_DETAILS_MAX_BYTES = 512 * 1024;
 

@@ -1,7 +1,8 @@
-// The provider-binding lifecycle reducer. One step applies one event to a life
-// record and leaves the command it decided in `command`. Step laws carry no
-// invariant, so each one holds from every life record, reachable or not.
-import { all, bool, no, oneOf, rule, when } from "gdp-wired";
+// The provider-binding lifecycle reducer, as a statechart: one step applies one
+// event to a life record and leaves the command it decided in `command`, which
+// is Denied when no transition fires. Step laws carry no invariant, so each one
+// holds from every life record, reachable or not.
+import { all, bool, chart, no, oneOf, when } from "gdp-wired";
 import type { Kernel } from "./kernel.js";
 
 export const PHASES = ["Staged", "Active", "Retiring", "Closing", "Closed", "Failed"] as const;
@@ -19,61 +20,46 @@ export type LifecycleBug =
 // Closed admit nothing, Failed admits cleanup only, the rest admit cleanup or unrevoked work.
 const Open = (phase: any, revoked: any, cleanup: any) =>
   phase.eq(CLOSING).or(phase.eq(CLOSED)).not().and(phase.eq(FAILED).implies(cleanup), cleanup.or(revoked.eq(0)));
-const retiredPhase = (phase: any) => when(phase.eq(STAGED).or(phase.eq(ACTIVE)), RETIRING, phase);
+const retiredPhase = (phase: any) => when(phase.eq(STAGED).or(phase.eq(ACTIVE)), phase.of("Retiring"), phase);
 
-export const lifecycle = (bug?: LifecycleBug) => rule("binding lifecycle")
-  .inputs({ event: oneOf(...EVENTS), cleanup: bool })
-  .state({ phase: STAGED, owner: 1, holds: 0, calls: 0, revoked: 0, command: DENIED })
-  .flags(({ event, cleanup, phase, revoked }) => ({
-    open: (bug === "closing admits work" ? phase.eq(CLOSED).not() : phase.eq(CLOSING).or(phase.eq(CLOSED)).not())
-      .and(phase.eq(FAILED).implies(bug === "failed admits ordinary work" ? cleanup.or(revoked.eq(0)) : cleanup), cleanup.or(revoked.eq(0))),
-    inspectable: phase.eq(CLOSING).or(phase.eq(CLOSED), phase.eq(FAILED)).not().and(revoked.eq(0)),
-  }))
-  .flags(({ event, open, phase, owner, holds, calls }) => ({
-    admitted: event.is("Begin").or(event.is("Retain")).and(open),
-    shut: event.is("Shut").and(phase.eq(RETIRING), owner.eq(0), holds.eq(0), bug === "close ignores calls" ? holds.eq(0) : calls.eq(0)),
-    released: event.is("Release").and(bug === "release underflows" ? holds.atLeast(0) : holds.atLeast(1)),
-    ended: event.is("End").and(calls.atLeast(1)),
-    aborted: event.is("Abort").and(bug === "abort reopens closed" ? phase.eq(CLOSED).or(phase.ne(CLOSED)) : phase.ne(CLOSED)),
-  }))
-  .step(({ event, phase, owner, holds, calls, revoked, admitted, inspectable, shut, released, ended, aborted }) => ({
-    phase: event.match({
-      Inspect: () => phase,
-      Activate: () => when(phase.eq(STAGED).or(phase.eq(ACTIVE)), ACTIVE, phase),
-      Retire: () => retiredPhase(phase),
-      DropOwner: () => phase,
-      Revoke: () => retiredPhase(phase),
-      Retain: () => phase,
-      Release: () => phase,
-      Begin: () => phase,
-      End: () => phase,
-      Shut: () => when(shut, CLOSING, phase),
-      Complete: () => when(phase.eq(CLOSING), CLOSED, phase),
-      Abort: () => when(aborted, FAILED, phase),
-    }),
-    owner: when(event.is("DropOwner").or(event.is("Revoke"), aborted), 0, owner),
-    holds: when(event.is("Retain").and(admitted), holds.plus(1),
-      when(released, holds.minus(1), bug === "revocation drops holds" ? when(event.is("Revoke"), 0, holds) : holds)),
-    calls: when(event.is("Begin").and(admitted), bug === "begin counts nothing" ? calls : calls.plus(1), when(ended, calls.minus(1), calls)),
-    revoked: when(event.is("Revoke").or(aborted), 1, revoked),
-    command: event.match({
-      Inspect: () => when(inspectable, GRANTED, DENIED),
-      Activate: () => when(phase.eq(STAGED).or(phase.eq(ACTIVE)), GRANTED, DENIED),
-      Retire: () => GRANTED,
-      DropOwner: () => GRANTED,
-      Revoke: () => GRANTED,
-      Retain: () => when(admitted, GRANTED, DENIED),
-      Release: () => when(released, GRANTED, DENIED),
-      Begin: () => when(admitted, GRANTED, DENIED),
-      End: () => when(ended, GRANTED, DENIED),
-      Shut: () => when(shut, START_CLOSE, DENIED),
-      Complete: () => when(phase.eq(CLOSING), GRANTED, DENIED),
-      Abort: () => when(aborted, GRANTED, DENIED),
-    }),
-  }));
+// Phases that admit ordinary work, and the rest.
+const WORK = ["Staged", "Active", "Retiring"], SETTLED = ["Retiring", "Closing", "Closed", "Failed"], EVERY = [...PHASES];
+export const lifecycle = (bug?: LifecycleBug) => {
+  const granted = () => ({ command: "Granted" as const });
+  const revoke = ({ holds }: any) => ({ owner: 0, revoked: 1, command: "Granted" as const, ...(bug === "revocation drops holds" ? { holds: 0 } : {}) });
+  // Ordinary work while unrevoked, cleanup always; Failed admits cleanup only; Closing and Closed admit nothing.
+  const working = bug === "closing admits work" ? [...WORK, "Closing"] : WORK;
+  const ordinary = ({ cleanup, revoked }: any) => cleanup.or(revoked.eq(0));
+  const cleanupOnly = ({ cleanup, revoked }: any) => (bug === "failed admits ordinary work" ? cleanup.or(revoked.eq(0)) : cleanup);
+  const retain = ({ holds }: any) => ({ holds: holds.plus(1), command: "Granted" as const });
+  const begin = ({ calls }: any) => ({ calls: bug === "begin counts nothing" ? calls : calls.plus(1), command: "Granted" as const });
+  return chart("binding lifecycle")
+    .events(...EVENTS)
+    .inputs({ cleanup: bool })
+    .context({ owner: 1, holds: 0, calls: 0, revoked: 0 })
+    .outputs({ command: oneOf(...COMMANDS).from("Denied") })
+    .states({ Staged: {}, Active: {}, Retiring: {}, Closing: {}, Closed: { final: true }, Failed: { final: true } }, { field: "phase" })
+    .on("Inspect", { from: WORK, when: ({ revoked }) => revoked.eq(0), set: granted })
+    .on("Activate", { from: ["Staged", "Active"], to: "Active", set: granted })
+    .on("Retire", { from: ["Staged", "Active"], to: "Retiring", set: granted })
+    .on("Retire", { from: SETTLED, set: granted })
+    .on("DropOwner", { from: EVERY, set: () => ({ owner: 0, command: "Granted" as const }) })
+    .on("Revoke", { from: ["Staged", "Active"], to: "Retiring", set: revoke })
+    .on("Revoke", { from: SETTLED, set: revoke })
+    .on("Retain", { from: working, when: ordinary, set: retain })
+    .on("Retain", { from: "Failed", when: cleanupOnly, set: retain })
+    .on("Begin", { from: working, when: ordinary, set: begin })
+    .on("Begin", { from: "Failed", when: cleanupOnly, set: begin })
+    .on("Release", { from: EVERY, when: ({ holds }) => (bug === "release underflows" ? holds.atLeast(0) : holds.atLeast(1)), set: ({ holds }) => ({ holds: holds.minus(1), command: "Granted" as const }) })
+    .on("End", { from: EVERY, when: ({ calls }) => calls.atLeast(1), set: ({ calls }) => ({ calls: calls.minus(1), command: "Granted" as const }) })
+    .on("Shut", { from: "Retiring", to: "Closing", when: ({ owner, holds, calls }) => all(owner.eq(0), holds.eq(0), bug === "close ignores calls" ? holds.eq(0) : calls.eq(0)),
+      set: () => ({ command: "StartClose" as const }) })
+    .on("Complete", { from: "Closing", to: "Closed", set: granted })
+    .on("Abort", { from: bug === "abort reopens closed" ? EVERY : EVERY.filter((phase) => phase !== "Closed"), to: "Failed", set: () => ({ owner: 0, revoked: 1, command: "Granted" as const }) });
+};
 
 export const lifecycleKernels = (bug?: LifecycleBug): Kernel[] => {
-  const r = lifecycle(bug);
+  const c = lifecycle(bug), r = c.rule;
   type E = any;
   const unchanged = (b: E, a: E) => all(a.phase.eq(b.phase), a.owner.eq(b.owner), a.holds.eq(b.holds), a.calls.eq(b.calls), a.revoked.eq(b.revoked));
   const life = (a: E, phase: E, owner: E, holds: E, calls: E, revoked: E) =>
@@ -81,7 +67,8 @@ export const lifecycleKernels = (bug?: LifecycleBug): Kernel[] => {
   const on = (name: (typeof EVENTS)[number]) => ({ event }: E) => event.is(name);
   return [{
     id: "bindingStep",
-    rule: r,
+    rule: c.rule,
+    chart: c,
     stepLaws: [
       r.stepLaw("inspect_safe: a granted inspection is open to ordinary work and changes nothing; every inspection changes nothing",
         (b, a) => unchanged(b, a).and(a.command.eq(GRANTED).implies(Open(b.phase, b.revoked, no)), a.command.ne(START_CLOSE)), on("Inspect")),

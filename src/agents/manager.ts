@@ -65,6 +65,7 @@ import { ProcessTransport } from "./transports/process-transport.js";
 import { ScreenTransport } from "./transports/screen-transport.js";
 import { TmuxTransport } from "./transports/tmux-transport.js";
 import type {
+  AgentActivity,
   AgentChildQuestionRequest,
   AgentChildQuestionResponse,
   FabricBudgetSummary,
@@ -246,6 +247,8 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
   openQuestions?: Array<{ decisionId?: string }>;
   /** Routed dialogs not yet answered; close awaits a detached run's cancellations. */
   asks?: Set<Promise<AgentChildQuestionResponse>>;
+  /** Titles of the routed child questions now waiting on the user, oldest first. */
+  questionTitles?: string[];
   latestRecord?: AgentRunRecord;
   latestUiRecord?: AgentRunRecord;
   background: boolean;
@@ -1622,6 +1625,17 @@ export class AgentManager {
     return [...this.#runs.keys()].map((id) => this.status(id));
   }
 
+  /** Unsettled runs, each with the title of a child question it waits on. */
+  activity(): AgentActivity[] {
+    return [...this.#runs.values()]
+      .filter((managed) => !managed.settled)
+      .map((managed) => ({
+        id: managed.id,
+        name: managed.actorName ?? managed.name,
+        ...(managed.questionTitles?.length ? { question: managed.questionTitles.at(-1)! } : {}),
+      }));
+  }
+
   listForUi(): Array<AgentRunRecord | AgentHandleInfo> {
     if (this.#uiListCache?.revision === this.#uiListRevision) {
       return this.#uiListCache.value;
@@ -2379,6 +2393,11 @@ export class AgentManager {
     managed.questions ??= new AbortController();
     const open: { decisionId?: string } = {};
     (managed.openQuestions ??= []).push(open);
+    const title =
+      typeof question.title === "string" && question.title.trim() ? question.title.trim() : "question";
+    // A run can have several questions open; each answer removes only its own.
+    (managed.questionTitles ??= []).push(title);
+    this.#invalidateUiList();
     const asked = this.#onChildQuestion({
       runId: managed.id,
       name: managed.actorName ?? managed.name,
@@ -2395,6 +2414,8 @@ export class AgentManager {
     }).catch((): AgentChildQuestionResponse => ({ cancelled: true })).then((response) => {
       managed.openQuestions!.splice(managed.openQuestions!.indexOf(open), 1);
       managed.asks?.delete(asked);
+      const waiting = managed.questionTitles?.lastIndexOf(title) ?? -1;
+      if (waiting >= 0) managed.questionTitles!.splice(waiting, 1);
       this.#invalidateUiList();
       return response;
     });
@@ -2481,13 +2502,31 @@ export class AgentManager {
   readonly #inheritedToolAllowlist = readChildToolAllowlist();
 
   #childTools(request: AgentRunRequest, runner: FabricRunnerAdapter, requiresFabricKernel = false): string[] {
-    const tools = [...(request.tools ?? this.config.defaultTools)].filter(
+    const requested = request.tools ?? this.config.defaultTools;
+    const tools = requested.filter(
       (tool) => tool !== "fabric_exec" &&
         (this.#inheritedToolAllowlist === undefined || this.#inheritedToolAllowlist.has(tool)),
     );
     const extensions = request.recursive === true
       ? true
       : (request.extensions ?? this.config.extensions);
+    // agents.childQuestions "route" sends a child's dialogs to the parent, so a
+    // Pi child with extensions also gets the tool that opens them. An empty
+    // list asks for no tools, a Pi tool list of +name/-name modifiers cannot
+    // take a plain name, and an inherited allowlist is never widened. Read the
+    // request, not the filtered list: the filter can drop a -name modifier.
+    if (
+      this.config.childQuestions === "route" &&
+      (runner.id === "pi" || runner.id === "pi-durable") &&
+      runner.capabilities.questions &&
+      extensions &&
+      requested.length > 0 &&
+      !requested.some((tool) => tool.startsWith("+") || tool.startsWith("-"))
+    ) {
+      for (const tool of this.config.childQuestionTools ?? ["ask"]) {
+        if (this.#inheritedToolAllowlist === undefined || this.#inheritedToolAllowlist.has(tool)) tools.push(tool);
+      }
+    }
     if (
       runner.capabilities.recursiveFabric &&
       (request.recursive || ((this.#fullCodeMode || requiresFabricKernel) && extensions))
