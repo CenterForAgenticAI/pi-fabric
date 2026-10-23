@@ -639,7 +639,7 @@ Other agent settings:
 - `sessionExport`: export each agent run's usage as an attributed pi-format session file (on by default).
 - `sessionExportDir`: override the export store root (default `~/.pi-fabric/agent`, with `PI_FABRIC_AGENT_DIR` taking precedence).
 - `worktree.setup`: optional shell command (`/bin/sh`, or `cmd.exe` on Windows) run in each new `worktree: true` checkout before the child starts (unset by default; blank values are ignored). A per-request `worktreeSetup` overrides it, and a non-zero exit fails the launch. See [worktree results and setup](agents.md#transports).
-- `childQuestions`: `"cancel"` (default) cancels every dialog a Pi child opens; `"route"` forwards it to the parent's UI, or to a root-held [decision](decisions.md#routed-child-questions) when the parent has no UI.
+- `childQuestions`: `"cancel"` (default) cancels every dialog a Pi child opens; `"route"` forwards it to the parent's UI, or to a root-held [decision](decisions.md#routed-child-questions) when the parent has no UI. Durable runs always use a decision.
 - `childQuestionTimeoutMs`: default deadline for a routed child dialog (default `600000`, bounded to 1 s..24 h); a dialog's own timeout wins.
 - `childQuestionTools`: exact tool names a Pi child with extensions gets when `childQuestions` is `"route"` (default `["ask"]`; `[]` grants none). Entries with `*`, a leading `+` or `-`, and `fabric_exec` are dropped. The grant never widens an inherited allowlist and is skipped for an empty `tools` list and for `+name`/`-name` tool lists.
 
