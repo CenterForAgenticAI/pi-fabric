@@ -439,6 +439,54 @@ Full-host coverage is in `tests/durable-agent.test.ts`,
 `tests/durable-worker-e2e.test.ts`, `tests/durable-fabric-exec.test.ts`,
 `tests/handoff-continuation-worker.test.ts`, and `tests/durable-actors.test.ts`.
 
+## Embedding a durable session: `pi-fabric/durable-host`
+
+A host process that wants one long-lived durable `AgentSession` of its own (a
+daemon, not a Fabric-managed worker) imports `pi-fabric/durable-host`. The host
+supplies the Pi SDK (`@earendil-works/pi-coding-agent`, `pi-ai`, `pi-agent-core`)
+as peers, exactly as for the extension. The entry is never loaded by Fabric's
+registration graph.
+
+Exports: `createDurableAgentSession` (the session), `DurableAgent`,
+`openDurableWorkerStorage` (exclusive, fsync'd JSONL storage with a lease),
+`createDurableWorkerRuntime` and `DurableWorkerOptions` (the full native runtime
+with `/new`, `/fork` and `/resume`), `declareWorkerSessionRole` and `DURABLE_WORKER_POLICY_ENTRY_TYPE`.
+
+```ts
+import {
+  createDurableAgentSession, declareWorkerSessionRole, openDurableWorkerStorage,
+} from "pi-fabric/durable-host";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+
+const lease = await openDurableWorkerStorage("/absolute/private/run-dir"); // throws if another process owns it
+const sessionManager = SessionManager.open(sessionFile, undefined, cwd);   // or create(...)
+declareWorkerSessionRole(sessionManager); // before the first prompt; "already-seeded" on resume
+const host = await createDurableAgentSession({
+  cwd, sessionManager, storage: lease.storage, runId: "my-daemon:main", // stable across restarts
+  // modelRuntime, model, tools, customTools, resourceLoader: as for createAgentSession
+});
+await host.session.bindExtensions({}); // not done for you; bind your own mode/UI/error hooks
+await host.session.prompt("...");
+// Shutdown: await host.close(); await lease.storage.close(BACKGROUND_CONTEXT); await lease.release();
+```
+
+**Worker role.** `declareWorkerSessionRole(sessionManager)` appends the same
+worker-role entry described under "Worker role" above (the one Fabric seeds into
+its own `pi-durable` children), to a session you already opened. It returns
+`"seeded"` when it wrote the entry and `"already-seeded"` when the session already
+declared the worker role, so a restart loop does not grow the file. Call it before
+the first prompt and before `bindExtensions`. Unlike a Fabric child, whose entry is
+the tree root, this one is appended after whatever the session already holds;
+without it the session counts as a foreground session with a user at a terminal.
+
+**Supervision is the host's job.** `createDurableAgentSession` does not restart
+anything. After a crash, the host must start a new process, reopen the same
+storage directory and session file, and call `createDurableAgentSession` again
+with the **same `runId`**, then `host.agent.continue()` to finish interrupted
+work. Do not replay the original prompt. The host also owns backoff, a restart
+budget, and releasing the storage lease before another process takes over.
+
 ## Evidence
 
 `tests/durable-runner.test.ts` exercises the real published packages with offline
