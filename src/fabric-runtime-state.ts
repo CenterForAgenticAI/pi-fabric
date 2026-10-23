@@ -37,6 +37,7 @@ import {
 } from "./components/model-guidance.js";
 import { builtinModelGuidance } from "./components/builtin-guidance.js";
 import { FabricComponentSupervisor } from "./components/supervisor.js";
+import { warnProviderGlobalConflict } from "./provider-globals.js";
 import {
   createProviderComponent,
   FABRIC_COMPONENT_PROVIDER_NAMES,
@@ -1563,6 +1564,10 @@ export class FabricRuntimeState {
     }
     this.#externalProviders.set(provider.name, provider);
     if (this.#registry) this.#registry.register(provider, options);
+    // Direct registrations (forwarded now or replayed at activation) and
+    // discovery registrations all land here. Warning here, not in FabricState,
+    // keeps the name tables out of the startup graph. Once per name.
+    warnProviderGlobalConflict(provider.name);
   }
 
   /** Withdraw a direct registration through the same retire/release path a
