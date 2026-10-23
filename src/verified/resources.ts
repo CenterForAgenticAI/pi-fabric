@@ -1,5 +1,5 @@
 import { bit, idSet, members } from "./machine.js";
-import { resourceScope, resourceConflict } from "./generated/resources.js";
+import { resourceScope, resourceConflict, resourceGroups as groupsMachine } from "./generated/resources.js";
 
 /** A resource scope as the host sees it: exact names, or unknown ("*"). */
 export interface ResourceScope { readonly exact: boolean; readonly names: readonly string[] }
@@ -103,11 +103,33 @@ const conflicts = (names: ResourceNames, left: ResourceEffect, right: ResourceEf
   return state.scalars.conflict === 1;
 };
 
-/** Whether any effect on the left conflicts with any effect on the right. The
- * pairwise decision is the compiled kernel's; this traversal visits every pair. */
+/** Effect flags as list cells: one 0/1 map per field, keyed by position. */
+const effectCells = (side: readonly ResourceEffect[]) => ({
+  effect: new Map(side.map((e, i) => [i, bit(e.effect)])),
+  ordered: new Map(side.map((e, i) => [i, bit(e.ordered)])),
+  exact: new Map(side.map((e, i) => [i, bit(e.scope.exact)])),
+});
+
+/** Each exact scope's names as rows (item, name), where `item` is the effect's
+ * position. Rows name an effect of their own side by construction. */
+const rowCells = (names: ResourceNames, side: readonly ResourceEffect[]) => {
+  const rows = side.flatMap((e, item) => (e.scope.exact ? e.scope.names : []).map((name) => [item, names.id(name)] as const));
+  return { len: rows.length, item: new Map(rows.map(([item], p) => [p, item])), name: new Map(rows.map(([, name], p) => [p, name])) };
+};
+
+/** Whether any effect on the left conflicts with any effect on the right,
+ * decided over every pair by the compiled groups kernel. Both sides' names
+ * come from one table, so a name shared across them shares its id. */
 export const resourceGroups = (left: readonly ResourceEffect[], right: readonly ResourceEffect[]): boolean => {
   const names = new ResourceNames();
-  return left.some((l) => right.some((r) => conflicts(names, l, r)));
+  const L = effectCells(left), R = effectCells(right), LN = rowCells(names, left), RN = rowCells(names, right);
+  const state = groupsMachine.step({}, groupsMachine.init({}), {
+    L_len: left.length, R_len: right.length, LN_len: LN.len, RN_len: RN.len,
+    "L.effect": L.effect, "L.ordered": L.ordered, "L.exact": L.exact,
+    "R.effect": R.effect, "R.ordered": R.ordered, "R.exact": R.exact,
+    "LN.item": LN.item, "LN.name": LN.name, "RN.item": RN.item, "RN.name": RN.name,
+  });
+  return state.scalars.conflict === 1;
 };
 
 export const resourceConflictOf = (left: ResourceScope, right: ResourceScope, leftOrdered: boolean, rightOrdered: boolean): boolean =>

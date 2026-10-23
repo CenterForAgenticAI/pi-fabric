@@ -7,7 +7,7 @@ import {
   Text,
   type SelectItem,
 } from "@earendil-works/pi-tui";
-import { FabricTraceSafeError } from "../audit/trace.js";
+import { FabricTraceSafeError } from "../audit/trace-schema.js";
 
 type ThemeColorApplicator = (name: string, text: string) => string;
 

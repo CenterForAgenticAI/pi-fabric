@@ -13,9 +13,31 @@ describe("child optional tool allowlist", () => {
     vi.stubEnv("PI_FABRIC_TOOL_ALLOWLIST", undefined);
     expect(readChildToolAllowlist()).toBeUndefined();
     for (const value of ["", "null", "{}", "not json", '["read", 1]']) {
-      expect([...readChildToolAllowlist(value)!]).toEqual([]);
+      expect(readChildToolAllowlist(value)!.entries).toEqual([]);
     }
-    expect([...readChildToolAllowlist('["read", "fabric_exec"]')!]).toEqual(["read"]);
+    expect(readChildToolAllowlist('["read", "fabric_exec"]')!.entries).toEqual(["read"]);
+  });
+
+  it("matches * entries with the semantics of Pi's --tools (#277)", () => {
+    const allowed = readChildToolAllowlist('["read", "mcp__srv__*", "*_search"]')!;
+    expect(allowed.has("read")).toBe(true);
+    expect(allowed.has("mcp__srv__lookup")).toBe(true);
+    expect(allowed.has("mcp__srv__")).toBe(true);
+    expect(allowed.has("mcp__other__lookup")).toBe(false);
+    expect(allowed.has("web_search")).toBe(true);
+    expect(allowed.has("web_search_v2")).toBe(false);
+    expect(allowed.has("bash")).toBe(false);
+    // Other characters stay literal.
+    expect(readChildToolAllowlist('["a.b*"]')!.has("aXb_tool")).toBe(false);
+    // A grandchild pattern passes only when an inherited pattern covers it.
+    expect(allowed.has("mcp__srv__*")).toBe(true);
+    expect(allowed.has("mcp__srv__get*")).toBe(true);
+    expect(allowed.has("mcp__*")).toBe(false);
+    expect(allowed.has("*")).toBe(false);
+    // fabric_exec is never inherited, even through a catch-all pattern.
+    const all = readChildToolAllowlist('["*"]')!;
+    expect(all.has("mcp__srv__lookup")).toBe(true);
+    expect(all.has("fabric_exec")).toBe(false);
   });
 
   it("filters discovery and blocks preparation and execution before any side effect", async () => {

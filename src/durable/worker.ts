@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import module from "node:module";
 import { fileURLToPath } from "node:url";
 import { parseDurableWorkerOptions } from "./worker-options.js";
+import { explainMissingInstall } from "../worker/missing-install.js";
 
 try {
   // This process-only entry is never imported by extension registration.
@@ -40,7 +41,8 @@ try {
     const { runDurableWorker } = await import("./worker-host.js");
     await runDurableWorker(options);
   }
-} catch (error) {
-  process.stderr.write(`Durable Pi worker failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+} catch (caught) {
+  const error = explainMissingInstall(caught, import.meta.url);
+  process.stderr.write(`Durable Pi worker failed: ${error instanceof Error ? (error === caught ? error.stack ?? error.message : error.message) : String(error)}\n`);
   process.exitCode = 1;
 }

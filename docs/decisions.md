@@ -127,6 +127,8 @@ By default a child Pi run cancels every dialog (`select`, `confirm`, `input`, `e
 
 The deadline is the dialog's own timeout, or `agents.childQuestionTimeoutMs` (default 10 minutes). The worker owns that deadline and answers `cancelled` when it passes, so a child never waits on a parent that has gone away. A settled run, including a stopped one, cancels its open question decision. Runners that declare the `questions` capability route dialogs: the built-in `pi` and `pi-durable` runners, and hosted runners through `reporter.question`. Other runners cancel them.
 
+Routing also gives a Pi child with extensions the tools listed in `agents.childQuestionTools` (default `["ask"]`), so a caller does not have to name a question tool in `tools`. The grant never widens an allowlist the child inherited, and it is skipped when `tools` is empty, uses `+name`/`-name` modifiers, or `extensions` is `false`. Set `childQuestionTools: []` to route dialogs without granting a tool; a caller then names the question tool in `tools`. A child's system prompt lists only the extension tools its allowlist permits, so a tool left out is not offered and cannot be called.
+
 A durable run's decision lives in the project mesh, so it outlives the session that spawned the run. Any root session on the same mesh, `/fabric decisions`, or `pi-fabric decisions answer` can answer it until its deadline.
 
 ### Holding a question for a person
@@ -172,5 +174,6 @@ Fabric copies only those question fields. The decision is always held by `"user"
 | `approvals.headlessTimeoutMs` | `300000` | headless approval deadline (1 s to 24 h) |
 | `agents.childQuestions` | `"cancel"` | `"route"` forwards child dialogs to the parent |
 | `agents.childQuestionTimeoutMs` | `600000` | default routed dialog deadline (1 s to 24 h) |
+| `agents.childQuestionTools` | `["ask"]` | tools a routed Pi child gets for asking; `[]` grants none |
 
 Decisions need `mesh.enabled`. Managed hosts do not expose `decisions.*`. Schema enforce mode allows `decisions.list` and blocks the other actions.
