@@ -33,6 +33,7 @@ import {
   effectiveToolCaptureConfig,
 } from "./config.js";
 import type { CompactionHandlers } from "./compaction/hook.js";
+import type { CompactionOwnerSlot } from "./compaction/claim-events.js";
 import { compactAtConfiguredThreshold, type AutoCompactionTrigger } from "./compaction/threshold.js";
 import type { CompactionOwnerObserver } from "./compaction/owner.js";
 import { unregisteredRunnerNotice } from "./agents/runner-notice.js";
@@ -75,6 +76,7 @@ import { classifyToolResult } from "./repairs/classify.js";
 import { getActiveRepairCompiler } from "./repairs/active.js";
 import { piHostCompatibilityWarning } from "./host-compatibility.js";
 import {
+  FABRIC_COMPACTION_OWNER_EVENT,
   FABRIC_COMPONENT_REGISTER_EVENT,
   FABRIC_PROGRAM_RUN_EVENT,
   FABRIC_PROVIDER_REGISTER_EVENT,
@@ -206,7 +208,15 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
   );
   const capturedTools = new CapturedToolCatalog();
   const proxyContract = new ProxyContractLedger();
+  // At most one extension owns compaction instead of Fabric. The claim code
+  // loads on the first owner message; `yielded` is a deliberate yield the
+  // compaction hook noted for the ownership observer (pi-vcc sentinel or
+  // override), which the next session_compact consumes.
+  const ownerSlot: CompactionOwnerSlot = { closed: false, yielded: false };
+  const compactionOwner = () => ownerSlot.host?.active;
+  let ownerCode: Promise<typeof import("./compaction/claim-events.js")> | undefined;
   const state = new FabricState(pi, capturedTools, {
+    compactionOwner,
     paths: FABRIC_RUNTIME_PATHS,
     ...(FABRIC_ENTRY_IDENTITY ? { entryIdentity: FABRIC_ENTRY_IDENTITY } : {}),
     ...(options.managedHost ? {managedHost: options.managedHost} : {}),
@@ -340,6 +350,23 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
       (error: unknown) => request.respond({ ok: false, error: `Fabric program host unavailable: ${String(error)}` }),
     );
   });
+
+  // Messages share one load promise, so they are answered in emit order.
+  const unsubscribeOwner = pi.events.on(FABRIC_COMPACTION_OWNER_EVENT, (value: unknown) =>
+    (ownerCode ??= import("./compaction/claim-events.js")).then(
+      ({ handleCompactionOwnerMessage }) =>
+        handleCompactionOwnerMessage(ownerSlot, value, state, () => programRunContext),
+      (error: unknown) => {
+        ownerCode = undefined;
+        // No claim code: the reply is the only channel left.
+        try {
+          (value as { reply?: (result: unknown) => void } | null)?.reply?.({
+            ok: false,
+            error: `Fabric compaction owner support failed to load: ${String(error)}`,
+          });
+        } catch {}
+      },
+    ));
 
   pi.on("resources_discover", async (_event, context) => {
     if (!state.bootstrapped) await state.bootstrap(context);
@@ -728,9 +755,11 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     }
   });
 
+  // A compaction owner claim runs its own triggers, so Fabric's threshold
+  // and headroom triggers stand down while it is held.
   pi.on("agent_settled", async (event, context) => {
     if (!state.initialized) {
-      await compactAtConfiguredThreshold(context, state.config);
+      if (!compactionOwner()) await compactAtConfiguredThreshold(context, state.config);
       return;
     }
     const sessionId = context.sessionManager.getSessionId();
@@ -759,12 +788,14 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     // so ExtensionRunner does not finish this handler (and Pi does not publish
     // its public agent_settled event) before compaction settles.
     await state.compact.maybeCommit(context);
-    await compactAtConfiguredThreshold(
-      context,
-      state.config,
-      (trigger: AutoCompactionTrigger, committed: boolean) =>
-        state.compact.noteAutoCompaction(trigger, committed),
-    );
+    if (!compactionOwner()) {
+      await compactAtConfiguredThreshold(
+        context,
+        state.config,
+        (trigger: AutoCompactionTrigger, committed: boolean) =>
+          state.compact.noteAutoCompaction(trigger, committed),
+      );
+    }
     await state.publishHostLifecycle("pi.agent_settled", event);
   });
 
@@ -898,14 +929,15 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
   // The observer loads at the first committed compaction; a deliberate yield
   // noted before then is handed over when it does.
   let compactionOwners: Promise<CompactionOwnerObserver> | undefined;
-  let compactionYieldPending = false;
   pi.on("session_compact", async (event, context) => {
-    const fabricEngine = (state.bootstrapped ? state.config : DEFAULT_FABRIC_CONFIG).compaction.engine === "fabric";
+    // A claimed owner's result is expected, not a lost ownership race.
+    const fabricEngine = !compactionOwner()
+      && (state.bootstrapped ? state.config : DEFAULT_FABRIC_CONFIG).compaction.engine === "fabric";
     const observer = await (compactionOwners ??= import("./compaction/owner.js").then(
       (module) => new module.CompactionOwnerObserver(),
     ));
-    if (compactionYieldPending) {
-      compactionYieldPending = false;
+    if (ownerSlot.yielded) {
+      ownerSlot.yielded = false;
       observer.noteDeliberateYield();
     }
     const { warning } = observer.observe(
@@ -948,8 +980,9 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
         ? state.config.compaction.outputReserveTokens
         : DEFAULT_FABRIC_CONFIG.compaction.outputReserveTokens,
     onYield: () => {
-      compactionYieldPending = true;
+      ownerSlot.yielded = true;
     },
+    getOwnerClaim: compactionOwner,
   }));
   pi.on("session_before_compact", async (event, context) => (await compactionHandlers()).beforeCompact(event, context));
   pi.on("session_before_tree", async (event, context) => (await compactionHandlers()).beforeTree(event, context));
@@ -1160,6 +1193,12 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
   });
 
   pi.on("session_shutdown", async (_event, context) => {
+    // A claim never outlives the runtime it was made in: reload, session
+    // replacement and quit all shut this instance down. Cleared before any
+    // await, so a later step that throws cannot leave the old handle active.
+    unsubscribeOwner();
+    ownerSlot.closed = true;
+    ownerSlot.host?.clear();
     entropyStopping = true;
     clearEntropyRetry();
     // Queue the richest final window and let async I/O/cooperative scoring
