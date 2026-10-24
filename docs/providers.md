@@ -352,7 +352,13 @@ export default function resultGuard(pi: ExtensionAPI) {
 }
 ```
 
-If you change only `content`, a string result becomes the patched text. A structured result (an array, object, number, boolean, or null) keeps its shape. If the patched text still parses as JSON, as it does after a redactor replaces a secret inside the serialized value, the program receives the parsed value. Otherwise the program receives the original value. Generic middleware, such as an output cap, appends a marker to a cut-off projection, and applying that text would give the program a truncated string where it expects the value. A patch that replaces the whole text with a non-JSON placeholder does not hide a structured result. To replace or hide one, return the proxy envelope in `details` with a changed `result`, as in the example above, or return `isError: true`. When both fields are patched, a valid changed `details.result` takes precedence. Returning `isError: true` fails the nested provider invocation for any result.
+If you change only `content`, a string result becomes the patched text. For a structured result (an array, object, number, boolean, or null), the patch applies as follows:
+
+- Patched text that still parses as JSON, as it does after a redactor replaces a secret inside the serialized value, gives the program the parsed value.
+- A cut-off projection keeps the original value. A cut-off projection keeps the start of the JSON text, at least half of the patched text, and drops the rest, as a generic output cap does when it appends a marker. Applying that text would give the program a truncated string where it expects the value. `maxNestedResultChars` still bounds the value.
+- Any other patch replaces the value, as for a string result. A placeholder such as `[REDACTED]` reaches the program as that text, so middleware that hides a result never fails open.
+
+To replace a structured result with another value, return the proxy envelope in `details` with a changed `result`, as in the example above. When both fields are patched, a valid changed `details.result` takes precedence. Returning `isError: true` fails the nested provider invocation for any result.
 
 Pi core tools and captured extension tools skip this generic proxy, because they already replay their native `tool_call`, `tool_result`, and `tool_execution_*` lifecycle. Nested shell calls still emit their native identity: `pi.bash()` uses `toolName: "bash"`/`isBashToolResult()`, while `pi.powershell()` uses `toolName: "powershell"`/`isPowerShellToolResult()`. Proxied events act as middleware only. They create no separate persisted tool-result messages.
 

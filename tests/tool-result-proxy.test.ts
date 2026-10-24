@@ -95,22 +95,37 @@ describe("FabricToolResultProxy", () => {
   });
 
   it.each([
-    ["array", Array.from({ length: 3 }, (_, index) => ({ id: `agent-${index}` }))],
-    ["object", { rows: [1, 2, 3] }],
-    ["number", 42],
-    ["boolean", true],
-    ["null", null],
-  ])("keeps a structured %s when middleware patches only content", async (_kind, original) => {
-    // A generic tool_result output cap rewrites the JSON text of a large
-    // result. Applying that text would hand the program a truncated string
-    // where it expects the value, so `agents.list().filter` would throw.
-    const emitToolResult = vi.fn(async () => ({
-      content: [{ type: "text" as const, text: '[{"id":"agent-0"},{"i\n[output capped at 50KB]' }],
+    ["array", Array.from({ length: 20 }, (_, index) => ({ id: `agent-${index}` }))],
+    ["object", { rows: Array.from({ length: 50 }, (_, index) => index) }],
+  ])("keeps a structured %s when an output cap cuts its text", async (_kind, original) => {
+    // A generic tool_result output cap keeps the start of the JSON text of a
+    // large result and appends a marker. Applying that text would hand the
+    // program a truncated string where it expects the value, so
+    // `agents.list().filter` would throw.
+    const emitToolResult = vi.fn(async (event: ToolResultEvent) => ({
+      content: [{
+        type: "text" as const,
+        text: `${(event.content[0] as { text: string }).text.slice(0, 60)}\n[output capped at 50KB]`,
+      }],
     }));
     const proxy = new FabricToolResultProxy(() => runnerWith(emitToolResult));
 
     await expect(proxy.proxy(request(original))).resolves.toBe(original);
     expect(emitToolResult).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["array", ["hunter2"]],
+    ["object", { token: "hunter2" }],
+    ["number", 42],
+    ["boolean", true],
+    ["null", null],
+  ])("lets a placeholder hide a structured %s", async (_kind, original) => {
+    // A redactor that replaces the whole text must not fail open.
+    const emitToolResult = vi.fn(async () => ({ content: [{ type: "text" as const, text: "[REDACTED]" }] }));
+    const proxy = new FabricToolResultProxy(() => runnerWith(emitToolResult));
+
+    await expect(proxy.proxy(request(original))).resolves.toBe("[REDACTED]");
   });
 
   it("applies a content patch that keeps a structured value valid JSON", async () => {
@@ -131,21 +146,23 @@ describe("FabricToolResultProxy", () => {
     await expect(proxy.proxy(request(["hunter2", "ok"]))).resolves.toEqual(["[redacted]", "ok"]);
   });
 
-  it("keeps a structured value when the patched text does not parse or changes nothing", async () => {
+  it("keeps a structured value when the patched text changes nothing", async () => {
     const original = { token: "hunter2" };
-    for (const content of [
-      [{ type: "text" as const, text: "[REDACTED]" }],
-      [{ type: "text" as const, text: JSON.stringify(original) }],
-      [
-        { type: "text" as const, text: "{}" },
-        { type: "image" as const, data: "AAAA", mimeType: "image/png" },
-      ],
-    ]) {
-      const emitToolResult = vi.fn(async () => ({ content }));
-      const proxy = new FabricToolResultProxy(() => runnerWith(emitToolResult));
+    const emitToolResult = vi.fn(async () => ({ content: [{ type: "text" as const, text: JSON.stringify(original) }] }));
+    const proxy = new FabricToolResultProxy(() => runnerWith(emitToolResult));
 
-      await expect(proxy.proxy(request(original))).resolves.toBe(original);
-    }
+    await expect(proxy.proxy(request(original))).resolves.toBe(original);
+  });
+
+  it("replaces a structured value with a patch that has a non-text part", async () => {
+    const content = [
+      { type: "text" as const, text: "{}" },
+      { type: "image" as const, data: "AAAA", mimeType: "image/png" },
+    ];
+    const emitToolResult = vi.fn(async () => ({ content }));
+    const proxy = new FabricToolResultProxy(() => runnerWith(emitToolResult));
+
+    await expect(proxy.proxy(request({ token: "hunter2" }))).resolves.toEqual({ content });
   });
 
   it("still fails a structured value that middleware marks as an error", async () => {
