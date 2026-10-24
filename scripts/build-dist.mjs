@@ -10,7 +10,7 @@
 //
 // The staging directory sits at the package root like dist/, so relative paths
 // in source maps and node_modules resolution are the same after the move.
-import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
@@ -20,6 +20,14 @@ const STAGED = /^\.dist-(?:build|old)-(\d+)(?:-\d+)?$/;
 // Windows reports EPERM, EBUSY or EACCES while another process briefly holds a
 // directory; EEXIST and ENOTEMPTY mean a concurrent build put dist/ back first.
 const RETRYABLE = new Set(["EEXIST", "ENOTEMPTY", "EPERM", "EBUSY", "EACCES"]);
+
+// Windows can refuse to delete a file another process holds open, such as a Pi
+// session reading the retired dist/. The next build removes what is left.
+const remove = (path) => {
+  try {
+    rmSync(path, { recursive: true, force: true, maxRetries: 5 });
+  } catch {}
+};
 
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
@@ -32,13 +40,23 @@ const alive = (pid) => {
   }
 };
 
-/** Remove staging and retired directories left by builds that are no longer running. */
+/**
+ * Remove staging and retired directories left by builds that are no longer
+ * running. A build that stopped between its renames left no dist/ and the
+ * previous one retired: that one is put back, not removed.
+ */
 export function removeStaleBuilds(root) {
+  const dist = join(root, "dist");
   for (const name of readdirSync(root)) {
     const match = STAGED.exec(name);
-    if (match && Number(match[1]) !== process.pid && !alive(Number(match[1]))) {
-      rmSync(join(root, name), { recursive: true, force: true });
+    if (!match || Number(match[1]) === process.pid || alive(Number(match[1]))) continue;
+    if (name.startsWith(".dist-old-") && !existsSync(dist)) {
+      try {
+        renameSync(join(root, name), dist);
+      } catch {}
+      continue;
     }
+    remove(join(root, name));
   }
 }
 
@@ -51,10 +69,8 @@ export function swapIntoPlace(root, stage, { attempts = 40, delayMs = 50, rename
   const retired = [];
   for (let attempt = 0; ; attempt += 1) {
     const old = join(root, `.dist-old-${process.pid}-${attempt}`);
-    let moved = false;
     try {
       rename(dist, old);
-      moved = true;
       retired.push(old);
     } catch (error) {
       if (error.code !== "ENOENT") {
@@ -73,11 +89,18 @@ export function swapIntoPlace(root, stage, { attempts = 40, delayMs = 50, rename
         sleep(delayMs);
         continue;
       }
-      if (moved && !existsSync(dist)) rename(old, dist);
+      // dist/ may have been retired on an earlier attempt. If putting it back
+      // fails too, the next build does it (removeStaleBuilds).
+      const previous = retired.pop();
+      if (previous !== undefined && !existsSync(dist)) {
+        try {
+          rename(previous, dist);
+        } catch {}
+      }
       throw error;
     }
   }
-  for (const old of retired) rmSync(old, { recursive: true, force: true });
+  for (const old of retired) remove(old);
 }
 
 /**
@@ -86,7 +109,7 @@ export function swapIntoPlace(root, stage, { attempts = 40, delayMs = 50, rename
  */
 export function buildDist({ root, steps, stage = join(root, `.dist-build-${process.pid}`) }) {
   removeStaleBuilds(root);
-  rmSync(stage, { recursive: true, force: true });
+  remove(stage);
   try {
     for (const [command, ...args] of steps(relative(root, stage))) {
       const result = spawnSync(command, args, { cwd: root, stdio: "inherit" });
@@ -97,11 +120,13 @@ export function buildDist({ root, steps, stage = join(root, `.dist-build-${proce
     }
     swapIntoPlace(root, stage);
   } finally {
-    rmSync(stage, { recursive: true, force: true });
+    remove(stage);
   }
 }
 
-const main = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+// Node resolves the main module's URL through realpathSync; compare the same way
+// so a checkout reached through a symlink or junction still builds.
+const main = process.argv[1] !== undefined && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
 if (main) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const tsc = createRequire(import.meta.url).resolve("typescript/bin/tsc");

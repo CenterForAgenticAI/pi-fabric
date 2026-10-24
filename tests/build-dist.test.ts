@@ -69,6 +69,28 @@ describe("build-dist", () => {
     expect(fs.existsSync(running)).toBe(true);
   });
 
+  it("puts the previous dist/ back when installing the staged build keeps failing", () => {
+    const dir = packageRoot();
+    const stage = path.join(dir, ".dist-build-1");
+    fs.mkdirSync(stage);
+    const rename = (from: string, to: string): void => {
+      if (from === stage) throw Object.assign(new Error("busy"), { code: "EPERM" });
+      fs.renameSync(from, to);
+    };
+    expect(() => swapIntoPlace(dir, stage, { attempts: 3, delayMs: 1, rename })).toThrow("busy");
+    expect(fs.readFileSync(path.join(dir, "dist", "index.js"), "utf8")).toBe("old");
+    expect(leftovers(dir)).toEqual([".dist-build-1"]);
+  });
+
+  it("puts back a dist/ that a dead build retired before removing its leftovers", () => {
+    const dir = packageRoot();
+    const retired = path.join(dir, ".dist-old-2147483646-0");
+    fs.renameSync(path.join(dir, "dist"), retired);
+    expect(() => buildDist({ root: dir, steps: () => [node("process.exit(2)")] })).toThrow("dist/ was left as it was");
+    expect(fs.readFileSync(path.join(dir, "dist", "index.js"), "utf8")).toBe("old");
+    expect(leftovers(dir)).toEqual([]);
+  });
+
   it("swaps in again when a concurrent build restored dist/ between the renames", () => {
     const dir = packageRoot();
     const stage = path.join(dir, ".dist-build-1");
