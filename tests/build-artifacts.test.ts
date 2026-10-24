@@ -120,10 +120,15 @@ describe("published build artifact guards", () => {
     fs.rmSync(path.join(dir, "dist/ui/image-overlays.js"));
     rejected(dir, "ui/image-overlays.js");
   });
-  it.each(["native-discovery.js", "memory/extractive-history.js", "durable/worker.js", "durable/worker-host.js"])("requires stable optional entry %s", (entry) => {
+  it.each(["native-discovery.js", "memory/extractive-history.js", "agents/agent-files.js", "durable/worker.js", "durable/worker-host.js"])("requires stable optional entry %s", (entry) => {
     const dir = fixture();
     fs.rmSync(path.join(dir, "dist", entry));
     rejected(dir, entry);
+  });
+  it("rejects the named agent file loader in the startup graph", () => {
+    const dir = fixture();
+    fs.appendFileSync(path.join(dir, "dist/extension-bootstrap.js"), "\n// src/agents/agent-files.ts\n");
+    rejected(dir, "Startup static graph contains lazy module marker: src/agents/agent-files.ts");
   });
   it("rejects an eager extractive engine implementation", () => {
     const dir = fixture();
