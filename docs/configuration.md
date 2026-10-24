@@ -746,7 +746,7 @@ call override → session binding → project default → Fabric default
 
 `mesh.eventContextChars` bounds the sanitized JSON context attached to each host-event activation. Over the limit, Fabric drops the oldest transcript lines first and keeps the digest. It shortens the digest, and marks it `truncated: true`, only when the digest alone exceeds the limit. Fabric extracts images first. It stores redacted image descriptors in the mailbox and registry, then sends the raw images to the actor out of band. The character limit never truncates image base64 because base64 is not part of that JSON context.
 
-`mesh.peerNotices` (default `true`) tells a root session's model when another root Pi session joins or leaves the project. The notice is appended to the transcript and never changes the system prompt. See [peer presence notices](agents.md#peer-presence-notices).
+`mesh.peerNotices` (default `true`) tells the model of a root session with a UI when another root Pi session joins or leaves the project. The notice is appended to the transcript and never changes the system prompt. See [peer presence notices](agents.md#peer-presence-notices).
 
 Mesh topics, shared state, and the participant directory remain project-scoped. Every runtime publishes one short-lived host lease and records for the roots, agents, and actors it owns. `agents.members()` and `mesh.members()` read those records. `agents.main()` and `agents.peers()` project roots. When a lease expires, its records leave normal discovery together. `mesh.actorPollMs` controls fallback polling for actor events and owner-addressed commands when filesystem notifications are unavailable.
 
