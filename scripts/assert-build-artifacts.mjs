@@ -2,11 +2,16 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import { parseArgs } from "node:util";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const dist = join(root, "dist");
+// --dist checks a staged build before scripts/build-dist.mjs swaps it in.
+// Package targets still name ./dist/; they are resolved inside this directory.
+const { values: options } = parseArgs({ options: { dist: { type: "string", default: "dist" } } });
+const dist = resolve(root, options.dist);
+const inDist = (target) => join(dist, target.replace(/^\.\/dist\//, ""));
 const stable = [
   "index.js",
   "extension-bootstrap.js",
@@ -131,7 +136,7 @@ for (const target of manifest.pi?.extensions ?? []) {
   }
 }
 for (const target of targets([manifest.main, manifest.types, manifest.exports, ownExtensions, manifest.bin])) {
-  if (!target.startsWith("./dist/") || target.split("/").includes("..") || !existsSync(join(root, target))) {
+  if (!target.startsWith("./dist/") || target.split("/").includes("..") || !existsSync(inDist(target))) {
     throw new Error(`Missing or unpackaged public entrypoint: ${target}`);
   }
 }
@@ -142,7 +147,7 @@ if (!sourceReceipt.equals(readFileSync(join(dist, receiptPath)))) {
 }
 for (const [source, expected] of Object.entries(JSON.parse(sourceReceipt).outputs)) {
   const artifact = source.replace(/^src\//, "dist/");
-  const actual = createHash("sha256").update(readFileSync(join(root, artifact))).digest("hex");
+  const actual = createHash("sha256").update(readFileSync(inDist(`./${artifact}`))).digest("hex");
   if (actual !== expected) throw new Error(`Bundled verified artifact differs: ${artifact}`);
 }
 // The prover is a build-time dependency: Fabric ships only the compiled kernels.
@@ -195,7 +200,7 @@ if ([...validator.matchAll(staticImport)].length || /\bimport\s*\(/.test(validat
   throw new Error("Worker validator must be self-contained");
 }
 // Measure the entry Pi actually loads, including every shared static chunk.
-const startupFiles = staticClosure(ownExtensions.map(file => resolve(root, file)));
+const startupFiles = staticClosure(ownExtensions.map(inDist));
 const startupBytes = [...startupFiles].reduce((sum, file) => sum + Buffer.byteLength(readFileSync(file)), 0);
 if (startupBytes > 1000 * 1024 || startupFiles.size > 41) {
   throw new Error(`Startup static graph grew beyond its budget: ${startupBytes} bytes in ${startupFiles.size} files`);
@@ -283,7 +288,7 @@ for (const file of entries) {
 }
 await Promise.all(
   stable.filter((file) => file !== "worker.js" && file !== "durable/worker.js").map((file) =>
-    import(new URL(`../dist/${file}`, import.meta.url)),
+    import(pathToFileURL(join(dist, file)).href),
   ),
 );
 console.log(
