@@ -163,6 +163,18 @@ describe("Pi task prompt lifecycle", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it.each(["started", "queued"])("holds a %s task to no turn deadline", disposition => {
+    vi.useFakeTimers();
+    const fail = vi.fn();
+    const task = new PiTaskPromptLifecycle(fail);
+    task.sent("task");
+    task.observe({ type: "response", command: "prompt", id: "task", success: true, data: { disposition } });
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(600_000);
+    task.childExited();
+    expect(fail).not.toHaveBeenCalled();
+  });
+
   it.each(["started", "handled"])("allows start-before-ack and post-start %s receipts", disposition => {
     vi.useFakeTimers();
     const fail = vi.fn();

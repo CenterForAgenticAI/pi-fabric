@@ -72,8 +72,10 @@ export class PiTaskPromptLifecycle {
     this.#responded = true;
     if (this.#started) return;
     const data = event.data;
-    if (typeof data === "object" && data !== null && !Array.isArray(data) &&
-        (data as Record<string, unknown>).disposition === "handled") {
+    const disposition = typeof data === "object" && data !== null && !Array.isArray(data)
+      ? (data as Record<string, unknown>).disposition
+      : undefined;
+    if (disposition === "handled") {
       this.#handled = true;
       this.#handledError = this.#notice === undefined
         ? HANDLED_TASK_ERROR
@@ -81,7 +83,10 @@ export class PiTaskPromptLifecycle {
       this.#arm(PI_HANDLED_TASK_GRACE_MS, this.#handledError);
       return;
     }
-    this.#arm(PI_INITIAL_TURN_TIMEOUT_MS, ACKNOWLEDGED_TASK_ERROR);
+    // "started" and "queued" say the task is in a run. A resumed durable
+    // request reattaches to its recorded run and sends no agent_start, so only
+    // a host that predates dispositions is held to the turn deadline.
+    if (disposition === undefined) this.#arm(PI_INITIAL_TURN_TIMEOUT_MS, ACKNOWLEDGED_TASK_ERROR);
   }
 
   /** The child is gone, so a handled task can no longer start a turn: fail it now. */

@@ -232,6 +232,25 @@ describe("AgentManager real durable parent worker", () => {
     expect(events(path.join(directory, "replay-lifecycle.jsonl")).some(event => event.event === "tokens.usage")).toBe(false);
   }, 60000);
 
+  it("does not time out a resumed durable request, which reattaches without agent_start", async () => {
+    // Pi answers "started", but DurableAgent reattaches the recorded request
+    // and emits no agent_start. Only the unanswered-turn clock is shortened.
+    const entry = path.join(path.dirname(workerPath), "resume-clock-worker.js");
+    fs.writeFileSync(entry, String.raw`
+      const realSetTimeout = globalThis.setTimeout;
+      globalThis.setTimeout = (callback, delay, ...args) => realSetTimeout(callback, delay === 300000 ? 1 : delay, ...args);
+      await import('./worker.js');
+    `);
+    const { manager, cwd } = setup();
+    const sessionFile = path.join(cwd, "resumed-session.jsonl");
+    const first = await manager.run({ task: "read fixture", tools: ["read"], sessionFile });
+    expect(first.status, first.error).toBe("completed");
+    const directory = manager.runDirectory(first.id)!;
+    const replay = await restart(directory, first, { "session-file": sessionFile }, entry);
+    expect(replay.status, replay.error).toBe("completed");
+    expect(events(replay.logFile!).some(event => event.type === "agent_start")).toBe(false);
+  }, 60000);
+
   it("fails a task that an extension input hook consumes without starting a turn", async () => {
     // Only the handled-task grace clock is shortened; the real durable host and SDK run.
     const entry = path.join(path.dirname(workerPath), "handled-clock-worker.js");
