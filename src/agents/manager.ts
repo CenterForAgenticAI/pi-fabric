@@ -242,10 +242,8 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
   nestedSnapshotAt?: number;
   /** Routed child dialogs in flight; aborted at settlement. */
   questions?: AbortController;
-  /** Open routed dialogs, oldest first, with the decision behind each once raised. */
-  openQuestions?: Array<{ decisionId?: string }>;
-  /** Titles of the routed child questions now waiting on the user, oldest first. */
-  questionTitles?: string[];
+  /** Open routed dialogs, oldest first: each title, and the decision behind it once raised. */
+  openQuestions?: Array<{ title: string; decisionId?: string }>;
   latestRecord?: AgentRunRecord;
   latestUiRecord?: AgentRunRecord;
   background: boolean;
@@ -1621,7 +1619,7 @@ export class AgentManager {
       .map((managed) => ({
         id: managed.id,
         name: managed.actorName ?? managed.name,
-        ...(managed.questionTitles?.length ? { question: managed.questionTitles.at(-1)! } : {}),
+        ...(managed.openQuestions?.length ? { question: managed.openQuestions.at(-1)!.title } : {}),
       }));
   }
 
@@ -2373,12 +2371,11 @@ export class AgentManager {
   ): Promise<AgentChildQuestionResponse> {
     if (!this.#onChildQuestion || managed.settled) return Promise.resolve({ cancelled: true });
     managed.questions ??= new AbortController();
-    const open: { decisionId?: string } = {};
-    (managed.openQuestions ??= []).push(open);
     const title =
       typeof question.title === "string" && question.title.trim() ? question.title.trim() : "question";
     // A run can have several questions open; each answer removes only its own.
-    (managed.questionTitles ??= []).push(title);
+    const open: { title: string; decisionId?: string } = { title };
+    (managed.openQuestions ??= []).push(open);
     this.#invalidateUiList();
     return this.#onChildQuestion({
       runId: managed.id,
@@ -2393,8 +2390,6 @@ export class AgentManager {
       },
     }).catch((): AgentChildQuestionResponse => ({ cancelled: true })).then((response) => {
       managed.openQuestions!.splice(managed.openQuestions!.indexOf(open), 1);
-      const waiting = managed.questionTitles?.lastIndexOf(title) ?? -1;
-      if (waiting >= 0) managed.questionTitles!.splice(waiting, 1);
       this.#invalidateUiList();
       return response;
     });
