@@ -39,6 +39,7 @@ describe("provider globals for a provider another extension registers", () => {
     fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
     vi.stubEnv("PI_CODING_AGENT_DIR", path.join(cwd, "agent"));
     vi.stubEnv("PI_FABRIC_PROJECT_ROOT", cwd);
+    vi.stubEnv("PI_FABRIC_DEBUG", "1");
     const context = stub("context");
     const discoveredClash = stub("rlm");
     const pi = {
@@ -97,6 +98,11 @@ describe("provider globals for a provider another extension registers", () => {
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain('Fabric provider "workflow" gets no program global');
       expect(warnings[0]).toContain('the Fabric program global "workflow"');
+      // Without PI_FABRIC_DEBUG a clashing provider registers silently.
+      vi.stubEnv("PI_FABRIC_DEBUG", "");
+      warn.mockClear();
+      runtime.registerExternal(stub("pipeline").provider);
+      expect(warn).not.toHaveBeenCalled();
       const clash = await run(`
         const viaTools = await tools.call({ ref: "workflow.task_list", args: {} });
         return { viaTools, builtIn: typeof workflow.phase };`);

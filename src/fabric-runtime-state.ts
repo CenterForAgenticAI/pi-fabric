@@ -1543,8 +1543,9 @@ export class FabricRuntimeState {
     if (this.#registry) this.#registry.register(provider, options);
     // Direct registrations (forwarded now or replayed at activation) and
     // discovery registrations all land here. Warning here, not in FabricState,
-    // keeps the name tables out of the startup graph. Once per name.
-    warnProviderGlobalConflict(provider.name);
+    // keeps the name tables out of the startup graph. Once per name, and only
+    // under PI_FABRIC_DEBUG: a provider without a global is working as documented.
+    if (process.env.PI_FABRIC_DEBUG) warnProviderGlobalConflict(provider.name);
   }
 
   /** Withdraw a direct registration through the same retire/release path a
