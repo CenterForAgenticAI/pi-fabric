@@ -233,8 +233,28 @@ describe("a durable run collected by a later session in the same project", () =>
 
     // With no live host the wait fails on its first read; it never sleeps, so a hang is a test timeout.
     await expect(later.waitProjectAgent(seeded.id)).rejects.toThrow(
-      /resident host of the session that started it is not running/,
+      /resident host of the session that started it is not running, so it cannot finish/,
     );
+    // Only a hosted run is re-attached when its owner resumes.
+    fs.writeFileSync(seeded.statusPath, JSON.stringify({ ...seeded.result, status: "running", hosted: { locator: {} } }));
+    await expect(later.waitProjectAgent(seeded.id)).rejects.toThrow(/resume that session to re-attach it/);
+  });
+
+  it("re-checks the run record on every poll of a wait", async () => {
+    const root = project("project-run-revoked");
+    const earlier = sessionConfig(root, "earlier");
+    const seeded = seedRun(earlier, { status: "running" });
+    fakeLiveOwner(earlier);
+    const later = sessionClient(sessionConfig(root, "later"));
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const waiting = later.waitProjectAgent(seeded.id);
+    void waiting.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(500);
+    // The record went away while the owner's host stays live: the wait must not keep polling.
+    fs.rmSync(seeded.metadataPath);
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(waiting).rejects.toThrow(/Unknown durable Fabric agent/);
   });
 
   it("keeps a run from another project unknown", async () => {

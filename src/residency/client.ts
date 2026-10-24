@@ -407,9 +407,11 @@ export class ResidencyClient {
       const status = this.#statusFrom(metadata);
       return terminal(status.status) && "startedAt" in status ? status as AgentRunResult : undefined;
     };
+    // Find the owning root once; each poll re-reads and re-checks the record there.
+    const found = this.#projectAgent(id);
     while (true) {
       if (signal?.aborted) throw new Error(`Waiting for durable Fabric agent ${id} was aborted`);
-      const project = this.#projectAgent(id);
+      const project = found && this.#projectAgentAt(found.residencyRoot, id);
       if (!project) throw new Error(`Unknown durable Fabric agent: ${id}`);
       const result = settled(project.metadata);
       if (result) return result;
@@ -417,9 +419,11 @@ export class ResidencyClient {
         // The host may have settled the run and exited between the two reads.
         const late = settled(project.metadata);
         if (late) return late;
-        throw new Error(
-          `Durable Fabric agent ${id} is unfinished and the resident host of the session that started it is not running; resume that session to continue it`,
-        );
+        // A restarted host re-attaches only hosted runs (see waitAgent).
+        const current = this.#statusFrom(project.metadata);
+        throw new Error("hosted" in current && current.hosted
+          ? `Durable Fabric agent ${id} is unfinished and the resident host of the session that started it is not running; resume that session to re-attach it`
+          : `Durable Fabric agent ${id} is unfinished and the resident host of the session that started it is not running, so it cannot finish`);
       }
       await sleepUnlessAborted(STATUS_POLL_MS, signal).catch(() => undefined);
     }
@@ -578,12 +582,6 @@ export class ResidencyClient {
    */
   #projectAgent(id: string): ProjectAgent | undefined {
     if (!AGENT_ID_PATTERN.test(id)) return undefined;
-    let caller: FabricScope | undefined;
-    try {
-      caller = (this.options.callerScope ?? sessionScope)();
-    } catch {
-      return undefined;
-    }
     const base = path.join(this.options.config.meshRoot, "residency");
     const own = path.resolve(this.options.config.residencyRoot);
     let entries: fs.Dirent[];
@@ -597,21 +595,33 @@ export class ResidencyClient {
       if (!entry.isDirectory() || !/^[a-f0-9]{64}$/.test(entry.name)) continue;
       const residencyRoot = path.join(base, entry.name);
       if (path.resolve(residencyRoot) === own) continue;
-      const raw = readJson<ResidentAgentMetadata>(path.join(residencyRoot, "agents", `${id}.json`));
-      if (typeof raw?.rootId !== "string") continue;
-      if (path.resolve(residentRoot(this.options.config.meshRoot, raw.rootId)) !== path.resolve(residencyRoot)) continue;
-      const metadata = this.#validMetadata(raw, id, raw.rootId, residencyRoot);
-      if (!metadata) continue;
-      if (caller) {
-        try {
-          if (!metadata.scope || !scopeCovers(caller, metadata.scope)) continue;
-        } catch {
-          continue;
-        }
-      }
-      return { metadata, residencyRoot, hostId: residentHostId(raw.rootId) };
+      const project = this.#projectAgentAt(residencyRoot, id);
+      if (project) return project;
     }
     return undefined;
+  }
+
+  /** The run `id` in one residency directory of another root, if this session may read it. */
+  #projectAgentAt(residencyRoot: string, id: string): ProjectAgent | undefined {
+    let caller: FabricScope | undefined;
+    try {
+      caller = (this.options.callerScope ?? sessionScope)();
+    } catch {
+      return undefined;
+    }
+    const raw = readJson<ResidentAgentMetadata>(path.join(residencyRoot, "agents", `${id}.json`));
+    if (typeof raw?.rootId !== "string") return undefined;
+    if (path.resolve(residentRoot(this.options.config.meshRoot, raw.rootId)) !== path.resolve(residencyRoot)) return undefined;
+    const metadata = this.#validMetadata(raw, id, raw.rootId, residencyRoot);
+    if (!metadata) return undefined;
+    if (caller) {
+      try {
+        if (!metadata.scope || !scopeCovers(caller, metadata.scope)) return undefined;
+      } catch {
+        return undefined;
+      }
+    }
+    return { metadata, residencyRoot, hostId: residentHostId(raw.rootId) };
   }
 
   #validMetadata(
