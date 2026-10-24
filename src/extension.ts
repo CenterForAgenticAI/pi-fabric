@@ -94,6 +94,7 @@ import { installFabricShellHangKeys } from "./ui/shell-hang-keys.js";
 import { FabricToolDisplayController } from "./ui/tool-display.js";
 import { configureHighlighting } from "./ui/highlight.js";
 import { registerHandoffCompletionRenderer } from "./ui/handoff-completion.js";
+import { installTerminalTitleRelease } from "./ui/terminal-title.js";
 import { formatFabricValue } from "./ui/structured.js";
 import { truncateMiddle } from "./util.js";
 import path from "node:path";
@@ -1158,6 +1159,10 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     if (!state.initialized) return;
     state.dispatchHostEvent(eventName, event, context);
   });
+
+  // A killed turn can abandon a fabric_exec promise before it hands the window
+  // title back. Both boundaries are no-ops while no run holds the title.
+  installTerminalTitleRelease(pi);
 
   pi.on("session_shutdown", async (_event, context) => {
     entropyStopping = true;

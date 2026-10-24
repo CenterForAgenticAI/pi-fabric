@@ -1,13 +1,15 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultCodePreviewSettings } from "../src/ui/code-preview.js";
 import type { FabricRenderAudit } from "../src/ui/fabric-render.js";
 import { piAppTitle, piTerminalTitle } from "../src/ui/pi-terminal-title.js";
 import {
   FabricTerminalTitle,
+  installTerminalTitleRelease,
   MAX_TERMINAL_TITLE_CHARS,
+  releaseTerminalTitle,
   terminalCallTitle,
   terminalTitleText,
   withTerminalTitle,
@@ -129,6 +131,76 @@ describe("FabricTerminalTitle", () => {
 
   it("runs without borrowing the title", async () => {
     await expect(withTerminalTitle(undefined, "Reading", async () => 7)).resolves.toBe(7);
+  });
+});
+
+describe("session boundary release", () => {
+  const host = (options: { applied?: string[]; mode?: string; hasUI?: boolean } = {}) => {
+    const applied = options.applied ?? [];
+    return {
+      applied,
+      mode: options.mode ?? "tui",
+      hasUI: options.hasUI ?? true,
+      cwd: "/work/pi-fabric",
+      sessionManager: { getSessionName: () => "titles" },
+      ui: { setTitle: (title: string) => applied.push(title) },
+    };
+  };
+
+  it("hands the title back when a run never settles", () => {
+    const leaked = new FabricTerminalTitle({ setTitle: vi.fn(), base: () => "π - stale" });
+    leaked.show("bash $ bun run build");
+    const context = host();
+
+    expect(releaseTerminalTitle(context as never)).toBe(true);
+    expect(context.applied).toEqual(["π - titles - pi-fabric"]);
+
+    // The released run cannot put a stale title back.
+    leaked.show("read src/late.ts");
+    expect(context.applied).toHaveLength(1);
+  });
+
+  it("leaves a title it does not hold alone", () => {
+    expect(releaseTerminalTitle(host() as never)).toBe(false);
+  });
+
+  it("does not let a leaked run block a later restore", async () => {
+    const leaked = new FabricTerminalTitle({ setTitle: vi.fn(), base: () => "π - stale" });
+    leaked.show("bash $ sleep 1");
+    const applied: string[] = [];
+    const run = new FabricTerminalTitle({
+      setTitle: (title) => applied.push(title),
+      base: () => "π - mine",
+    });
+
+    run.show("read src/a.ts");
+    await run.restore();
+
+    expect(applied).toEqual(["read src/a.ts", "π - mine"]);
+    leaked.detach();
+  });
+
+  it("registers both session boundaries and leaves non-TUI hosts alone", () => {
+    const handlers = new Map<string, (event: unknown, context: never) => void>();
+    installTerminalTitleRelease({
+      on: (event: string, handler: (event: unknown, context: never) => void) => {
+        handlers.set(event, handler);
+        return () => {};
+      },
+    } as never);
+    expect([...handlers.keys()]).toEqual(["session_shutdown", "agent_settled"]);
+
+    const applied: string[] = [];
+    const run = new FabricTerminalTitle({ setTitle: vi.fn(), base: () => "π - stale" });
+    run.show("read src/a.ts");
+
+    const rpc = host({ applied, mode: "rpc" });
+    for (const handler of handlers.values()) handler({}, rpc as never);
+    expect(applied).toEqual([]);
+
+    const tui = host({ applied });
+    for (const handler of handlers.values()) handler({}, tui as never);
+    expect(applied).toEqual(["π - titles - pi-fabric"]);
   });
 });
 

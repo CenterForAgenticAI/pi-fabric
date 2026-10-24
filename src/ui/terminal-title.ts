@@ -1,8 +1,15 @@
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentSettledEvent,
+  ExtensionAPI,
+  ExtensionContext,
+  SessionShutdownEvent,
+  Theme,
+} from "@earendil-works/pi-coding-agent";
 import type { CodePreviewSettings } from "./code-preview.js";
 import { nestedCallTitle, type FabricRenderAudit } from "./fabric-render.js";
 import { safeText } from "./format.js";
 import { observedThemeVariant } from "./highlight.js";
+import { piTerminalTitle } from "./pi-terminal-title.js";
 
 /** Window and tab chrome clips titles far earlier than the transcript does. */
 export const MAX_TERMINAL_TITLE_CHARS = 120;
@@ -54,9 +61,6 @@ export type FabricTerminalTitleOptions = {
   base?: (() => string | Promise<string>) | undefined;
 };
 
-/** Runs that currently hold the window title. Only the last one restores it. */
-const liveRuns = new Set<FabricTerminalTitle>();
-
 // A closed or redirected terminal can fail the write; decoration must never
 // fail the program that is doing the work.
 const applyTitle = (setTitle: (title: string) => void, text: string): void => {
@@ -66,6 +70,14 @@ const applyTitle = (setTitle: (title: string) => void, text: string): void => {
     // Ignore: the transcript already carries the same information.
   }
 };
+
+/**
+ * The run that last wrote the title, and so the only one that may hand it back.
+ * A run that never settles — a killed turn, an abandoned tool promise — stops
+ * blocking later runs as soon as a newer one takes the title, and a session
+ * boundary can release the title outright.
+ */
+let titleOwner: FabricTerminalTitle | undefined;
 
 /** Run `body` while owning the window title, handing it back on any exit. */
 export const withTerminalTitle = async <T>(
@@ -104,7 +116,7 @@ export class FabricTerminalTitle {
     const text = terminalTitleText(title);
     if (!text || text === this.#applied) return;
     this.#applied = text;
-    liveRuns.add(this);
+    titleOwner = this;
     applyTitle(setTitle, text);
   }
 
@@ -112,14 +124,55 @@ export class FabricTerminalTitle {
   async restore(): Promise<void> {
     if (this.#settled) return;
     this.#settled = true;
-    if (this.#applied === undefined) return;
-    liveRuns.delete(this);
-    if (liveRuns.size > 0) return;
+    // A parallel run took the title after this one last wrote it; that run
+    // decides when Pi's own title returns.
+    if (titleOwner !== this) return;
+    titleOwner = undefined;
     const setTitle = this.#setTitle;
     const base = await this.#base?.();
-    // A parallel run may have claimed the title while the base resolved.
-    if (!setTitle || liveRuns.size > 0) return;
+    // A newer run may have claimed the title while the base resolved.
+    if (!setTitle || titleOwner !== undefined) return;
     const text = terminalTitleText(base);
     if (text) applyTitle(setTitle, text);
   }
+
+  /** Give the title up without writing: a session boundary released it. */
+  detach(): void {
+    this.#settled = true;
+    this.#applied = undefined;
+    if (titleOwner === this) titleOwner = undefined;
+  }
 }
+
+/**
+ * Hand the window title back at a session boundary. A `fabric_exec` promise Pi
+ * abandoned (Escape halt, cancelled turn, crash) never reaches its own restore,
+ * so the last call title would otherwise outlive the session in the tab.
+ */
+export const releaseTerminalTitle = (context: {
+  ui: { setTitle(title: string): void };
+  cwd: string;
+  sessionManager: { getSessionName(): string | undefined };
+}): boolean => {
+  const held = titleOwner;
+  if (!held) return false;
+  held.detach();
+  const text = terminalTitleText(piTerminalTitle(context));
+  if (text) applyTitle((title) => context.ui.setTitle(title), text);
+  return true;
+};
+
+/** Register the boundaries that release a title no run handed back. */
+export const installTerminalTitleRelease = (pi: ExtensionAPI): void => {
+  const release = (
+    _event: SessionShutdownEvent | AgentSettledEvent,
+    context: ExtensionContext | undefined,
+  ): void => {
+    // Only an interactive host owns an OS window title; a headless host, or a
+    // caller that emits without a context, leaves the chrome alone.
+    if (context?.mode !== "tui" || !context.hasUI) return;
+    releaseTerminalTitle(context);
+  };
+  pi.on("session_shutdown", release);
+  pi.on("agent_settled", release);
+};
