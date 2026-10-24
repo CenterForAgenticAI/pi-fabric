@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { ExtensionRunner } from "@earendil-works/pi-coding-agent";
 import type { FabricActionDescriptor, FabricInvocationContext, FabricProvider, FabricProviderListRequest } from "../protocol.js";
 import { validationMessage } from "../core/action-arguments.js";
 import type { DurableShellBridge } from "../jev-fabric/bridge.js";
 import type { JevFabricServe } from "../jev-fabric/serve.js";
+import { emitToolCallPreflight } from "./pi-tools-provider.js";
 
 const DAY_MS = 24 * 3_600_000;
 const id = { type: "string", minLength: 1, maxLength: 128, description: "Session ID from sessions.open (`s-…` for session lifetime) or a durable jev-fabric job ID." };
@@ -63,8 +65,16 @@ const descriptors: FabricActionDescriptor[] = [
 
 type Opened = { id: string; lifetime: "session" | "durable"; label?: string; owner?: string; shell: boolean };
 
-/** Runs the shell `tool_call` preflight for one command; throws when a hook blocks it. */
-export type ShellPreflight = (input: Record<string, unknown>, context: Pick<FabricInvocationContext, "signal" | "nestedToolCallId" | "parentToolCallId">) => Promise<void>;
+/** Runs the shell `tool_call` preflight for one command of `sessions.<action>`; throws when a hook blocks it. */
+export type ShellPreflight = (input: Record<string, unknown>, context: Pick<FabricInvocationContext, "signal" | "nestedToolCallId" | "parentToolCallId">, action: "open" | "write") => Promise<void>;
+
+/** The `bash` `tool_call` preflight `pi.bash` runs, through the captured catalog's runner. */
+export const toolCallShellPreflight = (runner: () => ExtensionRunner | undefined): ShellPreflight => async (input, context, action) => {
+  const current = runner();
+  // Like pi.bash: without a runner no tool_call hook can judge the command, so refuse it.
+  if (!current) throw new Error(`sessions.${action} is unavailable until extension tool hooks initialize; retry once tools are ready`);
+  await emitToolCallPreflight(current, "bash", input, context, `sessions.${action} was blocked by a bash tool_call hook`);
+};
 
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "ash", "csh", "tcsh"]);
 const isShellArgv = (argv: string[]): boolean => SHELLS.has(path.basename(argv[0] ?? "").replace(/^-/, ""));
@@ -127,7 +137,7 @@ export class SessionsProvider implements FabricProvider {
     switch (name) {
       case "write": {
         // Text written to a shell is a command. A session this provider did not open is unknown: treat it as a shell.
-        if (this.#opened.get(job)?.shell !== false) await this.#preflight(String(args.text).replace(/\r?\n$/, ""), undefined, "text written to a session", context);
+        if (this.#opened.get(job)?.shell !== false) await this.#preflight("write", String(args.text).replace(/\r?\n$/, ""), undefined, "text written to a session", context);
         return serve.request("write", { job, text: args.text }, context.signal);
       }
       case "closeInput": return serve.request("closeInput", { job }, context.signal);
@@ -146,11 +156,19 @@ export class SessionsProvider implements FabricProvider {
    * A hook may block it. It may rewrite it only when `rewritable`; otherwise a rewrite is refused,
    * because argv and stdin text cannot be replaced after the guard has judged them.
    */
-  async #preflight(command: string, cwd: string | undefined, what: string, context: FabricInvocationContext, rewritable = false): Promise<string> {
+  async #preflight(action: "open" | "write", command: string, cwd: string | undefined, what: string, context: FabricInvocationContext, rewritable = false): Promise<string> {
+    if (process.env.PI_FABRIC_WRITE_POLICY) {
+      // Confined child: enforce the shell policy here too, as pi.bash does, even where no tool_call hook replays.
+      const guard = await import("../agents/write-guard.js");
+      const policy = guard.readWritePolicy();
+      const denial = policy && guard.writePolicyDenial(policy, "bash", { command }, cwd ?? this.options.cwd);
+      if (denial) throw new Error(denial);
+    }
     if (!this.options.preflight) return command;
     const input: Record<string, unknown> = { command, ...(cwd ? { cwd } : {}) };
     // Pass only the call identity: the hook input is not this call's arguments, so it must not replace them in the audit record.
-    await this.options.preflight(input, { signal: context.signal, nestedToolCallId: context.nestedToolCallId, parentToolCallId: context.parentToolCallId });
+    await this.options.preflight(input, { signal: context.signal, nestedToolCallId: context.nestedToolCallId, parentToolCallId: context.parentToolCallId }, action);
+    if (input.cwd !== cwd) throw new Error(`A tool_call hook cannot change the working directory of sessions.${action}; block it or allow it unchanged`);
     if (input.command === command) return command;
     if (!rewritable || typeof input.command !== "string") throw new Error(`A tool_call hook cannot rewrite ${what}; block it or allow it unchanged`);
     return input.command;
@@ -166,8 +184,8 @@ export class SessionsProvider implements FabricProvider {
     const bash = fs.existsSync("/bin/bash") ? "/bin/bash" : "bash";
     const argv = Array.isArray(args.argv)
       ? args.argv as string[]
-      : [bash, "-c", await this.#preflight(args.cmd as string, cwd, "argv", context, true)];
-    if (Array.isArray(args.argv)) await this.#preflight(argv.map(shellQuote).join(" "), cwd, "argv", context);
+      : [bash, "-c", await this.#preflight("open", args.cmd as string, cwd, "cmd", context, true)];
+    if (Array.isArray(args.argv)) await this.#preflight("open", argv.map(shellQuote).join(" "), cwd, "argv", context);
     else if (argv[2] !== args.cmd) context.updateArguments?.({ ...args, cmd: argv[2] });
     // Text written later to a shell is itself a command; other children get their stdin as data.
     const shell = Array.isArray(args.argv) ? isShellArgv(argv) : isShellCmd(argv[2] ?? "");

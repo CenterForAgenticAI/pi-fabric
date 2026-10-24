@@ -6,17 +6,17 @@ import type { ExtensionRunner } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DurableShellBridge } from "../src/jev-fabric/bridge.js";
 import type { FabricInvocationContext } from "../src/protocol.js";
-import { emitToolCallPreflight } from "../src/providers/pi-tools-provider.js";
-import { SessionsProvider } from "../src/providers/sessions-provider.js";
+import { SessionsProvider, toolCallShellPreflight } from "../src/providers/sessions-provider.js";
 
 const fake = fileURLToPath(new URL("./fixtures/fake-jev-fabric.mjs", import.meta.url));
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 type Hook = (event: { toolName: string; parentToolCallId: string; input: Record<string, unknown> }) => Promise<{ block: true; reason?: string } | undefined>;
+const bridgeOf = (provider: SessionsProvider) => provider.bridge as unknown as { resolve: () => Promise<unknown> };
 
 // The provider is wired the way the runtime wires it: through the shared preflight and a runner.
-const setup = (hook: Hook) => {
+const setup = (hook: Hook, options: { runner?: boolean } = {}) => {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "fabric-sessions-preflight-")));
   const binary = path.join(root, "jev-fabric");
   fs.writeFileSync(binary, `#!/bin/sh\nexec "${process.execPath}" "${fake}" "$@"\n`, { mode: 0o755 });
@@ -26,7 +26,7 @@ const setup = (hook: Hook) => {
   const provider = new SessionsProvider(bridge, {
     cwd: root,
     shellOverride: () => false,
-    preflight: (input, context) => emitToolCallPreflight(runner, "bash", input, context),
+    preflight: toolCallShellPreflight(() => options.runner === false ? undefined : runner),
   });
   cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
   cleanups.push(() => provider.close());
@@ -103,5 +103,34 @@ describe.skipIf(process.platform === "win32")("sessions run the shell tool_call 
     await rewrite.call("open", { cmd: "echo original", label: "job" });
     expect(rewrite.updateArguments).toHaveBeenCalledOnce();
     expect(rewrite.updateArguments).toHaveBeenCalledWith({ cmd: "echo guarded", label: "job" });
+  });
+
+  it("fails closed when a hook throws, blocks without a reason, or changes cwd", async () => {
+    const throwing = setup(async () => { throw new Error("guard crashed"); });
+    const resolve = vi.spyOn(bridgeOf(throwing.provider), "resolve");
+    await expect(throwing.call("open", { cmd: "true" })).rejects.toThrow("guard crashed");
+    expect(resolve).not.toHaveBeenCalled();
+    const silent = setup(async () => ({ block: true }));
+    await expect(silent.call("open", { cmd: "true" })).rejects.toThrow("sessions.open was blocked by a bash tool_call hook");
+    const moved = setup(async event => { event.input.cwd = "/"; return undefined; });
+    await expect(moved.call("open", { cmd: "true" })).rejects.toThrow("cannot change the working directory");
+    const cmdTyped = setup(async event => { event.input.command = 7; return undefined; });
+    await expect(cmdTyped.call("open", { cmd: "true" })).rejects.toThrow("cannot rewrite cmd");
+  });
+
+  it("refuses before spawning while no extension runner can run the hooks", async () => {
+    const { call, provider, emitToolCall } = setup(async () => undefined, { runner: false });
+    const resolve = vi.spyOn(bridgeOf(provider), "resolve");
+    await expect(call("open", { argv: ["true"] })).rejects.toThrow("sessions.open is unavailable until extension tool hooks initialize");
+    expect(resolve).not.toHaveBeenCalled();
+    expect(emitToolCall).not.toHaveBeenCalled();
+  });
+
+  it("refuses sessions in a child whose write policy denies the shell", async () => {
+    vi.stubEnv("PI_FABRIC_WRITE_POLICY", JSON.stringify({ readOnly: false, writableRoots: [os.tmpdir()], shell: "deny" }));
+    cleanups.push(() => { vi.unstubAllEnvs(); });
+    const { call, emitToolCall } = setup(async () => undefined);
+    await expect(call("open", { argv: ["true"] })).rejects.toThrow("Fabric write policy refuses bash");
+    expect(emitToolCall).not.toHaveBeenCalled();
   });
 });

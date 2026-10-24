@@ -267,6 +267,7 @@ export async function emitToolCallPreflight(
   name: string,
   input: Record<string, unknown>,
   context: Pick<FabricInvocationContext, "signal" | "nestedToolCallId" | "parentToolCallId" | "updateArguments">,
+  blocked = `Pi tool ${name} was blocked`,
 ): Promise<void> {
   const preflight = await runAbortable(context.signal, () => runner.emitToolCall({
     type: "tool_call",
@@ -277,7 +278,7 @@ export async function emitToolCallPreflight(
   }));
   context.updateArguments?.(input);
   if (preflight?.block) {
-    throw new Error(preflight.reason || `Pi tool ${name} was blocked`);
+    throw new Error(preflight.reason || blocked);
   }
 }
 
