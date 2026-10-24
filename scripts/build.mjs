@@ -8,7 +8,7 @@ import { parseArgs } from "node:util";
 // paths are identical after the move.
 const { values: options } = parseArgs({ options: { outdir: { type: "string", default: "dist" } } });
 const outdir = options.outdir;
-if (!/^\.?[\w.-]+$/.test(outdir)) throw new Error(`--outdir must be a directory directly under the package root: ${outdir}`);
+if (!/^[\w.-]+$/.test(outdir) || /^\.+$/.test(outdir)) throw new Error(`--outdir must be a directory directly under the package root: ${outdir}`);
 
 const primaryEntryPoints = [
   "src/index.ts",
