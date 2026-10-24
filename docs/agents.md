@@ -40,6 +40,10 @@ After a failed or aborted assistant response (including `Error: Terminated`), Fa
 
 Fabric handles exhausted retries explicitly without waiting forever on an earlier `willRetry` flag. Child shutdown after RPC stdin closes is also bounded: 5 seconds for graceful exit, then SIGTERM and a further 5 seconds before SIGKILL. These failures settle `agents.wait`/`join` and notify detached callers normally; they do not automatically replay potentially side-effecting work. Already-running workers must be stopped and respawned to use the fix.
 
+### Pi task consumed without a turn
+
+A Pi extension can take the first task prompt without starting a turn, for example an `input` hook that returns `handled`. Pi then answers the prompt with `disposition: "handled"` and sends no `agent_start`. The worker sends the task with the id `fabric-task` and follows only that reply. If the reply says `handled` and no turn starts within 60 seconds, or the child exits first, the run fails with `Pi handled the task without starting a turn; terminating child`. The wait covers an extension command that handled the prompt and then starts its own turn. The failure also carries the last warning or error notice the child sent before the reply, flattened and limited to 500 characters, so the parent sees why the task was refused. If the reply carries an absent disposition (an older Pi host) and the child starts no turn within 300 seconds, the run also fails with a message that starts `Pi acknowledged the task`. Later steer, follow-up and operator commands are not tracked. The task is not replayed.
+
 ### Image-heavy lifecycle events
 
 Pi repeats message history in `agent_end.messages` and tool results in `turn_end.toolResults`. Fabric streams past these redundant top-level fields, recording empty arrays in the worker event log. Large accumulated histories therefore do not trip the event-size guard or interrupt completion/retries. Authoritative message/tool events, final text, usage, and Pi's persisted session history are unchanged.
