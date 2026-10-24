@@ -62,7 +62,7 @@ return {
 };
 ```
 
-Independent calls run in parallel, and the returned object enters the model context. Known providers support concise direct calls such as `mcp.fal_ai.get_model_schema(...)`, `memory.recall(...)`, `state.get()`, `schema.status()`, and `compact.status()`. Refs found or computed at runtime use `tools.call({ ref, args })` (TypeScript notation). Python uses `await tools.call({"ref": ref, "args": args})`, native dictionary results, and `asyncio.gather` for independent calls.
+Independent calls run in parallel, and the returned object enters the model context. Known providers support concise direct calls such as `mcp.fal_ai.get_model_schema(...)`, `memory.recall(...)`, `state.get()`, `schema.status()`, and `compact.status()`. A provider another extension registers gets a typed global named after it, such as `context.task_add(...)` ([program globals](docs/providers.md#program-globals-and-types)). Refs found or computed at runtime use `tools.call({ ref, args })` (TypeScript notation). Python uses `await tools.call({"ref": ref, "args": args})`, native dictionary results, and `asyncio.gather` for independent calls.
 
 To select Python, put this in `~/.pi/agent/fabric.json` or a trusted project's `.pi/fabric.json`, or use `/fabric settings` → **Executor** → **Kernel**:
 
