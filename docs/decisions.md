@@ -105,7 +105,7 @@ const { id } = await decisions.raise({
 
 Records from before escalation chains carry neither `escalation` nor `history` and expire as before.
 
-Authority for the human surfaces is local file access to the mesh root. Until principals and scopes land, anyone who can write the mesh root as the same OS user can answer any decision.
+Authority for the human surfaces is local file access to the mesh root. Until principals and scopes land, anyone who can write the mesh root as the same OS user can answer or cancel any decision. A cancel needs no more authority than an answer.
 
 ## Headless approvals
 

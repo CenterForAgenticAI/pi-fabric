@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runDecisionsCli } from "../src/cli/decisions.js";
 import { openFabricDecisions } from "../src/decisions/command.js";
+import { answerFabricDecisionRequest } from "../src/decisions/events.js";
+import { requestHeadlessApproval } from "../src/decisions/host.js";
 import { DecisionStore } from "../src/decisions/store.js";
 import { MeshStore } from "../src/mesh/store.js";
 
@@ -70,6 +72,35 @@ describe("pi-fabric decisions cancel", () => {
     expect(late.code).toBe(1);
     expect(late.stderr).toMatch(/answered, not open/);
     expect(await store.get(answered.id)).toMatchObject({ status: "answered" });
+  });
+
+  it("settles every kind of waiter as cancelled", async () => {
+    const { root, store } = fixture();
+    const text = await store.raise({ title: "Why?" });
+    const waited = store.wait(text.id, { pollMs: 10 });
+    expect((await run(["cancel", "--root", root, text.id])).code).toBe(0);
+    expect(await waited).toMatchObject({ id: text.id, status: "cancelled" });
+
+    const approval = requestHeadlessApproval(store, { ref: "pi.bash", risk: "execute", description: "run" });
+    const pending = await vi.waitFor(async () => {
+      const [open] = await store.list({ status: "open" });
+      if (!open) throw new Error("approval not raised yet");
+      return open;
+    });
+    expect((await run(["cancel", "--root", root, pending.id])).code).toBe(0);
+    expect(await approval).toBe(false);
+
+    const asked = new Promise((respond) => {
+      void answerFabricDecisionRequest({
+        version: 1,
+        context: {} as ExtensionContext,
+        question: { title: "Name?" },
+        claim: () => true,
+        respond,
+        onRaised: (id) => { void run(["cancel", "--root", root, id]); },
+      }, async () => ({ store }));
+    });
+    expect(await asked).toMatchObject({ ok: true, status: "cancelled" });
   });
 
   it("returns a usage error without exactly one id", async () => {
