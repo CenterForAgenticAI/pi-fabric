@@ -45,7 +45,8 @@ describe("published build artifact guards", () => {
     fs.rmSync(path.join(dir, ".dist-build-1", "extension-bootstrap.js"));
     const missing = check();
     expect(missing.status).toBe(1);
-    expect(missing.stderr).toContain("Missing build artifacts:\nextension-bootstrap.js");
+    // Node prints an uncaught error through the C runtime, which writes CRLF on Windows.
+    expect(missing.stderr.replace(/\r\n/g, "\n")).toContain("Missing build artifacts:\nextension-bootstrap.js");
   }, 90_000);
 
   it("uses host-only wildcard peers and exact Pi development dependencies", () => {
