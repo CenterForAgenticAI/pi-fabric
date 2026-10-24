@@ -28,7 +28,9 @@ const startHerdr = async (initial: {
   tabLabel?: string;
   failRename?: boolean;
 } = {}) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-label-"));
+  // Short on purpose: a unix socket path is capped at 104 bytes on macOS, and
+  // the suite already runs under an isolated per-run TMPDIR.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pfl-"));
   roots.push(root);
   const socketPath = path.join(root, "herdr.sock");
   const pane: { pane_id: string; tab_id: string; label: string | null } = {
@@ -91,12 +93,13 @@ const present = (options: {
   mode?: ExtensionContext["mode"];
   hasUI?: boolean;
   on?: ExtensionAPI["on"];
+  theme?: ExtensionContext["ui"]["theme"];
 }) => {
   const setStatus = vi.fn();
   const context = {
     mode: options.mode ?? "tui",
     hasUI: options.hasUI ?? true,
-    ui: { setStatus },
+    ui: { setStatus, ...(options.theme ? { theme: options.theme } : {}) },
   } as unknown as ExtensionContext;
   const pi = { on: options.on ?? (() => () => undefined) } as unknown as ExtensionAPI;
   const presenter = new SessionLabelPresenter(pi, context, {
@@ -119,6 +122,35 @@ describe("session label footer", () => {
     expect(setStatus.mock.calls).toEqual([[SESSION_LABEL_STATUS_KEY, "Fabric FAB-3"]]);
     await presenter.close();
     expect(setStatus).toHaveBeenLastCalledWith(SESSION_LABEL_STATUS_KEY, undefined);
+  });
+
+  it("dims the footer label to match Pi's own footer lines", async () => {
+    const { presenter, setStatus } = present({
+      settings: () => settings(),
+      theme: {
+        fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+      } as unknown as ExtensionContext["ui"]["theme"],
+    });
+
+    await presenter.sync();
+
+    expect(setStatus).toHaveBeenCalledWith(SESSION_LABEL_STATUS_KEY, "<dim>Fabric FAB-3</dim>");
+  });
+
+  it("keeps the status raw outside the TUI or without a host theme", async () => {
+    const rpc = present({
+      settings: () => settings(),
+      mode: "rpc",
+      theme: {
+        fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+      } as unknown as ExtensionContext["ui"]["theme"],
+    });
+    await rpc.presenter.sync();
+    expect(rpc.setStatus).toHaveBeenCalledWith(SESSION_LABEL_STATUS_KEY, "Fabric FAB-3");
+
+    const plain = present({ settings: () => settings() });
+    await plain.presenter.sync();
+    expect(plain.setStatus).toHaveBeenCalledWith(SESSION_LABEL_STATUS_KEY, "Fabric FAB-3");
   });
 
   it("waits for the label to be minted and hides it when the setting is off", async () => {
