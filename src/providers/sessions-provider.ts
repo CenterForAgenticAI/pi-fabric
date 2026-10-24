@@ -76,12 +76,10 @@ export const toolCallShellPreflight = (runner: () => ExtensionRunner | undefined
   await emitToolCallPreflight(current, "bash", input, context, `sessions.${action} was blocked by a bash tool_call hook`);
 };
 
-const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "ash", "csh", "tcsh"]);
-const isShellArgv = (argv: string[]): boolean => SHELLS.has(path.basename(argv[0] ?? "").replace(/^-/, ""));
-const isShellCmd = (cmd: string): boolean => {
-  const [first, second] = cmd.trim().split(/\s+/);
-  return isShellArgv([first === "exec" ? second ?? "" : first ?? ""]);
-};
+// A word naming a shell or a program that hosts one (`env bash`, `docker exec -it c sh`, `ssh host`).
+// Extra matches only add preflights; a missed shell would let its commands skip the guard.
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "ash", "csh", "tcsh", "ssh", "su", "sudo", "doas", "script", "tmux", "screen", "login"]);
+const isShellArgv = (argv: string[]): boolean => argv.some(word => SHELLS.has(path.basename(word).replace(/^-/, "")));
 const shellQuote = (word: string): string => /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
 
 /**
@@ -95,6 +93,8 @@ export class SessionsProvider implements FabricProvider {
   readonly description = "Interactive jev-fabric children: open, write, read, wait and stop";
   #serve: Promise<JevFabricServe> | undefined;
   readonly #opened = new Map<string, Opened>();
+  /** Text after the last newline written to each shell session, judged again with the next write. */
+  readonly #partial = new Map<string, string>();
   #closed = false;
 
   constructor(
@@ -137,8 +137,13 @@ export class SessionsProvider implements FabricProvider {
     switch (name) {
       case "write": {
         // Text written to a shell is a command. A session this provider did not open is unknown: treat it as a shell.
-        if (this.#opened.get(job)?.shell !== false) await this.#preflight("write", String(args.text).replace(/\r?\n$/, ""), undefined, "text written to a session", context);
-        return serve.request("write", { job, text: args.text }, context.signal);
+        if (this.#opened.get(job)?.shell === false) return serve.request("write", { job, text: args.text }, context.signal);
+        // A command split across writes is judged whole: the guard sees the unfinished line before this text.
+        const line = (this.#partial.get(job) ?? "") + String(args.text);
+        await this.#preflight("write", line.replace(/\r?\n$/, ""), undefined, "text written to a session", context);
+        const result = await serve.request("write", { job, text: args.text }, context.signal);
+        this.#partial.set(job, line.slice(line.lastIndexOf("\n") + 1));
+        return result;
       }
       case "closeInput": return serve.request("closeInput", { job }, context.signal);
       case "read": return serve.request("read", { job, stream: args.stream ?? "stdout",
@@ -188,7 +193,8 @@ export class SessionsProvider implements FabricProvider {
     if (Array.isArray(args.argv)) await this.#preflight("open", argv.map(shellQuote).join(" "), cwd, "argv", context);
     else if (argv[2] !== args.cmd) context.updateArguments?.({ ...args, cmd: argv[2] });
     // Text written later to a shell is itself a command; other children get their stdin as data.
-    const shell = Array.isArray(args.argv) ? isShellArgv(argv) : isShellCmd(argv[2] ?? "");
+    // `cmd` is shell source that can hand its stdin to any shell it starts (`echo ready; exec sh`), so it always counts.
+    const shell = Array.isArray(args.argv) ? isShellArgv(argv) : true;
     const durable = args.durable === true;
     const serve = await this.#connect();
     const fields = { argv, cwd, ...pick(args, ["timeoutMs", "label"]) };
@@ -218,6 +224,7 @@ export class SessionsProvider implements FabricProvider {
     this.#closed = true;
     const serve = await this.#serve?.catch(() => undefined);
     this.#opened.clear();
+    this.#partial.clear();
     // Ending the connection stops its session children; durable jobs stay in their store.
     await serve?.close();
   }

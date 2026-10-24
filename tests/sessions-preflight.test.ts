@@ -133,4 +133,25 @@ describe.skipIf(process.platform === "win32")("sessions run the shell tool_call 
     await expect(call("open", { argv: ["true"] })).rejects.toThrow("Fabric write policy refuses bash");
     expect(emitToolCall).not.toHaveBeenCalled();
   });
+
+  it("treats cmd sessions and argv that starts a shell anywhere as shells", async () => {
+    const { call, emitToolCall } = setup(async () => undefined);
+    for (const open of [{ cmd: "echo ready; exec sh" }, { argv: ["env", "bash"] }]) {
+      const opened = await call("open", open);
+      emitToolCall.mockClear();
+      await call("write", { id: opened.id, text: "exit\n" });
+      expect(emitToolCall).toHaveBeenCalledOnce();
+      expect(emitToolCall.mock.calls[0]![0].input).toEqual({ command: "exit" });
+    }
+  });
+
+  it("judges a command split across writes as one line", async () => {
+    const { call, emitToolCall } = setup(async event => (event.input.command === "rm -rf x" ? { block: true, reason: "no rm" } : undefined));
+    const shell = await call("open", { argv: ["sh"] });
+    await call("write", { id: shell.id, text: "rm -r" });
+    await expect(call("write", { id: shell.id, text: "f x\n" })).rejects.toThrow("no rm");
+    await call("write", { id: shell.id, text: "\n" });
+    await call("write", { id: shell.id, text: "echo next" });
+    expect(emitToolCall.mock.calls.map(([event]) => event.input.command)).toEqual(["sh", "rm -r", "rm -rf x", "rm -r", "echo next"]);
+  });
 });
