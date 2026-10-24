@@ -128,6 +128,7 @@ describe.skipIf(!availablePythonBackends.monty)("Python-native skill behavior in
     expect(await reject(["a", "b", "c"], "test/none")).toContain("model test/none for synthesis is not in the model registry");
     expect(await reject([{ role: "a", thinking: "extreme" }, "b", "c"])).toContain("Council role a has unknown thinking extreme.");
     expect(await reject([{ model: "test/two" }, "b", "c"])).toContain("A council role object needs a non-empty role.");
+    expect(await reject([{ role: "a", thinking: 3 }, "b", "c"])).toContain("Council role a has a non-string model or thinking.");
     expect(await reject([{ role: "a", model: "test/two" }, { role: "a" }, "b", "c"])).toContain("Council role a appears twice with different settings.");
     expect(await reject(["a", "b", "c", "d", "e", "f", "g", "h", "i"])).toContain("3–8 distinct");
     expect(runs).toBe(0);

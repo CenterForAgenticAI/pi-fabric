@@ -28,6 +28,9 @@ for (const spec of specs) {
     if (typeof spec === "string") continue;
     throw new Error("A council role object needs a non-empty role.");
   }
+  if ([entry.model, entry.thinking].some((value) => value != null && typeof value !== "string")) {
+    throw new Error(`Council role "${role}" has a non-string model or thinking.`);
+  }
   const thinking = text(entry.thinking);
   if (thinking && !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(thinking)) {
     throw new Error(`Council role "${role}" has unknown thinking "${thinking}".`);
@@ -148,8 +151,8 @@ try {
 }
 ```
 
-Pass the task as `strings.task`, the JSON role array as `strings.roles`, and the synthesis model key as `strings.synthesis`; an empty `strings.synthesis` keeps the session default. A role is a string or `{ "role": "security", "model": "provider/id", "thinking": "high" }`, and a role without `model` runs on the session default. Model keys must match a registry key exactly, ignoring case, and the skill checks them before any agent runs. Every result lists `seats`, each with its role, pinned model and thinking, and status, plus `synthesisModel` when one was pinned. These are the models the skill requested; keeping a run on its pinned model is the host's job. Successful synthesis returns only the compact decision, coverage, seats, and failures. Raw completed reports return only when synthesis fails; one surviving role returns directly without spending another agent call.
+Pass the task as `strings.task`, the JSON role array as `strings.roles`, and the synthesis model key as `strings.synthesis`; an empty `strings.synthesis` keeps the session default. A role is a string or `{ "role": "security", "model": "provider/id", "thinking": "high" }`, and a role without `model` runs on the session default. Model keys must match a Pi registry key from `tools.models()` exactly, ignoring case; the skill refuses a `models.aliases` name or a partial id, and checks every key before any agent runs. Every result lists `seats`, each with its role, pinned model and thinking, and status, plus `synthesisModel` when one was pinned. These are the models the skill requested; keeping a run on its pinned model is the host's job. Successful synthesis returns only the compact decision, coverage, seats, and failures. Raw completed reports return only when synthesis fails; one surviving role returns directly without spending another agent call.
 
-Concurrent calls can overshoot an observational `tokenBudget` because usage settles afterward. Reserve at least `roles.length + 1` top-level agent calls when synthesis may run, and use a finite role set rather than relying on token accounting as a hard concurrent ceiling.
+Concurrent calls can overshoot an observational `tokenBudget` because usage settles afterward. Reserve at least `seats.length + 1` top-level agent calls when synthesis may run, and use a finite role set rather than relying on token accounting as a hard concurrent ceiling.
 
 Status is `success`, `partial`, or `failed`. A partial result is usable evidence with named gaps and must not trigger an automatic whole-council rerun. If a missing perspective matters, retry that role with one plain agent using the original task and role; do not invoke a new council or rerun successful roles. Do not use a council for a lookup or a decision with no meaningful competing considerations.

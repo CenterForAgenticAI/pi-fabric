@@ -46,6 +46,8 @@ for spec in specs:
         if isinstance(spec, str):
             continue
         raise ValueError("A council role object needs a non-empty role.")
+    if [value for value in [entry.get("model"), entry.get("thinking")] if value is not None and not isinstance(value, str)]:
+        raise ValueError("Council role " + role + " has a non-string model or thinking.")
     if text(entry.get("thinking")) and text(entry.get("thinking")) not in ["off", "minimal", "low", "medium", "high", "xhigh", "max"]:
         raise ValueError("Council role " + role + " has unknown thinking " + text(entry.get("thinking")) + ".")
     seat = {"role": role}
@@ -106,4 +108,4 @@ except Exception as error:
     return dict(summary, status="partial", failures=failures, result=None, synthesisError=str(error), fallback=completed)
 ```
 
-Reserve at least the role count plus one agent call. Concurrency remains host-limited; usage settles afterward, not as a hard token reservation. Model keys must match a registry key exactly, ignoring case, and the program checks them before any agent runs. Every result lists `seats` with each role's pinned model, thinking, and status, plus `synthesisModel` when one was pinned. These are the models the program requested; keeping a run on its pinned model is the host's job. Successful synthesis returns only the compact decision, coverage, seats, and failures; raw reports return only on synthesis failure. A partial result is useful evidence with named gaps, not permission for an automatic whole-council rerun. Retry only the failed role or synthesis when needed. Do not use a council for a lookup.
+Reserve at least the role count plus one agent call. Concurrency remains host-limited; usage settles afterward, not as a hard token reservation. Model keys must match a Pi registry key from `tools.models()` exactly, ignoring case; the program refuses a `models.aliases` name or a partial id, and checks every key before any agent runs. Every result lists `seats` with each role's pinned model, thinking, and status, plus `synthesisModel` when one was pinned. These are the models the program requested; keeping a run on its pinned model is the host's job. Successful synthesis returns only the compact decision, coverage, seats, and failures; raw reports return only on synthesis failure. A partial result is useful evidence with named gaps, not permission for an automatic whole-council rerun. Retry only the failed role or synthesis when needed. Do not use a council for a lookup.

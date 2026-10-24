@@ -392,6 +392,8 @@ describe("expensive skill program behavior", () => {
       .rejects.toThrow('Council role "a" has unknown thinking "extreme".');
     await expect(run([{ model: "p/two" }, "b", "c"]))
       .rejects.toThrow("A council role object needs a non-empty role.");
+    await expect(run([{ role: "a", model: 42 }, "b", "c"]))
+      .rejects.toThrow('Council role "a" has a non-string model or thinking.');
     await expect(run([{ role: "a", model: "p/two" }, { role: "a" }, "b", "c"]))
       .rejects.toThrow('Council role "a" appears twice with different settings.');
     await expect(run(["a", "b", "c", "d", "e", "f", "g", "h", "i"])).rejects.toThrow("3–8 distinct");
