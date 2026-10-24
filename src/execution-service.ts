@@ -350,17 +350,18 @@ export class FabricExecutionService {
     const python = this.config.executor.kernel === "python";
     const enforce = this.config.schema.mode === "enforce";
     const monty = python && this.config.executor.pythonRuntime === "monty";
-    // CPython and the Node/Bun processes reach the OS directly, so only QuickJS
-    // and Monty can vouch that no effect bypassed the bridge.
-    const fence = offeredFence && (python ? monty : enforce || executor.runtime === "quickjs") ? offeredFence : undefined;
-    let fenceArm: Promise<void> | undefined;
-    // One durable mark per execution; a failed mark keeps failing every effect.
-    const armFence = (): Promise<void> => fenceArm ??= fence ? fence.arm() : Promise.resolve();
     // Snapshot kernel identity before awaits. Schema enforce isolates the selected
     // language rather than silently changing Python programs into TypeScript.
     const runtimeKind = python
       ? monty ? "python:monty" : `python:${this.config.executor.cpython.binary}:${enforce}`
       : `typescript:${enforce ? "quickjs" : this.config.executor.runtime}`;
+    // CPython and the Node/Bun processes reach the OS directly, so only QuickJS
+    // and Monty can vouch that no effect bypassed the bridge. Decide from the
+    // runtime this call actually runs on.
+    const fence = offeredFence && (runtimeKind === "python:monty" || runtimeKind === "typescript:quickjs") ? offeredFence : undefined;
+    let fenceArm: Promise<void> | undefined;
+    // One durable mark per execution; a failed mark keeps failing every effect.
+    const armFence = (): Promise<void> => fenceArm ??= fence ? fence.arm() : Promise.resolve();
     let runtime = this.#runtimeKind === runtimeKind ? this.#runtime : undefined;
     if (!runtime) {
       if (monty) {

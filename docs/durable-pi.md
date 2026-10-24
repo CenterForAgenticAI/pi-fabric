@@ -58,7 +58,9 @@ read approval that would prompt or call the auto classifier also arms, and so
 does semantic search. On recovery, an accepted fence that was never armed reruns
 the program from the start. An armed fence, an unaccepted one, or a second crash
 fails closed as before. A rerun can read different file contents than the first
-attempt did.
+attempt did. It also emits its progress and `workflow.item` transitions again,
+with the same `invocationId` and item IDs, so a listener that acts on them
+should deduplicate.
 
 A worker's store lives in its run directory under `durable/`. Recovery never
 replays streaming updates, so each provider delta and tool progress update commits
