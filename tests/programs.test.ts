@@ -375,7 +375,7 @@ describe("host program runs", () => {
       const f = fixture();
       const { deps, sendMessage } = hostDeps(f);
       const { replies, reply } = collect();
-      await handle({ code: CODE, kernel: "typescript", sha256: sha(CODE), input: { who: "pi-stack" }, reply }, { ...deps, context: f.context });
+      await handle({ code: CODE, input: { who: "pi-stack" }, reply }, { ...deps, context: f.context });
       const label = `caller-code:${sha(CODE).slice(0, 12)}`;
       const program = `caller-code:${sha(CODE)}`;
       expect(replies).toEqual([{ ok: true, program, value: { r: { called: "allowed", args: { who: "pi-stack" } }, who: "pi-stack" }, logs: [] }]);
@@ -399,38 +399,22 @@ describe("host program runs", () => {
       const f = fixture();
       const code = "return { input };";
       const { replies, reply } = collect();
-      await handle({ code, sha256: sha(code), reply }, { ...hostDeps(f).deps, context: f.context });
+      await handle({ code, reply }, { ...hostDeps(f).deps, context: f.context });
       expect(replies).toMatchObject([{ ok: true, value: { input: null } }]);
-    });
-
-    it("refuses a mismatching hash and runs nothing, not even a prefix", async () => {
-      const f = fixture();
-      const { deps, sendMessage } = hostDeps(f);
-      const { replies, reply } = collect();
-      const executed = vi.spyOn(f.service, "execute");
-      await handle({ code: CODE, sha256: sha(`${CODE} `), input: { who: "x" }, reply }, { ...deps, context: f.context });
-      expect(replies).toEqual([{ ok: false, error: "Invalid program run request: sha256 does not match code" }]);
-      expect(f.demo).not.toHaveBeenCalled();
-      expect(executed).not.toHaveBeenCalled();
-      expect(sendMessage).not.toHaveBeenCalled();
     });
 
     it("refuses each malformed request with one reply and runs nothing", async () => {
       const f = fixture();
       const { deps, sendMessage } = hostDeps(f);
       const executed = vi.spyOn(f.service, "execute");
-      const good = { code: CODE, sha256: sha(CODE) };
+      const good = { code: CODE };
       const big = `return 1;${" ".repeat(65_536)}`;
       const cases: Array<[string, Record<string, unknown>, string]> = [
         ["neither", {}, "ref must be a non-empty string"],
-        ["empty code", { code: "", sha256: sha("") }, "code must be a non-empty string"],
-        ["blank code", { code: "  \n", sha256: sha("  \n") }, "code must be a non-empty string"],
-        ["non-string code", { code: 7, sha256: sha("7") }, "code must be a non-empty string"],
-        ["oversized code", { code: big, sha256: sha(big) }, "code exceeds 65536 characters"],
-        ["python kernel", { ...good, kernel: "python" }, 'kernel must be "typescript"'],
-        ["uppercase sha256", { code: CODE, sha256: sha(CODE).toUpperCase() }, "sha256 must be 64 lowercase hex characters"],
-        ["short sha256", { code: CODE, sha256: sha(CODE).slice(0, 12) }, "sha256 must be 64 lowercase hex characters"],
-        ["non-string sha256", { code: CODE, sha256: 1 }, "sha256 must be 64 lowercase hex characters"],
+        ["empty code", { code: "" }, "code must be a non-empty string"],
+        ["blank code", { code: "  \n" }, "code must be a non-empty string"],
+        ["non-string code", { code: 7 }, "code must be a non-empty string"],
+        ["oversized code", { code: big }, "code exceeds 65536 characters"],
         ["bad signal", { ...good, signal: {} }, "signal must be an AbortSignal"],
       ];
       for (const [name, request, error] of cases) {
@@ -451,7 +435,7 @@ describe("host program runs", () => {
       const code = `return 1;${" ".repeat(65_536 - "return 1;".length)}`;
       expect(code.length).toBe(65_536);
       const { replies, reply } = collect();
-      await handle({ code, sha256: sha(code), reply }, { ...hostDeps(f).deps, context: f.context });
+      await handle({ code, reply }, { ...hostDeps(f).deps, context: f.context });
       expect(replies).toMatchObject([{ ok: true, value: 1 }]);
     });
 
@@ -460,7 +444,7 @@ describe("host program runs", () => {
       const { deps, sendMessage } = hostDeps(f);
       const code = "throw new Error('boom');";
       const { replies, reply } = collect();
-      await handle({ code, sha256: sha(code), reply }, { ...deps, context: f.context });
+      await handle({ code, reply }, { ...deps, context: f.context });
       expect(replies).toHaveLength(1);
       expect(replies[0]).toMatchObject({ ok: false, program: `caller-code:${sha(code)}`, error: expect.stringContaining("boom") });
       expect(sendMessage.mock.calls[0]![0].details).toMatchObject({ invokedBy: "host", success: false });
@@ -475,7 +459,7 @@ describe("host program runs", () => {
         requestedTimeoutMs: 1, display: { name: "EVIL-DISPLAY" }, context: { cwd: "/EVIL" }, kernel2: "EVIL", EVIL: "EVIL-FIELD",
       };
       for (const request of [
-        { code: CODE, sha256: sha(CODE), input: { who: "x" }, requirePromoted: true, ...hostile },
+        { code: CODE, input: { who: "x" }, requirePromoted: true, ...hostile },
         { ref: "hello", ...hostile },
       ]) {
         if ("ref" in request) await f.store.save({ name: "hello", code: "return 1;" }, "typescript");
@@ -510,7 +494,7 @@ describe("host program runs", () => {
         const asCode = collect();
         // Control: under allow, both run the body.
         await handle({ ref: "body", reply: asRef.reply }, { ...deps, context: f.context });
-        await handle({ code: body, sha256: sha(body), reply: asCode.reply }, { ...deps, context: f.context });
+        await handle({ code: body, reply: asCode.reply }, { ...deps, context: f.context });
         expect(asRef.replies, name).toMatchObject([{ ok: true, value: { called: "allowed" } }]);
         expect(asCode.replies, name).toMatchObject([{ ok: true, value: { called: "allowed" } }]);
         expect(f.demo, name).toHaveBeenCalledTimes(2);
@@ -519,7 +503,7 @@ describe("host program runs", () => {
         const deniedRef = collect();
         const deniedCode = collect();
         await handle({ ref: "body", reply: deniedRef.reply }, { ...deps, context: f.context });
-        await handle({ code: body, sha256: sha(body), reply: deniedCode.reply }, { ...deps, context: f.context });
+        await handle({ code: body, reply: deniedCode.reply }, { ...deps, context: f.context });
         expect(deniedRef.replies, name).toMatchObject([{ ok: false, error: expect.stringContaining("programs.run") }]);
         expect(deniedCode.replies, name).toHaveLength(1);
         expect(deniedCode.replies[0], name).toMatchObject({ ok: false, error: expect.stringContaining("programs.run") });
@@ -533,13 +517,13 @@ describe("host program runs", () => {
       const { deps } = hostDeps(f);
       const code = "return await tools.call({ ref: 'jev.run', args: { input: 1 } });";
       const allowed = collect();
-      await handle({ code, sha256: sha(code), reply: allowed.reply }, { ...deps, context: f.context });
+      await handle({ code, reply: allowed.reply }, { ...deps, context: f.context });
       expect(allowed.replies).toMatchObject([{ ok: true }]);
       expect(f.jevRun).toHaveBeenCalledTimes(1);
       f.jevRun.mockClear();
       f.config.approvals.actions = { "jev.run": "deny" };
       const { replies, reply } = collect();
-      await handle({ code, sha256: sha(code), reply }, { ...deps, context: f.context });
+      await handle({ code, reply }, { ...deps, context: f.context });
       expect(replies).toMatchObject([{ ok: false, error: expect.stringContaining("jev.run") }]);
       expect(f.jevRun).not.toHaveBeenCalled();
     });
@@ -551,7 +535,7 @@ describe("host program runs", () => {
       const executed = vi.spyOn(f.service, "execute");
       const code = collect();
       const saved = collect();
-      await handle({ code: CODE, sha256: sha(CODE), input: { who: "x" }, reply: code.reply }, { ...deps, context: f.context });
+      await handle({ code: CODE, input: { who: "x" }, reply: code.reply }, { ...deps, context: f.context });
       await handle({ ref: "body", input: { who: "x" }, reply: saved.reply }, { ...deps, context: f.context });
       // The trace the execution itself returned, not the message metadata built from it.
       const traceOf = async (index: number) => (await executed.mock.results[index]!.value as { trace: { operations: Array<{ ref: string; args?: Record<string, unknown> }> } }).trace.operations;
@@ -572,7 +556,7 @@ describe("host program runs", () => {
       const executed = vi.spyOn(f.service, "execute");
       const absent = { ...deps, state: { ...deps.state, registry: { has: () => false } } } as unknown as ProgramHostDeps;
       const { replies, reply } = collect();
-      await handle({ code: CODE, sha256: sha(CODE), reply }, { ...absent, context: f.context });
+      await handle({ code: CODE, reply }, { ...absent, context: f.context });
       expect(replies).toEqual([{ ok: false, error: "Program runs are unavailable in this session" }]);
       expect(executed).not.toHaveBeenCalled();
       expect(f.demo).not.toHaveBeenCalled();
@@ -635,7 +619,7 @@ describe("host program runs", () => {
       expect(f.demo).toHaveBeenCalledTimes(2);
     });
 
-    it("computes the hash itself when the request has none, and records it", async () => {
+    it("computes the hash itself and records it", async () => {
       const f = fixture();
       const { deps, sendMessage } = hostDeps(f);
       const { replies, reply } = collect();
@@ -644,13 +628,13 @@ describe("host program runs", () => {
       expect(sendMessage.mock.calls[0]![0].details).toMatchObject({ source: "caller-code", sha256: sha(CODE) });
     });
 
-    it("runs the ref and ignores the code fields when a request carries both", async () => {
+    it("runs the ref and ignores the code when a request carries both", async () => {
       const f = fixture();
       await f.store.save({ name: "hello", code: "return { from: 'saved' };" }, "typescript");
       const { deps } = hostDeps(f);
       const executed = vi.spyOn(f.service, "execute");
       const { replies, reply } = collect();
-      await handle({ ref: "hello", code: CODE, sha256: "not a hash", kernel: "python", reply }, { ...deps, context: f.context });
+      await handle({ ref: "hello", code: CODE, reply }, { ...deps, context: f.context });
       expect(replies).toMatchObject([{ ok: true, value: { from: "saved" } }]);
       expect(executed.mock.calls[0]![0].callerProgram).toBeUndefined();
       expect(f.demo).not.toHaveBeenCalled();
@@ -664,7 +648,7 @@ describe("host program runs", () => {
         pi: { sendMessage },
       } as unknown as ProgramHostDeps;
       const code = "return 1;";
-      const reply = await runHostProgram(deps, {} as ExtensionContext, { code, sha256: sha(code) });
+      const reply = await runHostProgram(deps, {} as ExtensionContext, { code });
       expect(reply).toMatchObject({ ok: false, error: expect.stringContaining("kernel is python") });
       expect(execute).not.toHaveBeenCalled();
     });
@@ -712,8 +696,6 @@ describe("host program runs", () => {
     };
     // Lets any further, unexpected reply arrive before a test counts replies.
     const drained = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
-
-    const sha = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
     it("still answers once, on the original reply, when the caller deletes or replaces it after emitting", async () => {
       const { listener, shutdown } = await boot();
@@ -842,11 +824,10 @@ describe("host program runs", () => {
       const f = fixture();
       const code = "return { who: input.who };";
       const answered = nextReply();
-      const request: Record<string, unknown> = { code, sha256: sha(code), input: { who: "original" }, reply: answered.reply };
+      const request: Record<string, unknown> = { code, input: { who: "original" }, reply: answered.reply };
       const snapshot = snapshotFabricProgramRunRequestV1(request)!;
       const evil = "return { who: 'EVIL' };";
       request.code = evil;
-      request.sha256 = sha(evil);
       request.input = { who: "EVIL" };
       request.ref = "hello";
       delete request.reply;
@@ -864,7 +845,7 @@ describe("host program runs", () => {
       };
       const refused = (field: string) => `Invalid program run request: ${field} could not be read`;
       const named = ["ref", "input", "requirePromoted", "signal"] as const;
-      const codeFields = ["code", "kernel", "sha256"] as const;
+      const codeFields = ["code"] as const;
 
       it.each(named)("%s on a ref request: nothing escapes the listener and the request is answered exactly once", async (field) => {
         const { listener, shutdown } = await boot();

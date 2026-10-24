@@ -38,15 +38,12 @@ export interface HostSavedProgramRunRequest extends HostProgramRunBase {
   requirePromoted?: boolean;
 }
 
-/** Caller-supplied TypeScript and the SHA-256 that Fabric computed for it. */
+/** Caller-supplied TypeScript. Fabric computes its SHA-256 for the run's identity. */
 export interface HostCodeProgramRunRequest extends HostProgramRunBase {
   code: string;
-  sha256: string;
 }
 
 export type HostProgramRunRequest = HostSavedProgramRunRequest | HostCodeProgramRunRequest;
-
-const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
@@ -74,6 +71,8 @@ export const runHostProgram = async (
   let reply: FabricProgramRunReplyV1;
   let details: Record<string, unknown> = {};
   const caller = "code" in request;
+  // Hashed here, from the text that runs, so the run's identity cannot name other text.
+  const sha256 = caller ? sha256Hex(request.code) : "";
   try {
     await deps.state.ensure(context);
     if (!deps.state.registry.has("programs")) {
@@ -90,9 +89,9 @@ export const runHostProgram = async (
       if (kernel !== "typescript") {
         throw new Error(`This session's kernel is ${kernel}; caller-supplied code runs only in the typescript kernel`);
       }
-      program = callerCodeProgram(request.sha256);
+      program = callerCodeProgram(sha256);
       ref = program;
-      displayName = `Program ${callerCodeLabel(request.sha256)}`;
+      displayName = `Program ${callerCodeLabel(sha256)}`;
     } else {
       const store = new ProgramStore(programsDirectory(context.cwd));
       const record = await store.resolve(request.ref, { requirePromoted: request.requirePromoted === true });
@@ -109,7 +108,7 @@ export const runHostProgram = async (
         ...(input !== undefined ? { input } : {}),
         ...(requirePromoted ? { requirePromoted: true } : {}),
       }),
-      ...(caller ? { callerProgram: { code: request.code, sha256: request.sha256 } } : {}),
+      ...(caller ? { callerProgram: { code: request.code, sha256 } } : {}),
       signal: request.signal,
       parentToolCallId: `fabric_program_${randomUUID()}`,
       context,
@@ -129,7 +128,7 @@ export const runHostProgram = async (
   } catch (error) {
     reply = { ok: false, error: errorText(error), ...(program ? { program } : {}) };
   }
-  const label = caller ? callerCodeLabel(request.sha256) : reply.program ?? request.ref;
+  const label = caller ? callerCodeLabel(sha256) : reply.program ?? request.ref;
   const body = reply.ok
     ? [...reply.logs, valueText(reply.value)].join("\n")
     : `Error: ${reply.error}`;
@@ -142,7 +141,7 @@ export const runHostProgram = async (
         version: 1,
         invokedBy: "host",
         ...(reply.program ? { program: reply.program } : caller ? {} : { ref: request.ref }),
-        ...(caller ? { source: "caller-code", sha256: request.sha256 } : {}),
+        ...(caller ? { source: "caller-code", sha256 } : {}),
         success: reply.ok,
         ...(reply.ok ? {} : { error: reply.error }),
         ...details,
@@ -166,7 +165,7 @@ export const handleFabricProgramRunEvent = async (
   request: FabricProgramRunSnapshotV1,
   deps: ProgramHostDeps & { context: ExtensionContext | undefined },
 ): Promise<void> => {
-  const { ref, code, kernel, sha256: pinned, input, requirePromoted, signal, unreadable, respond } = request;
+  const { ref, code, input, requirePromoted, signal, unreadable, respond } = request;
   const refuse = (reason: string): void => respond({ ok: false, error: `Invalid program run request: ${reason}` });
   try {
     // The first unreadable field, in read order, is refused by name before any other check.
@@ -189,15 +188,8 @@ export const handleFabricProgramRunEvent = async (
     } else {
       if (typeof code !== "string" || !code.trim()) return refuse("code must be a non-empty string");
       if (code.length > MAX_PROGRAM_CODE_CHARS) return refuse(`code exceeds ${MAX_PROGRAM_CODE_CHARS} characters`);
-      if (kernel !== undefined && kernel !== "typescript") return refuse('kernel must be "typescript"');
-      // Fabric computes the digest. A caller's `sha256` is only a pin on the text it meant to send.
-      const sha256 = sha256Hex(code);
-      if (pinned !== undefined) {
-        if (typeof pinned !== "string" || !SHA256_PATTERN.test(pinned)) return refuse("sha256 must be 64 lowercase hex characters");
-        if (pinned !== sha256) return refuse("sha256 does not match code");
-      }
       if (signal !== undefined && !isAbortSignal(signal)) return refuse("signal must be an AbortSignal");
-      run = { code, sha256, ...(input !== undefined ? { input } : {}), ...(signal ? { signal } : {}) };
+      run = { code, ...(input !== undefined ? { input } : {}), ...(signal ? { signal } : {}) };
     }
     if (!deps.context) {
       respond({ ok: false, error: "No active Pi session to run the program in" });

@@ -58,7 +58,7 @@ export interface FabricWorkflowItemEventV1 {
   meta?: Record<string, unknown>;
 }
 
-/** Host-local request: run a saved program without the model, like `/fabric run`. */
+/** Host-local request: run a saved program or caller-supplied code without the model, like `/fabric run`. */
 export const FABRIC_PROGRAM_RUN_EVENT = "pi-fabric:program:run:v1";
 
 export type FabricProgramRunReplyV1 =
@@ -79,24 +79,15 @@ export interface FabricProgramRunByRefRequestV1 extends FabricProgramRunRequestB
   ref: string;
   requirePromoted?: boolean;
   code?: never;
-  kernel?: never;
-  sha256?: never;
 }
 
 /**
- * Runs program text the caller built, without saving it anywhere. Fabric
- * computes the SHA-256 of the code and records it in the trace.
+ * Runs TypeScript program text the caller built, without saving it anywhere.
+ * Fabric computes the SHA-256 of the code and records it in the trace.
  */
 export interface FabricProgramRunByCodeRequestV1 extends FabricProgramRunRequestBaseV1 {
-  /** Non-empty, at most 65 536 characters. */
+  /** Non-empty TypeScript, at most 65 536 characters. */
   code: string;
-  /** Only `"typescript"` today; the default. */
-  kernel?: "typescript";
-  /**
-   * Optional pin: the lowercase hex SHA-256 of the code's UTF-8 bytes. Fabric
-   * checks it against its own digest and runs nothing on a mismatch.
-   */
-  sha256?: string;
   ref?: never;
   requirePromoted?: never;
 }
@@ -104,14 +95,7 @@ export interface FabricProgramRunByCodeRequestV1 extends FabricProgramRunRequest
 export type FabricProgramRunRequestV1 = FabricProgramRunByRefRequestV1 | FabricProgramRunByCodeRequestV1;
 
 /** The request fields Fabric reads, once, when a program run event arrives. */
-export type FabricProgramRunFieldV1 =
-  | "ref"
-  | "code"
-  | "kernel"
-  | "sha256"
-  | "input"
-  | "requirePromoted"
-  | "signal";
+export type FabricProgramRunFieldV1 = "ref" | "code" | "input" | "requirePromoted" | "signal";
 
 /**
  * Everything a program run listener keeps of a request. Read once, at the event
@@ -121,8 +105,6 @@ export type FabricProgramRunFieldV1 =
 export interface FabricProgramRunSnapshotV1 {
   readonly ref: unknown;
   readonly code: unknown;
-  readonly kernel: unknown;
-  readonly sha256: unknown;
   /** A JSON copy of the caller's `input`, never the caller's object. */
   readonly input: unknown;
   readonly requirePromoted: unknown;
@@ -193,19 +175,14 @@ export const snapshotFabricProgramRunRequestV1 = (value: unknown): FabricProgram
   // and getters, which must not be able to change what else the request says.
   const ref = read("ref");
   // A request with `ref` is a saved-program run, as it was before `code`
-  // existed: it never reads the code fields, so a getter on one cannot refuse it.
-  const byCode = ref === undefined && unreadable === undefined;
-  const code = byCode ? read("code") : undefined;
-  const kernel = byCode ? read("kernel") : undefined;
-  const sha256 = byCode ? read("sha256") : undefined;
+  // existed: it never reads `code`, so a getter on it cannot refuse the run.
+  const code = ref === undefined && unreadable === undefined ? read("code") : undefined;
   const requirePromoted = read("requirePromoted");
   const signal = read("signal");
   const input = copyProgramRunInput(read("input"));
   return Object.freeze({
     ref,
     code,
-    kernel,
-    sha256,
     input,
     requirePromoted,
     signal,
