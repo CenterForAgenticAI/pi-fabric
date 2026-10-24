@@ -89,7 +89,24 @@ export class FabricToolResultProxy implements FabricNestedToolResultProxy {
     ) {
       return patchedDetails.result;
     }
-    if (patchedContent !== content) return valueFromContent(patchedContent);
-    return request.value;
+    if (patchedContent === content) return request.value;
+    // A content-only patch replaces a string result.
+    if (typeof request.value === "string") return valueFromContent(patchedContent);
+    // A structured value keeps its shape. Generic middleware such as an output
+    // cap rewrites the JSON projection, and applying that text would hand the
+    // program a truncated string where it expects an array or object. Text
+    // that still parses as JSON is a redaction or rewrite that kept the shape,
+    // so the program receives the parsed value. Anything else (a cut-off
+    // projection) leaves the original; `maxNestedResultChars` still bounds it.
+    // Middleware can also replace the value through `details.result`, above,
+    // or fail it with `isError`.
+    if (!patchedContent.every((part) => part.type === "text")) return request.value;
+    const patchedText = textFromContent(patchedContent);
+    if (patchedText === textForValue(request.value)) return request.value;
+    try {
+      return JSON.parse(patchedText) as unknown;
+    } catch {
+      return request.value;
+    }
   }
 }
