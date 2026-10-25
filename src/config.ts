@@ -270,6 +270,8 @@ interface FabricUiConfig {
   herdrStatus: boolean;
   showAgentToolPreview: boolean;
   toolDisplay: FabricToolDisplayMode;
+  /** Lend the window title to the latest nested call while fabric_exec runs. */
+  terminalTitle: boolean;
   updateDebounceMs: number;
   /**
    * Raw `ui.sessionLabel`, passed through unchecked: sessionLabelSettings() in
@@ -585,6 +587,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     herdrStatus: true,
     showAgentToolPreview: true,
     toolDisplay: "compact",
+    terminalTitle: true,
     updateDebounceMs: 100,
   },
   compaction: {
@@ -1324,6 +1327,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         ui.toolDisplay,
         DEFAULT_FABRIC_CONFIG.ui.toolDisplay,
       ),
+      terminalTitle: booleanValue(ui.terminalTitle, DEFAULT_FABRIC_CONFIG.ui.terminalTitle),
       // Renamed from ui.nestedToolDebounceMs (v3): the window coalesces every
       // live fabric_exec card update — nested calls, progress, agent previews.
       updateDebounceMs: boundedInteger(
