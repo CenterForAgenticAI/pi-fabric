@@ -16,6 +16,8 @@ export interface Kernel {
   readonly laws?: Law[];
   readonly stepLaws?: StepLaw[];
   readonly decisions?: Decision[];
+  /** A statechart the rule compiles from: its check must reach every state, with none stuck and no event ambiguous. */
+  readonly chart?: { check(): { ok: boolean; stuck: string[]; ambiguous: { event: string }[]; reached: Record<string, unknown> } };
 }
 
 export interface Verdict { readonly claim: string; readonly proven: boolean; readonly checked: boolean; readonly detail?: string | undefined }

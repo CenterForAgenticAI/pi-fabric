@@ -211,7 +211,7 @@ Mailbox:
 
 - `agents.ask({ id, message, data?, model?, thinking? })` waits for a `FabricActorMessage` from the live owner. Its deadline follows the actor timeout. Caller cancellation aborts work on that owner. Large text and structured data share the mesh event budget; truncated data carries `fabricTruncated: true`.
 - `agents.tell({ id, message, data?, model?, thinking? })` returns `{ queued, messageId }`. Optional binding values affect only that mailbox item.
-- `agents.actorStatus({ id })` and `agents.actors()` return the shared project actor view. `model`/`thinking` are effective for this caller; `binding` and `projectDefaults` expose the two persisted layers.
+- `agents.actorStatus({ id })` and `agents.actors()` return the shared project actor view. `model`/`thinking` are effective for this caller; `binding` and `projectDefaults` expose the two persisted layers. `agents.actors({ scope: "global" })` lists the global templates instead.
 - `agents.setModel({ id, model?, scope? })` and `agents.setThinking({ id, thinking?, scope? })` default to `scope: "session"`. Use `scope: "project"` only to pin a shared default.
 - `agents.setTools({ id, tools, scope? })` replaces the persisted tool allowlist for a project actor (default) or global template.
 - `agents.setDeliveryPolicy({ id, delivery, triggerTurn, scope? })` replaces the explicit project/global continuation policy without recreating the actor. In the dashboard, press `y` on an actor/template for the same control.
