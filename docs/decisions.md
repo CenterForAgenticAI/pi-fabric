@@ -105,7 +105,7 @@ const { id } = await decisions.raise({
 
 Records from before escalation chains carry neither `escalation` nor `history` and expire as before.
 
-Authority for the human surfaces is local file access to the mesh root. Until principals and scopes land, anyone who can write the mesh root as the same OS user can answer any decision.
+Authority for the human surfaces is local file access to the mesh root. Until principals and scopes land, anyone who can write the mesh root as the same OS user can answer or cancel any decision. A cancel needs no more authority than an answer.
 
 ## Headless approvals
 
@@ -125,7 +125,9 @@ By default a child Pi run cancels every dialog (`select`, `confirm`, `input`, `e
 3. Without an interactive UI, the parent raises a `kind: "question"` decision held by `"root"`. `select` options become `o1`, `o2`, … (the first 12), and `confirm` becomes `yes`/`no`. The run record then shows `blockedOn: { decisionId, since }`.
 4. The answer goes back through the run's steer channel as `{ type: "ui_response", requestId, value? | confirmed? | cancelled? }`, and the worker forwards it to the child as `extension_ui_response`.
 
-The deadline is the dialog's own timeout, or `agents.childQuestionTimeoutMs` (default 10 minutes). The worker owns that deadline and answers `cancelled` when it passes, so a child never waits on a parent that has gone away. A settled run cancels its open question decision. Only the `pi` runner routes dialogs.
+The deadline is the dialog's own timeout, or `agents.childQuestionTimeoutMs` (default 10 minutes). The worker owns that deadline and answers `cancelled` when it passes, so a child never waits on a parent that has gone away. A settled run cancels its open question decision. The `pi` and `pi-durable` runners route dialogs.
+
+Routing also gives a Pi child with extensions the tools listed in `agents.childQuestionTools` (default `["ask"]`), so a caller does not have to name a question tool in `tools`. The grant never widens an allowlist the child inherited, and it is skipped when `tools` is empty, uses `+name`/`-name` modifiers, or `extensions` is `false`. Set `childQuestionTools: []` to route dialogs without granting a tool; a caller then names the question tool in `tools`. A child's system prompt lists only the extension tools its allowlist permits, so a tool left out is not offered and cannot be called.
 
 ## Extension questions
 
@@ -140,9 +142,10 @@ Fabric copies only those question fields. The decision is always held by `"user"
 
 ## Human surfaces
 
-- `/fabric decisions [id]` lists open decisions, then answers the picked one through native dialogs (`select` for options, with a "Cancel this decision" entry, and `input` or `editor` for text). Answers record `via: "tui"`.
+- `/fabric decisions [id]` lists open decisions, then answers the picked one through native dialogs (`select` for options, and `input` or `editor` for text). Both kinds offer a "Cancel this decision" entry. A text or editor decision first asks "Answer this question" or "Cancel this decision", so an empty answer and a cancel never look the same. Answers and cancels record `via: "tui"`.
 - `pi-fabric decisions list --root <meshRoot> [--status open|answered|expired|cancelled|all] [--holder h] [--limit n] [--json]` prints decisions from outside any Pi session. `--root` defaults to `$PI_FABRIC_MESH_ROOT`. The project mesh root is `.pi/fabric/mesh` unless `mesh.root` says otherwise.
 - `pi-fabric decisions answer --root <meshRoot> <id> (--option <id> | --text <t>) [--json]` answers one decision with `via: "cli"` and the OS user name as `answeredBy`. Exit code 1 reports a refused answer (not open, unknown option), and 2 reports a usage error.
+- `pi-fabric decisions cancel --root <meshRoot> <id> [--json]` cancels one open decision with `via: "cli"` and the OS user name as `answeredBy`. Use it to clear a decision whose asker has gone away, such as a `pi -p` run stopped with Ctrl+C. Cancelling a decision that is not open exits 1, like answering one twice.
 
 ## Configuration
 
@@ -152,5 +155,6 @@ Fabric copies only those question fields. The decision is always held by `"user"
 | `approvals.headlessTimeoutMs` | `300000` | headless approval deadline (1 s to 24 h) |
 | `agents.childQuestions` | `"cancel"` | `"route"` forwards child dialogs to the parent |
 | `agents.childQuestionTimeoutMs` | `600000` | default routed dialog deadline (1 s to 24 h) |
+| `agents.childQuestionTools` | `["ask"]` | tools a routed Pi child gets for asking; `[]` grants none |
 
 Decisions need `mesh.enabled`. Managed hosts do not expose `decisions.*`. Schema enforce mode allows `decisions.list` and blocks the other actions.

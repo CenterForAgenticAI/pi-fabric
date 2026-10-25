@@ -96,6 +96,7 @@ import { installFabricShellHangKeys } from "./ui/shell-hang-keys.js";
 import { FabricToolDisplayController } from "./ui/tool-display.js";
 import { configureHighlighting } from "./ui/highlight.js";
 import { registerHandoffCompletionRenderer } from "./ui/handoff-completion.js";
+import { installTerminalTitleRelease } from "./ui/terminal-title.js";
 import { formatFabricValue } from "./ui/structured.js";
 import { truncateMiddle } from "./util.js";
 import path from "node:path";
@@ -1113,12 +1114,17 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
         content: defaultFabricExecutionGuidance(effectiveFullCodeMode, config.executor.kernel, config.executor.pythonRuntime, config.executor.codemodeProfile),
       }],
     });
+    // A child's prompt names only the tools its allowlist lets it call; the
+    // captured-tools provider refuses the rest as "not permitted by this
+    // child's tool allowlist".
+    const toolAllowlist = readChildToolAllowlist();
     const overrideGuidance = effectiveFullCodeMode
-      ? coreOverridePromptGuidance(capturedTools).trim()
+      ? coreOverridePromptGuidance(capturedTools, toolAllowlist).trim()
       : undefined;
     const extensionRoster = effectiveFullCodeMode
       ? extensionToolRosterGuidance(capturedTools.list().filter(entry =>
-          !state.config.mcp.enabled || !isSelectedNativeMcpTool(entry.definition, state.config.mcp.nativeServers),
+          (toolAllowlist === undefined || toolAllowlist.has(entry.name)) &&
+          (!config.mcp.enabled || !isSelectedNativeMcpTool(entry.definition, config.mcp.nativeServers)),
         ), new Set(PI_CORE_TOOL_NAMES), config.executor.kernel === "typescript" && config.executor.codemodeProfile === "native")
       : undefined;
     // Only turn-stable sections go into the system prompt. Anything derived
@@ -1186,6 +1192,10 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     if (!state.initialized) return;
     state.dispatchHostEvent(eventName, event, context);
   });
+
+  // A killed turn can abandon a fabric_exec promise before it hands the window
+  // title back. Both boundaries are no-ops while no run holds the title.
+  installTerminalTitleRelease(pi);
 
   pi.on("session_shutdown", async (_event, context) => {
     // A claim never outlives the runtime it was made in: reload, session
