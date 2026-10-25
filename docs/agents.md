@@ -69,6 +69,62 @@ return results.map(result => result.status === "fulfilled"
 
 `systemPrompt` on `agents.run` or `agents.spawn` adds text to the child's system prompt. Fabric joins it ahead of any [component model guidance](components.md), and Pi and Claude children append the result to their system prompt with `--append-system-prompt`. A Veda child receives it as a `<system_instructions>` block in its prompt. A blank value is ignored, and durable `agents.spawn` refuses it.
 
+### Named agent files
+
+A named agent file saves the settings of a child agent in a Markdown file with YAML frontmatter. Pass its name as `agent` to `agents.run` or `agents.spawn` and Fabric fills the request from the file. Files written for Claude Code subagents and for Pi agent profiles load unchanged.
+
+```ts
+const reviewer = await agents.run({ agent: "reviewer", task: "Review the diff on this branch" });
+// A field you pass on the call wins over the file.
+const quick = await agents.run({ agent: "reviewer", task: "Skim the diff", thinking: "low" });
+```
+
+An agent file looks like this:
+
+```md
+---
+name: reviewer
+description: Reviews a diff for defects
+tools: Read, Grep, Glob
+model: cheap
+effort: high
+runtimes:
+  fabric:
+    timeoutMs: 1800000
+---
+
+You review diffs. Report defects only.
+```
+
+**Where Fabric looks.** Fabric reads the visible `*.md` files directly inside two folders, with no recursion. It skips names that start with a dot. From lowest to highest precedence:
+
+1. `agents/` inside the Pi agent directory (`~/.pi/agent/agents` unless `PI_CODING_AGENT_DIR` says otherwise).
+2. `.pi/agents` at the project root Fabric uses for the mesh.
+
+A project file shadows a user file with the same `name`. Fabric reads the project folder only when the host trusts the project, and says so when it skips a folder that exists. The folder list is the `AGENT_FILE_FOLDERS` constant in `src/agents/agent-files.ts`.
+
+**Fields.**
+
+| Frontmatter | Becomes | Notes |
+| --- | --- | --- |
+| `name` | the run name | Required. 1 to 64 characters from letters, digits, `.`, `_` and `-`, starting with a letter or digit. The call's `name` wins. |
+| `description` | nothing | Shown by `agents.definitions()`. |
+| body | `systemPrompt` | The text after the frontmatter. It is handled exactly like a `systemPrompt` passed on the call (see [Child system prompt](#child-system-prompt)): Fabric joins it ahead of any component model guidance. |
+| `model` | `model` | Resolved like a call's `model`, so `models.aliases` names and their thinking levels apply. `inherit` or no value sets nothing. |
+| `tools` | `tools` | A YAML list or a comma-separated string. Claude Code names map to Pi names without regard to case: `Read` to `read`, `Grep` to `grep`, `Glob` to `find`, `LS` to `ls`, `Bash` to `bash`, `Edit`, `MultiEdit` to `edit`, `Write` to `write`. Other names stay as written. No value means the default allowlist. |
+| `thinking` or `effort` | `thinking` | One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Writing both is an error. |
+| `runtimes.fabric` | request fields | Fabric-only settings under their request field names: `runner`, `kernel`, `model`, `thinking`, `tools`, `timeoutMs`, `readOnly`. They win over the shared fields above. An unknown key is an error. |
+
+Any other top-level field, such as `color`, `skills`, `delegate` or `permissionMode`, is ignored. Fabric reports each one as a warning in `agents.definitions()` and in the run's progress notice. It never fails the run, so a file written for another tool keeps loading. Pi agent profiles accept only seven keys, so a file in `.pi/agents` that you share with that tool must keep to them. Put Fabric-only settings under `runtimes.fabric` only in a folder that tool does not read.
+
+**Override rule.** Fabric fills a request field from the file only when the call leaves it out. A field passed on the call, including an empty list, always wins. `agents.spawn` with `residency: "durable"` refuses a file that has a body, because a durable spawn does not accept `systemPrompt`.
+
+**Errors.** An unknown name fails before any child starts. The message lists the available names and suggests the closest one. A file Fabric cannot read fails with the file path and the line, for example a missing closing `---`, a duplicate key, an unknown thinking level, or an unknown `runtimes.fabric` key. A broken project file never falls back to a user file of the same name.
+
+**Listing.** `agents.definitions()` returns `{ name, description, path, scope, shadows?, warnings, error? }[]` with `scope` set to `"user"` or `"project"`. `shadows` is the path of the user file a project file replaces. A file that cannot be read appears with an `error`. The call reads the folders each time and starts no child.
+
+Fabric does not read actor templates from files (they stay in `global-actors.json`), does not look in `.claude/agents`, and does not preload skills. Fabric loads the file reader and its YAML parser on first use, so a session that never names an agent does not pay for them.
+
 ### Requested models are authoritative
 
 For Pi workers, Fabric reapplies the resolved `provider/model` over RPC **after startup extensions finish**, reapplies the requested thinking level, and independently reads `get_state` before sending the task. A successful `set_model` response alone is insufficient: it can echo the requested model even when an extension switches away during `model_select`. Thinking is reported at Pi's effective, capability-clamped level.

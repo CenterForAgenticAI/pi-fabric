@@ -708,6 +708,11 @@ export class AgentManager {
     return resolveAgentCwd(this.cwd, requestedCwd);
   }
 
+  /** The project root Fabric already uses for the mesh; named agent files live under its .pi folder. */
+  get projectRoot(): string {
+    return this.#projectRoot;
+  }
+
   #inheritedSessionPins(request: AgentRunRequest): InheritedSessionPin[] | undefined {
     const explicit = request.inheritedSessionPins;
     if (explicit && explicit.length > 0) return explicit;
