@@ -220,8 +220,11 @@ export const coerceValue = (id: string, value: string, config: FabricConfig): un
   }
   const current = getPath(config, id);
   // prewalk.enabled is enabled by default and omitted from normalized
-  // configs unless false, so its control still needs an explicit boolean type.
-  if (typeof current === "boolean" || id === "prewalk.enabled") return value === "true";
+  // configs unless false, and ui.sessionLabel stays raw until first use, so
+  // their controls still need an explicit boolean type.
+  if (typeof current === "boolean" || id === "prewalk.enabled" || id === "ui.sessionLabel.footer") {
+    return value === "true";
+  }
   if (typeof current === "number") return parseFormattedNumericValue(value);
   // The model picker stores the canonical "provider/id" string, or "Inherit"
   // for no override; persist an empty string so normalizeFabricConfig drops it.
