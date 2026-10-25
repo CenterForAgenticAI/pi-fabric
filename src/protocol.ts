@@ -58,25 +58,44 @@ export interface FabricWorkflowItemEventV1 {
   meta?: Record<string, unknown>;
 }
 
-/** Host-local request: run a saved program without the model, like `/fabric run`. */
+/** Host-local request: run a saved program or caller-supplied code without the model, like `/fabric run`. */
 export const FABRIC_PROGRAM_RUN_EVENT = "pi-fabric:program:run:v1";
 
 export type FabricProgramRunReplyV1 =
   | { ok: true; program: string; value: unknown; logs: string[] }
   | { ok: false; error: string; program?: string };
 
-export interface FabricProgramRunRequestV1 {
-  /** name, name@<digest prefix >= 12>, or a full digest. */
-  ref: string;
+interface FabricProgramRunRequestBaseV1 {
+  /** JSON, at most 64 KiB; reaches the program as `input`. */
   input?: unknown;
-  requirePromoted?: boolean;
   signal?: AbortSignal;
   /** Called exactly once. */
   reply: (result: FabricProgramRunReplyV1) => void;
 }
 
+/** Runs a saved program. Exactly one of `ref` or `code` is allowed. */
+export interface FabricProgramRunByRefRequestV1 extends FabricProgramRunRequestBaseV1 {
+  /** name, name@<digest prefix >= 12>, or a full digest. */
+  ref: string;
+  requirePromoted?: boolean;
+  code?: never;
+}
+
+/**
+ * Runs TypeScript program text the caller built, without saving it anywhere.
+ * Fabric computes the SHA-256 of the code and records it in the trace.
+ */
+export interface FabricProgramRunByCodeRequestV1 extends FabricProgramRunRequestBaseV1 {
+  /** Non-empty TypeScript, at most 65 536 characters. */
+  code: string;
+  ref?: never;
+  requirePromoted?: never;
+}
+
+export type FabricProgramRunRequestV1 = FabricProgramRunByRefRequestV1 | FabricProgramRunByCodeRequestV1;
+
 /** The request fields Fabric reads, once, when a program run event arrives. */
-export type FabricProgramRunFieldV1 = "ref" | "input" | "requirePromoted" | "signal";
+export type FabricProgramRunFieldV1 = "ref" | "code" | "input" | "requirePromoted" | "signal";
 
 /**
  * Everything a program run listener keeps of a request. Read once, at the event
@@ -85,6 +104,7 @@ export type FabricProgramRunFieldV1 = "ref" | "input" | "requirePromoted" | "sig
  */
 export interface FabricProgramRunSnapshotV1 {
   readonly ref: unknown;
+  readonly code: unknown;
   /** A JSON copy of the caller's `input`, never the caller's object. */
   readonly input: unknown;
   readonly requirePromoted: unknown;
@@ -154,11 +174,15 @@ export const snapshotFabricProgramRunRequestV1 = (value: unknown): FabricProgram
   // Read the plain fields before `input`: copying `input` runs its `toJSON`
   // and getters, which must not be able to change what else the request says.
   const ref = read("ref");
+  // A request with `ref` is a saved-program run, as it was before `code`
+  // existed: it never reads `code`, so a getter on it cannot refuse the run.
+  const code = ref === undefined && unreadable === undefined ? read("code") : undefined;
   const requirePromoted = read("requirePromoted");
   const signal = read("signal");
   const input = copyProgramRunInput(read("input"));
   return Object.freeze({
     ref,
+    code,
     input,
     requirePromoted,
     signal,
@@ -739,6 +763,16 @@ export interface FabricMcpServerTypeSource {
   tools: FabricNamedActionTypeSource[];
 }
 
+/**
+ * One registered provider that gets a program global named after it. Its
+ * actions' input schemas are its TypeScript declarations; an empty list
+ * declares the global loosely (any action, one argument object).
+ */
+export interface FabricProviderTypeSource {
+  provider: string;
+  actions: FabricNamedActionTypeSource[];
+}
+
 export type {
   FabricKernel,
   FabricKernelRuntime,
@@ -751,21 +785,30 @@ export type { FabricPythonRuntime } from "./config.js";
 
 /**
  * Live descriptor snapshot the registry hands to the guest declaration
- * builder so dynamic surfaces (mcp, extensions) get argument checking before
- * the sandbox runs. Empty/absent sections keep the loose static declarations.
+ * builder so dynamic surfaces (mcp, extensions, provider globals) get argument
+ * checking before the sandbox runs. Empty/absent sections keep the loose
+ * static declarations.
  */
 export interface FabricGuestTypeSources {
   mcpServers?: FabricMcpServerTypeSource[];
   extensionTools?: FabricNamedActionTypeSource[];
+  /**
+   * Providers registered outside Fabric whose names can be program globals
+   * (see `src/provider-globals.ts`). Each entry is exactly one global the
+   * program gets, typed or loose.
+   */
+  providers?: FabricProviderTypeSource[];
 }
 
 /**
  * Pre-rendered `declare const` blocks replacing the loose mcp/extensions
  * declaration lines. Values are full replacement text (helpers + declare).
+ * `providers` replaces nothing: it declares one new global per provider.
  */
 export interface FabricDynamicGuestDeclarations {
   mcp?: string;
   extensions?: string;
+  providers?: string;
 }
 
 /**
