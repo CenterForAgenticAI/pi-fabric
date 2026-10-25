@@ -62,6 +62,7 @@ interface FabricAgentRequest {
   runner?: FabricAgentRunner;
   transport?: FabricTransport;
   model?: string;
+  holdQuestions?: true;
   persona?: string;
   thinking?: FabricThinking;
   /** Child thinking bounds; must lie inside this session's bounds. Levels outside are clamped. */

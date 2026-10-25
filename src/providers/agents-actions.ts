@@ -37,6 +37,12 @@ const runProperties = {
     type: "string",
     description: "Veda persona name for this run, such as frontend, reviewer, worker, or a custom persona.",
   },
+  holdQuestions: {
+    type: "boolean",
+    const: true,
+    description:
+      "Hold this run's routed questions for a person. Each question becomes a root-held Fabric decision with a 30-day deadline (the longest allowed); only this run waits until it is answered (/fabric decisions, pi-fabric decisions answer, or decisions.answer from the main session). Needs agents.childQuestions \"route\" and a runner that declares questions; refused otherwise. The run's timeoutMs still applies.",
+  },
   thinking: {
     type: "string",
     enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
