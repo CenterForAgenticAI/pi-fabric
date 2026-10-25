@@ -20,19 +20,23 @@ export interface Kernel {
   readonly chart?: { check(): { ok: boolean; stuck: string[]; ambiguous: { event: string }[]; reached: Record<string, unknown> } };
 }
 
-export interface Verdict { readonly claim: string; readonly proven: boolean; readonly checked: boolean; readonly detail?: string | undefined }
+export interface Verdict { readonly claim: string; readonly proven: boolean; readonly checked: boolean; readonly stuck?: string | undefined; readonly detail?: string | undefined }
 
 export const prove = (kernel: Kernel): Verdict[] => {
   const verdicts: Verdict[] = [];
   const rule = kernel.rule;
   if (rule && (kernel.laws?.length || kernel.stepLaws?.length)) {
-    const v = proveSteps(rule, kernel.laws ?? [], kernel.stepLaws ?? []);
+    // Fabric steps these machines from any state its bridges pass in, so every claim is proven by the prover alone.
+    // gdp-wired's search (on by default since 0.16.0) may prove a step law with invariants it found, which hold only in
+    // states reachable from init. A verdict that leans on found laws is not proven here.
+    const v = proveSteps(rule, kernel.laws ?? [], kernel.stepLaws ?? [], { search: false });
     const names = [...(kernel.laws ?? []), ...(kernel.stepLaws ?? [])].map((law) => law.name).join("; ");
-    verdicts.push({ claim: `${kernel.id}: ${names}`, proven: v.proven, checked: v.checked, detail: v.proven ? undefined : `${v.goal ?? ""} ${v.stuck ?? ""} ${v.why ?? ""}`.trim() });
+    verdicts.push({ claim: `${kernel.id}: ${names}`, proven: v.proven && !v.found, checked: v.checked, stuck: v.stuck,
+      detail: v.proven && !v.found ? undefined : v.found ? `proven only with found laws: ${JSON.stringify(v.found)}` : `${v.goal ?? ""} ${v.stuck ?? ""} ${v.why ?? ""}`.trim() });
   }
   for (const decision of kernel.decisions ?? []) {
     const v = proveDecision(decision);
-    verdicts.push({ claim: `${kernel.id}: ${decision.name}`, proven: v.proven, checked: v.checked, detail: v.proven ? undefined : `${v.goal ?? ""} ${v.stuck ?? ""} ${v.why ?? ""}`.trim() });
+    verdicts.push({ claim: `${kernel.id}: ${decision.name}`, proven: v.proven, checked: v.checked, stuck: v.stuck, detail: v.proven ? undefined : `${v.goal ?? ""} ${v.stuck ?? ""} ${v.why ?? ""}`.trim() });
   }
   return verdicts;
 };
