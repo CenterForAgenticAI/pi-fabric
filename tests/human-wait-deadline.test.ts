@@ -228,12 +228,22 @@ const approvalFixture = (configure: (config: FabricConfig) => void, headless: bo
     inputSchema: { type: "object", properties: {}, additionalProperties: true },
     risk: "write" as const,
   };
+  // "slow" is a read that settles only when the program deadline aborts it, so
+  // a program can outlive its budget on every runtime (Monty has no sleep).
+  const slow = { ...descriptor, name: "slow", description: "read that never settles", risk: "read" as const };
   registry.register({
     name: "extensions",
     description: "fake extensions",
-    async list() { return [descriptor]; },
-    async describe(name) { return name === "act" ? descriptor : undefined; },
-    async invoke() { ran++; return { done: true }; },
+    async list() { return [descriptor, slow]; },
+    async describe(name) { return name === "act" ? descriptor : name === "slow" ? slow : undefined; },
+    async invoke(name, _args, context) {
+      if (name !== "slow") { ran++; return { done: true }; }
+      return new Promise((_resolve, reject) => {
+        const abort = () => reject(new Error("aborted"));
+        if (context.signal?.aborted) abort();
+        context.signal?.addEventListener("abort", abort, { once: true });
+      });
+    },
   });
   const config = structuredClone(DEFAULT_FABRIC_CONFIG);
   config.fullCodeMode = true;
@@ -295,8 +305,8 @@ describe.each(runtimes)("%s approval prompt deadline pause", (runtime) => {
   runTest("resumes the saved budget after the approval", async () => {
     const { run, nextPrompt } = approvalFixture(configure, false);
     const code = python
-      ? `${act}\nwhile True:\n    await asyncio.sleep(0.05)`
-      : `${act}; while (true) await new Promise(resolve => setTimeout(resolve, 50));`;
+      ? `${act}\nreturn await tools.call(ref="extensions.slow", args={})`
+      : `${act}; return await extensions.slow({});`;
     const pending = run(code);
     const approve = await nextPrompt();
     await vi.advanceTimersByTimeAsync(60_000);

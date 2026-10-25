@@ -22,9 +22,9 @@ a set of small policy kernels, **not a proof of every subsystem invariant**.
 
 | Area | Proof module, shipped machine | Authoritative production path | Laws |
 | --- | --- | --- | --- |
-| Effect independence | `resources.ts`: `resourceScope`, `resourceConflict` | `verified/resources.ts`, `components/effect-policy.ts`, `components/effect-scope.ts` | `resource_source_refinement`, `resource_source_valid`, `resource_source_complete`, `resource_refinement`, `resource_output_valid`, `resource_unknown`, `resource_precision`, `resource_pair_sound`, `resource_conflict_exact`, `resource_conflict_complete`, `resource_pair_complete` |
+| Effect independence | `resources.ts`: `resourceScope`, `resourceConflict`, `resourceGroups` | `verified/resources.ts`, `components/effect-policy.ts`, `components/effect-scope.ts` | `resource_source_refinement`, `resource_source_valid`, `resource_source_complete`, `resource_refinement`, `resource_output_valid`, `resource_unknown`, `resource_precision`, `resource_recheck_idempotent`, `resource_pair_sound`, `resource_conflict_exact`, `resource_conflict_complete`, `resource_pair_complete`, `resource_groups_known`, `resource_groups_unshared`, `resource_groups_unknown_complete`, `resource_groups_shared_complete` |
 | Component lifecycle | `policy.ts`: `transitionCurrent`, `cleanupState`, `consume` | `components/supervisor.ts`, `components/effect-scope.ts` | `transition_sound`, `transition_complete`, `cleanup_failure_quarantines`, `consume_once`, `consume_retires` |
-| Capability authority | `authority.ts`: `capabilityAuthority` | `verified/authority.ts`, `core/action-registry.ts` | `authority_issue_exact`, `authority_use_safe`, `authority_use_complete`, `authority_derive_safe`, `authority_derive_complete`, `authority_released_cannot_derive`, `authority_released_not_live`, `authority_released_refused` |
+| Capability authority | `authority.ts`: `capabilityAuthority` | `verified/authority.ts`, `core/action-registry.ts` | `authority_issue_exact`, `authority_use_safe`, `authority_use_complete`, `authority_derive_safe`, `authority_derive_complete`, `authority_child_use_safe`, `authority_released_cannot_derive`, `authority_released_not_live`, `authority_released_refused` |
 | Binding lifecycle | `lifecycle.ts`: `bindingStep` | `verified/lifecycle.ts`, `core/provider-bindings.ts`, `core/provider-operations.ts` | 19 step laws: safety, `Open`-based completeness, exact counts, close reservation, quarantine |
 | Compaction | `compaction.ts`: `compactionCut`; `policy.ts`: `summaryWithin`, `sampleWithin` | `compaction/hook.ts`, `compaction/bounds.ts` | `cut_sound`, `span_sound`, `refusal_final`, `header_once`, `cut_complete`, `summary_bounds`, `summary_complete`, `sample_accounting`, `sample_complete` |
 | Memory | `policy.ts`: `lineageSelected`, `pointerCurrent`, `chunkAccepted`, `coverageComplete` | `memory/normalize.ts`, `memory/expand-service.ts`, `memory/digest.ts`, `memory/index.ts` | `active_lineage_only`, `explicit_all_lineages`, `pointer_sound`, `pointer_complete`, `chunk_sound`, `chunk_complete`, `coverage_sound`, `coverage_complete` |
@@ -47,15 +47,18 @@ registered module:
 1. Proves each law, step law, k-step law and decision. A claim counts only when
    the verdict is `proven && checked`. `checked` is the kernel's verdict on the
    proof tree that the untrusted prover produced.
-2. Proves each deliberately broken variant (46 of them, such as "a span may
+2. Proves each deliberately broken variant (50 of them, such as "a span may
    straddle the boundary", "stale writes pass", or "derivation checks one
    grant"). Every variant must leave at least one claim unproven. This replaces
    the old negative-mutation script.
 3. Replays every claim on concrete runs with `crossCheck` and
    `crossCheckDecision`. The builders are untrusted, so this catches a builder
    whose expression differs from what its callback computed.
-4. Compiles each shipped machine with gdp-wired's `compileJs`. The shared
-   runtime helpers are emitted once per module, and host access is refused.
+4. Runs each statechart's `check()`. Every state must be reachable from the
+   start, no state other than a final one may lack a way out, and no event may
+   enable two equally specific transitions at once.
+5. Compiles each shipped machine with gdp-wired's `compileJs`. Each runtime
+   helper a module's machines call is emitted once, and host access is refused.
    `fork` (a state copy for branching searches) is left out, because Fabric
    never branches; `init` and `step` ship unchanged.
    The step writes `src/verified/generated/<module>.js`, its declarations, and
@@ -83,7 +86,8 @@ Kernels decide over naturals, flags, choices and sets of names. The bridges in
   The codec interns a proposal's names first, so they take ids 2..65.
   `Len` carries each name's complete UTF-16 length.
 - Numbers are naturals below `2^53`. The compiled runtime refuses anything else
-  with a `RangeError`, and each bridge fails closed before that point. Storage
+  with a `RangeError`, and each bridge fails closed before that point. It
+  refuses a request that fails its rule's assumption the same way. Storage
   revisions are plain naturals, with no radix limbs.
 
 ### Complete-resource conflict preservation
@@ -104,8 +108,8 @@ The production path:
    unknown scope (`*`). An unknown source can never become exact
    (`resource_refinement`).
 5. Component lifetime and registry call policy compare complete effect
-   declarations through the compiled `resourceConflict` step, applied to every
-   pair of effects. TypeScript summary maps and flags provide diagnostics only.
+   declarations through the compiled `resourceGroups` step, which decides
+   every pair of effects at once. TypeScript summary maps and flags provide diagnostics only.
    They cannot turn a compiled conflict into an empty conflict list.
 
 A proposer that silently drops resource 65 fails the coverage check. The laws
@@ -115,28 +119,44 @@ repeats one name 65 times is that one name. Precision assumes a valid, bounded,
 set-equivalent proposal (`resource_precision`). A broken producer can still
 cause a conservative false positive, but it cannot create false independence.
 
-Two claims are compositions of proven laws, each stated through the laws it combines:
+Rechecking an accepted normal form against itself keeps it
+(`resource_recheck_idempotent`). This is a two-step law: a normalization is
+accepted, then the next normalization's proposal is the current scope. Two spec
+flags, `unchanged` and `short`, state that proposal apart from `fits`; the step
+never reads them.
 
-- **Conflict preservation.** `resource_refinement` gives a normalized scope that
-  is either unknown or names exactly the original set. Unknown scopes of
-  ordered effects conflict (`resource_conflict_complete`). Two exact scopes
-  conflict exactly when they share a name: `resource_conflict_exact` and
-  `resource_pair_complete` cover the two directions. So normalization cannot
-  erase a conflict.
-- **Recheck idempotence.** An accepted normal form is valid, bounded and equal
-  to its proposal (`resource_output_valid`, `resource_refinement`). Rechecking
-  it with the same proposal is the identity case of `resource_precision`.
+Conflict preservation is a composition of proven laws.
+`resource_refinement` gives a normalized scope that is either unknown or names
+exactly the original set. Unknown scopes of ordered effects conflict
+(`resource_conflict_complete`). Two exact scopes conflict exactly when they
+share a name: `resource_conflict_exact` and `resource_pair_complete` cover the
+two directions. So normalization cannot erase a conflict.
 
-The traversal over every pair of effects (`resourceGroups`) is a short
-TypeScript loop around the compiled pairwise decision. It is trusted and
-tested; it is not itself proved.
+Two components' effects are decided over every pair at once by
+`resourceGroups`. Each side is a list of effect flags (`effect`, `ordered`,
+`exact`) and a list of rows (`item`, `name`), one row per name in an exact
+scope, where `item` is the effect's position in its list. A row reads its
+effect at the position it names, so the request's own data pairs each name
+with its effect; no loop does. The groups conflict unless no ordered
+pair of effects has an unknown scope and no ordered pair of rows names one
+resource. Four laws cover both directions: independent groups have neither kind
+of pair (`resource_groups_known`, `resource_groups_unshared`), and a pair of
+either kind makes them conflict (`resource_groups_unknown_complete`,
+`resource_groups_shared_complete`). The broken variants that pair only the
+diagonal, skip the last left effect, check only the first right effect, or
+check one side against itself are each refused.
 
-### Other compositions
+The codec stays trusted: it names both sides' rows from one shared table, and
+writes each row's `item` as its effect's position. The rule assumes every row
+names an effect of its own side. The codec meets that by construction, and the
+compiled step throws a `RangeError` on a request that fails it, so such a
+request never grants independence. The shared-name condition runs as a join on the name,
+so its cost grows with the rows and their matches, not with every pair of rows.
 
-- `authority_child_use_safe` composes `authority_derive_safe` (a live child's
-  grants are within its parent's) with `authority_use_safe` (a granted use
-  names a held grant). The two-step form exceeds what the prover instantiates
-  today, so the claim is stated as this composition, at full strength.
+### Multi-step claims
+
+- `authority_child_use_safe` is a proven two-step law on the child's machine:
+  after a derive, a granted use names a grant of the parent the derive read.
 - The compaction cut is checked as a fold: one header step, then one step per
   call/result span. `cut_sound` is an invariant over every run. `span_sound`
   shows that a span keeps the cut open only if the cut was open and the span is
@@ -203,7 +223,12 @@ postcondition commands are not formally verified.
 ### Lifecycle limits
 
 Provider bindings run the compiled lifecycle reducer for admission, holds,
-in-flight work, retirement, revocation and close reservation. Independent laws
+in-flight work, retirement, revocation and close reservation. The reducer is a
+gdp-wired statechart: a table of transitions over the six phases, where Closed
+and Failed are final and counter updates stay in their phase. Its `command` is
+an output that reads Denied whenever no transition fires. The chart compiles to
+the rule that ships, and its check proves every phase reachable, none stuck
+and no event ambiguous. Independent laws
 prove exact count updates and prevent close while ownership remains. The host
 interprets commands, observes actual promise settlement and releases private
 one-use leases. Those observations and interpreter effects remain trusted.
@@ -257,8 +282,9 @@ gdp-wired changed these claims:
   coverage are proven over sets of ids, and the codec's injectivity is trusted.
   A resource name's length is the codec's `string.length`.
 - The resource bound counted list entries. It now counts distinct names.
-- Pairwise effect traversal, the authority child-use theorem, and recheck
-  idempotence are compositions, as described above.
+- Group conflict over every pair of effects is a proven rule, as described
+  above. Recheck idempotence and the authority child-use theorem are proven
+  two-step laws.
 - Several laws no longer apply. `all_sound` and `all_complete` covered the old
   list conjunction; every predicate is now a direct conjunction with its own
   soundness and completeness laws. `footprint_*` and `close_*` covered

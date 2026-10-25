@@ -217,6 +217,14 @@ describe("Pi-owned MCP tools inside Fabric", () => {
     expect(ambient.createRuntime).not.toHaveBeenCalled();
   });
 
+  it("admits Pi-owned tools through * allowlist patterns (#277)", async () => {
+    vi.stubEnv("PI_FABRIC_TOOL_ALLOWLIST", '["read", "mcp__*"]');
+    const f = fixture();
+    expect(f.native.list().length).toBeGreaterThan(0);
+    await f.registry.invoke("mcp.docs-api.find.item", { value: "x" }, f.context);
+    expect(f.executeTool).toHaveBeenCalledWith("mcp__hashed_0", { value: "x" }, expect.anything());
+  });
+
   it("normalizes arguments once before approval and emits one logical trace operation", async () => {
     const f = fixture();
     setActiveCompiledSurface(undefined, true);
