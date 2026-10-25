@@ -38,7 +38,7 @@ A mandatory pointer serves legibility and single-source maintenance. Per-run tok
 
 - `/skill:fabric-guide`: choose a workflow.
 - `/skill:fabric-workflow`: run finite fan-out or pipeline work with verification.
-- `/skill:fabric-council`: get role diversity from the same model.
+- `/skill:fabric-council`: get role diversity, on the session model or with one pinned model per seat.
 - `/skill:fabric-fusion`: run multi-model deliberation (compare) or acting (read-only references + one actor).
 - `/skill:fabric-rlm`: decompose context recursively.
 - `/skill:fabric-schema`: gate mutation behind evidence.

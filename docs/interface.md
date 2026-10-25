@@ -10,6 +10,10 @@ Nested `pi.read`, `pi.bash`, `pi.powershell`, `pi.grep`, `pi.find`, `pi.ls`, `pi
 
 Fabric keeps its orchestration-specific behavior around those previews. Multi-call rows stay compact, and live write composition with phase/call progress stays visible during the run. Agent and actor audits can expose their current child tools directly in the parent card, with owner, runner, and run metadata. One execution-wide throttle coalesces parallel nested-call updates before they reach Pi, and continuous streams are not starved. Long ANSI rows are bounded without clearing the enclosing tool background. The widget lease plus result-to-source row transfer keep completion height stable. The highlighter initializes lazily and falls back to plain text until it is ready. When Pi switches between its light and dark variants, the highlighter swaps themes live. Collapsed previews use the configured expand keybinding, for example `Ctrl-O`.
 
+## Terminal title
+
+While an interactive session runs a `fabric_exec` program, Fabric lends the terminal window/tab title to the run. It starts with the declared display name (or the static hint) and then follows the latest nested tool call: `read src/prewalk/handoff.ts · typescript`, `grep /applyCut/ in src`, `bash $ bun run check`. Nothing else about the window changes, and Pi's own `app - session - cwd` title returns as soon as the program stops. A run that never hands it back (a halted turn, an abandoned call, a crash path) is released at the next settle or at shutdown, so the last call title never outlives the session in the tab. Each hand-back rebuilds that shape from the live session name and cwd, so a renamed session sticks. Parallel `fabric_exec` calls share one title: Pi's title returns with the last one. Titles are plain text: styling and control characters are stripped, and the text is clipped to 120 characters, so a long path cannot wrap or repaint the terminal chrome. Turn it off with `ui.terminalTitle` under `/fabric settings` → **UI**.
+
 ## Background shell tasks
 
 `/fabric tasks` or **Ctrl+Alt+T** opens a live task inspector without interrupting Main. The widget keeps detached commands visible with their ID, purpose/command, elapsed time and access hint. A single task opens directly; Enter inspects a selected task, arrows scroll its bounded output tail, **x twice** stops it, and Esc returns to the list or closes. The detail shows cwd, PID, exit status, output path, elapsed time separately from time since last output, and monitor delivery/deadline. Completion hints last 30 seconds; retained jobs remain inspectable.
@@ -214,7 +218,7 @@ async invoke(actionName, args, context) {
 /fabric run <ref> [json input]
 ```
 
-`/fabric decisions` lists open [durable decisions](decisions.md) and answers the picked one through native dialogs.
+`/fabric decisions` lists open [durable decisions](decisions.md) and answers or cancels the picked one through native dialogs.
 
 `/fabric programs` lists [saved programs](programs.md) with their status; `promote` and `retire` are the only way to change one. `/fabric run` executes a saved program without the model, with the same approval policy as a model call, and shows the result in the transcript.
 

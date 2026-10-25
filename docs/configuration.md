@@ -184,7 +184,8 @@ where absent values do not participate, and time spent inside a `humanWaitRefs` 
     "sessionExport": true,
     "sessionExportDir": "",
     "childQuestions": "cancel",
-    "childQuestionTimeoutMs": 600000
+    "childQuestionTimeoutMs": 600000,
+    "childQuestionTools": ["ask"]
   },
   "components": [
     {
@@ -201,9 +202,15 @@ where absent values do not participate, and time spent inside a `humanWaitRefs` 
     "refreshMs": 500,
     "eventHistory": 80,
     "haltOnEscape": true,
+    "herdrStatus": true,
     "showAgentToolPreview": true,
     "toolDisplay": "compact",
-    "updateDebounceMs": 100
+    "terminalTitle": true,
+    "updateDebounceMs": 100,
+    "sessionLabel": {
+      "footer": true,
+      "herdr": "off"
+    }
   },
   "compaction": {
     "engine": "fabric",
@@ -596,7 +603,7 @@ Fabric clears inactive run artifacts by age. It never truncates active JSONL fil
 - `retention.oneShotRunMs`: retain terminal one-shot agent run artifacts for 24 hours. An explicit `agents.cleanup()` may remove them sooner. Graceful shutdown with `agents.retainRuns: true` marks managed roots closed; empty roots are removed immediately. `retainRuns: false` requests deletion after child transports stop, including for managed temporary roots. Inherited nested roots belong to the enclosing agent run: a child manager stops its session children but leaves their terminal status and transcripts for that run's cleanup/retention or the root-session shutdown.
 - `retention.actorRunArchiveMs`: retain terminal actor run archives for seven days. Fabric always preserves the latest run for each actor.
 
-Run housekeeping begins on actual agent storage use (not manager startup), continues during use, and runs best-effort on close. It never applies cache pressure to agent runs or truncates their JSONL/actor `session.jsonl` files. A `pi-durable` run's own `durable/` journal is a known run artifact and expires with its run. Caller-owned run roots retain their existing explicit-cleanup semantics. Symlink roots/markers, wrong-uid files, malformed ownership, unknown contents, and unverifiable incomplete descendants are preserved. `/fabric settings` exposes all three values under **Retention**. Changing them requires `/fabric reload`.
+Run housekeeping begins on actual agent storage use (not manager startup), continues during use, and runs best-effort on close. It never applies cache pressure to agent runs or truncates their JSONL/actor `session.jsonl` files. A `pi-durable` run's own `durable/` journal is a known run artifact and expires with its run. The same holds for a forked child's `fork-session/` folder, the `oversized-event-prefix.txt` that a failed worker saves, and the `status.json` temp file a crash leaves behind. `fork-session/` may hold Fabric's `handoff-<uuid>.jsonl` files and the `<timestamp>_<uuid>.jsonl` files Pi writes when a child forks its session. A link, an unknown file, a sub-folder, or a file owned by another user in these places keeps the run. A run with a hosted-run locator (`hosted.json` or its temp file) is always kept, because no record proves the remote work stopped. Caller-owned run roots retain their existing explicit-cleanup semantics. Symlink roots/markers, wrong-uid files, malformed ownership, unknown contents, and unverifiable incomplete descendants are preserved. `/fabric settings` exposes all three values under **Retention**. Changing them requires `/fabric reload`.
 
 ### Temporary output and reader scratch
 
@@ -635,6 +642,7 @@ Other agent settings:
 - `worktree.setup`: optional shell command (`/bin/sh`, or `cmd.exe` on Windows) run in each new `worktree: true` checkout before the child starts (unset by default; blank values are ignored). A per-request `worktreeSetup` overrides it, and a non-zero exit fails the launch. See [worktree results and setup](agents.md#transports).
 - `childQuestions`: `"cancel"` (default) cancels every dialog a Pi child opens; `"route"` forwards it to the parent's UI, or to a root-held [decision](decisions.md#routed-child-questions) when the parent has no UI.
 - `childQuestionTimeoutMs`: default deadline for a routed child dialog (default `600000`, bounded to 1 s..24 h); a dialog's own timeout wins.
+- `childQuestionTools`: exact tool names a Pi child with extensions gets when `childQuestions` is `"route"` (default `["ask"]`; `[]` grants none). Entries with `*`, a leading `+` or `-`, and `fabric_exec` are dropped. The grant never widens an inherited allowlist and is skipped for an empty `tools` list and for `+name`/`-name` tool lists.
 
 ### Usage tracking with external tools
 
@@ -706,7 +714,13 @@ See the [TypeScript MCP reference](../skillsets/typescript/fabric-exec/reference
 - `ui.maxRows` defaults to `6` and clamps the widget to `1..20` rows. The effective budget is also bounded by half the live terminal height, so a short pane or a tmux split cannot let the animated box fill the viewport and keep pi's scroll region moving under the editor. Rows beyond the budget collapse into a dim `+N` marker on the last line.
 - `ui.showAgentToolPreview` defaults to `true` and controls the child-agent and actor tool rows in both the parent `fabric_exec` card and the widget. Recursive agents render their full descendant tree, bounded by the preview depth/node budget. The version 2 config migration renamed this key from `ui.showNestedToolCalls`.
 - `ui.toolDisplay` is `"compact"` (default) or `"full"`. Compact elevates the declared display name and description and keeps bounded nested tool detail visible; full retains the outer Fabric program transcript. Pi's tool-expand keybinding (`ctrl+o` by default) expands a compact card to the full transcript and collapses it again. Invalid values fall back to `"compact"`. If configuration fails to load, rendering falls back to full so a degraded startup never hides the transcript. Change it under `/fabric settings` → **UI**; successful changes apply immediately to live and completed cards.
+- `ui.terminalTitle` defaults to `true`. While a `fabric_exec` program runs in an interactive session, the terminal window/tab title follows the latest nested tool call's display title (for example `read src/config.ts · typescript` or `bash $ bun run build`). It starts from the declared display name or the static hint, and Pi's own `app - session - cwd` title returns the moment the program stops, including on failure or abort, and a run that never hands it back is released at the next settle or at shutdown. Parallel calls share one title, so Pi's title returns only after the last one finishes. Headless and RPC hosts never receive it, and it requires `ui.enabled`; turn it off under `/fabric settings` → **UI**.
 - `ui.updateDebounceMs` defaults to `100`. It applies one execution-wide coalescing interval to every live `fabric_exec` card update: nested calls, progress text, and agent tool previews. Continuous streams emit at most once per interval, so a long call no longer postpones every render until completion. Set it to `0` to emit every update. Accepted values clamp to `0..2000`. The version 3 config migration renamed this key from `ui.nestedToolDebounceMs`.
+- `ui.sessionLabel` controls where a root Pi session shows its Fabric [peer label](agents.md#peer-labels-and-queue-gates), such as `FAB-3`. Child agents and actors never show one.
+  - `footer` defaults to `true` and shows `Fabric FAB-3` in the Pi footer.
+  - `herdr` is `"off"` (default), `"tab"`, `"pane"`, or `"both"`. When Pi runs interactively inside Herdr, Fabric puts the label in front of that tab or pane name. It reads the live name before each change, so a rename by Herdr, by you, or by Pi's own name sync keeps its new text, and Fabric adds its label back within a few seconds. On shutdown, or when you turn the setting off, Fabric removes only its own label word. A pane with no name of its own goes back to having none.
+  - Labels exist only while `mesh.enabled` is `true`. Change these settings under `/fabric settings` → **UI**; a change applies at once.
+- `ui.herdrStatus` defaults to `true`. In an interactive root session inside a Herdr pane (`HERDR_ENV=1` with `HERDR_PANE_ID` and `HERDR_SOCKET_PATH`), Fabric tells Herdr about the agents this session runs. Herdr's Pi integration reports the pane idle when the turn ends, so Fabric replaces the pane's idle, done, and working text with a count such as `⏳ 2 Fabric agents · scout, reviewer` through `pane.report_metadata`. That metadata is display-only and expires after two minutes unless refreshed, so a crashed session does not leave it behind. While a routed child question waits on the user, Fabric emits `herdr:blocked`, which Herdr's Pi integration shows as a blocked pane. Fabric also emits `herdr:busy` while agents run; Herdr does not act on that event yet. Child agents and headless sessions report nothing. The presenter loads at the first agent run, so other sessions pay nothing for it. Turn it off under `/fabric settings` → **UI**.
 - The widget renders above the chat, like `pi-supervisor`. Set `ui.enabled` to `false` to disable both the widget and the dashboard controller.
 
 See the [interface reference](interface.md).
@@ -734,7 +748,7 @@ call override → session binding → project default → Fabric default
 
 `mesh.eventContextChars` bounds the sanitized JSON context attached to each host-event activation. Over the limit, Fabric drops the oldest transcript lines first and keeps the digest. It shortens the digest, and marks it `truncated: true`, only when the digest alone exceeds the limit. Fabric extracts images first. It stores redacted image descriptors in the mailbox and registry, then sends the raw images to the actor out of band. The character limit never truncates image base64 because base64 is not part of that JSON context.
 
-`mesh.peerNotices` (default `true`) tells a root session's model when another root Pi session joins or leaves the project. The notice is appended to the transcript and never changes the system prompt. See [peer presence notices](agents.md#peer-presence-notices).
+`mesh.peerNotices` (default `true`) tells the model of a root session with a UI when another root Pi session joins or leaves the project. The notice is appended to the transcript and never changes the system prompt. See [peer presence notices](agents.md#peer-presence-notices).
 
 Mesh topics, shared state, and the participant directory remain project-scoped. Every runtime publishes one short-lived host lease and records for the roots, agents, and actors it owns. `agents.members()` and `mesh.members()` read those records. `agents.main()` and `agents.peers()` project roots. When a lease expires, its records leave normal discovery together. `mesh.actorPollMs` controls fallback polling for actor events and owner-addressed commands when filesystem notifications are unavailable.
 

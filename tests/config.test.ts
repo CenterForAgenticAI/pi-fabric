@@ -13,6 +13,7 @@ import {
   normalizeFabricConfig,
   saveFabricConfig,
 } from "../src/config.js";
+import { sessionLabelSettings } from "../src/topology/session-label-settings.js";
 
 const temporaryDirectories: string[] = [];
 const originalCompactionEngineEnv = process.env.PI_FABRIC_COMPACTION_ENGINE;
@@ -257,6 +258,16 @@ describe("Fabric configuration", () => {
     expect(DEFAULT_FABRIC_CONFIG.agents.budgetUsd).toBe(0);
   });
 
+  it("normalizes the routed child question tools", () => {
+    expect(DEFAULT_FABRIC_CONFIG.agents.childQuestionTools).toBeUndefined();
+    expect(normalizeFabricConfig({}).agents.childQuestionTools).toBeUndefined();
+    expect(normalizeFabricConfig({
+      agents: { childQuestionTools: [" ask ", "question", "", 7, "ask", "fabric_exec", "+ask", "-ask", "*", "ask_*"] },
+    }).agents.childQuestionTools).toEqual(["ask", "question"]);
+    expect(normalizeFabricConfig({ agents: { childQuestionTools: [] } }).agents.childQuestionTools).toEqual([]);
+    expect(normalizeFabricConfig({ agents: { childQuestionTools: "ask" } }).agents.childQuestionTools).toBeUndefined();
+  });
+
   it("normalizes the agent default model and drops empty values", () => {
     expect(DEFAULT_FABRIC_CONFIG.agents.model).toBeUndefined();
     const set = normalizeFabricConfig({ agents: { model: "claude-sonnet-4-5" } });
@@ -383,6 +394,18 @@ describe("Fabric configuration", () => {
     expect(invalid.ui.haltOnEscape).toBe(true);
   });
 
+  it("normalizes the Herdr agent status toggle", () => {
+    expect(DEFAULT_FABRIC_CONFIG.ui.herdrStatus).toBe(true);
+    expect(normalizeFabricConfig({ ui: { herdrStatus: false } }).ui.herdrStatus).toBe(false);
+    expect(normalizeFabricConfig({ ui: { herdrStatus: "off" } }).ui.herdrStatus).toBe(true);
+  });
+
+  it("normalizes the window-title toggle", () => {
+    expect(DEFAULT_FABRIC_CONFIG.ui.terminalTitle).toBe(true);
+    expect(normalizeFabricConfig({ ui: { terminalTitle: false } }).ui.terminalTitle).toBe(false);
+    expect(normalizeFabricConfig({ ui: { terminalTitle: "no" } }).ui.terminalTitle).toBe(true);
+  });
+
   it("normalizes agent-preview visibility and the global debounce", () => {
     expect(DEFAULT_FABRIC_CONFIG.ui.showAgentToolPreview).toBe(true);
     expect(DEFAULT_FABRIC_CONFIG.ui.updateDebounceMs).toBe(100);
@@ -402,6 +425,19 @@ describe("Fabric configuration", () => {
         ui: { showAgentToolPreview: "off", updateDebounceMs: "fast" },
       }).ui,
     ).toMatchObject({ showAgentToolPreview: true, updateDebounceMs: 100 });
+  });
+
+  it("defaults the session label to the footer only and drops invalid label settings", () => {
+    const label = (value: unknown) => sessionLabelSettings(normalizeFabricConfig({ ui: { sessionLabel: value } }).ui.sessionLabel);
+    expect(sessionLabelSettings(DEFAULT_FABRIC_CONFIG.ui.sessionLabel)).toEqual({ footer: true, herdr: "off" });
+    expect(label({ footer: false, herdr: "both" })).toEqual({ footer: false, herdr: "both" });
+    expect(label({ footer: true, herdr: "tab" })).toEqual({ footer: true, herdr: "tab" });
+    expect(label({ herdr: "pane" })).toEqual({ footer: true, herdr: "pane" });
+    expect(label({ footer: "no", herdr: "window" })).toEqual({ footer: true, herdr: "off" });
+    expect(label({ herdr: "toString" })).toEqual({ footer: true, herdr: "off" });
+    expect(label({ herdr: "constructor" })).toEqual({ footer: true, herdr: "off" });
+    expect(label("tab")).toEqual({ footer: true, herdr: "off" });
+    expect(label(["tab"])).toEqual({ footer: true, herdr: "off" });
   });
 
   it("defaults, validates, merges, and persists tool display independently of full code mode", () => {

@@ -26,6 +26,8 @@ export default async function (pi: ExtensionAPI) {
       return { content: [{ type: "text", text: bodies.join(",") }], details: {} };
     },
   });
+  // An input hook that consumes the task, like a quota or account gate.
+  if (process.env.DURABLE_TEST_HANDLE_INPUT) pi.on("input", () => ({ action: "handled" }));
   pi.registerTool({ name: "hold_effect", label: "Hold effect", description: "Offline crash-safety fixture", parameters: Type.Object({}),
     async execute(_id, _args, signal) {
       fs.appendFileSync(process.env.DURABLE_TEST_EFFECT!, "effect\n");

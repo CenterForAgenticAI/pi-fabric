@@ -230,6 +230,8 @@ export interface FabricAgentConfig {
   childQuestions?: "cancel" | "route";
   /** Routed child question deadline; absent means 10 minutes. */
   childQuestionTimeoutMs?: number;
+  /** Tools a routed Pi child gets for asking questions; absent means ["ask"], [] grants none. */
+  childQuestionTools?: string[];
 }
 
 export interface FabricToolCaptureConfig {
@@ -264,9 +266,19 @@ interface FabricUiConfig {
   refreshMs: number;
   eventHistory: number;
   haltOnEscape: boolean;
+  /** Tell Herdr about running agents in an interactive root session. */
+  herdrStatus: boolean;
   showAgentToolPreview: boolean;
   toolDisplay: FabricToolDisplayMode;
+  /** Lend the window title to the latest nested call while fabric_exec runs. */
+  terminalTitle: boolean;
   updateDebounceMs: number;
+  /**
+   * Raw `ui.sessionLabel`, passed through unchecked: sessionLabelSettings() in
+   * topology/session-label-settings.ts checks it at first use, which keeps the
+   * check out of the startup graph.
+   */
+  sessionLabel?: unknown;
 }
 
 export interface FabricCompactionPressureBands {
@@ -572,8 +584,10 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     refreshMs: 500,
     eventHistory: 80,
     haltOnEscape: true,
+    herdrStatus: true,
     showAgentToolPreview: true,
     toolDisplay: "compact",
+    terminalTitle: true,
     updateDebounceMs: 100,
   },
   compaction: {
@@ -1269,6 +1283,14 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       ...(agents.childQuestionTimeoutMs === undefined ? {} : {
         childQuestionTimeoutMs: boundedInteger(agents.childQuestionTimeoutMs, 600_000, 1_000, 86_400_000),
       }),
+      // Exact tool names only: a +name/-name modifier would make the child's
+      // Pi tool list invalid, and a * pattern would grant more than one tool.
+      ...(Array.isArray(agents.childQuestionTools) ? {
+        childQuestionTools: [...new Set(agents.childQuestionTools.flatMap((tool) => {
+          const name = typeof tool === "string" ? tool.trim() : "";
+          return name && name !== "fabric_exec" && !/^[+-]/.test(name) && !name.includes("*") ? [name] : [];
+        }))],
+      } : {}),
     },
     jev: normalizeJevConfig(input.jev),
     components: configuredComponents.map((entry) => structuredClone(entry)),
@@ -1294,6 +1316,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         500,
       ),
       haltOnEscape: booleanValue(ui.haltOnEscape, DEFAULT_FABRIC_CONFIG.ui.haltOnEscape),
+      herdrStatus: booleanValue(ui.herdrStatus, DEFAULT_FABRIC_CONFIG.ui.herdrStatus),
       // Renamed from ui.showNestedToolCalls; the v2 migration rewrites persisted
       // files, and this fallback covers configs normalized without migration.
       showAgentToolPreview: booleanValue(
@@ -1304,6 +1327,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         ui.toolDisplay,
         DEFAULT_FABRIC_CONFIG.ui.toolDisplay,
       ),
+      terminalTitle: booleanValue(ui.terminalTitle, DEFAULT_FABRIC_CONFIG.ui.terminalTitle),
       // Renamed from ui.nestedToolDebounceMs (v3): the window coalesces every
       // live fabric_exec card update — nested calls, progress, agent previews.
       updateDebounceMs: boundedInteger(
@@ -1312,6 +1336,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         0,
         2_000,
       ),
+      sessionLabel: ui.sessionLabel,
     },
     compaction: {
       engine: compactionEngineValue(compaction.engine, DEFAULT_FABRIC_CONFIG.compaction.engine),
