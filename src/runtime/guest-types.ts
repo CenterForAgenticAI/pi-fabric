@@ -63,6 +63,8 @@ interface FabricAgentRequest {
   transport?: FabricTransport;
   model?: string;
   holdQuestions?: true;
+  /** Pi only. "exact": model must be a visible provider/id; no alias, closest-match or fuzzy step and no alias thinking level; refused before launch otherwise. */
+  modelMatch?: "exact";
   persona?: string;
   thinking?: FabricThinking;
   /** Child thinking bounds; must lie inside this session's bounds. Levels outside are clamped. */
@@ -781,7 +783,8 @@ interface FabricAgentsApi {
   }): Promise<FabricLifecycleSubscription>;
   subscriptions(args?: { from?: string; to?: string }): Promise<FabricLifecycleSubscription[]>;
   unsubscribe(args: FabricAgentTargetArgs): Promise<{ removed: boolean }>;
-  models(args?: { runner?: FabricAgentRunner; refresh?: boolean }): Promise<FabricModelInfo[]>;
+  /** With model, only entries whose key equals it exactly (no aliases or fuzzy matching); unknown keys give []. */
+  models(args?: { runner?: FabricAgentRunner; refresh?: boolean; model?: string }): Promise<FabricModelInfo[]>;
   stop(args: FabricAgentTargetArgs): Promise<FabricAgentResult | FabricActorInfo | FabricRemoteControlResult>;
   cleanup(args: FabricAgentTargetArgs & { deleteBranch?: boolean; delete_branch?: boolean }): Promise<{ cleaned: boolean }>;
   create(args: FabricActorRequest): Promise<FabricActorInfo>;

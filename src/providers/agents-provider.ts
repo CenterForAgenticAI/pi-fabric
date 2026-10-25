@@ -74,12 +74,15 @@ import {
 import {
   FUZZY_RESOLUTION_MARKERS,
   aliasThinking,
-  resolveAvailablePiModel,
+  assertExactModelRequest,
+  resolvePiModelSelector,
   resolveFabricModel,
   type FabricModelCandidate,
+  type FabricModelMatch,
 } from "../core/model-resolution.js";
 import { loadModelUsage } from "../core/model-usage.js";
 import { AGENTS_ACTION_DESCRIPTORS } from "./agents-actions.js";
+import { FabricTraceSafeError } from "../audit/trace.js";
 import { actionArgNormalizer } from "./arg-normalization.js";
 import { isFabricThinking } from "../thinking.js";
 import { normalizeAgentRunRequest } from "../agents/request.js";
@@ -177,6 +180,21 @@ const longerTimeoutOverride = (
 const checkedRunner = (value: unknown, fallback: FabricAgentRunner): FabricAgentRunner => {
   if (value === undefined) return fallback;
   if (!isFabricRunnerId(value)) throw new Error(`Invalid Fabric agent runner: ${JSON.stringify(value)}`);
+  return value;
+};
+
+const MAX_MODEL_KEY_CHARS = 256;
+const MODEL_KEY_RULE =
+  `model must be a string of 1 to ${MAX_MODEL_KEY_CHARS} characters (an exact key from agents.models())`;
+
+// Count code points, as the schema's minLength/maxLength do, not UTF-16 units.
+const isModelKey = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0 && [...value].length <= MAX_MODEL_KEY_CHARS;
+
+/** agents.models({ model }): an exact, untrimmed key; undefined means the unfiltered list. */
+const checkedModelKey = (value: unknown): string | undefined => {
+  if (value === undefined) return undefined;
+  if (!isModelKey(value)) throw new Error(`agents.models ${MODEL_KEY_RULE}`);
   return value;
 };
 
@@ -352,6 +370,25 @@ const actorRequest = (
 // lexicon; no agents-specific table remains.
 export const normalizeAgentsArgs = actionArgNormalizer(() => AGENTS_ACTION_DESCRIPTORS);
 
+/** True when a null argument is model or a spelling the normalizer repairs to model. */
+const nullModelSpelling = (args: Record<string, unknown>): boolean =>
+  Object.entries(args).some(
+    ([key, value]) => value === null && "model" in normalizeAgentsArgs("models", { [key]: "" }),
+  );
+
+/**
+ * Refuse an invalid agents.models model while preparing it. Normalization both
+ * here and after preparation deletes a null optional field, which would turn
+ * the lookup into the full list, so the schema check cannot be relied on.
+ */
+const refuseInvalidModelsModel = (
+  args: Record<string, unknown>,
+  prepared: Record<string, unknown>,
+): void => {
+  const invalid = prepared.model === undefined ? nullModelSpelling(args) : !isModelKey(prepared.model);
+  if (invalid) throw new FabricTraceSafeError(`Invalid arguments for agents.models: ${MODEL_KEY_RULE}`);
+};
+
 export class AgentsProvider implements FabricProvider {
   readonly #transcripts = new AgentTranscriptReader();
   readonly #router: AgentMessageRouter;
@@ -429,6 +466,7 @@ export class AgentsProvider implements FabricProvider {
   #resolvePiModel(
     model: string,
     context: FabricInvocationContext,
+    modelMatch?: FabricModelMatch,
   ): string {
     let available: FabricModelCandidate[] = [];
     try {
@@ -440,11 +478,11 @@ export class AgentsProvider implements FabricProvider {
     } catch {
       // The authoritative visible set is empty when registry discovery fails.
     }
-    const resolved = resolveAvailablePiModel(model, {
+    const resolved = resolvePiModelSelector(model, {
       aliases: this.modelsConfig().aliases,
       available,
       lastUsed: loadModelUsage(),
-    });
+    }, modelMatch);
     return `${resolved.provider}/${resolved.id}`;
   }
 
@@ -454,8 +492,14 @@ export class AgentsProvider implements FabricProvider {
     runnerOverride?: FabricAgentRunner,
   ): Record<string, unknown> {
     const runner = runnerOverride ?? checkedRunner(args.runner, this.manager.config.runner);
+    // Exact matching is checked before the non-Pi early return so it can never be skipped silently.
+    assertExactModelRequest({ modelMatch: args.modelMatch, runner, model: args.model });
     if (runner !== "pi" && runner !== "pi-durable") return args;
     const model = typeof args.model === "string" ? args.model.trim() : "";
+    if (args.modelMatch === "exact") {
+      // No alias, closest or fuzzy step, and no alias thinking level.
+      return { ...args, model: this.#resolvePiModel(model, context, "exact") };
+    }
     if (!model) return args;
     const thinking = isFabricThinking(args.thinking)
       ? args.thinking
@@ -500,7 +544,9 @@ export class AgentsProvider implements FabricProvider {
     actionName: string,
     args: Record<string, unknown>,
   ): Record<string, unknown> {
-    return normalizeAgentsArgs(actionName, args);
+    const prepared = normalizeAgentsArgs(actionName, args);
+    if (actionName === "models") refuseInvalidModelsModel(args, prepared);
+    return prepared;
   }
 
   async handoff(
@@ -803,11 +849,14 @@ export class AgentsProvider implements FabricProvider {
         return this.lifecycle.unsubscribe(String(args.id));
       case "models": {
         const runner = checkedRunner(args.runner, this.manager.config.runner);
+        const exactKey = checkedModelKey(args.model);
         const runnerAdapter = requireAgentRunner(runner);
+        const matching = <T extends { key: string }>(models: readonly T[]): T[] =>
+          exactKey === undefined ? [...models] : models.filter((model) => model.key === exactKey);
         if (!BUILT_IN_RUNNER_IDS.has(runner)) {
           // A registered runner discovers its own models; none means an advisory empty list.
           return runnerAdapter.models
-            ? [...await runnerAdapter.models({ cwd: this.manager.cwd, refresh: args.refresh === true })]
+            ? matching(await runnerAdapter.models({ cwd: this.manager.cwd, refresh: args.refresh === true }))
             : [];
         }
         if (runner === "veda") {
@@ -819,24 +868,24 @@ export class AgentsProvider implements FabricProvider {
         }
         if (runner === "claude") {
           const models = await this.manager.claudeModels(args.refresh === true);
-          return models.map((model) => ({
+          return matching(models.map((model) => ({
             runner: "claude",
             provider: "claude",
             id: model.value,
             name: model.displayName,
             key: `claude/${model.value}`,
             ...model,
-          }));
+          })));
         }
         try {
           const available = context.extensionContext.modelRegistry.getAvailable();
-          return available.map((model) => ({
+          return matching(available.map((model) => ({
             runner,
             provider: String(model.provider),
             id: String(model.id),
             name: String(model.name ?? model.id),
             key: `${model.provider}/${model.id}`,
-          }));
+          })));
         } catch {
           return [];
         }
