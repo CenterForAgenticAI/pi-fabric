@@ -85,7 +85,8 @@ for (const module of modules) {
   const compiled = (kernel: (typeof kernels)[number]) => compileJs((kernel.rule ?? kernel.fun?.rule)!.machine);
   const shipped = new Map(kernels.map((kernel) => [kernel.id, compiled(kernel)]));
   for (const bug of module.bugs) {
-    const refused = module.kernels(bug).some((kernel) => compiled(kernel) !== shipped.get(kernel.id) && prove(kernel).some((verdict) => !verdict.proven));
+    // A refusal needs a counterexample (a run or a state), not a prover that gave up.
+    const refused = module.kernels(bug).some((kernel) => compiled(kernel) !== shipped.get(kernel.id) && prove(kernel).some((verdict) => !verdict.proven && verdict.stuck === "sat"));
     if (!refused) failures.push(`${module.stem}: broken variant "${bug}" was not refused`);
   }
   console.log(`refused ${module.bugs.length} broken variants of ${module.stem}`);
