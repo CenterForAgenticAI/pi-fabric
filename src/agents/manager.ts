@@ -120,6 +120,7 @@ import {
 } from "../storage/retention.js";
 import { resolveRunRootParent } from "../storage/run-root.js";
 import { resolveSessionExportDir, sessionExportFileFor } from "./session-export.js";
+import { assertChildModelReachable, resolveRequiredExtensions } from "./required-extensions.js";
 import {
   isFabricLifecycleEventType,
   type FabricLifecycleEventType,
@@ -563,6 +564,8 @@ export class AgentManager {
     | ((launch: FabricChildTraceContextLaunch) => FabricTraceContextV1 | undefined)
     | undefined;
   readonly #executorRuntime: (() => string | undefined) | undefined;
+  readonly #loadedExtensions: (() => readonly string[] | undefined) | undefined;
+  readonly #piModelApi: ((model: string) => string | undefined) | undefined;
   /** This process's own confinement; children may only narrow it. */
   readonly #parentWritePolicy: FabricWritePolicy | undefined = readWritePolicy();
   readonly #parentLineage: FabricAgentLineage | undefined = readAgentLineage();
@@ -623,6 +626,13 @@ export class AgentManager {
       resolveChildTraceContext?: (launch: FabricChildTraceContextLaunch) => FabricTraceContextV1 | undefined;
       /** Caller TypeScript executor runtime; native runtimes escape write confinement. */
       executorRuntime?: () => string | undefined;
+      /**
+       * Extension paths this session loaded; the only paths requiredExtensions
+       * may forward. Undefined means unknown, and requiredExtensions is refused.
+       */
+      loadedExtensions?: () => readonly string[] | undefined;
+      /** The streaming API of a prepared provider/id Pi model, when known. */
+      piModelApi?: (model: string) => string | undefined;
     } = {},
   ) {
     this.#semaphore = new AgentAdmission(config.maxConcurrent, Infinity, config.maxDepth);
@@ -660,6 +670,8 @@ export class AgentManager {
     this.#sessionId = options.sessionId;
     this.#resolveChildTraceContext = options.resolveChildTraceContext;
     this.#executorRuntime = options.executorRuntime;
+    this.#loadedExtensions = options.loadedExtensions;
+    this.#piModelApi = options.piModelApi;
     this.#currentDepth = Math.max(0, Number(process.env.PI_FABRIC_DEPTH ?? "0") || 0);
     this.#fullCodeMode = options.fullCodeMode ?? true;
     this.#kernel = options.kernel ?? (() => "typescript");
@@ -906,6 +918,22 @@ export class AgentManager {
     }
     const scope = launchScope(request.scope, request.inheritedScope);
     checkedTraceContext(request);
+    const childExtensions = capabilities.recursiveFabric && request.recursive === true
+      ? true
+      : (request.extensions ?? this.config.extensions);
+    let requiredExtensions: string[] = [];
+    if (request.requiredExtensions?.length) {
+      if (runner !== "pi" && runner !== "pi-durable") {
+        throw new Error(`requiredExtensions needs a Pi runner (pi or pi-durable), not ${runner}`);
+      }
+      if (childExtensions) {
+        throw new Error("requiredExtensions applies only with extensions: false; an extension-enabled child already loads this session's extensions");
+      }
+      requiredExtensions = resolveRequiredExtensions(request.requiredExtensions, {
+        loaded: this.#loadedExtensions?.(),
+        fabricExtensionPath: this.#fabricExtensionPath,
+      });
+    }
     const thinkingBounds = this.childThinkingBounds(request.thinkingBounds);
     const requiresFabricKernel = kernel === "python" || request.kernel === "typescript";
     let tools = this.#childTools(request, runnerAdapter, requiresFabricKernel);
@@ -943,7 +971,15 @@ export class AgentManager {
     const admissionSignal = signal ? AbortSignal.any([signal, this.#closeAbort.signal]) : this.#closeAbort.signal;
     const release = await this.#semaphore.acquire("native", admissionSignal);
     try {
-      if (runner === "pi" || runner === "pi-durable") model = await this.#prepareModel(model, request.modelMatch);
+      if (runner === "pi" || runner === "pi-durable") {
+        model = await this.#prepareModel(model, request.modelMatch);
+        assertChildModelReachable({
+          model,
+          api: model ? this.#piModelApi?.(model) : undefined,
+          extensions: childExtensions,
+          requiredExtensions,
+        });
+      }
       if (this.#closing) throw new Error("Fabric agent manager is closing");
       this.#semaphore.admit(this.#currentDepth + 1);
     } catch (error) {
@@ -1137,6 +1173,9 @@ export class AgentManager {
         ...(this.#fabricSessionId ? ["--fabric-session-id", this.#fabricSessionId] : []),
         "--extensions",
         String(extensions),
+        ...(requiredExtensions.length > 0
+          ? ["--required-extensions", JSON.stringify(requiredExtensions)]
+          : []),
         "--tools",
         JSON.stringify(tools),
         "--granted-risks",

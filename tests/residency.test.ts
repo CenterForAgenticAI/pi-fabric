@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActorManager } from "../src/actors/manager.js";
 import { AgentManager } from "../src/agents/manager.js";
@@ -1252,6 +1253,102 @@ describe("durable wait against a resident host that keeps dying", () => {
     } finally {
       await client.close();
       await state.participants.close();
+    }
+  });
+});
+
+// F-019: the resident host runs Pi with --no-extensions, so it cannot see the
+// parent's extensions. The parent publishes its loaded set in the host config;
+// the host forwards only those, and refuses anything else before launch.
+describe.skipIf(!hasResidentHost || process.platform === "win32")("durable requiredExtensions", () => {
+  const extensionPackage = (root: string, name: string): string => {
+    const directory = path.join(root, "packages", name);
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, "package.json"), JSON.stringify({ name }));
+    const entry = path.join(directory, "index.ts");
+    fs.writeFileSync(entry, "export default () => {};\n");
+    return entry;
+  };
+  const durableHarness = async (name: string) => {
+    const state = await rootHarness(name);
+    const argvFile = path.join(state.root, "worker-argv.json");
+    const capture = path.join(state.root, "capture-worker.mjs");
+    fs.writeFileSync(
+      capture,
+      `import fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(argvFile)}, JSON.stringify(process.argv));\n` +
+        `await import(${JSON.stringify(pathToFileURL(fakeWorker).href)});\n`,
+    );
+    state.config.workerPath = capture;
+    state.config.piModels = {
+      available: [
+        { provider: "provider", id: "visible", name: "Visible", api: "openai-completions" },
+        { provider: "unified", id: "claude-opus-5-5", name: "Unified", api: "unified" },
+      ],
+      aliases: {},
+      defaultModel: "provider/visible",
+    };
+    const provider = extensionPackage(state.root, "provider-pkg");
+    const client = new ResidencyClient({
+      config: state.config,
+      mesh: state.mesh,
+      participants: state.participants,
+      mainAgent: state.mainAgent,
+      hostPath,
+      parentExtensions: () => [provider],
+    });
+    return { state, client, provider, argvFile };
+  };
+
+  it("forwards a parent-loaded package and refuses a path the parent did not load", { timeout: 45_000 }, async () => {
+    const { state, client, provider, argvFile } = await durableHarness("resident-required-ext");
+    try {
+      const hostile = extensionPackage(fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-hostile-")), "hostile-pkg");
+      roots.push(path.dirname(path.dirname(path.dirname(hostile))));
+      await expect(client.spawnAgent({
+        task: "never launch",
+        transport: "process",
+        residency: "durable",
+        model: "provider/visible",
+        extensions: false,
+        requiredExtensions: [hostile],
+      })).rejects.toThrow(/not loaded by this session/);
+      expect(fs.existsSync(argvFile)).toBe(false);
+
+      const handle = await client.spawnAgent({
+        task: "durable provider extension",
+        transport: "process",
+        residency: "durable",
+        model: "unified/claude-opus-5-5",
+        extensions: false,
+        requiredExtensions: ["provider-pkg"],
+      });
+      const result = await client.waitAgent(handle.id);
+      expect(result.status, result.error).toBe("completed");
+      const argv = JSON.parse(fs.readFileSync(argvFile, "utf8")) as string[];
+      expect(argv[argv.indexOf("--required-extensions") + 1]).toBe(JSON.stringify([provider]));
+      await client.cleanupAgent(handle.id);
+    } finally {
+      await client.close();
+      await state.participants.close();
+      await stopResident(state.config);
+    }
+  });
+
+  it("refuses an extension-provided durable model for an extensions: false child", { timeout: 45_000 }, async () => {
+    const { state, client, argvFile } = await durableHarness("resident-unified-model");
+    try {
+      await expect(client.spawnAgent({
+        task: "never launch",
+        transport: "process",
+        residency: "durable",
+        model: "unified/claude-opus-5-5",
+        extensions: false,
+      })).rejects.toThrow(/provider "unified"/);
+      expect(fs.existsSync(argvFile)).toBe(false);
+    } finally {
+      await client.close();
+      await state.participants.close();
+      await stopResident(state.config);
     }
   });
 });

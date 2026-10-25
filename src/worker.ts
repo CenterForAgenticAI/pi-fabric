@@ -321,10 +321,16 @@ const main = async (): Promise<void> => {
   const piArguments = ["--mode", "rpc"];
   if (options.sessionFile) piArguments.push("--session", options.sessionFile);
   else piArguments.push("--no-session");
-  if (!options.extensions) piArguments.push("--no-extensions");
+  if (!options.extensions) {
+    piArguments.push("--no-extensions");
+    // Parent-verified provider extensions (agents requiredExtensions); -e still loads them.
+    for (const extension of options.requiredExtensions ?? []) piArguments.push("-e", extension);
+  }
   // Extension-registered model providers still resolve without the rest of
   // their extensions: the bridge registers only the requested provider.
-  const providerBridge = isPi && !options.extensions && Boolean(options.model?.includes("/"));
+  // Explicit requiredExtensions already load the provider, so they skip it.
+  const providerBridge = isPi && !options.extensions && Boolean(options.model?.includes("/")) &&
+    !(options.requiredExtensions?.length);
   if (providerBridge) {
     const bridge = import.meta.url.endsWith(".ts") ? "./agents/provider-bridge.ts" : "./agents/provider-bridge.js";
     piArguments.push("-e", fileURLToPath(new URL(bridge, import.meta.url)));
