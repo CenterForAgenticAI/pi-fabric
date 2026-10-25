@@ -14,7 +14,8 @@ const managers: AgentManager[] = [];
 afterEach(async () => {
   await Promise.all(managers.splice(0).map(manager => manager.close()));
   vi.unstubAllEnvs();
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+  // Windows can hold a handle on a just-closed worker's files for a moment.
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 // A Pi-managed installation has production dependencies, but no physical host
