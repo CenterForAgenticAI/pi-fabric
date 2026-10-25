@@ -20,6 +20,9 @@ const primaryEntryPoints = [
   "src/runners.ts",
   // Opt-in durable Pi adapter; never reachable from the extension entry.
   "src/durable.ts",
+  // Public `pi-fabric/durable-host`: embeds a durable AgentSession in a host process.
+  // Imports the Pi SDK by name (the host's peer); never reachable from the extension entry.
+  "src/durable-host.ts",
   "src/jev.ts",
   "src/assessment.ts",
   // Public `pi-fabric/scope`; also the extension's first-use scope parser.
