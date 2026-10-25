@@ -38,6 +38,14 @@ type Checkpoint =
   | { phase: "decide"; message: AssistantMessage; results: ToolResultMessage[]; action?: "end" | "continue"; terminate?: boolean };
 type ToolInput = { replaySafe?: boolean; message: AssistantMessage; call: Extract<AssistantMessage["content"][number], { type: "toolCall" }> };
 type ToolCheckpoint = { phase: "execute" };
+// The Fabric extension can be another module instance in this process, so it
+// reads the fence through this global. It is inline so neither startup graph
+// gains a chunk shared with this worker module.
+type ToolFence = { toolCallId: string; accept(): Promise<void>; arm(): Promise<void> };
+const toolFences = (): AsyncLocalStorage<ToolFence | undefined> => {
+  const holder = globalThis as typeof globalThis & { [key: symbol]: AsyncLocalStorage<ToolFence | undefined> | undefined };
+  return holder[Symbol.for("pi-fabric.durable-tool-fence.v1")] ??= new AsyncLocalStorage();
+};
 type Listener = (event: AgentEvent, signal: AbortSignal) => void | Promise<void>;
 
 /** A public-API Agent facade over restartable pi-durable tasks. */
@@ -101,15 +109,33 @@ export class DurableAgent extends Agent {
           await runtime.commit(async tx => { await this.event(tx, { type: "tool_execution_start", toolCallId: call.id, toolName: call.name, args: call.arguments }); }, ctx);
           await this.delivery;
         }
-        const outcome: { isError: boolean; result: AgentToolResult<any> } = prior && !(task.input.replaySafe === true && tool?.replay === "safe")
+        // Fabric accepts the fence before its program starts and arms it before
+        // any effect, so an accepted, unarmed attempt changed nothing. Wrapper
+        // layers drop tool replay metadata, so the fence is offered by name.
+        const fabricExec = call.name === "fabric_exec";
+        let execute = !prior || (task.input.replaySafe === true && tool?.replay === "safe");
+        if (!execute && fabricExec
+          && await runtime.memo<boolean>("fabric.fence", ctx) === true
+          && await runtime.memo<boolean>("fabric.armed", ctx) === undefined
+          && await runtime.memo<boolean>("fabric.rerun", ctx) === undefined) {
+          // One rerun only: a program that keeps crashing its process must not loop.
+          execute = await runtime.memo("fabric.rerun", true, ctx);
+        }
+        const fence: ToolFence | undefined = fabricExec ? {
+          toolCallId: call.id,
+          accept: async () => { await runtime.memo("fabric.fence", true, ctx); },
+          arm: async () => { await runtime.memo("fabric.armed", true, ctx); },
+        } : undefined;
+        const outcome: { isError: boolean; result: AgentToolResult<any> } = !execute
           ? { isError: true, result: { content: [{ type: "text" as const, text: "Tool execution interrupted; unsafe effect was not replayed." }], details: { interrupted: true } } }
-          : await runToolCall(call, {
+          // Every other tool runs outside any inherited fence.
+          : await toolFences().run(fence, () => runToolCall(call, {
             tools: context.tools ?? [], assistantMessage: message, context, signal: runtime.signal,
             ...(this.beforeToolCall ? { beforeToolCall: this.beforeToolCall } : {}), ...(this.afterToolCall ? { afterToolCall: this.afterToolCall } : {}),
             onUpdate: async result => {
               await this.transientEvent(change => runtime.commit(change, ctx), { type: "tool_execution_update", toolCallId: call.id, toolName: call.name, args: call.arguments, partialResult: result });
             },
-          });
+          }));
         const result: ToolResultMessage = { role: "toolResult", toolCallId: call.id, toolName: call.name,
           content: outcome.result.content ?? [], details: outcome.result.details, isError: outcome.isError,
           ...(outcome.result.usage ? { usage: outcome.result.usage } : {}), timestamp: Date.now() };
