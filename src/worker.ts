@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { assertWorkerRuntime, writeWorkerStartupFailure } from "./worker/startup.js";
+import { explainMissingInstall } from "./worker/missing-install.js";
 
 import { StringDecoder } from "node:string_decoder";
 import type { ImageContent } from "@earendil-works/pi-ai";
@@ -44,6 +45,14 @@ const loadWorkerModelControl = async (): Promise<WorkerModelControlModule> => {
   if (!import.meta.url.endsWith(".ts")) return import("./worker/model-control.js");
   const sourceModulePath = "./worker/model-control.ts";
   return import(sourceModulePath) as Promise<WorkerModelControlModule>;
+};
+
+type WorkerPromptModule = typeof import("./worker/prompt-lifecycle.js");
+
+const loadWorkerPromptLifecycle = async (): Promise<WorkerPromptModule> => {
+  if (!import.meta.url.endsWith(".ts")) return import("./worker/prompt-lifecycle.js");
+  const sourceModulePath = "./worker/prompt-lifecycle.ts";
+  return import(sourceModulePath) as Promise<WorkerPromptModule>;
 };
 
 type WorkerRecoveryModule = typeof import("./worker/recovery-watchdog.js");
@@ -227,7 +236,7 @@ process.on("unhandledRejection", (error) => {
 const main = async (): Promise<void> => {
   assertWorkerRuntime();
   crossSpawn = (await import("cross-spawn")).default;
-  const [optionHelpers, loadedRunRecordHelpers, sessionExportHelpers, {parseStructuredValue, validateAgentResult}, { PiModelControl }, { PiEventProjection }, { PiRecoveryWatchdog }] = await Promise.all([
+  const [optionHelpers, loadedRunRecordHelpers, sessionExportHelpers, {parseStructuredValue, validateAgentResult}, { PiModelControl }, { PiEventProjection }, { PiRecoveryWatchdog }, { PiTaskPromptLifecycle, PI_TASK_PROMPT_ID }] = await Promise.all([
     loadWorkerOptions(),
     loadWorkerRunRecord(),
     loadWorkerSessionExport(),
@@ -235,6 +244,7 @@ const main = async (): Promise<void> => {
     loadWorkerModelControl(),
     loadWorkerEventProjection(),
     loadWorkerRecovery(),
+    loadWorkerPromptLifecycle(),
   ]);
   runRecordHelpers = loadedRunRecordHelpers;
   const {
@@ -479,7 +489,9 @@ const main = async (): Promise<void> => {
   let killTimer: NodeJS.Timeout | undefined;
   let closeTimer: NodeJS.Timeout | undefined;
   const recoveryWatchdog = new PiRecoveryWatchdog((error) => failStalledChild(error));
+  const taskPrompt = new PiTaskPromptLifecycle((error) => failStalledChild(error, "fabric_prompt_error"));
   const killChild = (): void => {
+    taskPrompt.dispose();
     recoveryWatchdog.dispose();
     if (closeTimer) clearTimeout(closeTimer);
     terminateChild(child, "SIGTERM");
@@ -487,17 +499,18 @@ const main = async (): Promise<void> => {
     killTimer.unref();
     child.stdin?.end();
   };
-  const failStalledChild = (error: string): void => {
+  const failStalledChild = (error: string, type = "fabric_recovery_error"): void => {
     if (terminalStatus) return;
     terminalStatus = "failed";
     terminalError = error;
     record.error = error;
     update();
-    appendLog(`${JSON.stringify({ type: "fabric_recovery_error", error })}\n`);
+    appendLog(`${JSON.stringify({ type, error })}\n`);
     killChild();
   };
   const closeChild = (): void => {
     child.stdin?.end();
+    taskPrompt.dispose();
     recoveryWatchdog.clear();
     if (closeTimer || killTimer) return;
     // RPC EOF requests disposal, but a stuck extension can prevent process exit.
@@ -526,7 +539,8 @@ const main = async (): Promise<void> => {
         record.thinking = effectiveThinking as NonNullable<AgentRunRecord["thinking"]>;
       }
       update();
-      child.stdin?.write(`${JSON.stringify({ type: "prompt", message: task, ...(images.length > 0 ? { images } : {}) })}\n`);
+      taskPrompt.sent(PI_TASK_PROMPT_ID);
+      child.stdin?.write(`${JSON.stringify({ type: "prompt", id: PI_TASK_PROMPT_ID, message: task, ...(images.length > 0 ? { images } : {}) })}\n`);
     },
     fail(error) {
       if (terminalStatus) return;
@@ -986,6 +1000,7 @@ const main = async (): Promise<void> => {
     }
     compactControl.observe(event);
     if (modelControl.observe(event)) return;
+    taskPrompt.observe(event);
     if (event.type === "message_start" || event.type === "message_update") {
       const message = event.message;
       if (typeof message === "object" && message !== null && !Array.isArray(message)) {
@@ -1390,8 +1405,6 @@ const main = async (): Promise<void> => {
   delete record.blockedOn;
   if (claudeCloseTimer) clearTimeout(claudeCloseTimer);
   clearTimeout(timeout);
-  if (killTimer) clearTimeout(killTimer);
-  if (closeTimer) clearTimeout(closeTimer);
   recoveryWatchdog.dispose();
   if (isPi && !modelControl.ready && !terminalStatus) {
     terminalStatus = "failed";
@@ -1461,6 +1474,11 @@ const main = async (): Promise<void> => {
   } else if (outputBuffer.trim()) {
     processEvent(outputBuffer);
   }
+  // A handled task cannot start its turn once the child is gone.
+  taskPrompt.childExited();
+  // Tail frames can request closure after the child has already exited.
+  if (killTimer) clearTimeout(killTimer);
+  if (closeTimer) clearTimeout(closeTimer);
   record.exitCode = exitCode;
   record.stderr = stderr.slice(-MAX_STDERR_CHARS);
   if (
@@ -1526,8 +1544,9 @@ const main = async (): Promise<void> => {
   process.exitCode = record.status === "completed" ? 0 : 1;
 };
 
-main().catch((error) => {
-  console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
+main().catch((caught) => {
+  const error = explainMissingInstall(caught, import.meta.url);
+  console.error(error instanceof Error ? (error === caught ? (error.stack ?? error.message) : error.message) : String(error));
   writeCrashStatus(error);
   process.exit(1);
 });
