@@ -257,6 +257,31 @@ const normalizeResult = (
 // Pi 0.99 reports ordinary shell exits through isError + structuredContent.
 type PiToolResult = AgentToolResult<unknown>;
 
+/**
+ * Emit a `tool_call` event for a nested call and throw when a hook blocks it.
+ * Hooks may mutate `input` in place. Shared by pi.* tools and by interactive
+ * sessions, so a command guard sees both through one code path.
+ */
+export async function emitToolCallPreflight(
+  runner: ExtensionRunner,
+  name: string,
+  input: Record<string, unknown>,
+  context: Pick<FabricInvocationContext, "signal" | "nestedToolCallId" | "parentToolCallId" | "updateArguments">,
+  blocked = `Pi tool ${name} was blocked`,
+): Promise<void> {
+  const preflight = await runAbortable(context.signal, () => runner.emitToolCall({
+    type: "tool_call",
+    toolName: name,
+    toolCallId: context.nestedToolCallId,
+    parentToolCallId: context.parentToolCallId,
+    input,
+  }));
+  context.updateArguments?.(input);
+  if (preflight?.block) {
+    throw new Error(preflight.reason || blocked);
+  }
+}
+
 export class PiToolsProvider implements FabricProvider {
   readonly name = "pi";
   readonly #allowedTools = readChildToolAllowlist();
@@ -725,17 +750,7 @@ export class PiToolsProvider implements FabricProvider {
     context: FabricInvocationContext,
     runner: ExtensionRunner,
   ): Promise<void> {
-    const preflight = await runAbortable(context.signal, () => runner.emitToolCall({
-      type: "tool_call",
-      toolName: name,
-      toolCallId: context.nestedToolCallId,
-      parentToolCallId: context.parentToolCallId,
-      input: args,
-    }));
-    context.updateArguments?.(args);
-    if (preflight?.block) {
-      throw new Error(preflight.reason || `Pi tool ${name} was blocked`);
-    }
+    await emitToolCallPreflight(runner, name, args, context);
   }
 
   // Replay the agent-core tool-execution lifecycle for a nested pi.* call, so

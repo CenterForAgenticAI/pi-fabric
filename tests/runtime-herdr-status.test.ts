@@ -46,7 +46,9 @@ const startHerdr = async (root: string) => {
 const startRuntime = async (
   options: { mode?: ExtensionContext["mode"]; herdrStatus?: boolean } = {},
 ) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-herdr-status-runtime-"));
+  // Short on purpose: a unix socket path is capped at 104 bytes on macOS, and
+  // the suite already runs under an isolated per-run TMPDIR.
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "phs-"));
   roots.push(cwd);
   fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
   const herdr = await startHerdr(cwd);
