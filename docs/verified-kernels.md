@@ -46,11 +46,16 @@ registered module:
 
 1. Proves each law, step law, k-step law and decision. A claim counts only when
    the verdict is `proven && checked`. `checked` is the kernel's verdict on the
-   proof tree that the untrusted prover produced.
+   proof tree that the untrusted prover produced. The generator proves with the
+   prover alone (`{search: false}`). The step laws must hold from every state the
+   host can pass in, and gdp-wired's search may prove a law with invariants that
+   hold only in states reachable from `init`. A verdict that needs found laws
+   counts as unproven.
 2. Proves each deliberately broken variant (50 of them, such as "a span may
    straddle the boundary", "stale writes pass", or "derivation checks one
-   grant"). Every variant must leave at least one claim unproven. This replaces
-   the old negative-mutation script.
+   grant"). Every variant must be refuted with a counterexample (a run or a
+   state), leaving at least one claim unproven. This replaces the old
+   negative-mutation script.
 3. Replays every claim on concrete runs with `crossCheck` and
    `crossCheckDecision`. The builders are untrusted, so this catches a builder
    whose expression differs from what its callback computed.
