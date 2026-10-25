@@ -167,9 +167,20 @@ export class SessionLabelPresenter {
   }
 
   #setFooter(text: string | undefined): void {
-    if (text === this.#footer) return;
-    this.#footer = text;
-    if (this.context.hasUI) this.context.ui.setStatus(SESSION_LABEL_STATUS_KEY, text);
+    // Pi draws extension statuses verbatim, so an unstyled label reads brighter
+    // than Pi's own dim cwd and stats lines. Match them with the live theme.
+    // RPC clients render the status themselves and get the raw text.
+    const styled = text === undefined || this.context.mode !== "tui"
+      ? text
+      : this.#dim(text);
+    if (styled === this.#footer) return;
+    this.#footer = styled;
+    if (this.context.hasUI) this.context.ui.setStatus(SESSION_LABEL_STATUS_KEY, styled);
+  }
+
+  #dim(text: string): string {
+    const theme = this.context.ui.theme;
+    return typeof theme?.fg === "function" ? theme.fg("dim", text) : text;
   }
 
   async #apply(kind: HerdrName, label: string): Promise<void> {

@@ -400,6 +400,12 @@ describe("Fabric configuration", () => {
     expect(normalizeFabricConfig({ ui: { herdrStatus: "off" } }).ui.herdrStatus).toBe(true);
   });
 
+  it("normalizes the window-title toggle", () => {
+    expect(DEFAULT_FABRIC_CONFIG.ui.terminalTitle).toBe(true);
+    expect(normalizeFabricConfig({ ui: { terminalTitle: false } }).ui.terminalTitle).toBe(false);
+    expect(normalizeFabricConfig({ ui: { terminalTitle: "no" } }).ui.terminalTitle).toBe(true);
+  });
+
   it("normalizes agent-preview visibility and the global debounce", () => {
     expect(DEFAULT_FABRIC_CONFIG.ui.showAgentToolPreview).toBe(true);
     expect(DEFAULT_FABRIC_CONFIG.ui.updateDebounceMs).toBe(100);

@@ -16,7 +16,7 @@ import { nativeToolCatalog, resolveNativeTool } from "../src/native-tool-catalog
 
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach(cleanup => cleanup()));
-function fixture(profile: "additive" | "native" = "additive", runtime: "quickjs" | "node-process" | "bun-process" = "quickjs") {
+function fixture(profile: "additive" | "native" = "additive", runtime: "quickjs" | "node-process" | "bun-process" = "quickjs", extra: ReturnType<typeof defineTool>[] = []) {
   const cwd = mkdtempSync(join(tmpdir(), "fabric-native-test-"));
   cleanups.push(() => rmSync(cwd, {recursive: true, force: true}));
   writeFileSync(join(cwd, "input.txt"), "hello");
@@ -30,6 +30,7 @@ function fixture(profile: "additive" | "native" = "additive", runtime: "quickjs"
   const definitions = [
     defineTool({name: "echo", label: "Echo", description: "Structured example", parameters: Type.Object({fail: Type.Optional(Type.Boolean())}), outputSchema: Type.Object({answer: Type.Number()}), namespace: {name: "examples", instructions: "Example namespace"}, execute: echo}),
     defineTool({name: "search", label: "Search", description: "Native search tool", parameters: Type.Object({}), async execute() { return {content: [{type: "text" as const, text: "native search"}], details: {}}; }}),
+    ...extra,
   ];
   const runner = {createContext: () => ({cwd}), getActiveTools: () => definitions.map(d => d.name), emit: vi.fn(async () => {}), emitToolCall: vi.fn(async () => undefined), emitToolResult: vi.fn(async () => undefined)} as unknown as ExtensionRunner;
   const captured = new CapturedToolCatalog();
@@ -172,3 +173,49 @@ it("normalizes the opt-in profile without changing existing defaults", () => {
   expect(normalizeFabricConfig({executor:{codemodeProfile:"native"}}).executor.codemodeProfile).toBe("native");
   expect(normalizeFabricConfig({executor:{codemodeProfile:"invalid"}}).executor.codemodeProfile).toBe("additive");
 });
+
+it.skipIf(process.platform === "win32")("exposes the task id of a detached native shell call", async () => {
+  const f = fixture("native");
+  const result = await f.run('const r = await tools.bash({command:"printf hi", background:true}); return {r, id: typeof r === "object" && r ? r.taskId : undefined};');
+  expect(result.success, result.error ?? JSON.stringify(result.typeErrors)).toBe(true);
+  const value = result.value as {r: {output: string; taskId: string}; id: string};
+  expect(value.id).toMatch(/^[0-9a-f-]{36}$/);
+  expect(value.r.output).toContain(`[Task ${value.id};`);
+});
+
+it("resolves an overridden core tool to the single active definition", () => {
+  const read = {name: "read", label: "Read", description: "override", parameters: {type: "object", properties: {}}} as any;
+  const actions = [
+    {provider: "pi", ref: "pi.read", name: "read", description: "core", inputSchema: {}, risk: "read" as const},
+    {provider: "extensions", ref: "extensions.read", name: "read", description: "override", inputSchema: {}, risk: "read" as const},
+  ];
+  const entries = nativeToolCatalog(actions, [read], nativeMcpIdentity);
+  expect(entries.map(entry => entry.ref)).toEqual(["pi.read"]);
+  expect(resolveNativeTool(entries, "read").ref).toBe("pi.read");
+});
+
+it("keeps a non-core extension tool whose name matches no core tool", () => {
+  const actions = [{provider: "extensions", ref: "extensions.echo", name: "echo", description: "e", inputSchema: {}, risk: "read" as const}];
+  expect(resolveNativeTool(nativeToolCatalog(actions, [], nativeMcpIdentity), "echo").ref).toBe("extensions.echo");
+});
+
+describe("an extension override of a core tool", () => {
+  const override = () => defineTool({name: "read", label: "Read", description: "Hash-anchored read", parameters: Type.Object({path: Type.String()}), async execute() { return {content: [{type: "text" as const, text: "override read"}], details: {}}; }});
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it.each(["additive", "native"] as const)("runs the override through nativeTools.read in the %s profile", async profile => {
+    const f = fixture(profile, "quickjs", [override()]);
+    const result = await f.run('return await nativeTools.read({path: "input.txt"});');
+    expect(result.success, result.error ?? JSON.stringify(result.typeErrors)).toBe(true);
+    expect(result.value).toBe("override read");
+  });
+
+  it("stays unreachable when the child allowlist hides it", async () => {
+    vi.stubEnv("PI_FABRIC_TOOL_ALLOWLIST", JSON.stringify(["echo"]));
+    const f = fixture("native", "quickjs", [override()]);
+    const result = await f.run('return await nativeTools.read({path: "input.txt"});');
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result)).not.toContain("override read");
+  });
+});
+

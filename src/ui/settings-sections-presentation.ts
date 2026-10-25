@@ -115,6 +115,16 @@ export const buildUiSection = (
           values: BOOLEANS,
         }),
         setting(
+          "ui.terminalTitle",
+          "Terminal title",
+          config.ui.terminalTitle ? "true" : "false",
+          {
+            description:
+              "Show the latest nested tool call as the terminal window title while a fabric_exec program runs; Pi's own title returns when it stops.",
+            values: BOOLEANS,
+          },
+        ),
+        setting(
           "ui.showAgentToolPreview",
           "Agent tool preview",
           config.ui.showAgentToolPreview ? "true" : "false",
