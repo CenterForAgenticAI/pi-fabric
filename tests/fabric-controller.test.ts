@@ -741,6 +741,18 @@ describe("FabricUiController widget arrow entry", () => {
     }
   });
 
+  it("leaves another extension's later render wrapper in place when it stops", () => {
+    const { controller, editorBox } = mount("regular", { agents: false, label: "PBO-21" });
+    // Another extension wraps Pi's editor container after Fabric did.
+    const fabricRender = editorBox.render;
+    editorBox.render = (width: number) => fabricRender(width).map((line, index) => index === 1 ? "> other" : line);
+    const otherRender = editorBox.render;
+    controller.stop();
+    expect(editorBox.render).toBe(otherRender);
+    // Fabric's layer passes through: no badge, the other wrapper still applies.
+    expect(editorBox.render(40)).toEqual(["─".repeat(40), "> other", "─".repeat(40)]);
+  });
+
   it("keeps the list and the border label while agents run", () => {
     const { controller, editorBox, list } = mount("regular", { label: "PBO-21" });
     try {

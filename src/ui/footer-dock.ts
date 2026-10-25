@@ -61,8 +61,11 @@ export const withBorderBadge = (lines: string[], label: string | undefined): str
 export class FooterDock {
   #parent: LayoutNode | undefined;
   #holder: unknown;
-  /** Pi's editor container while its render carries the badge, with the original render. */
-  #editor: { node: Rendering; render: Rendering["render"] } | undefined;
+  /**
+   * Pi's editor container while its render carries the badge: the render it
+   * had, the wrapper installed over it, and whether that wrapper still badges.
+   */
+  #editor: { node: Rendering; render: Rendering["render"]; wrapper: Rendering["render"]; live: { on: boolean } } | undefined;
 
   constructor(
     private readonly tui: TUI,
@@ -126,20 +129,27 @@ export class FooterDock {
     this.#restoreEditor();
     const render = editor.render;
     const badge = this.badge;
-    this.#editor = { node: editor, render };
-    editor.render = (width: number) => {
+    const live = { on: true };
+    const wrapper = (width: number): string[] => {
       const lines = render.call(editor, width);
+      if (!live.on) return lines;
       const badged = withBorderBadge(lines, badge());
       this.#badgeDrawn = badged !== lines;
       return badged;
     };
+    this.#editor = { node: editor, render, wrapper, live };
+    editor.render = wrapper;
   }
 
   #restoreEditor(): void {
     const editor = this.#editor;
     this.#editor = undefined;
     this.#badgeDrawn = false;
-    if (editor) editor.node.render = editor.render;
+    if (!editor) return;
+    // Another extension may have wrapped the render after us: putting the
+    // original back would drop its wrapper, so ours only stops badging then.
+    editor.live.on = false;
+    if (editor.node.render === editor.wrapper) editor.node.render = editor.render;
   }
 
   #roots(): readonly unknown[] {
