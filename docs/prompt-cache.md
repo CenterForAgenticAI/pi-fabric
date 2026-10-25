@@ -6,7 +6,7 @@
 
 Observations work on ordinary Pi sessions now. Warming requires the optional native `ctx.acquireCacheWarming("idle")` capability, returning an idempotent release function. The inspected stock Pi 0.87.0/0.87.1 SDKs do **not** expose that capability. They return `unsupported`; Fabric never simulates warming with prompts, changes global settings, or sends a replacement provider request.
 
-No configuration switch is needed. Fabric acquires no warming interest until an explicit approved `cache.hold` or trusted component `cache.lease` acquisition. Native warming settings, including Pi's ordinary streaming policy, are unchanged. Acquisition has `agent` risk and may authorize paid native refreshes for the duration. Pi retains request snapshots, model eligibility, retention tiers, economic decisions, scheduling, and native safety windows. A lease cannot force a refresh or guarantee a cache hit.
+No configuration switch is needed. Fabric acquires no warming interest until an explicit approved `cache.hold` or trusted component `cache.lease` acquisition. The one exception is a decision, not an interest: when Pi's own idle warming is already enabled and a spilled shell will wake this agent, Fabric re-prices Pi's idle refresh at certain continuation (see [background tasks](background-tasks.md#prompt-cache-warming-while-yielded)). Native warming settings, including Pi's ordinary streaming policy, are unchanged. Acquisition has `agent` risk and may authorize paid native refreshes for the duration. Pi retains request snapshots, model eligibility, retention tiers, economic decisions, scheduling, and native safety windows. A lease cannot force a refresh or guarantee a cache hit.
 
 ## Guest API
 

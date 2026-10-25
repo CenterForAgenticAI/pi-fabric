@@ -75,6 +75,24 @@ suspension suppresses the reminder until new input, just like automatic delivery
 Reload/session shutdown removes the context hook along with the inbox. Awareness
 works without a terminal and does not restore processes across Pi restarts.
 
+### Prompt-cache warming while yielded
+
+Spilling ends the tool call, so the agent run settles and Pi's cache warmer moves
+to its idle phase. Pi prices idle refreshes with a fixed low continuation
+probability, because an idle session usually waits on a person. While a
+spilled job whose completion wakes this agent is still running, the next real
+request is near-certain. The inbox handles Pi's `cache_warming_decision` and,
+only when Pi chose `stop` in the idle phase, re-prices that refresh at
+probability 1 against Pi's own $0.05 savings threshold, returning `warm` if it
+clears.
+
+It never downgrades `warm` or touches streaming-phase decisions, and counts the
+same jobs as the reminder above minus UI-only monitors. It needs
+`cacheWarming: "idle"`: Pi's default `"streaming"` mode stops warming when the
+run settles, before any extension is asked. Pi's 30-minute idle horizon still
+applies, so longer jobs resume against a cold cache. Refreshes are ordinary paid
+`cache_warm` usage.
+
 ## Inspection and control
 
 - Focus the footer list with **↓** from an empty editor or `/fabric tasks`, then
