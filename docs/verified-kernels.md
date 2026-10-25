@@ -45,12 +45,12 @@ every ticket, reachable or not.
 registered module:
 
 1. Proves each law, step law, k-step law and decision. A claim counts only when
-   the verdict is `proven && checked`. `checked` is the kernel's verdict on the
-   proof tree that the untrusted prover produced. The generator proves with the
-   prover alone (`{search: false}`). The step laws must hold from every state the
-   host can pass in, and gdp-wired's search may prove a law with invariants that
-   hold only in states reachable from `init`. A verdict that needs found laws
-   counts as unproven.
+   the verdict is `proven && checked && !assumes`. `checked` is the kernel's
+   verdict on the proof tree that the untrusted prover produced. The generator
+   calls `proveSteps` with `{from: 'any'}`: the step laws must hold from every
+   state the laws allow, including host-supplied states unreachable from `init`.
+   Search still looks for breaking runs and state-independent lemmas. A verdict
+   with `assumes` depends on reachability and counts as unproven.
 2. Proves each deliberately broken variant (50 of them, such as "a span may
    straddle the boundary", "stale writes pass", or "derivation checks one
    grant"). Every variant must be refuted with a counterexample (a run or a
