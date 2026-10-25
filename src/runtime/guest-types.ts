@@ -439,6 +439,14 @@ interface FabricCapturedTool {
   (args?: Record<string, unknown>): Promise<FabricCapturedToolResult>;
 }
 type FabricExtensionsApi = Record<string, FabricCapturedTool>;
+// A provider another extension registers is a global named after it when
+// the name is free (src/provider-globals.ts). Each call is
+// tools.call({ ref: "<provider>.<action>", args }). Typed actions come from
+// the provider's input schemas (runtime/dynamic-guest-types.ts); actions
+// without usable types keep this loose shape and validate at dispatch.
+interface FabricProviderGlobal {
+  [action: string]: (args?: Record<string, unknown>) => Promise<any>;
+}
 // String-primary tools (read/bash/powershell/grep/find/ls) accept a bare string; the
 // runtime proxy coerces it to { <primaryField>: string }. Lets the model write
 // the natural form (pi.bash("ls")) instead of pi.bash({ command: "ls" }).
@@ -670,6 +678,7 @@ type FabricActorRequest = FabricActorRequestBase & (
   | { delivery: "nextTurn"; triggerTurn?: false }
   | { delivery: "steer" | "followUp"; triggerTurn: boolean }
 );
+type FabricGlobalActorTemplate = FabricActorRequest & { id: string; createdAt: number; updatedAt: number };
 interface FabricActorInfo {
   kernel?: FabricKernel;
   pythonRuntime?: "cpython" | "monty";
@@ -800,7 +809,9 @@ interface FabricAgentsApi {
   /** Advisory compaction of a running Pi-runner child at its next safe turn boundary. */
   compact(args: { id: string; instructions?: string }): Promise<{ queued: true; messageId: string }>;
   actorStatus(args: FabricAgentTargetArgs): Promise<FabricActorInfo>;
-  actors(): Promise<FabricActorInfo[]>;
+  /** Live actors in this Fabric session by default; scope "global" lists the project-independent templates. */
+  actors(args?: { scope?: "project" }): Promise<FabricActorInfo[]>;
+  actors(args: { scope: "global" }): Promise<FabricGlobalActorTemplate[]>;
   messages(args: { id: string; limit?: number }): Promise<FabricActorMessage[]>;
   remove(args: { id: string }): Promise<{ removed: boolean }>;
   /** Drop an actor's mailbox history without stopping the actor. */
@@ -808,7 +819,7 @@ interface FabricAgentsApi {
   /** Stamp a global template into the current project as a fresh live actor with no inherited history. */
   "import"(args: { id?: string; name?: string; as?: string }): Promise<FabricActorInfo>;
   /** Export a live project actor's definition to the global registry as a project-independent template. */
-  "export"(args: { id: string; overwrite?: boolean }): Promise<FabricActorRequest & { id: string; createdAt: number; updatedAt: number }>;
+  "export"(args: { id: string; overwrite?: boolean }): Promise<FabricGlobalActorTemplate>;
   log(args: {
     id: string;
     type?: "session" | "run" | "all";
@@ -1637,7 +1648,8 @@ export interface FabricGuestDeclarationOptions {
    * Pre-rendered replacement blocks from buildDynamicGuestDeclarations().
    * Applied only when the loose anchor line is still present — excluded
    * globals (or orchestration-only mode, for extensions) keep nothing to
-   * replace, and missing/undefined sections keep the loose surface.
+   * replace, and missing/undefined sections keep the loose surface. The
+   * `providers` block is appended: it declares new globals only.
    */
   dynamic?: FabricDynamicGuestDeclarations;
   /**
@@ -1685,5 +1697,7 @@ export const guestTypeDeclarations = (
       terminatedDeclaration(options.dynamic.extensions),
     );
   }
+  // Provider globals add names; they replace no static declaration.
+  if (options.dynamic?.providers) result += terminatedDeclaration(options.dynamic.providers);
   return result;
 };
