@@ -44,8 +44,6 @@ export const authorityKernels = (bug?: AuthorityBug): Kernel[] => {
       r.stepLaw("authority_use_safe: a granted use was live and named a held grant", ({ live, name, Grants }, a) => a.granted.eq(1).implies(live.eq(1).and(Grants.has(name))), ({ op }) => op.is("use")),
       r.stepLaw("authority_use_complete: a live use of a held grant is granted", ({ live, name, Grants }, a) => live.eq(1).and(Grants.has(name)).implies(a.granted.eq(1)), ({ op }) => op.is("use")),
       r.stepLaw("authority_use_preserves: a use changes no authority", ({ live, Grants }, a) => a.live.eq(live).and(exactly(a.Grants, Grants)), ({ op }) => op.is("use")),
-      // authority_child_use_safe is the composition of derive_safe (a live child's
-      // grants are within its parent) and use_safe (a granted use names a held grant).
       r.stepLaw("authority_derive_safe: a live child had a live parent and holds exactly its candidate, all within the parent",
         ({ parentLive, Candidate, Parent }, a) => a.live.eq(1).implies(all(parentLive, within(Candidate, Parent), exactly(a.Grants, Candidate))), ({ op }) => op.is("derive")),
       r.stepLaw("authority_derive_complete: a candidate within a live parent is derived exactly",
@@ -53,6 +51,9 @@ export const authorityKernels = (bug?: AuthorityBug): Kernel[] => {
         ({ op, parentLive, withinParent }) => op.is("derive").and(parentLive, withinParent)),
       r.stepLaw("authority_released_cannot_derive: a released parent derives only a released child", (_, a) => a.live.eq(0), ({ op, parentLive }) => op.is("derive").and(parentLive.not())),
       r.stepLaw("authority_released_not_live: release leaves no live authority and no grants", (_, a) => a.live.eq(0).and(everyKey((k) => a.Grants.at(k).eq(0))), ({ op }) => op.is("release")),
+      r.stepsLaw("authority_child_use_safe: a derived child's granted use names a grant of its parent", 2,
+        ({ Parent }, last, [, use]) => last.granted.eq(1).implies(Parent.has(use!.name)),
+        ({ op }, j) => (j === 0 ? op.is("derive") : op.is("use"))),
       r.stepsLaw("authority_released_refused: a released authority grants nothing", 2, (_, last) => last.granted.eq(0),
         ({ op }, j) => (j === 0 ? op.is("release") : op.is("use"))),
     ],

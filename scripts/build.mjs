@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 import { build } from "esbuild";
 import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
+import { parseArgs } from "node:util";
+
+// scripts/build-dist.mjs passes a staging directory beside dist/ and swaps it
+// in once the build is verified. Same depth as dist/, so relative source map
+// paths are identical after the move.
+const { values: options } = parseArgs({ options: { outdir: { type: "string", default: "dist" } } });
+const outdir = options.outdir;
+if (!/^[\w.-]+$/.test(outdir) || /^\.+$/.test(outdir)) throw new Error(`--outdir must be a directory directly under the package root: ${outdir}`);
 
 const primaryEntryPoints = [
   "src/index.ts",
@@ -43,6 +51,8 @@ const primaryEntryPoints = [
 // after the installed package is replaced, while preserving lazy evaluation.
 const lazyEntryPoints = [
   "src/extension-copy.ts",
+  // Herdr agent status; loaded at the first agent run inside Herdr.
+  "src/agents/herdr-status.ts",
   "src/durable/worker-host.ts",
   "src/type-error-guidance.ts",
   "src/native-discovery.ts",
@@ -54,6 +64,12 @@ const lazyEntryPoints = [
   "src/thinking-control.ts",
   "src/compaction/owner.ts",
   "src/compaction/orphan-repair.ts",
+  // /fabric subcommands; the command registers without them.
+  "src/commands/fabric-handler.ts",
+  // Peer queuing protocol; loaded at the first peer request.
+  "src/topology/peer-settle.ts",
+  // System prompt builders; loaded at the first agent start.
+  "src/core/prompt-guidance.ts",
   "src/decisions/command.ts",
   "src/decisions/events.ts",
   "src/programs/host.ts",
@@ -100,10 +116,13 @@ const lazyEntryPoints = [
   "src/ui/conversation-chrome.ts",
   "src/ui/conversation-native-reader.ts",
   "src/ui/model-picker.ts",
+  // Word-diff matcher; core tool rendering loads it at the first diff.
+  "src/ui/word-diff/line-emphasis.ts",
   "src/ui/settings.ts",
   "src/worker/event-projection.ts",
   "src/worker/model-control.ts",
   "src/worker/options.ts",
+  "src/worker/prompt-lifecycle.ts",
   "src/worker/questions.ts",
   "src/worker/recovery-watchdog.ts",
   "src/worker/result.ts",
@@ -113,7 +132,7 @@ const lazyEntryPoints = [
 
 const result = await build({
   entryPoints: [...primaryEntryPoints, ...lazyEntryPoints],
-  outdir: "dist",
+  outdir,
   outbase: "src",
   entryNames: "[dir]/[name]",
   chunkNames: "chunks/[name]-[hash]",
@@ -129,16 +148,16 @@ const result = await build({
 });
 
 // tsc does not copy input .d.ts files; ship the generated kernel ABI and receipt.
-mkdirSync("dist/verified/generated", { recursive: true });
+mkdirSync(`${outdir}/verified/generated`, { recursive: true });
 const receiptPath = "src/verified/generated/manifest.json";
 const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
 for (const source of Object.keys(receipt.outputs)) {
   if (!/^src\/verified\/generated\/[a-z-]+\.(?:js|d\.ts)$/.test(source)) {
     throw new Error(`Unexpected verified artifact path: ${source}`);
   }
-  copyFileSync(source, source.replace(/^src\//, "dist/"));
+  copyFileSync(source, source.replace(/^src\//, `${outdir}/`));
 }
-copyFileSync(receiptPath, "dist/verified/generated/manifest.json");
+copyFileSync(receiptPath, `${outdir}/verified/generated/manifest.json`);
 
 const bundledPackages = Object.keys(result.metafile.inputs).filter((input) =>
   input.includes("node_modules/"),
@@ -152,7 +171,7 @@ if (bundledPackages.length > 0) {
 // continue to use Pi's mapped TypeBox, never this isolated artifact.
 const workerResult = await build({
   entryPoints: ["src/worker/result.ts"],
-  outfile: "dist/worker/result.js",
+  outfile: `${outdir}/worker/result.js`,
   bundle: true,
   platform: "node",
   format: "esm",
