@@ -101,7 +101,7 @@ export const buildUiSection = (
           values: BOOLEANS,
         }),
         setting("ui.widget", "Widget", config.ui.widget, {
-          description: "When to show the activity widget above the editor.",
+          description: "When to show the activity widget below the editor.",
           values: WIDGET_MODES,
         }),
         setting("ui.toolDisplay", "Tool display", config.ui.toolDisplay, {

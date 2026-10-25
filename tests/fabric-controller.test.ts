@@ -591,3 +591,91 @@ describe("FabricUiController dashboard wiring", () => {
     }
   });
 });
+
+describe("FabricUiController widget arrow entry", () => {
+  const mount = () => {
+    const state = stubState();
+    state.config.ui.widget = "always";
+    state.config.ui.maxRows = 6;
+    vi.mocked(state.actors.list).mockReturnValue([]);
+    vi.mocked(state.agents.list).mockReturnValue([{
+      id: "agent-1", name: "reviewer", status: "running", transport: "process", cwd: "/tmp",
+      model: "anthropic/claude-opus-5-5", task: "Review the diff", startedAt: Date.now(),
+    }] as never);
+    let widget: FabricWidget | undefined;
+    let focused: unknown;
+    const editor = { text: "", getText() { return this.text; }, handleInput: vi.fn(), render: () => [], invalidate: () => {} };
+    focused = editor;
+    let overlay = false;
+    const tui = {
+      requestRender: vi.fn(),
+      hasOverlay: () => overlay,
+      getFocusedComponent: () => focused,
+      setFocus: (component: unknown) => {
+        if (widget) widget.focused = component === widget;
+        focused = component;
+      },
+    } as unknown as TUI;
+    const listeners: Array<(data: string) => { consume?: boolean } | undefined> = [];
+    const setWidget = vi.fn((_key: string, content: unknown) => {
+      if (typeof content === "function") widget = (content as (t: TUI, theme: Theme) => FabricWidget)(tui, theme);
+    });
+    const context = {
+      mode: "tui",
+      ui: {
+        notify: vi.fn(),
+        setWidget,
+        onTerminalInput: (handler: (data: string) => { consume?: boolean } | undefined) => {
+          listeners.push(handler);
+          return () => listeners.splice(listeners.indexOf(handler), 1);
+        },
+      },
+    } as unknown as ExtensionContext;
+    const controller = new FabricUiController(state);
+    controller.start(context);
+    const press = (data: string) => listeners.map((listener) => listener(data)).find(Boolean);
+    return { controller, editor, press, setWidget, widget: () => widget!, focused: () => focused, setOverlay: (value: boolean) => { overlay = value; } };
+  };
+
+  it("mounts the participant list below the editor and shows each row's model", () => {
+    const { controller, setWidget, widget } = mount();
+    try {
+      expect(setWidget).toHaveBeenCalledWith("pi-fabric", expect.any(Function), { placement: "belowEditor" });
+      const lines = widget().render(120).join("\n");
+      expect(lines).toContain("claude-opus-5-5");
+      expect(lines).not.toContain("anthropic/");
+      expect(lines).toContain("↓ to manage");
+    } finally {
+      controller.stop();
+    }
+  });
+
+  it("moves focus from an empty editor into the list on ↓ and back out on ↑", () => {
+    const { controller, editor, press, widget, focused } = mount();
+    try {
+      editor.text = "draft";
+      expect(press("\x1b[B")).toBeUndefined();
+      expect(focused()).toBe(editor);
+      editor.text = "";
+      expect(press("\x1b[B")).toEqual({ consume: true });
+      expect(focused()).toBe(widget());
+      // A focused widget owns input: the listener lets its own ↓ through.
+      expect(press("\x1b[B")).toBeUndefined();
+      widget().handleInput("\x1b[A");
+      expect(focused()).toBe(editor);
+    } finally {
+      controller.stop();
+    }
+  });
+
+  it("leaves ↓ to an open overlay", () => {
+    const { controller, press, setOverlay, editor, focused } = mount();
+    try {
+      setOverlay(true);
+      expect(press("\x1b[B")).toBeUndefined();
+      expect(focused()).toBe(editor);
+    } finally {
+      controller.stop();
+    }
+  });
+});

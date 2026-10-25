@@ -5,7 +5,8 @@ import { safeText } from "./format.js";
 
 /** Shortcut that focuses the Fabric widget so a participant row can be expanded in place. */
 export const FABRIC_WIDGET_FOCUS_SHORTCUT = "ctrl+shift+e";
-export const FABRIC_WIDGET_FOCUS_HINT = "ctrl+shift+e expand";
+/** ↓ in an empty editor also focuses the widget, which sits below the editor. */
+export const FABRIC_WIDGET_FOCUS_HINT = "↓ to manage";
 
 /** Rows the expanded activity pane may use, bounded again by the widget row limit. */
 export const WIDGET_ACTIVITY_ROWS = 12;

@@ -81,12 +81,15 @@ export interface FabricWidgetRow {
   id: string;
   kind: "agent" | "actor";
   name: string;
+  model?: string;
 }
 
 /** Optional interaction wiring; without it the widget stays a passive status box. */
 export interface FabricWidgetInteraction {
   /** Live activity for an expanded row, read from the participant's event log. */
   activity: (row: FabricWidgetRow) => FabricAgentTranscript | undefined;
+  /** Open the participant's full conversation, where it can be read and steered. */
+  open?: (row: FabricWidgetRow) => void;
   /**
    * Return focus to the editor. `forward` is a key the widget does not use; the
    * editor receives it, because Pi handles Ctrl+C and extension shortcuts there.
@@ -97,6 +100,10 @@ export interface FabricWidgetInteraction {
   /** Ask the host to redraw (selection and expansion change without a snapshot change). */
   requestRender: () => void;
 }
+
+/** Model id without its provider prefix: `anthropic/claude-opus-5-5` → `claude-opus-5-5`. */
+const modelName = (model: string | undefined): string | undefined =>
+  model ? safeText(model.slice(model.lastIndexOf("/") + 1)).trim() || undefined : undefined;
 
 const agentLines = (
   theme: Theme,
@@ -114,6 +121,7 @@ const agentLines = (
           ? "thinking"
           : agent.status);
   const metrics = [
+    modelName(agent.model),
     agent.toolCalls !== undefined ? `${agent.toolCalls} calls` : undefined,
     agent.usage ? `${formatTokens(agent.usage.input + agent.usage.output)} tok` : undefined,
     agent.startedAt
@@ -214,6 +222,17 @@ export class FabricWidget implements Component, Focusable {
     if (!rows.some((row) => row.id === this.#selectedId)) this.#selectedId = this.#expandedId ?? rows[0]?.id;
   }
 
+  /** Select the top row; ↓ from the editor lands on the row next to it. */
+  selectFirst(): void {
+    const rows = this.#selectableRows();
+    this.#selectedId = rows.find((row) => row.id === this.#expandedId)?.id ?? rows[0]?.id;
+  }
+
+  /** True while at least one participant row can take focus. */
+  hasRows(): boolean {
+    return this.#selectableRows().length > 0;
+  }
+
   #interactionKey(): string {
     return `${this.focused}|${this.#selectedId ?? ""}|${this.#expandedId ?? ""}|${this.#activityScroll}`;
   }
@@ -231,10 +250,20 @@ export class FabricWidget implements Component, Focusable {
       if (this.#expandedId && matchesKey(data, "escape")) this.#expandedId = undefined;
       else this.interaction?.release();
     } else if (matchesKey(data, "up") || data === "k") {
-      select(index - 1);
+      // The widget sits below the editor, so ↑ past the top row returns to it.
+      if (index === 0 && matchesKey(data, "up")) {
+        this.#expandedId = undefined;
+        this.interaction?.release();
+      } else select(index - 1);
     } else if (matchesKey(data, "down") || data === "j") {
       select(index + 1);
-    } else if (matchesKey(data, "enter") || data === " ") {
+    } else if (matchesKey(data, "enter")) {
+      const row = rows[index];
+      if (row && this.interaction?.open) {
+        this.#expandedId = undefined;
+        this.interaction.open(row);
+      } else if (this.#selectedId) this.#toggle(this.#selectedId);
+    } else if (data === " ") {
       if (this.#selectedId) this.#toggle(this.#selectedId);
     } else if (this.#expandedId && (matchesKey(data, "pageUp") || data === "K")) {
       this.#activityScroll = Math.min(this.#activityMaxScroll, this.#activityScroll + Math.max(1, this.#paneRows - 1));
@@ -387,19 +416,20 @@ export class FabricWidget implements Component, Focusable {
       this.theme,
       this.interaction?.activity(expanded),
       width,
-      paneRows,
+      this.#paneRows,
       this.#activityScroll,
       this.interaction?.hideThinking?.() ?? false,
     );
     this.#activityMaxScroll = activity.maxScroll;
     this.#activityScroll = Math.min(this.#activityScroll, activity.maxScroll);
     const position = this.#activityScroll > 0 ? ` · ↑${this.#activityScroll}` : " · live";
+    const model = modelName(expanded.model);
     const help = this.focused
-      ? "↑↓ switch · PgUp/PgDn scroll · ⏎/click collapse · esc close"
+      ? `↑↓ switch · PgUp/PgDn scroll${this.interaction?.open ? " · ⏎ open" : ""} · space collapse · esc close`
       : `click or ${FABRIC_WIDGET_FOCUS_SHORTCUT} to focus`;
     return [
       ...list,
-      widgetDivider(this.theme, width, this.theme.fg("accent", `${safeText(expanded.name)} activity${position}`)),
+      widgetDivider(this.theme, width, this.theme.fg("accent", `${safeText(expanded.name)} activity${model ? ` · ${model}` : ""}${position}`)),
       ...activity.lines,
       widgetDivider(this.theme, width, this.theme.fg("dim", help)),
     ].map((line) => truncateToWidth(line, width));
@@ -408,7 +438,9 @@ export class FabricWidget implements Component, Focusable {
   /** Advertise the expand shortcut on the header while participant rows exist. */
   #withFocusHint(lines: string[], hasRows: boolean): string[] {
     if (!this.interaction || lines.length === 0 || !hasRows) return lines;
-    const hint = this.focused ? "↑↓ select · ⏎ expand · esc back" : FABRIC_WIDGET_FOCUS_HINT;
+    const hint = this.focused
+      ? `↑↓ select${this.interaction.open ? " · ⏎ open" : ""} · space peek · esc back`
+      : FABRIC_WIDGET_FOCUS_HINT;
     return [`${lines[0]} · ${this.theme.fg("dim", hint)}`, ...lines.slice(1)];
   }
 
@@ -511,7 +543,13 @@ export class FabricWidget implements Component, Focusable {
 
     const pushParticipant = (agent: FabricUiAgent, kind: "agent" | "actor"): void => {
       const id = kind === "actor" ? agent.actorId ?? agent.id : agent.id;
-      rows.push({ id, kind, name: agent.name, line: lines.length });
+      rows.push({
+        id,
+        kind,
+        name: agent.name,
+        ...(agent.model ? { model: agent.model } : {}),
+        line: lines.length,
+      });
       lines.push(...agentLines(this.theme, agent, snapshot.now));
     };
     for (const agent of activeAgents) pushParticipant(agent, "agent");

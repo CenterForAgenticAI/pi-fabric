@@ -2,6 +2,7 @@ import path from "node:path";
 import { resolveAgentDir } from "../core/agent-dir.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
+import { matchesKey } from "@earendil-works/pi-tui";
 import type { CodePreviewSettings } from "./code-preview.js";
 import type { FabricConversationState, FabricConversationTarget, FabricConversationView } from "./conversation.js";
 import type { NativeConversationReader, NativeConversationSource } from "./conversation-native-reader.js";
@@ -66,6 +67,7 @@ export class FabricUiController {
   #actorUnsubscribe: (() => void) | undefined;
   #agentUnsubscribe: (() => void) | undefined;
   #shellUnsubscribe: (() => void) | undefined;
+  #arrowEntryUnsubscribe: (() => void) | undefined;
   #tasksOpen = false;
   #tasksView: import("./shell-tasks.js").ShellTasksView | undefined;
   #closeTasks: (() => void) | undefined;
@@ -123,6 +125,9 @@ export class FabricUiController {
     this.#actorUnsubscribe = this.state.actors.subscribe(() => this.#scheduleRefresh());
     this.#agentUnsubscribe = this.state.agents.subscribeUi(() => this.#scheduleRefresh());
     this.#shellUnsubscribe = this.state.shellJobs?.subscribe(() => this.#scheduleRefresh());
+    // Observed before the editor sees the key; consumed only when it moves focus.
+    this.#arrowEntryUnsubscribe = context.ui.onTerminalInput?.((data) =>
+      matchesKey(data, "down") && this.#enterWidgetFromEditor() ? { consume: true } : undefined);
     this.#refresh();
     this.#schedulePoll();
   }
@@ -136,6 +141,8 @@ export class FabricUiController {
     this.#tasksOpen = false;
     this.#shellUnsubscribe?.();
     this.#shellUnsubscribe = undefined;
+    this.#arrowEntryUnsubscribe?.();
+    this.#arrowEntryUnsubscribe = undefined;
     this.#closeConversation?.();
     this.#closeConversation = undefined;
     this.#conversationView?.dispose();
@@ -204,6 +211,43 @@ export class FabricUiController {
     if (widget.focused) return this.#releaseWidget();
     const current = tui.getFocusedComponent?.();
     if (current && current !== widget) this.#widgetReturnFocus = current as Component;
+    widget.selectDefault();
+    tui.setFocus(widget);
+    tui.requestRender();
+  }
+
+  /**
+   * ↓ in an empty editor moves into the participant list below it, as in Claude
+   * Code. The editor has no use for ↓ there: history browsing ends at empty text.
+   */
+  #enterWidgetFromEditor(): boolean {
+    if (this.ownsInput) return false;
+    const tui = this.#widgetTui as (TUI & { getFocusedComponent?(): unknown }) | undefined;
+    const widget = this.#widget;
+    if (!tui || !widget || tui.hasOverlay() || !widget.hasRows()) return false;
+    const editor = tui.getFocusedComponent?.() as
+      | (Component & { getText?(): string; isShowingAutocomplete?(): boolean })
+      | null
+      | undefined;
+    // Only Pi's main editor qualifies: dialogs and selectors keep their own arrows.
+    if (!editor || editor === widget || typeof editor.getText !== "function") return false;
+    if (editor.getText() !== "" || editor.isShowingAutocomplete?.()) return false;
+    this.#widgetReturnFocus = editor;
+    widget.selectFirst();
+    tui.setFocus(widget);
+    tui.requestRender();
+    return true;
+  }
+
+  /** Enter on a widget row: open the participant's conversation, then come back to the list. */
+  async #openFromWidget(context: ExtensionContext, id: string): Promise<void> {
+    this.#releaseWidget();
+    const epoch = this.#epoch;
+    await this.openConversation(context, id);
+    if (epoch !== this.#epoch || this.ownsInput) return;
+    const tui = this.#widgetTui as (TUI & { getFocusedComponent?(): unknown }) | undefined;
+    const widget = this.#widget;
+    if (!tui || !widget?.hasRows() || tui.getFocusedComponent?.() !== this.#widgetReturnFocus) return;
     widget.selectDefault();
     tui.setFocus(widget);
     tui.requestRender();
@@ -890,6 +934,7 @@ export class FabricUiController {
                   : this.#snapshot.agents.find((agent) => agent.id === row.id);
                 return target ? this.#widgetTranscripts.read(this.#transcriptSource(target)) : undefined;
               },
+              open: (row) => void this.#openFromWidget(context, row.id),
               release: (forward) => this.#releaseWidget(forward),
               requestRender: () => tui.requestRender(),
               hideThinking: () => this.#widgetHidesThinking(context, tui),
@@ -897,7 +942,8 @@ export class FabricUiController {
           );
           return this.#widget;
         },
-        { placement: "aboveEditor" },
+        // Below the editor, as in Claude Code: ↓ moves into the list and ↑ back out.
+        { placement: "belowEditor" },
       );
       return;
     }

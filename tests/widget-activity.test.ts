@@ -57,9 +57,10 @@ const transcript = (): FabricAgentTranscript =>
     { type: "tool_execution_start", toolCallId: "t1", toolName: "read", args: { path: "src/a.ts" } },
   ]);
 
-const setup = (options: { current?: FabricDashboardSnapshot; terminalRows?: number; hideThinking?: boolean; activity?: () => FabricAgentTranscript } = {}) => {
+const setup = (options: { current?: FabricDashboardSnapshot; terminalRows?: number; hideThinking?: boolean; activity?: () => FabricAgentTranscript; open?: boolean } = {}) => {
   const current = options.current ?? snapshot();
   const reads: FabricWidgetRow[] = [];
+  const opened: FabricWidgetRow[] = [];
   const forwarded: string[] = [];
   let released = 0;
   const widget = new FabricWidget(theme, () => current, 6, () => options.terminalRows ?? 40, undefined, {
@@ -74,8 +75,9 @@ const setup = (options: { current?: FabricDashboardSnapshot; terminalRows?: numb
     },
     requestRender: () => {},
     ...(options.hideThinking === undefined ? {} : { hideThinking: () => options.hideThinking! }),
+    ...(options.open ? { open: (row: FabricWidgetRow) => { opened.push(row); } } : {}),
   });
-  return { widget, reads, forwarded, released: () => released };
+  return { widget, reads, opened, forwarded, released: () => released };
 };
 
 const longTranscript = (): FabricAgentTranscript =>
@@ -104,7 +106,7 @@ describe("Fabric widget activity expansion", () => {
   it("expands the selected participant inline and collapses it again from the keyboard", () => {
     const { widget, reads } = setup();
     const collapsed = widget.render(100);
-    expect(collapsed.join("\n")).toContain("ctrl+shift+e expand");
+    expect(collapsed.join("\n")).toContain("↓ to manage");
 
     widget.focused = true;
     widget.selectDefault();
@@ -121,6 +123,34 @@ describe("Fabric widget activity expansion", () => {
     widget.handleInput("\r");
     expect(widget.expandedId).toBeUndefined();
     expect(widget.render(100).join("\n")).not.toContain("advisor activity");
+  });
+
+  it("Enter opens the selected participant and Space peeks inline, as in Claude Code", () => {
+    const current = snapshot() as FabricDashboardSnapshot & { agents: FabricUiAgent[] };
+    current.agents = [{ ...agent("agent-1", "security-reviewer"), model: "anthropic/claude-sonnet-5-5" }];
+    const { widget, opened } = setup({ current, open: true });
+    expect(widget.render(120)[1]).toContain("claude-sonnet-5-5");
+    widget.focused = true;
+    widget.selectFirst();
+    expect(widget.render(120)[0]).toContain("⏎ open · space peek");
+    widget.handleInput(" ");
+    expect(widget.expandedId).toBe("agent-1");
+    const peek = widget.render(120).join("\n");
+    expect(peek).toContain("security-reviewer activity · claude-sonnet-5-5 · live");
+    widget.handleInput("\r");
+    expect(opened).toMatchObject([{ id: "agent-1", kind: "agent", model: "anthropic/claude-sonnet-5-5" }]);
+    expect(widget.expandedId).toBeUndefined();
+  });
+
+  it("↑ on the top row returns focus to the editor above the list", () => {
+    const { widget, released } = setup();
+    widget.focused = true;
+    widget.selectFirst();
+    widget.handleInput("\x1b[B");
+    widget.handleInput("\x1b[A");
+    expect(released()).toBe(0);
+    widget.handleInput("\x1b[A");
+    expect(released()).toBe(1);
   });
 
   it("Esc collapses first, then releases focus to the editor", () => {
