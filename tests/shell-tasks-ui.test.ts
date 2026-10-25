@@ -29,18 +29,18 @@ const fixture = () => {
 
 describe("background shell UI", () => {
   it.each<[string, Partial<FabricShellJobInfo>, Parameters<Theme["fg"]>[0], string]>([
-    ["running", { status: "running" }, "accent", "◐"],
-    ["spilled", {}, "accent", "◐"],
-    ["stopping", { stopping: true }, "warning", "◐"],
-    ["monitor:ui", { monitor: { delivery: "ui", timeoutMs: 300000, intervalMs: 5000 } }, "accent", "◐"],
-    ["monitor:wake", { monitor: { delivery: "wake", timeoutMs: 300000, intervalMs: 5000 } }, "accent", "◐"],
-    ["exited", { status: "exited", finishedAt: 13000 }, "success", "✓"],
-    ["failed", { status: "failed", finishedAt: 13000 }, "error", "✗"],
-    ["killed", { status: "killed", finishedAt: 13000 }, "dim", "■"],
-    ["timed_out", { status: "timed_out", finishedAt: 13000 }, "error", "✗"],
-    ["exited", { status: "exited", finishedAt: 13000, monitor: { delivery: "ui", timeoutMs: 300000, intervalMs: 5000 } }, "success", "✓"],
-    ["stopping", { stopping: true, monitor: { delivery: "wake", timeoutMs: 300000, intervalMs: 5000 } }, "warning", "◐"],
-  ])("renders %s shells with semantic status icons, muted labels and dim metrics", (status, overrides, color, glyph) => {
+    ["running", { status: "running" }, "accent", "○"],
+    ["spilled", {}, "accent", "○"],
+    ["stopping", { stopping: true }, "warning", "○"],
+    ["monitor:ui", { monitor: { delivery: "ui", timeoutMs: 300000, intervalMs: 5000 } }, "accent", "○"],
+    ["monitor:wake", { monitor: { delivery: "wake", timeoutMs: 300000, intervalMs: 5000 } }, "accent", "○"],
+    ["exited", { status: "exited", finishedAt: 13000 }, "success", "○"],
+    ["failed", { status: "failed", finishedAt: 13000 }, "error", "○"],
+    ["killed", { status: "killed", finishedAt: 13000 }, "dim", "○"],
+    ["timed_out", { status: "timed_out", finishedAt: 13000 }, "error", "○"],
+    ["exited", { status: "exited", finishedAt: 13000, monitor: { delivery: "ui", timeoutMs: 300000, intervalMs: 5000 } }, "success", "○"],
+    ["stopping", { stopping: true, monitor: { delivery: "wake", timeoutMs: 300000, intervalMs: 5000 } }, "warning", "○"],
+  ])("renders %s shells with status-coloured circles, muted labels and dim metrics", (status, overrides, color, glyph) => {
     vi.useFakeTimers(); vi.setSystemTime(13000);
     const h = fixture();
     const colors: Record<string, number> = { dim: 90, muted: 37, accent: 36, success: 32, error: 31, warning: 33 };
@@ -57,9 +57,10 @@ describe("background shell UI", () => {
       const snapshot = { ...h.controller.snapshot(), now: 13000, shells: [description === undefined ? job : { ...job, description }] };
       const widget = new FabricWidget(ansiTheme, () => snapshot, 5);
       const lines = widget.render(120);
-      expect(lines[0]).toContain(ansiTheme.fg("dim", " · /fabric tasks · ctrl+alt+t"));
-      expect(lines[1]).toBe(
-        `  ${ansiTheme.fg(color, glyph)} ${ansiTheme.fg("muted", "7b6eb606")} ${ansiTheme.fg("muted", status)}` +
+      expect(lines[0]).toBe("");
+      expect(lines[1]).toContain(ansiTheme.fg("dim", "ctrl+alt+t tasks"));
+      expect(lines[2]).toBe(
+        `${ansiTheme.fg(color, glyph)} ${ansiTheme.fg("muted", "7b6eb606")} ${ansiTheme.fg("muted", status)}` +
         `${ansiTheme.fg("dim", " · 3s · ")}${ansiTheme.fg("muted", description ? "Watch CI 界" : "sleep 30")}`,
       );
       for (const width of [1, 12, 40, 80]) {
@@ -68,21 +69,19 @@ describe("background shell UI", () => {
     }
   });
 
-  it("animates spilled shell icons and replaces them with a fixed completion icon", async () => {
+  it("keeps a steady shell circle and redraws it when the task completes", async () => {
     vi.useFakeTimers(); vi.setSystemTime(10000);
     const h = fixture();
     const job = h.jobs.begin("bash", "sleep 30"); job.spill();
     const widget = new FabricWidget(theme, () => ({ ...h.controller.snapshot(), now: Date.now(), shells: h.jobs.list() }), 5);
-    expect(widget.render(120)[1]).toMatch(/^  ◐ /);
+    expect(widget.render(120)[2]).toMatch(/^○ .* spilled /);
     vi.setSystemTime(10250);
-    expect(widget.hasChanged()).toBe(true);
-    expect(widget.render(120)[1]).toMatch(/^  ◓ /);
+    expect(widget.hasChanged()).toBe(false);
     await job.finish(0);
     expect(widget.hasChanged()).toBe(true);
-    expect(widget.render(120)[1]).toMatch(/^  ✓ .* exited /);
+    expect(widget.render(120)[2]).toMatch(/^○ .* exited /);
     vi.setSystemTime(10500);
     expect(widget.hasChanged()).toBe(false);
-    expect(widget.render(120)[1]).toMatch(/^  ✓ /);
   });
   it("keeps the widget live after the executor is idle and refreshes elapsed time without output", async () => {
     vi.useFakeTimers(); vi.setSystemTime(10000);
@@ -95,7 +94,7 @@ describe("background shell UI", () => {
     expect(shouldShowFabricWidget(snapshot, "auto")).toBe(true);
     expect(shouldShowFabricWidget(snapshot, "hidden")).toBe(false);
     const widget = new FabricWidget(theme, () => h.controller.snapshot(), 5);
-    expect(widget.render(80).join("\n")).toContain("/fabric tasks");
+    expect(widget.render(80).join("\n")).toContain("ctrl+alt+t tasks");
     expect(widget.render(80).join("\n")).toContain("Watch CI");
     await vi.advanceTimersByTimeAsync(3000);
     expect(widget.render(80).join("\n")).toContain("3s");

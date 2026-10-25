@@ -13,6 +13,8 @@ export interface ShellTasksOptions {
   rows: () => number;
   keys?: KeybindingsManager;
   id?: string;
+  /** Esc in the task opened by `id` closes the view; opened from the agent list, there is no list to step back to. */
+  closeFromTask?: boolean;
 }
 
 const groupNames = ["Active", "Needs attention", "Finished"] as const;
@@ -29,6 +31,8 @@ export class ShellTasksView implements Component {
   #listStart = 0;
   #pageSize = 1;
   #id: string | undefined;
+  /** With `closeFromTask`, the task whose detail closes the view on Esc. */
+  readonly #openedOn: string | undefined;
   #output = "";
   #scroll = 0;
   #stopArmed: number | undefined;
@@ -40,6 +44,7 @@ export class ShellTasksView implements Component {
 
   constructor(readonly options: ShellTasksOptions) {
     this.#id = options.id;
+    this.#openedOn = options.closeFromTask ? options.id : undefined;
     this.#refresh();
     if (!this.#id && this.#jobs.length === 1) this.#id = this.#jobs[0]!.id;
     this.#selected = this.#id ?? this.#selected;
@@ -92,7 +97,7 @@ export class ShellTasksView implements Component {
     if (this.#closed) return;
     const keys = this.options.keys ?? getKeybindings();
     if (keys.matches(data, "tui.select.cancel")) {
-      if (!this.#id) { this.dispose(); this.options.done(); return; }
+      if (!this.#id || (this.#openedOn !== undefined && this.#id === this.#openedOn)) { this.dispose(); this.options.done(); return; }
       this.#id = undefined; this.#stopArmed = undefined; this.#refresh(); return;
     }
     if (!this.#id) {

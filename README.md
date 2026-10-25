@@ -142,7 +142,7 @@ Execution references stay progressive: the model loads the selected kernel's ski
 
 ## Agent conversations
 
-Press **ctrl+shift+a** or run **`/fabric chat <agent-id-or-name>`** to open a live, full-screen child conversation with a multiline editor. Send steering or follow-ups directly, switch between nested agents, and return to Main without stopping its work. Drafts and scroll positions stay with each conversation. Completed one-shot agents are read-only; persistent actors accept further messages. Drag to select transcript text, use `/copy` or `/copy selection`, and type `/help` for the small set of preview-local commands with slash completion. See [focused conversations](docs/interface.md#focused-conversations) for controls and current limitations.
+Press **↓** in an empty editor and **Enter** on an agent in the list at the bottom of the screen, or run **`/fabric chat <agent-id-or-name>`**, to open a live, full-screen child conversation with a multiline editor. Send steering or follow-ups directly, switch between nested agents, and return to Main without stopping its work. Drafts and scroll positions stay with each conversation. Completed one-shot agents are read-only; persistent actors accept further messages. Drag to select transcript text, use `/copy` or `/copy selection`, and type `/help` for the small set of preview-local commands with slash completion. See [focused conversations](docs/interface.md#focused-conversations) for controls and current limitations.
 
 ## The dashboard
 

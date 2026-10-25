@@ -107,6 +107,15 @@ describe("shell task inspector layout", () => {
     expect(h.done).toHaveBeenCalledOnce(); expect(job.abort.signal.aborted).toBe(false);
   });
 
+  it("closes in one step when the agent list opened it on a task", () => {
+    const h = fixture(); const job = h.add("First"); h.add("Second");
+    const view = new ShellTasksView({ jobs: h.jobs, theme, rows: () => 24, requestRender: h.requestRender, done: h.done, id: job.id, closeFromTask: true });
+    expect(view.render(80)[0]).toContain(job.id.slice(0, 8));
+    view.handleInput("\u001b");
+    expect(h.done).toHaveBeenCalledOnce(); expect(job.abort.signal.aborted).toBe(false);
+    view.dispose();
+  });
+
   it("keeps borders, footer and selected rows bounded for tiny, narrow and wide terminals", () => {
     const h = fixture(); h.add("Watch 界 👩‍💻 é\u001b[2J"); h.add("Build");
     const view = h.open();

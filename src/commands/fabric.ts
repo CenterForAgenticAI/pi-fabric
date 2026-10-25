@@ -3,8 +3,7 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import type { CapturedToolCatalog } from "../capture/catalog.js";
 import type { FabricState } from "../fabric-state.js";
 import type { FabricUiController } from "../ui/controller.js";
-import { FABRIC_CONVERSATION_SHORTCUT } from "../ui/conversation-shortcut.js";
-import { FABRIC_WIDGET_FOCUS_SHORTCUT } from "../ui/widget-activity.js";
+import { FABRIC_WIDGET_FOCUS_SHORTCUT } from "../ui/widget-keys.js";
 import { safeText } from "../ui/format.js";
 import {
   FABRIC_DECISION_REQUEST_EVENT,
@@ -154,21 +153,8 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
     });
   }
 
-  pi.registerShortcut?.(FABRIC_CONVERSATION_SHORTCUT, {
-    description: "Open Fabric conversation or return to Main",
-    handler: async (context) => {
-      if (context.mode !== "tui") return;
-      try {
-        await state.ensure(context);
-        await fabricUi.openConversation(context);
-      } catch (error) {
-        context.ui.notify(safeText(error instanceof Error ? error.message : String(error)), "error");
-      }
-    },
-  });
-
   pi.registerShortcut?.(FABRIC_WIDGET_FOCUS_SHORTCUT, {
-    description: "Focus the Fabric widget to expand an agent's live activity",
+    description: "Focus the Fabric agent list",
     handler: async (context) => {
       if (context.mode !== "tui") return;
       fabricUi.focusWidget(context);
