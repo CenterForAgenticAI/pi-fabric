@@ -120,7 +120,7 @@ export const buildUiSection = (
           config.ui.terminalTitle ? "true" : "false",
           {
             description:
-              "Show the latest nested tool call as the terminal window title while a fabric_exec program runs; Pi's own title returns when it stops.",
+              "Keep the latest fabric_exec display name as the terminal window title, including after a resume.",
             values: BOOLEANS,
           },
         ),
