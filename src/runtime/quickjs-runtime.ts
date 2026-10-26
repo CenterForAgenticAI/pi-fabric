@@ -503,6 +503,7 @@ globalThis.agents = Object.freeze({
   main: () => __call("agents.main", {}),
   sessions: () => __call("agents.sessions", {}),
   peers: () => __call("agents.peers", {}),
+  definitions: () => __call("agents.definitions", {}),
   subscribe: (args) => __call("agents.subscribe", args),
   subscriptions: (args = {}) => __call("agents.subscriptions", args),
   unsubscribe: (args) => __call("agents.unsubscribe", args),
