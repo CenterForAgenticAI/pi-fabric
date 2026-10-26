@@ -493,13 +493,10 @@ export class FabricExecutionService {
         ? (action, reason) => this.#headlessApproval!(action, reason, options.signal)
         : undefined,
       policyHooks && this.config.approvals.policyHooks === true
-        ? {
-            get active() { return policyHooks.size > 0; },
-            evaluate: (action, args) => policyHooks.evaluate(action, args, {
-              caller: "program",
-              ...(options.parentToolCallId ? { parentToolCallId: options.parentToolCallId } : {}),
-            }, options.signal),
-          }
+        ? policyHooks.bind({
+            caller: "program",
+            ...(options.parentToolCallId ? { parentToolCallId: options.parentToolCallId } : {}),
+          }, () => options.signal)
         : undefined,
     );
     const audits: FabricCallAudit[] = [];

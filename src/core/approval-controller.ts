@@ -85,6 +85,8 @@ export interface FabricAutoApprovalAudit {
   verdicts?: FabricAutoApprovalVerdicts;
   /** Jev path only: effective auto-approval threshold. */
   threshold?: number;
+  /** Set when an extension action policy hook settled the prompt instead of a classifier. */
+  policyHook?: string;
 }
 
 export class ApprovalController {
@@ -164,8 +166,19 @@ export class ApprovalController {
       return;
     }
     if (policy === "allow") return;
-    // A hook allow settles an ask or auto prompt only.
-    if (hook?.decision === "allow") return;
+    // A hook allow settles an ask or auto prompt only. Record it like an auto
+    // decision, so the settled prompt leaves a trace naming the hook.
+    if (hook?.decision === "allow") {
+      this.onAutoDecision?.({
+        action: action.ref,
+        risk: action.risk,
+        decision: "allow",
+        reason: `Allowed by Fabric action policy hook ${hook.hook}`,
+        policyHook: hook.hook,
+        at: Date.now(),
+      });
+      return;
+    }
     const mode = actionApprovalOverride(this.config.actions, action.ref) ?? this.config[action.risk];
 
     await this.sessionApprovals.serialize(async () => {

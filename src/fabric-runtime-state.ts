@@ -1139,6 +1139,7 @@ export class FabricRuntimeState {
               },
             },
             authorize: (ref, parentToolCallId) => this.#schema!.authorize(ref, parentToolCallId),
+            actionPolicyHooks: this.#actionPolicyHooks,
             jevFabric: this.#shellJobs.durable,
           });
           const setDecisionProfile = (profile: string | null | undefined) => provider.setDecisionProfile(profile);

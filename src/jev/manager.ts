@@ -4,6 +4,7 @@ import { runAbortable } from "../async-settlement.js";
 import type { ActionRegistry, FabricCapabilityViewLease, FabricCallAudit } from "../core/action-registry.js";
 import { ApprovalController, FabricSessionApprovals } from "../core/approval-controller.js";
 import { FabricAutoApprovalClassifier } from "../core/auto-approval-classifier.js";
+import type { FabricActionPolicyHooks } from "../core/action-policy-hooks.js";
 import type { FabricConfig } from "../config.js";
 import type { FabricInvocationContext } from "../protocol.js";
 import type { JevLaunch, JevRunInfo, JevJson, JevResponse } from "./types.js";
@@ -28,6 +29,8 @@ export interface JevManagerOptions {
   /** Host-only target snapshot hook, before any guest execution. */
   onRunStarted?(id: string): void;
   authorize?(ref: string, parentToolCallId: string): Promise<void>;
+  /** Extension action policy hooks; consulted only when approvals.policyHooks is true. */
+  actionPolicyHooks?: FabricActionPolicyHooks | undefined;
 }
 const prelude = `const input = JSON.parse(π.__jevInput);
 const program = Object.freeze({
@@ -125,7 +128,18 @@ export class JevProgramManager {
       const sources = await registry.guestTypeSources({ ...context, capabilityView: lease.view });
       const { code, checked } = runtime.prepare(prelude + definition.code, true, [], sources, [], true);
       if (checked.errors.length) throw new Error(`Jev program typecheck failed: ${checked.errors.map(e => e.message).join("; ").slice(0, 2000)}`);
-      const approval = new ApprovalController(config.approvals, context.extensionContext, this.#approvals, new FabricAutoApprovalClassifier(() => config.jev));
+      // Nested program actions pass the same extension policy hooks as the
+      // fabric_exec program that launched this one; the run's own signal takes
+      // over once the run exists.
+      let policySignal = context.signal;
+      const policyHooks = this.options.actionPolicyHooks;
+      const policyGate = policyHooks && config.approvals.policyHooks === true
+        ? policyHooks.bind({ caller: "jev", parentToolCallId: context.parentToolCallId }, () => policySignal)
+        : undefined;
+      const approval = new ApprovalController(
+        config.approvals, context.extensionContext, this.#approvals, new FabricAutoApprovalClassifier(() => config.jev),
+        undefined, undefined, undefined, policyGate,
+      );
       if (observe) await approval.approve({
         ref: "jev.spawn", provider: "jev", name: "spawn",
         description: "Observe future Main lifecycle events and explicitly selected content for a bounded Jev program",
@@ -143,6 +157,7 @@ export class JevProgramManager {
       const maxTokens = bounded(limits.maxTokens, 100_000, config.jev.maxTokens);
       const id = randomUUID();
       const controller = new AbortController();
+      policySignal = controller.signal;
       const info: JevRunInfo = {
         id, name: definition.name, state: "running", background, startedAt: Date.now(),
         evaluations: 0, toolCalls: 0, usage: { input_tokens: 0, output_tokens: 0 },

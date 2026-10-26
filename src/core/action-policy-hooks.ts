@@ -11,11 +11,13 @@ import type { ResolvedFabricAction } from "./action-registry.js";
 // - no opinion leaves the configured policy alone.
 // A hook that throws, times out, or answers malformed fails closed as a deny.
 
-export type FabricActionPolicyCallerV1 = "program";
+/** "program": a fabric_exec program. "jev": a Jev program launched from one. */
+export type FabricActionPolicyCallerV1 = "program" | "jev";
 
 export interface FabricActionPolicyContextV1 {
   caller: FabricActionPolicyCallerV1;
-  /** The outer fabric_exec tool-call id, when the program has one. */
+  /** The outer fabric_exec tool-call id, when the program has one. For a Jev
+   *  program, the tool call that launched it. */
   parentToolCallId?: string;
 }
 
@@ -56,8 +58,12 @@ export const ACTION_POLICY_HOOK_NAME_PATTERN = /^[A-Za-z0-9@][A-Za-z0-9@._/-]{0,
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
-const boundedReason = (reason: string): string =>
-  reason.length > MAX_REASON_CHARS ? `${reason.slice(0, MAX_REASON_CHARS)}…` : reason;
+// Control characters go first, so a hook cannot inject ANSI escapes or line
+// breaks into the approval prompt or the error.
+const boundedReason = (raw: string): string => {
+  const reason = raw.replace(/\p{Cc}/gu, " ");
+  return reason.length > MAX_REASON_CHARS ? `${reason.slice(0, MAX_REASON_CHARS)}…` : reason;
+};
 
 /** Read a hook's answer by named fields; anything else is malformed. */
 const readDecision = (value: unknown): { decision: "allow" | "deny" | "hold"; reason?: string } | undefined | "malformed" => {
@@ -84,16 +90,16 @@ export class FabricActionPolicyHooks {
   }
 
   /**
-   * Register `hook` under `name`; the same name replaces an earlier hook, so a
-   * reloaded extension does not stack copies. The returned function removes
-   * only this registration.
+   * Register `hook` under `name`; the same name replaces an earlier hook in
+   * its original position, so a reloaded extension does not stack copies or
+   * change which hook names a tie. The returned function removes only this
+   * registration.
    */
   register(name: string, hook: FabricActionPolicyHookV1): () => void {
     if (!ACTION_POLICY_HOOK_NAME_PATTERN.test(name)) {
       throw new Error("Action policy hook name must match [A-Za-z0-9@][A-Za-z0-9@._/-]{0,63}");
     }
     if (typeof hook !== "function") throw new Error("Action policy hook must be a function");
-    this.#hooks.delete(name);
     this.#hooks.set(name, hook);
     return () => {
       if (this.#hooks.get(name) === hook) this.#hooks.delete(name);
@@ -102,6 +108,24 @@ export class FabricActionPolicyHooks {
 
   clear(): void {
     this.#hooks.clear();
+  }
+
+  /**
+   * Bind the hooks to one call site as an approval policy gate. `signal` is
+   * read at each evaluation, so a caller can hand over to a later signal.
+   */
+  bind(
+    context: FabricActionPolicyContextV1,
+    signal?: () => AbortSignal | undefined,
+  ): {
+    readonly active: boolean;
+    evaluate(action: ResolvedFabricAction, args: Record<string, unknown>): Promise<FabricActionPolicyVerdict | undefined>;
+  } {
+    const hooks = this;
+    return {
+      get active() { return hooks.size > 0; },
+      evaluate: (action, args) => hooks.evaluate(action, args, context, signal?.()),
+    };
   }
 
   /**

@@ -539,11 +539,12 @@ An extension can register a policy hook that Fabric consults at the approve stag
 }
 ```
 
-Register a hook over `pi.events`. Registration is accepted whether or not the setting is on. A second registration under the same `name` replaces the first, so a reloaded extension does not stack copies:
+Register a hook over `pi.events`. Registration is accepted whether or not the setting is on. A second registration under the same `name` replaces the first and keeps its place in registration order, so a reloaded extension does not stack copies:
 
 ```ts
 import { FABRIC_ACTION_POLICY_REGISTER_EVENT } from "pi-fabric/protocol";
 
+let unregister: (() => void) | undefined;
 pi.events.emit(FABRIC_ACTION_POLICY_REGISTER_EVENT, {
   version: 1,
   name: "my-policy-engine",
@@ -560,7 +561,7 @@ pi.events.emit(FABRIC_ACTION_POLICY_REGISTER_EVENT, {
 });
 ```
 
-The hook receives private copies of the resolved action (`ref`, `provider`, `risk`, `effect`) and the validated arguments, a `context` with `caller: "program"` and the outer `parentToolCallId`, and an abort `signal`. Its answer combines with the configured policy as follows:
+The hook receives private copies of the resolved action (`ref`, `provider`, `risk`, `effect`) and the validated arguments, a `context`, and an abort `signal`. In a `fabric_exec` program, `context` has `caller: "program"` and the outer `parentToolCallId`. In a Jev program launched from one, it has `caller: "jev"` and the `parentToolCallId` of the call that launched the program. Its answer combines with the configured policy as follows:
 
 | Hook answer | Effect |
 |---|---|
@@ -569,9 +570,11 @@ The hook receives private copies of the resolved action (`ref`, `provider`, `ris
 | `{ decision: "allow" }` | Settles an `ask` or `auto` prompt without asking. It never lifts an `approvals.actions` deny or a risk-class `deny`. |
 | `undefined` | No opinion; the configured policy decides. |
 
-With several hooks, deny beats hold, and hold beats allow. A hook that throws, answers anything else, or takes longer than 5 seconds counts as a deny that names the hook. Cancelling the program aborts the hook's signal and cancels the call instead. While any hook is registered, Fabric treats every action as possibly interactive when it decides whether to arm a durable tool fence. `schema.commit` is approved as both `write` and `execute`, so hooks see it twice.
+Hooks run before the configured approvals, so they also see calls that `approvals.actions` or a risk-class `deny` will deny anyway. Do not read a hook call as proof that the action ran.
 
-Hooks do not cover direct model tool calls (Pi's `tool_call` event already reaches those), component calls, Jev programs, actors, or agent admission that bypasses the action registry.
+With several hooks, deny beats hold, and hold beats allow; among equal answers, the first registered hook names the verdict. A hook that throws, answers anything else, or takes longer than 5 seconds counts as a deny that names the hook. The 5-second timeout is fixed and not configurable yet. Control characters in a reason are replaced with spaces, and a reason is cut at 500 characters. When a hook `allow` settles an `ask` or `auto` prompt, the run trace records a `fabric.approval.auto` entry with `decision: "allow"` and `policyHook` set to the hook's name; the auto classifier does not run. Cancelling the program aborts the hook's signal and cancels the call instead. While any hook is registered, Fabric treats every action as possibly interactive when it decides whether to arm a durable tool fence. `schema.commit` is approved as both `write` and `execute`, so hooks see it twice.
+
+Actions inside Jev programs pass through the same hooks. Jev programs do not raise headless decisions, so a `hold` there without an interactive UI fails closed. Hooks do not cover direct model tool calls (Pi's `tool_call` event already reaches those), component calls, actors, or agent admission that bypasses the action registry.
 
 ### Per-action approval overrides
 

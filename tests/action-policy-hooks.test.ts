@@ -12,8 +12,12 @@ import {
   FabricSessionApprovals,
   type FabricActionPolicyGate,
 } from "../src/core/approval-controller.js";
+import type { FabricAutoApprovalClassifier } from "../src/core/auto-approval-classifier.js";
 import { FabricExecutionService } from "../src/execution-service.js";
+import { JevClient, JevCredentials } from "../src/jev/client.js";
+import { JevProvider } from "../src/providers/jev-provider.js";
 import { readFabricActionPolicyRegistrationV1 } from "../src/protocol.js";
+import { callProgram, jevContext, launch } from "./jev-test-helpers.js";
 
 const action: ResolvedFabricAction = {
   ref: "demo.write",
@@ -111,6 +115,57 @@ describe("ApprovalController with action policy hooks", () => {
     await expect(controllerWith(() => undefined).approve(action)).rejects.toThrow("no interactive UI");
   });
 
+  it("a hold raises the headless decision with the hook's reason and runs only on approve", async () => {
+    const headless = vi.fn(async () => true);
+    const hooks = new FabricActionPolicyHooks();
+    hooks.register("policy", () => ({ decision: "hold", reason: "needs a grant" }));
+    const controller = new ApprovalController(
+      { ...policies, headless: "decision" }, noUi, new FabricSessionApprovals(),
+      undefined, undefined, undefined, headless, gateFor(hooks),
+    );
+    await expect(controller.approve({ ...action, risk: "read" })).resolves.toBeUndefined();
+    expect(headless).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: "demo.write", risk: "read" }),
+      "Held by policy hook policy: needs a grant",
+    );
+    headless.mockResolvedValueOnce(false);
+    await expect(controller.approve({ ...action, risk: "read" })).rejects.toThrow("approval was denied, cancelled, or expired");
+    expect(headless).toHaveBeenCalledTimes(2);
+  });
+
+  it("a hook allow under auto mode skips the classifier and records an audit naming the hook", async () => {
+    const classify = vi.fn(async () => { throw new Error("classifier must not run"); });
+    const audits: unknown[] = [];
+    const hooks = new FabricActionPolicyHooks();
+    hooks.register("engine", () => ({ decision: "allow" }));
+    const controller = new ApprovalController(
+      { ...policies, write: "auto" }, noUi, new FabricSessionApprovals(),
+      { classify } as unknown as FabricAutoApprovalClassifier,
+      (audit) => audits.push(audit), undefined, undefined, gateFor(hooks),
+    );
+    await expect(controller.approve(action)).resolves.toBeUndefined();
+    expect(classify).not.toHaveBeenCalled();
+    expect(audits).toEqual([expect.objectContaining({
+      action: "demo.write",
+      risk: "write",
+      decision: "allow",
+      policyHook: "engine",
+      reason: "Allowed by Fabric action policy hook engine",
+    })]);
+  });
+
+  it("a hook allow over a configured allow records nothing: no prompt was settled", async () => {
+    const audits: unknown[] = [];
+    const hooks = new FabricActionPolicyHooks();
+    hooks.register("engine", () => ({ decision: "allow" }));
+    const controller = new ApprovalController(
+      policies, noUi, new FabricSessionApprovals(), undefined,
+      (audit) => audits.push(audit), undefined, undefined, gateFor(hooks),
+    );
+    await controller.approve({ ...action, risk: "read" });
+    expect(audits).toEqual([]);
+  });
+
   it("an active gate makes decidesWithoutInteraction false", () => {
     expect(controllerWith(() => undefined).decidesWithoutInteraction({ ...action, risk: "read" })).toBe(false);
     expect(new ApprovalController(policies, noUi).decidesWithoutInteraction({ ...action, risk: "read" })).toBe(true);
@@ -129,6 +184,26 @@ describe("FabricActionPolicyHooks", () => {
     hooks.register("denier", async () => ({ decision: "deny", reason: "no" }));
     expect(await hooks.evaluate(action, {}, { caller: "program" }))
       .toEqual({ decision: "deny", hook: "denier", reason: "no" });
+  });
+
+  it("among equal decisions the first registered hook names the verdict", async () => {
+    const hooks = new FabricActionPolicyHooks();
+    hooks.register("first", async () => { await new Promise(resolve => setTimeout(resolve, 5)); return { decision: "deny", reason: "one" }; });
+    hooks.register("second", () => ({ decision: "deny", reason: "two" }));
+    expect(await hooks.evaluate(action, {}, { caller: "program" }))
+      .toEqual({ decision: "deny", hook: "first", reason: "one" });
+  });
+
+  it("strips control characters from a reason before it reaches a prompt or error", async () => {
+    const hooks = new FabricActionPolicyHooks();
+    hooks.register("ansi", () => ({ decision: "deny", reason: "\u001b[31mx\ny" }));
+    const verdict = await hooks.evaluate(action, {}, { caller: "program" });
+    expect(verdict?.reason).toBe(" [31mx y");
+    expect(verdict?.reason).not.toMatch(/\p{Cc}/u);
+    hooks.register("ansi", () => { throw new Error("\u001b[2Jboom\r\n"); });
+    const failed = await hooks.evaluate(action, {}, { caller: "program" });
+    expect(failed?.reason).toBe("the hook failed:  [2Jboom  ");
+    expect(failed?.reason).not.toMatch(/\p{Cc}/u);
   });
 
   it("a hook past its deadline is denied and sees its signal abort", async () => {
@@ -176,6 +251,15 @@ describe("FabricActionPolicyHooks", () => {
     expect(hooks.size).toBe(0);
     expect(() => hooks.register("bad:name", () => undefined)).toThrow("must match");
   });
+
+  it("re-registering a name keeps its original position for ties", async () => {
+    const hooks = new FabricActionPolicyHooks();
+    hooks.register("engine", () => ({ decision: "deny", reason: "old" }));
+    hooks.register("other", () => ({ decision: "deny", reason: "other" }));
+    hooks.register("engine", () => ({ decision: "deny", reason: "reloaded" }));
+    expect(await hooks.evaluate(action, {}, { caller: "program" }))
+      .toEqual({ decision: "deny", hook: "engine", reason: "reloaded" });
+  });
 });
 
 describe("action policy hook configuration and registration", () => {
@@ -200,7 +284,11 @@ describe("fabric_exec programs consult action policy hooks", () => {
     await Promise.all(registries.splice(0).map(registry => registry.close()));
   });
 
-  const fixture = (policyHooks: boolean) => {
+  const fixture = (
+    policyHooks: boolean,
+    answer: () => ReturnType<FabricActionPolicyHookV1> = () => ({ decision: "deny", reason: "writes are frozen" }),
+    write: "allow" | "ask" = "allow",
+  ) => {
     const registry = new ActionRegistry();
     registries.push(registry);
     let ran = 0;
@@ -219,13 +307,13 @@ describe("fabric_exec programs consult action policy hooks", () => {
     });
     const config = structuredClone(DEFAULT_FABRIC_CONFIG);
     config.fullCodeMode = true;
-    config.approvals.write = "allow";
+    config.approvals.write = write;
     if (policyHooks) config.approvals.policyHooks = true;
     const hooks = new FabricActionPolicyHooks();
     const inputs: FabricActionPolicyInputV1[] = [];
     hooks.register("engine", (input) => {
       inputs.push(input);
-      return { decision: "deny", reason: "writes are frozen" };
+      return answer();
     });
     const service = new FabricExecutionService(registry, config);
     service.setActionPolicyHooks(hooks);
@@ -253,10 +341,83 @@ describe("fabric_exec programs consult action policy hooks", () => {
     expect(inputs[0]?.context).toEqual({ caller: "program", parentToolCallId: "outer-call" });
   });
 
+  it("traces a hook allow that settles an ask, naming the hook", async () => {
+    const { run, ran } = fixture(true, () => ({ decision: "allow" }), "ask");
+    const result = await run();
+    expect(result.success).toBe(true);
+    expect(ran()).toBe(1);
+    expect(result.trace.operations).toContainEqual(expect.objectContaining({
+      ref: "fabric.approval.auto",
+      result: expect.objectContaining({ decision: "allow", policyHook: "engine" }),
+    }));
+  });
+
   it("ignores registered hooks when approvals.policyHooks is absent", async () => {
     const { run, ran, inputs } = fixture(false);
     const result = await run();
     expect(result.success).toBe(true);
+    expect(ran()).toBe(1);
+    expect(inputs).toHaveLength(0);
+  });
+});
+
+describe("Jev programs consult action policy hooks", () => {
+  const registries: ActionRegistry[] = [];
+  afterEach(async () => {
+    await Promise.all(registries.splice(0).map(registry => registry.close()));
+  });
+
+  const fixture = (policyHooks: boolean) => {
+    const config = normalizeFabricConfig({
+      approvals: { network: "allow", execute: "allow", read: "allow", write: "allow", ...(policyHooks ? { policyHooks: true } : {}) },
+    });
+    const registry = new ActionRegistry();
+    registries.push(registry);
+    let ran = 0;
+    const descriptor = {
+      name: "act",
+      description: "write action stub",
+      inputSchema: { type: "object", properties: {}, additionalProperties: true },
+      risk: "write" as const,
+    };
+    registry.register({
+      name: "demo",
+      description: "demo provider",
+      async list() { return [descriptor]; },
+      async describe(name) { return name === "act" ? descriptor : undefined; },
+      async invoke() { ran++; return { done: true }; },
+    });
+    const hooks = new FabricActionPolicyHooks();
+    const inputs: FabricActionPolicyInputV1[] = [];
+    hooks.register("engine", (input) => {
+      inputs.push(input);
+      return input.action.ref === "demo.act" ? { decision: "deny", reason: "writes are frozen" } : undefined;
+    });
+    const client = new JevClient(config.jev, undefined, new JevCredentials([], { TYPESAFE_API_KEY: "test-only-never-a-real-key" }));
+    const provider = new JevProvider({ registry, config, actionPolicyHooks: hooks }, client);
+    registry.register(provider);
+    const run = () => callProgram(provider, "run", launch(
+      'return await tools.call({ ref: "demo.act", args: { path: "notes.md" } });',
+      { requires: ["demo.act"] },
+    ), jevContext());
+    return { run, ran: () => ran, inputs };
+  };
+
+  it("a hook deny on a ref also blocks it inside a Jev program", async () => {
+    const { run, ran, inputs } = fixture(true);
+    const info = await run();
+    expect(info.state).toBe("failed");
+    expect(info.error).toContain("demo.act is denied by the Fabric action policy hook engine: writes are frozen");
+    expect(ran()).toBe(0);
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]?.args).toEqual({ path: "notes.md" });
+    expect(inputs[0]?.context).toEqual({ caller: "jev", parentToolCallId: "jev-test" });
+  });
+
+  it("ignores the hooks inside a Jev program when approvals.policyHooks is absent", async () => {
+    const { run, ran, inputs } = fixture(false);
+    const info = await run();
+    expect(info.state).toBe("completed");
     expect(ran()).toBe(1);
     expect(inputs).toHaveLength(0);
   });
