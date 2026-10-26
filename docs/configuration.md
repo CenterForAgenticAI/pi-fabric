@@ -529,7 +529,7 @@ Fabric risk classes are `read`, `write`, `execute`, `network`, and `agent`. Appr
 
 ### Extension action policy hooks
 
-An extension can register a policy hook that Fabric consults at the approve stage of every `fabric_exec` action: `pi.*`, `extensions.*`, `mcp.*`, `agents.*` (including `agents.spawn` and `agents.create`), `mesh.*`, `memory.*`, `state.*`, `schema.*` and external providers. Fabric consults hooks only when `approvals.policyHooks` is `true`; any other value leaves approvals exactly as configured.
+An extension can register a policy hook that Fabric consults at the approve stage of every `fabric_exec` action: `pi.*`, `extensions.*`, `mcp.*`, `agents.*` (including `agents.spawn` and `agents.create`), `mesh.*`, `memory.*`, `state.*`, `schema.*` and external providers. Fabric consults hooks only when `approvals.policyHooks` is `true`; any other value leaves approvals exactly as configured. Hooks do not see direct tool calls the model makes outside `fabric_exec`; Pi's own `tool_call` event already covers those.
 
 ```json
 {
