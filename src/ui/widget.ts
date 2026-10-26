@@ -67,10 +67,10 @@ const totalCost = (
 export interface FabricWidgetRow {
   /**
    * Agent id, actor id for an actor's worker row, the main session's id, a
-   * shell task id, or `SHELL_TASKS_ROW` for the row that stands for all shells.
+   * or the exact shell task id.
    */
   id: string;
-  kind: "main" | "agent" | "actor" | "shell" | "shells";
+  kind: "main" | "agent" | "actor" | "shell";
   name: string;
   model?: string;
 }
@@ -247,9 +247,6 @@ export const widgetFocusedRowLimit = (maxRows: number, terminalRows?: number): n
 /** Header row id when the main session is not itself selectable. */
 const HEADER_ROW = "";
 
-/** Row id for folded shell tasks; opening it lists every shell. */
-export const SHELL_TASKS_ROW = "shell-tasks";
-
 export class FabricWidget implements Component, Focusable {
   constructor(
     readonly theme: Theme,
@@ -349,11 +346,11 @@ export class FabricWidget implements Component, Focusable {
     return { focus: true, render: true };
   }
 
-  /** Rows a user can select: the rows the widget shows, in drawing order. */
+  /** Focused keyboard traversal can scroll; pointer targets remain viewport-only. */
   #selectableRows(): FabricWidgetRow[] {
     const { rows } = this.#content(this.snapshot(), Number.MAX_SAFE_INTEGER);
     const limit = Math.max(1, this.#rowLimit() - 1);
-    return rows.filter((row) => row.line < limit);
+    return this.focused && limit > 1 ? rows : rows.filter((row) => row.line < limit);
   }
 
   #rowLimit(): number {
@@ -436,7 +433,16 @@ export class FabricWidget implements Component, Focusable {
       if (this.focused) ({ lines, rows } = this.#content(snapshot, width));
     }
     if (this.#hoveredId !== undefined && !rows.some((row) => row.id === this.#hoveredId)) this.#hoveredId = undefined;
-    // Rows cut off by the row limit are neither clickable nor selectable.
+    // Keep the header pinned while keyboard navigation brings any participant
+    // or task into view. The footer replaces the old full task-list overlay.
+    if (this.focused && body > 1) {
+      const selectedLine = rows.find(row => row.id === this.#selectedId)?.line ?? 0;
+      const start = Math.max(1, selectedLine - body + 2);
+      lines = [lines[0]!, ...lines.slice(start)];
+      rows = rows.filter(row => row.line === 0 || row.line >= start)
+        .map(row => ({ ...row, line: row.line === 0 ? 0 : row.line - start + 1 }));
+    }
+    // Only rows in the viewport are pointer targets.
     this.#rows = rows.filter((row) => row.line < body);
     // Nothing to select, such as only idle actors: save the rows; any label is on the editor border.
     if (rows.length === 0 && this.interaction?.collapseIdle?.()) return [];
@@ -445,13 +451,10 @@ export class FabricWidget implements Component, Focusable {
   }
 
   /** Key hints for the header, most important first; the line fitter drops them from the end. */
-  #hints(hasRows: boolean, hasShells: boolean): string[] {
-    if (this.interaction?.hints === false) return [];
-    // ctrl+alt+t is a global shortcut, so it applies without list focus.
-    const tasks = hasShells ? ["ctrl+alt+t tasks"] : [];
-    if (!this.interaction) return tasks;
+  #hints(hasRows: boolean): string[] {
+    if (!this.interaction || this.interaction.hints === false) return [];
     if (this.focused) return [...(this.interaction.open ? ["⏎ open"] : []), "↑↓ select", "esc back"];
-    return [...(hasRows ? [FABRIC_WIDGET_FOCUS_HINT] : []), ...tasks];
+    return hasRows ? [FABRIC_WIDGET_FOCUS_HINT] : [];
   }
 
   #content(snapshot: FabricDashboardSnapshot, width: number): { lines: string[]; rows: Array<FabricWidgetRow & { line: number }> } {
@@ -547,7 +550,7 @@ export class FabricWidget implements Component, Focusable {
       `${colorStatus(this.theme, headerStatus, circle(marked === headerId))} ${this.theme.fg("accent", this.theme.bold(label))}`,
       run?.name ? { text: safeText(run.name), gap: " ", color: "muted" } : undefined,
       parts,
-      this.#hints(hasRows, listedShells.length > 0),
+      this.#hints(hasRows),
     ));
 
     const pushParticipant = (agent: FabricUiAgent, kind: "agent" | "actor", depth = 0): void => {
@@ -575,10 +578,9 @@ export class FabricWidget implements Component, Focusable {
     for (const agent of terminalActorWorkers) pushParticipant(agent, "actor");
     for (const { agent, depth } of settledTrees) pushParticipant(agent, "agent", depth);
 
-    // Shells come after the participants, so they never push agents out of the
-    // row budget. Beside participants they fold into one row; ctrl+alt+t lists them all.
-    // Shell rows are selectable too: opening one shows its output in the tasks view.
-    // The id (or count) is the row's name, emphasised like an agent's name.
+    // Shells follow participants. Every selectable row names an exact task;
+    // Enter opens its detail, with no separate task-list overlay.
+    // The id is the row's name, emphasised like an agent's name.
     const shellLine = (job: FabricShellJobInfo, name: string, detail: string | undefined, id: string): string => {
       const status = job.stopping ? "stopping" : job.status;
       const elapsed = formatDuration((job.finishedAt ?? snapshot.now) - job.startedAt) || "0s";
@@ -594,25 +596,11 @@ export class FabricWidget implements Component, Focusable {
         [],
       );
     };
-    const pushShells = (name: string, line: string): void => {
-      rows.push({ id: SHELL_TASKS_ROW, kind: "shells", name, line: lines.length });
-      lines.push(line);
-    };
-    if (participants.length > 0 && listedShells.length > 1) {
-      const name = `${listedShells.length} shell tasks`;
-      pushShells(name, shellLine(listedShells[0]!, name, undefined, SHELL_TASKS_ROW));
-    } else {
-      for (const job of listedShells.slice(0, 3)) {
-        const status = job.stopping ? "stopping" : job.status;
-        const label = job.monitor && job.finishedAt === undefined && !job.stopping ? `monitor:${job.monitor.delivery}` : status;
-        rows.push({ id: job.id, kind: "shell", name: safeText(job.description ?? job.command), line: lines.length });
-        lines.push(shellLine(job, job.id.slice(0, 8), label, job.id));
-      }
-      if (listedShells.length > 3) {
-        const more = `+${listedShells.length - 3} more shell tasks`;
-        const selected = marked === SHELL_TASKS_ROW;
-        pushShells(more, `${colorStatus(this.theme, "idle", circle(selected))} ${selected ? this.theme.bold(more) : this.theme.fg("dim", more)}`);
-      }
+    for (const job of listedShells) {
+      const status = job.stopping ? "stopping" : job.status;
+      const label = job.monitor && job.finishedAt === undefined && !job.stopping ? `monitor:${job.monitor.delivery}` : status;
+      rows.push({ id: job.id, kind: "shell", name: safeText(job.description ?? job.command), line: lines.length });
+      lines.push(shellLine(job, job.id.slice(0, 8), label, job.id));
     }
     return lines;
   }

@@ -161,15 +161,6 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
     },
   });
 
-  pi.registerShortcut?.("ctrl+alt+t", {
-    description: "Inspect Fabric background shell tasks",
-    handler: async (context) => {
-      if (context.mode !== "tui") return;
-      try { await state.ensure(context); await fabricUi.openTasks(context); }
-      catch (error) { context.ui.notify(safeText(error instanceof Error ? error.message : String(error)), "error"); }
-    },
-  });
-
   pi.registerCommand("fabric", {
     description: "Open Fabric dashboard, chat or tasks, arm prewalk, reload, or manage agents and actors",
     getArgumentCompletions: (argumentPrefix: string): AutocompleteItem[] | null => {

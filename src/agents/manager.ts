@@ -106,6 +106,7 @@ import {
 } from "./budget-ledger.js";
 import type { BudgetLedgerDetail } from "./budget-ledger.js";
 import type { BudgetLedgerState } from "./budget-ledger.js";
+import { budgetAdmits } from "../verified/budget.js";
 import { readJsonlPage } from "../log-tail.js";
 import {
   canRemoveManagedRunRoot,
@@ -916,7 +917,7 @@ export class AgentManager {
     }
     if (this.#budget) {
       const spent = readBudgetLedger(this.#budget.file).cost;
-      if (spent >= this.#budget.budget) {
+      if (!budgetAdmits(spent, this.#budget.budget)) {
         throw new Error(
           `Fabric recursion budget exceeded: spent $${spent.toFixed(6)} of $${this.#budget.budget.toFixed(6)}. Increase agents.budgetUsd or simplify the task.`,
         );

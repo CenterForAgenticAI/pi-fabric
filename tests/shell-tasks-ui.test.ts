@@ -58,7 +58,7 @@ describe("background shell UI", () => {
       const widget = new FabricWidget(ansiTheme, () => snapshot, 5);
       const lines = widget.render(120);
       expect(lines[0]).toBe("");
-      expect(lines[1]).toContain(ansiTheme.fg("dim", "ctrl+alt+t tasks"));
+      expect(lines[1]).not.toContain("ctrl+alt+t");
       expect(lines[2]).toBe(
         `${ansiTheme.fg(color, glyph)} ${ansiTheme.fg("muted", "7b6eb606")} ${ansiTheme.fg("muted", status)}` +
         `${ansiTheme.fg("dim", " · 3s · ")}${ansiTheme.fg("muted", description ? "Watch CI 界" : "sleep 30")}`,
@@ -94,7 +94,7 @@ describe("background shell UI", () => {
     expect(shouldShowFabricWidget(snapshot, "auto")).toBe(true);
     expect(shouldShowFabricWidget(snapshot, "hidden")).toBe(false);
     const widget = new FabricWidget(theme, () => h.controller.snapshot(), 5);
-    expect(widget.render(80).join("\n")).toContain("ctrl+alt+t tasks");
+    expect(widget.render(80).join("\n")).not.toContain("ctrl+alt+t");
     expect(widget.render(80).join("\n")).toContain("Watch CI");
     await vi.advanceTimersByTimeAsync(3000);
     expect(widget.render(80).join("\n")).toContain("3s");
@@ -109,7 +109,7 @@ describe("background shell UI", () => {
     const job = h.jobs.begin("bash", "printf secret; sleep 5", { cwd: "/work", description: "Build 界\u001b[2J" }); job.spill(); job.append(Buffer.from("line 1\nline 2\n"));
     const done = vi.fn();
     let rows = 32;
-    const view = new ShellTasksView({ jobs: h.jobs, theme, done, rows: () => rows, requestRender: h.requestRender }); cleanup.push(() => view.dispose());
+    const view = new ShellTasksView({ jobs: h.jobs, theme, done, rows: () => rows, requestRender: h.requestRender, id: job.id }); cleanup.push(() => view.dispose());
     await Promise.resolve();
     const text = view.render(100).join("\n");
     expect(text).toContain("Elapsed"); expect(text).toContain("last output"); expect(text).toContain("cwd: /work"); expect(text).toContain("printf secret");
@@ -125,11 +125,11 @@ describe("background shell UI", () => {
 
   it("does not kill work when the inspector closes", () => {
     const h = fixture(); const job = h.jobs.begin("bash", "watch"); job.spill();
-    const view = new ShellTasksView({ jobs: h.jobs, theme, done: vi.fn(), rows: () => 24, requestRender: vi.fn() });
+    const view = new ShellTasksView({ jobs: h.jobs, theme, done: vi.fn(), rows: () => 24, requestRender: vi.fn(), id: job.id });
     view.dispose(); expect(job.abort.signal.aborted).toBe(false);
   });
 
-  it("registers the task command, exact-ID completion and shortcut", async () => {
+  it("keeps the task command and exact-ID completion without the retired shortcut", async () => {
     const h = fixture(); const job = h.jobs.begin("bash", "watch"); job.spill();
     let command: any; const shortcuts = new Map<string, any>();
     const pi = { registerCommand: (_name: string, value: any) => { command = value; }, registerShortcut: (key: string, value: any) => shortcuts.set(key, value) } as unknown as ExtensionAPI;
@@ -139,7 +139,6 @@ describe("background shell UI", () => {
     expect(command.getArgumentCompletions("tasks ")[0].value).toBe(`tasks ${job.id}`);
     await command.handler(`tasks ${job.id}`, h.context);
     expect(openTasks).toHaveBeenCalledWith(h.context, job.id);
-    await shortcuts.get("ctrl+alt+t").handler(h.context);
-    expect(openTasks).toHaveBeenLastCalledWith(h.context);
+    expect(shortcuts.has("ctrl+alt+t")).toBe(false);
   });
 });

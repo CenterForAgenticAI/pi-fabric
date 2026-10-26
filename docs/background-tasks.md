@@ -77,18 +77,17 @@ works without a terminal and does not restore processes across Pi restarts.
 
 ## Inspection and control
 
-- `/fabric tasks` or **Ctrl+Alt+T** opens the lazy inspector. A single task opens
-  directly. `/fabric tasks <id-or-unique-prefix>` opens a specific task.
-- The widget shows up to three tasks, elapsed time, and the command or short
-  description. It stays alive after the Fabric program returns. Completion hints
-  expire after 30 seconds; retained jobs remain in the inspector.
-- The rounded, theme-aware inspector groups tasks into **Active**, **Needs
-  attention** (failed/timed out), and **Finished**. Purpose/command labels lead;
-  IDs, elapsed time, exit codes and monitor delivery sit beneath each task.
-  Live tasks use Fabric's activity spinner; completed tasks have fixed status icons.
-  Arrows/PageUp/PageDown navigate the list without selecting group headings.
-- Enter opens detail; arrows/PageUp/PageDown scroll the bounded output tail; G
-  follows the tail; x twice within three seconds stops; Esc backs out/closes.
+- Focus the footer list with **↓** from an empty editor or `/fabric tasks`, then
+  press **Enter** on a task to open its lazy detail.
+  `/fabric tasks <id-or-unique-prefix>` opens a specific task directly.
+- The footer lists tasks individually after agents, with elapsed time and the
+  command or short description. It stays alive after the Fabric program returns.
+  Completion hints expire after 30 seconds; retained jobs remain inspectable by ID.
+- The rounded, theme-aware detail shows one task. Live tasks use Fabric's
+  activity spinner; completed tasks have fixed status icons. There is no
+  secondary task-list overlay or global task-list shortcut.
+- Arrows/PageUp/PageDown scroll the bounded output tail; G follows the tail;
+  x twice within three seconds stops; Esc closes the detail in one step.
 - Elapsed time and time since last output are separate. A quiet shell is not
   automatically classified as stuck. Opening/closing the inspector doesn't stop it.
 - `ui.enabled` and `ui.widget` retain their existing meaning. Rendering is TUI-only;

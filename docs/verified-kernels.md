@@ -31,7 +31,10 @@ a set of small policy kernels, **not a proof of every subsystem invariant**.
 | Entropy normal forms | `policy.ts`: `useNormalized` | `entropy/normal-form.ts` | `normalization_sound`, `normalization_complete`, `canonical_identity` |
 | Storage CAS | `storage.ts`: `storageTransition` | `verified/storage.ts`, `mesh/store.ts` | `storage_safe` (three plan cases), `storage_put_complete`, `storage_delete_complete`, `storage_absent_delete_complete`, `storage_stale_refused`, `storage_put_overflow`, `storage_delete_overflow` |
 | Provider dispatch | `provider.ts`: `providerTicket` | `verified/provider.ts`, `core/provider-operations.ts` | `provider_plan_safe`, `provider_ticket_consumed`, `provider_revocation_consumes`, `provider_revoked_refused`, `provider_canceled_refused`, `state_stale_refused`, `provider_admission_complete`, `provider_replay_refused` |
-| State and Schema | `policy.ts`: `headReadable`, `certificateAccepted`, `consume` | `state/store.ts`, `schema/controller.ts` | `head_sound`, `pending_without_marker_hidden`, `committed_head_visible`, `certificate_sound`, `certificate_complete`, `consume_once`, `consume_retires` |
+| State and Schema | `policy.ts`: `headReadable`, `certificateAccepted`, `consume` | `state/store.ts`, `schema/controller.ts` | `head_sound`, `pending_without_marker_hidden`, `committed_head_visible`, `pending_head_visible`, `certificate_sound`, `certificate_complete`, `consume_once`, `consume_retires` |
+| External mesh grants | `grants.ts`: `meshGrantTake` | `verified/grants.ts`, `mesh/grants.ts` | Exact scoped admission, expiry/refusal precedence, exact decrement, refusal preservation and kind/topic forwarding |
+| Speculation bookkeeping | `speculation.ts`: `speculationAdmission`, `speculationCheck`, `speculationAccounting`; `policy.ts`: `consume` | `verified/speculation.ts`, `speculation/store.ts` | Exact admission caps, checkpoint refusal precedence, one-use entry reservation, exact event counters and epoch successor |
+| Agent budget admission | `budget.ts`: `budgetAdmission` | `verified/budget.ts`, `agents/manager.ts` | Strict threshold safety/completeness, equality refusal, invalid observations refused |
 | Effect diagnostics | `policy.ts`: `unknownConflict`, `knownConflict` | `components/effect-policy.ts` | `unknown_conflict_exact`, `unknown_conflict_symmetric`, `known_conflict_exact` |
 
 `src/verified/generated/manifest.json` lists every claim by module. Laws about
@@ -47,7 +50,7 @@ registered module:
 1. Proves each law, step law, k-step law and decision. A claim counts only when
    the verdict is `proven && checked`. `checked` is the kernel's verdict on the
    proof tree that the untrusted prover produced.
-2. Proves each deliberately broken variant (50 of them, such as "a span may
+2. Proves each registered deliberately broken variant (such as "a span may
    straddle the boundary", "stale writes pass", or "derivation checks one
    grant"). Every variant must leave at least one claim unproven. This replaces
    the old negative-mutation script.
@@ -65,6 +68,25 @@ registered module:
    a SHA-256 receipt over the proof sources, the generator and the artifacts.
 
 `proof:check` repeats the whole run and requires byte-for-byte equal output.
+Independent whole kernels and mutation batches run in up to four isolated worker
+threads (bounded by available CPU parallelism). Invariants, step laws and k-step
+laws of one kernel stay together. Every worker result must name all expected
+claims; a worker crash, premature exit, malformed response or deadline fails the
+run and terminates its siblings. No proof verdict is reused from a cache.
+Compilation and the receipt retain registry order regardless of completion order,
+and the receipt hashes the worker and scheduler as well as the generator.
+Use `bun run proof:check --jobs 1` for serial diagnostics; `--jobs 2` through
+`--jobs 4` select an explicit cap. CI keeps proof reproduction as a required
+pre-build gate, and combines the fixed ABI/diagnostic tests into one Vitest
+invocation on each platform without dropping cases.
+
+For a bounded before/after measurement on one same-sized Modal worker, use
+`bun run benchmark:verification --proofs` (complete serial versus parallel proof
+checks) or `bun run benchmark:verification --ci-tests` (the same fixed suites in
+three launches versus one). Each comparison runs once, stops on failure and
+checks that verification did not rewrite the receipt. These are targeted timings,
+not a whole-suite speed claim or millisecond CI gate.
+
 `proof:artifact` runs during every build. It compares only hashes and the
 exact gdp-wired pin, and never loads the prover.
 
@@ -189,6 +211,38 @@ policy assertions the laws cover, including positive completeness, and keep
 focused tests for the remaining host observables. A safety law alone can still
 permit an implementation that denies valid requests.
 
+### Additional admission and bookkeeping boundaries
+
+Mesh grant decisions run over the record read inside the existing mesh lock.
+The codec interns complete topic/kind identities in one table. At a nonnegative
+clock, legacy negative deadlines and use counts encode as zero, preserving
+expiry/exhaustion diagnostics; refused records are never rewritten. Token hashing,
+constant-time matching, input validation, event serialization, locking and
+cross-file crash consistency are not proved. Exact decrement is a decision law,
+not a proof of exactly-once persistence.
+
+Speculation admission reads the retained-entry count after the host expiry
+sweep. Its concurrency observation is the number of retained nonfailed entries,
+not all unsettled external work. TTL equality remains usable. Before settlement,
+expiry precedes epoch and freshness; afterward, abort/epoch precedes expiry,
+freshness and provider failure. Freshness callbacks stay lazy at both checkpoints.
+Stale, expired or freshness-refused entries are aborted at either checkpoint;
+an otherwise-current provider failure does not receive an extra abort.
+The compiled shared `consume` decision reserves an entry before awaiting it.
+Accounting laws prove exact per-event increments, not that the host observes and
+emits each event correctly. Key construction, actual settlement, abort delivery,
+callback order, map removal and reset behavior remain integration-tested.
+
+The budget is an admission threshold: completed child costs are observed before
+the next spawn, so existing concurrent admission and overshoot semantics remain.
+The codec maps complete binary64 observations to lexicographically ordered
+unsigned high/low words, normalizing signed zero without rounding to decimal
+units. The laws prove strict ordered admission, not the float codec or a hard
+spending ceiling. Nonfinite spend and invalid present budgets now fail closed
+(previously a `NaN` aggregate could pass the JavaScript comparison). No active
+budget remains distinct from an invalid observation of an active budget. Ledger
+parsing, aggregation, file I/O and recursive environment propagation remain tested.
+
 ### Producer/checker boundaries
 
 The compactor's optimized TypeScript selector still proposes cuts. `computeCut`
@@ -252,6 +306,7 @@ bun run proof:check       # all of the above, then require byte-for-byte equal a
 bun run proof:artifact    # prover-free source/generator/artifact freshness check
 bunx vitest run tests/verified-kernels.test.ts tests/verified-resources.test.ts tests/verified-providers.test.ts tests/verified-artifact.test.ts
 bunx vitest run tests/verified-authority.test.ts tests/verified-lifecycle.test.ts tests/verified-storage.test.ts
+bunx vitest run tests/verified-grants.test.ts tests/verified-speculation.test.ts tests/verified-budget.test.ts
 bun run typecheck
 bun run build
 bun run proof:dist        # probe the bundled registry, compactor and kernels

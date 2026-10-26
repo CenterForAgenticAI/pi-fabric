@@ -206,7 +206,7 @@ export interface FabricConversationOptions {
   /** The agent list shown at the bottom of the window, as on the main screen. */
   participants?: (interaction: FabricWidgetInteraction) => FabricWidget;
   /** Open the background shell tasks view over this window, on one task when `id` is given. */
-  openTasks?: (id?: string) => void;
+  openTasks?: (id: string) => void;
 }
 
 interface Feedback {
@@ -310,7 +310,7 @@ export class FabricConversationView implements Component, Focusable {
     this.list = options.participants?.({
       open: (row) => {
         this.releaseList();
-        if (row.kind === "shell" || row.kind === "shells") this.options.openTasks?.(row.kind === "shell" ? row.id : undefined);
+        if (row.kind === "shell") this.options.openTasks?.(row.id);
         else this.selectTarget(row.id);
       },
       release: (forward) => this.releaseList(forward),

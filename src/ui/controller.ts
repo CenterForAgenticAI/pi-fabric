@@ -254,9 +254,8 @@ export class FabricUiController {
     this.#releaseWidget();
     const epoch = this.#epoch;
     try {
-      if (row.kind === "shell" || row.kind === "shells") {
-        await this.openTasks(context, row.kind === "shell" ? row.id : undefined, { fromList: true });
-      } else await this.openConversation(context, row.id);
+      if (row.kind === "shell") await this.openTasks(context, row.id);
+      else await this.openConversation(context, row.id);
       if (epoch !== this.#epoch || this.ownsInput) return;
       const tui = this.#widgetTui as (TUI & { getFocusedComponent?(): unknown }) | undefined;
       const widget = this.#widget;
@@ -279,8 +278,8 @@ export class FabricUiController {
     tui.requestRender();
   }
 
-  /** `fromList`: opened from an agent list row, so Esc on that task closes the view. */
-  async openTasks(context: ExtensionContext, query?: string, options: { fromList?: boolean } = {}): Promise<void> {
+  /** Without an ID, focus the footer list; explicit IDs open single-task detail. */
+  async openTasks(context: ExtensionContext, query?: string): Promise<void> {
     // The tasks view may open over a conversation, from its agent list.
     if (this.#tasksOpen || this.#dashboardOpen || this.#widget?.focused === true) return;
     const jobs = this.state.shellJobs;
@@ -295,6 +294,8 @@ export class FabricUiController {
     }
     if (!this.state.config.ui.enabled) { context.ui.notify("The Fabric UI is disabled by ui.enabled", "warning"); return; }
     if (!this.#context) this.start(context);
+    if (!query) { this.focusWidget(context); return; }
+    const id = candidates[0]!.id;
     this.#tasksOpen = true;
     const epoch = this.#epoch;
     try {
@@ -302,9 +303,8 @@ export class FabricUiController {
       if (epoch !== this.#epoch) return;
       await imageSafeCustom<void>(context.ui, (tui, theme, keys, done) => {
         this.#closeTasks = () => done();
-        const id = candidates[0]?.id;
         this.#tasksView = new ShellTasksView({ jobs, theme, keys, done: () => done(), requestRender: () => tui.requestRender(),
-          rows: () => tui.terminal?.rows ?? 24, ...(id ? { id, closeFromTask: options.fromList === true } : {}) });
+          rows: () => tui.terminal?.rows ?? 24, id });
         return this.#tasksView;
       }, { overlay: true, overlayOptions: { width: "94%", maxHeight: "90%", anchor: "center", margin: 1 } });
     } finally {
@@ -446,7 +446,7 @@ export class FabricUiController {
         this.#closeConversation = () => done(undefined);
         const view = new FabricConversationView(tui, theme, {
           targets,
-          openTasks: (id) => void this.openTasks(context, id, { fromList: true }),
+          openTasks: (id) => void this.openTasks(context, id),
           // The same agent list as the main screen, at the bottom of the window.
           participants: (interaction) => new FabricWidget(
             theme,

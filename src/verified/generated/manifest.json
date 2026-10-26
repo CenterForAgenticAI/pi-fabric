@@ -2,16 +2,21 @@
   "version": 3,
   "prover": "gdp-wired@0.13.3",
   "inputs": {
-    "proofs/index.ts": "d9e2c3f14979dea32bfbd42d2c844ba00ac714e48cbe665d1b9e664e08c60505",
+    "proofs/index.ts": "6e3d0e5a5b1ef6bafc6f4fee9bdf83ba30034d6680220ddca46204b50ebd8f95",
     "proofs/kernel.ts": "5a903597ae23c6def169cfd9b43e72a04b852762485b73cbea78f8f031969cd4",
-    "proofs/policy.ts": "47701ff159ea3c1cd142676d93d50346e8542ca6fcf2ccf5f8412a3d5581844a",
+    "proofs/policy.ts": "525f2306ee56395ce5424495ea0cd7031c6b64238b1673c05be09d4292ede621",
     "proofs/compaction.ts": "b559117f9f2224ba7bace8a94fc06af0ff60dd7cd997af5d177990202b4ca9b2",
     "proofs/resources.ts": "2253513bbe9cef4a166feb2ff83020d0e36388e2f9ce15911a9ff1e8aabab697",
     "proofs/lifecycle.ts": "e2a41e2a3f0701ccce977d0a0414ca6d1ded43d4365315e799a4a3abd1645320",
     "proofs/storage.ts": "5428833c8d71be81947159c8d09fcf31989809da4f09156c7f10cc0291a7df84",
     "proofs/provider.ts": "f067052d8571c79ac9880692aa33a4a794744d3c586db53afd89d466db5659cc",
     "proofs/authority.ts": "3e4d111396e7b4a5f0798832972a75b945270bb481b77810e253a212684e96fe",
-    "scripts/verified-kernels.ts": "c6739fcd58e9ab584e9085d4cc801558a56cb4ec0069bac692cb976164dd4ce8"
+    "proofs/grants.ts": "c71c1e8b327034dbf710d1f8839f0bd036783dedd22470a9c069029f3ea0ba38",
+    "proofs/speculation.ts": "dc1f1b59f2e5414a439e7e62c897bd238b3470c7e608a9228fcf9e3b18dc9477",
+    "proofs/budget.ts": "a6aa3ce2aaffe80d411f8addb6953cbee82c522743a7934dca12e823cf8e3f13",
+    "scripts/verified-kernels.ts": "6b839fc89c86e7ac1185d334a96aeb86459fc9219194bd313c04d89bbfbfc772",
+    "scripts/verified-kernel-pool.ts": "7869f607e4ff87ac219fe2b14df06887fbc56a43c783118e64387f477e5ead42",
+    "scripts/verified-kernel-worker.ts": "92f8019de892e0659c0a944ffb7890bafd8dc789699cc723192853c5d4ccbff7"
   },
   "outputs": {
     "src/verified/generated/policy.js": "0d019ced07cf42c741e16ed36827eb7950de8d4c587c1ed733fbddb7e0abc641",
@@ -27,7 +32,13 @@
     "src/verified/generated/provider.js": "d09dd3d2db4a443419104049cec64ced6042cf7698b32eaa8a5287e8d6d4728f",
     "src/verified/generated/provider.d.ts": "e8d006a1fd9c70fc757e70710642f2b7f1f60f25709fac1737fb7a0a40d66d8f",
     "src/verified/generated/authority.js": "6a48c2c2f48650c601d1913e4bffdcebd3caede5385242d8f0dd997a5f6bea9e",
-    "src/verified/generated/authority.d.ts": "39aafe16159bc41c803651cc60cbd6de4e0ad8cf133ffed189cabde41e531430"
+    "src/verified/generated/authority.d.ts": "39aafe16159bc41c803651cc60cbd6de4e0ad8cf133ffed189cabde41e531430",
+    "src/verified/generated/grants.js": "11e8203b23be73a6c7cfedb63e30b974ecce602a0074beecaaff8b6dd4d19e63",
+    "src/verified/generated/grants.d.ts": "18cf64471c79b706312286363bcc0555a9d60a5b95f4be5650ed74cffdf7d83d",
+    "src/verified/generated/speculation.js": "55fddab26189a2b6ada020e7c373aef614a447b132af03215cc09a783f96096b",
+    "src/verified/generated/speculation.d.ts": "87fd3252288433bec45d8e4a09369eef2db84be6e21209acc20f12d01676ba50",
+    "src/verified/generated/budget.js": "bbeda2244a11be7a1b227d69a04cf51981ac5e7f189f6ead43d517fdf92cfb76",
+    "src/verified/generated/budget.d.ts": "39b6293f86bd43778b66971e274956bdff93ebce98d52216c87f10b4ff4e06f5"
   },
   "claims": {
     "policy": [
@@ -51,6 +62,7 @@
       "headReadable: head_sound: a readable head has its sequence, its version, and a commit or a marked pending write",
       "headReadable: pending_without_marker_hidden: a pending uncommitted head without its marker is hidden",
       "headReadable: committed_head_visible: a committed head with its sequence and version is visible",
+      "headReadable: pending_head_visible: a pending head with its sequence, version and commit marker is visible",
       "certificateAccepted: certificate_sound: an accepted certificate has every fact",
       "certificateAccepted: certificate_complete: a certificate with every fact is accepted",
       "consume: consume_once: an inactive token releases nothing",
@@ -89,6 +101,35 @@
     ],
     "authority": [
       "capabilityAuthority: grants are a set; authority_issue_exact: issuance is live and holds exactly its grants; authority_use_safe: a granted use was live and named a held grant; authority_use_complete: a live use of a held grant is granted; authority_use_preserves: a use changes no authority; authority_derive_safe: a live child had a live parent and holds exactly its candidate, all within the parent; authority_derive_complete: a candidate within a live parent is derived exactly; authority_released_cannot_derive: a released parent derives only a released child; authority_released_not_live: release leaves no live authority and no grants; authority_child_use_safe: a derived child's granted use names a grant of its parent; authority_released_refused: a released authority grants nothing"
+    ],
+    "grants": [
+      "meshGrantTake: grant_safe: consumption requires authentication, an unexpired use, and matching requested scopes",
+      "meshGrantTake: grant_complete: every authenticated unexpired in-scope use is consumed",
+      "meshGrantTake: grant_decrement: consumption removes exactly one remaining use",
+      "meshGrantTake: grant_refusal_preserves: refusal changes no remaining use",
+      "meshGrantTake: grant_forwarding: the topic and selected kind are forwarded exactly",
+      "meshGrantTake: grant_invalid: failed authentication is the first refusal",
+      "meshGrantTake: grant_expired: an authenticated grant expires at its deadline, before other refusals",
+      "meshGrantTake: grant_exhausted: an authenticated unexpired grant without uses is refused",
+      "meshGrantTake: grant_topic: a live use cannot name another topic",
+      "meshGrantTake: grant_kind: a live topic-matching use cannot widen a fixed kind"
+    ],
+    "speculation": [
+      "speculationAdmission: speculation_admission_exact: only a new live entry below both caps is admitted",
+      "speculationAdmission: speculation_ended: ended invocations are refused without counting a skip",
+      "speculationAdmission: speculation_skipped: a live duplicate or full store counts a skip",
+      "speculationCheck: speculation_ready_exact: readiness requires a fresh, unexpired current entry and, after settlement, no abort or failure",
+      "speculationCheck: speculation_expiry_exact: expiry precedes other pre-settlement failures, but not a post-settlement abort or epoch change",
+      "speculationCheck: speculation_epoch_exact: an epoch change or settled abort wins unless a pre-settlement entry has expired",
+      "speculationCheck: speculation_freshness_exact: a current unexpired entry with failed freshness is refused",
+      "speculationCheck: speculation_failure_exact: provider failure is checked only after settlement, following epoch, expiry and freshness",
+      "speculationAccounting: speculation_launch_count: launch adds exactly one, other events preserve launches; speculation_serve_count: service adds exactly one, other events preserve services; speculation_epoch_count: epoch invalidation adds exactly one only for its event; speculation_freshness_count: freshness invalidation adds exactly one only for its event; speculation_failure_count: failure adds exactly one only for its event; speculation_waste_count: discarded work adds exactly one only for its event; speculation_skip_count: skipped admission adds exactly one only for its event; speculation_epoch_successor: a bump advances the epoch exactly once and preserves it on every other event"
+    ],
+    "budget": [
+      "budgetAdmission: budget_safe: admission has valid observations strictly below the ordered threshold",
+      "budgetAdmission: budget_complete: valid observations below the threshold are admitted",
+      "budgetAdmission: budget_exhausted: equality and larger observations are refused",
+      "budgetAdmission: budget_invalid: invalid observations are never admitted"
     ]
   }
 }

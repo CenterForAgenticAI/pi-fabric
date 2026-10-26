@@ -834,7 +834,7 @@ describe("FabricUiController widget arrow entry", () => {
       list().handleInput("\x1b[B");
       list().handleInput("\r");
       await Promise.resolve();
-      expect(openTasks).toHaveBeenCalledWith(expect.anything(), "job-1", { fromList: true });
+      expect(openTasks).toHaveBeenCalledWith(expect.anything(), "job-1");
       expect(openConversation).not.toHaveBeenCalled();
       // Closing the tasks view returns to the list, still on the shell.
       await Promise.resolve();

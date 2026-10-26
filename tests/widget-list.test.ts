@@ -3,7 +3,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { projectAgentTranscript } from "../src/ui/transcript.js";
 import type { FabricDashboardSnapshot, FabricUiAgent } from "../src/ui/types.js";
-import { FabricWidget, SHELL_TASKS_ROW, shouldShowFabricWidget, type FabricWidgetInteraction, type FabricWidgetRow } from "../src/ui/widget.js";
+import { FabricWidget, shouldShowFabricWidget, type FabricWidgetInteraction, type FabricWidgetRow } from "../src/ui/widget.js";
 
 const theme = {
   fg: (_color: string, text: string) => text,
@@ -179,38 +179,25 @@ describe("Fabric agent list", () => {
     expect(widget.render(160)[2]).toMatch(/^○ probe  read · /);
   });
 
-  it("keeps agents in view and folds shell tasks into one row beside them", () => {
-    const current = snapshot();
-    current.actors = [];
+  it("lists exact shell tasks after agents and opens their details directly", () => {
+    const current = snapshot(); current.actors = [];
     current.shells = Array.from({ length: 5 }, (_, index) => ({
       id: `shell-${index}-0000`, tool: "bash", command: `sleep ${index}`, startedAt: current.now - 1_000,
       spilledAt: current.now, status: "spilled", eventCount: 0, unread: false, stopping: false,
     })) as NonNullable<FabricDashboardSnapshot["shells"]>;
-    const { widget, opened } = setup({ current });
+    const { widget, opened } = setup({ current, maxRows: 10 });
     const lines = widget.render(120);
-    expect(lines[1]).toContain("ctrl+alt+t tasks");
+    expect(lines[1]).not.toContain("ctrl+alt+t");
     expect(lines[2]).toMatch(/^○ security-reviewer /);
-    expect(lines[3]).toMatch(/^○ 5 shell tasks · /);
-    expect(lines).toHaveLength(4);
-    // The folded row is selectable and opens every shell.
-    widget.focused = true;
-    widget.selectFirst();
-    widget.handleInput("\x1b[B");
-    expect(widget.render(120)[3]).toMatch(/^● 5 shell tasks/);
+    expect(lines.slice(3).every(line => /^○ shell-\d/.test(line))).toBe(true);
+    expect(lines).toHaveLength(8);
+    widget.focused = true; widget.selectFirst(); widget.handleInput("\x1b[B");
+    expect(widget.render(120)[3]).toMatch(/^● shell-0/);
     widget.handleInput("\r");
-    expect(opened.at(-1)).toMatchObject({ id: SHELL_TASKS_ROW, kind: "shells" });
-    // Without participants, shells list one by one again, each its own row.
-    current.agents = [];
-    widget.focused = false;
-    widget.invalidate();
-    const shells = widget.render(120);
-    expect(shells[1]).toContain("↓ to manage");
-    expect(shells.slice(2, 5).every((line) => /^○ shell-\d/.test(line))).toBe(true);
-    expect(shells[5]).toMatch(/^○ \+2 more shell tasks$/);
+    expect(opened.at(-1)).toMatchObject({ id: "shell-0-0000", kind: "shell" });
+    current.agents = []; widget.focused = false; widget.invalidate(); widget.render(120);
     expect(mouse(widget, "click", 3)).toEqual({ handled: true, render: true });
     expect(opened.at(-1)).toMatchObject({ id: "shell-1-0000", kind: "shell", name: "sleep 1" });
-    expect(mouse(widget, "click", 5)).toEqual({ handled: true, render: true });
-    expect(opened.at(-1)).toMatchObject({ id: SHELL_TASKS_ROW, kind: "shells" });
   });
 
   it("emphasises a selected shell's id like an agent's name", () => {
@@ -305,15 +292,23 @@ describe("Fabric agent list", () => {
     }
   });
 
-  it("selects only the rows the widget shows", () => {
-    const { widget, opened } = setup({ current: manyAgents(30), terminalRows: 12 });
-    widget.focused = true;
-    widget.selectFirst();
-    const shown = widget.render(100);
+  it("scrolls to overflow tasks and maps clicks only to their visible rows", () => {
+    const current = snapshot(); current.agents = []; current.actors = [];
+    current.shells = Array.from({ length: 30 }, (_, index) => ({
+      id: `shell-${index}-0000`, tool: "bash", command: `sleep ${index}`, startedAt: current.now - 1_000,
+      spilledAt: current.now, status: "spilled", eventCount: 0, unread: false, stopping: false,
+    })) as NonNullable<FabricDashboardSnapshot["shells"]>;
+    const { widget, opened } = setup({ current, terminalRows: 12 });
+    widget.focused = true; widget.selectFirst(); widget.render(100);
     for (let index = 0; index < 40; index++) widget.handleInput("\x1b[B");
-    widget.handleInput("\r");
-    const lastShown = shown.map((line) => /agent-(\d+)/.exec(line)?.[1]).filter(Boolean).at(-1);
-    expect(opened.at(-1)?.id).toBe(`agent-${lastShown}`);
+    const shown = widget.render(100);
+    expect(shown).toHaveLength(6); expect(shown.at(-1)).toMatch(/^● shell-29/);
+    widget.handleInput("\r"); expect(opened.at(-1)?.id).toBe("shell-29-0000");
+    const firstVisible = /shell-\d+/.exec(shown[2]!)![0];
+    expect(mouse(widget, "click", 2)).toEqual({ handled: true, render: true });
+    expect(opened.at(-1)?.id).toBe(`${firstVisible}-0000`);
+    widget.handleInput("\x1b[A"); widget.render(100); widget.handleInput("\r");
+    expect(opened.at(-1)?.id).toBe(`shell-${Number(firstVisible.slice(6)) - 1}-0000`);
   });
 
   it("marks the participant on screen and offers Main as a row in a participant window", () => {
