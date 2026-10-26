@@ -61,12 +61,19 @@ export const renameAtomic = (
   }
 };
 
-const UNSUPPORTED_DIRECTORY_FSYNC_CODES = new Set(["EINVAL", "ENOTSUP", "EISDIR", "EPERM", "EACCES"]);
+// Windows refuses to open or flush a directory with EPERM/EACCES/EISDIR. On
+// POSIX the same EPERM/EACCES means the caller lacks access to a directory it
+// asked to make durable, so it must surface rather than pass as unsupported.
+export const unsupportedDirectoryFsyncCodes = (platform: NodeJS.Platform): ReadonlySet<string> =>
+  new Set(["EINVAL", "ENOTSUP", "EISDIR", ...(platform === "win32" ? ["EPERM", "EACCES"] : [])]);
+
+const UNSUPPORTED_DIRECTORY_FSYNC_CODES = unsupportedDirectoryFsyncCodes(process.platform);
 
 /**
  * Flushes a directory entry table so a create or rename in it is durable.
  * Platforms that cannot open or flush a directory (Windows, some network
- * filesystems) report an error code that is ignored here.
+ * filesystems) report an error code that is ignored here; on POSIX a
+ * permission error is rethrown.
  */
 export const fsyncDirectory = (directory: string): void => {
   let descriptor: number | undefined;
@@ -81,15 +88,27 @@ export const fsyncDirectory = (directory: string): void => {
   }
 };
 
+/**
+ * `mkdir -p` that, when `fsync` is set, also flushes the parent of every
+ * directory it created, so a new directory chain survives a power loss. An
+ * existing directory costs nothing beyond the mkdir.
+ */
+export const mkdirDurable = (directory: string, mode: number, fsync: boolean): void => {
+  const created = fs.mkdirSync(directory, { recursive: true, mode });
+  if (!fsync || created === undefined) return;
+  const first = path.resolve(created);
+  for (let current = path.resolve(directory); ; current = path.dirname(current)) {
+    fsyncDirectory(path.dirname(current));
+    if (current === first || path.dirname(current) === current) break;
+  }
+};
+
 export const writeFileAtomic = (
   filePath: string,
   contents: string,
   options?: AtomicWriteOptions,
 ): void => {
-  fs.mkdirSync(path.dirname(filePath), {
-    recursive: true,
-    mode: options?.dirMode ?? 0o700,
-  });
+  mkdirDurable(path.dirname(filePath), options?.dirMode ?? 0o700, options?.fsync === true);
   const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
     if (options?.fsync) {

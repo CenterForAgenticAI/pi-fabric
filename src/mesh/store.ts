@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   fsyncDirectory,
+  mkdirDurable,
   writeFileAtomic,
   encodeOwnerIdentityLine,
   lockOwnerLiveness,
@@ -397,7 +398,7 @@ export class MeshStore {
     this.#lockTimeoutMs = Math.max(100, Math.floor(options.lockTimeoutMs ?? LOCK_TIMEOUT_MS));
     this.#staleLockMs = Math.max(100, Math.floor(options.staleLockMs ?? STALE_LOCK_MS));
     this.durable = options.durability === "fsync";
-    fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+    mkdirDurable(root, 0o700, this.durable);
   }
 
   async publish(input: {
@@ -997,7 +998,7 @@ export class MeshStore {
   }
 
   async #withLock<T>(operation: () => T): Promise<T> {
-    fs.mkdirSync(this.root, { recursive: true, mode: 0o700 });
+    mkdirDurable(this.root, 0o700, this.durable);
     const deadline = Date.now() + this.#lockTimeoutMs;
     const token = randomUUID();
     const ownerPath = path.join(this.#lockPath, "owner");

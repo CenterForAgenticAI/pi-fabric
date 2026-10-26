@@ -102,6 +102,35 @@ describe("MeshStore", () => {
     if (flushesDirectories) expect(flushed).toContain(path.basename(store.root));
   });
 
+  it.skipIf(process.platform === "win32")("flushes the parents of a newly created durable mesh root", () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-mesh-"));
+    roots.push(base);
+    const realOpen = fs.openSync;
+    const descriptors = new Map<number, string>();
+    vi.spyOn(fs, "openSync").mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+      const descriptor = (realOpen as (...args: unknown[]) => number)(target, ...rest);
+      descriptors.set(descriptor, String(target));
+      return descriptor;
+    }) as typeof fs.openSync);
+    const flushed: string[] = [];
+    const realFsync = fs.fsyncSync;
+    vi.spyOn(fs, "fsyncSync").mockImplementation((descriptor: number) => {
+      flushed.push(descriptors.get(descriptor) ?? "?");
+      realFsync(descriptor);
+    });
+
+    new MeshStore(path.join(base, "relaxed", "mesh"), 64 * 1024, 100);
+    expect(flushed).toEqual([]);
+
+    const root = path.join(base, "fabric", "mesh");
+    new MeshStore(root, 64 * 1024, 100, { durability: "fsync" });
+    expect(flushed).toEqual([path.join(base, "fabric"), base]);
+
+    flushed.length = 0;
+    new MeshStore(root, 64 * 1024, 100, { durability: "fsync" });
+    expect(flushed).toEqual([]);
+  });
+
   it("repairs an interrupted append without reusing sequence numbers", async () => {
     const store = createStore();
     await store.publish({ topic: "team.auth", from: identity, text: "one" });
