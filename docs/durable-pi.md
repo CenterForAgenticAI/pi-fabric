@@ -77,7 +77,10 @@ task that does not survive a restart. A call resumes at most three times.
 
 The journal holds the program's identity digest, its random seed and start
 time, and for every host call its reference, an argument digest, and the full
-result or error the program received. Tool output can include secrets, so the
+result or error the program received. Each line carries a checksum and a hash
+of the line before it, so a lost, reordered, or foreign line refuses the
+resume. Lines lost from the very end cannot be detected this way; Fabric relies
+on `fdatasync` to keep a synced intent. Tool output can include secrets, so the
 journal is private to its owner (mode `0600`). The worker deletes it as soon as
 the call's final result is committed to the durable store, whether the call
 succeeded, failed, was stopped as interrupted, or was aborted. It is never

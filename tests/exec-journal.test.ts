@@ -248,6 +248,48 @@ describe("fabric_exec crash journal", () => {
     );
   });
 
+  it("refuses a journal whose lines were lost, reordered, or spliced in from another journal", async () => {
+    const threeCalls = 'const a = await tools.call({ ref: "demo.read", args: { n: 1 } });\nconst b = await tools.call({ ref: "demo.read", args: { n: 2 } });\nconst c = await tools.call({ ref: "demo.read", args: { n: 3 } });\nreturn [a, b, c];';
+    const file = journalFile();
+    const first = await record(file, threeCalls, () => async (_ref, args) => (args.args as { n: number }).n);
+    const intact = fs.readFileSync(file, "utf8");
+    const lines = intact.split("\n");
+    expect(lines).toHaveLength(5);
+    const damaged = "fabric_exec could not resume after an interruption: its journal is damaged. Nothing was rerun.";
+
+    // A lost middle line: every remaining line keeps a valid checksum.
+    fs.writeFileSync(file, [lines[0], lines[2], lines[3], ""].join("\n"));
+    await expect(resume(file, first.digest, threeCalls, neverCalled)).rejects.toThrow(damaged);
+
+    // Two complete lines swapped.
+    fs.writeFileSync(file, [lines[0], lines[2], lines[1], lines[3], ""].join("\n"));
+    await expect(resume(file, first.digest, threeCalls, neverCalled)).rejects.toThrow(damaged);
+
+    // A line copied from another journal of the same program.
+    const other = journalFile();
+    await record(other, threeCalls, () => async (_ref, args) => (args.args as { n: number }).n);
+    const foreign = fs.readFileSync(other, "utf8").split("\n");
+    fs.writeFileSync(file, [lines[0], lines[1], foreign[2], lines[3], ""].join("\n"));
+    await expect(resume(file, first.digest, threeCalls, neverCalled)).rejects.toThrow(damaged);
+
+    // The intact journal still resumes.
+    fs.writeFileSync(file, intact);
+    expect((await resume(file, first.digest, threeCalls, neverCalled)).value).toEqual([1, 2, 3]);
+  });
+
+  it("refuses a journal written in the unchained v1 format", async () => {
+    const file = journalFile();
+    await record(file, "return 1;", () => async () => undefined);
+    const [header] = fs.readFileSync(file, "utf8").split("\n");
+    const json = header!.slice(9).replace(/pi-fabric\.exec-journal\.v\d+/, "pi-fabric.exec-journal.v1");
+    const { crc32 } = await import("node:zlib");
+    fs.writeFileSync(file, `${crc32(json).toString(16).padStart(8, "0")} ${json}\n`);
+    const { createHash } = await import("node:crypto");
+    await expect(resume(file, createHash("sha256").update(json).digest("hex"), "return 1;", neverCalled)).rejects.toThrow(
+      "fabric_exec could not resume after an interruption: its journal was written in format v1, which this Fabric cannot verify. Nothing was rerun.",
+    );
+  });
+
   it("refuses a missing, replaced, or re-identified journal", async () => {
     const file = journalFile();
     const first = await record(file, twoCalls("demo.read"), () => async () => 1);

@@ -33,8 +33,15 @@ import type { FabricJournalDelivery, FabricJournalDriver, FabricJournalOutcome, 
 //
 // One record per line: an 8-digit CRC-32, a space, and JSON. A crash can tear
 // only the last line; it is dropped and truncated before anything is appended.
+// Every record after the header names the line before it in `p`: a short hash
+// of that line's JSON, which itself carries the hash before it, back to the
+// header. A lost, reordered, or foreign line breaks the chain and the resume is
+// refused. The chain cannot show that whole lines are missing from the end:
+// that needs a durable record outside the file for every call. The journal
+// trusts fdatasync instead: a synced intent survives a crash.
 
-const FORMAT = "pi-fabric.exec-journal.v1";
+const FORMAT = "pi-fabric.exec-journal.v2";
+const FORMAT_PATTERN = /^pi-fabric\.exec-journal\.(v\d+)$/;
 const PREVIEW_CHARS = 300;
 // Results that name process-local work a restart does not keep.
 const HANDLE_REFS: ReadonlySet<string> = new Set([
@@ -74,6 +81,7 @@ interface JournalHeader {
   startedAt: number;
 }
 interface CompletionRecord {
+  p: string;
   c: number;
   seq: number;
   ref: string;
@@ -103,15 +111,16 @@ const isOutcome = (value: unknown): value is FabricJournalOutcome => {
 };
 
 const isCompletion = (value: unknown): value is CompletionRecord =>
-  isObject(value) && isIndex(value.c) && isIndex(value.seq) && typeof value.ref === "string" &&
+  isObject(value) && typeof value.p === "string" && isIndex(value.c) && isIndex(value.seq) && typeof value.ref === "string" &&
   (value.t === undefined || typeof value.t === "string") && typeof value.d === "string" &&
   typeof value.at === "number" && Number.isFinite(value.at) && isOutcome(value.o) &&
   (value.handle === undefined || value.handle === true);
 
-const encode = (value: unknown): Buffer => {
-  const json = JSON.stringify(value);
-  return Buffer.from(`${crc32(json).toString(16).padStart(8, "0")} ${json}\n`, "utf8");
-};
+const encode = (json: string): Buffer =>
+  Buffer.from(`${crc32(json).toString(16).padStart(8, "0")} ${json}\n`, "utf8");
+
+// Link from one journal line to the next; covers the previous line's own link.
+const chainLink = (previous: string): string => createHash("sha256").update(previous).digest("base64url").slice(0, 16);
 
 // Returns the JSON text of each intact line and the byte length they cover.
 const decode = (buffer: Buffer): { lines: string[]; size: number } => {
@@ -203,6 +212,7 @@ export class FabricExecJournal implements FabricJournalDriver {
   #fd: number | undefined;
   #next: number;
   #lastAt: number;
+  #previous: string;
 
   constructor(
     fd: number,
@@ -211,8 +221,10 @@ export class FabricExecJournal implements FabricJournalDriver {
     completions: readonly CompletionRecord[],
     intents: Map<number, string>,
     hooks: FabricJournalHooks,
+    previous: string,
   ) {
     this.#fd = fd;
+    this.#previous = previous;
     this.shim = journalShimSource(header.seed);
     this.startedAt = header.startedAt;
     this.resuming = resuming;
@@ -310,9 +322,11 @@ export class FabricExecJournal implements FabricJournalDriver {
     closeSync(fd);
   }
 
-  #write(record: unknown, sync: boolean): void {
+  #write(record: Record<string, unknown>, sync: boolean): void {
     if (this.#fd === undefined) throw new Error("Fabric journal is closed");
-    writeAll(this.#fd, encode(record));
+    const json = JSON.stringify({ p: chainLink(this.#previous), ...record });
+    writeAll(this.#fd, encode(json));
+    this.#previous = json;
     if (sync) fdatasyncSync(this.#fd);
   }
 }
@@ -342,15 +356,16 @@ async function createJournal(offer: FabricJournalOffer, identity: string, hooks:
   try {
     if (!fstatSync(fd).isFile()) throw new Error(`Fabric journal is not a regular file: ${offer.path}`);
     fchmodSync(fd, 0o600);
-    writeAll(fd, encode(header));
+    const headerText = JSON.stringify(header);
+    writeAll(fd, encode(headerText));
     fdatasyncSync(fd);
     // Windows cannot open a directory for fsync; the file sync above still runs there.
     if (process.platform !== "win32") {
       const directoryFd = openSync(directory, constants.O_RDONLY);
       try { fsyncSync(directoryFd); } finally { closeSync(directoryFd); }
     }
-    await offer.accept(sha256(JSON.stringify(header)));
-    return new FabricExecJournal(fd, header, false, [], new Map(), hooks);
+    await offer.accept(sha256(headerText));
+    return new FabricExecJournal(fd, header, false, [], new Map(), hooks, headerText);
   } catch (error) {
     closeSync(fd);
     throw error;
@@ -372,6 +387,10 @@ function resumeJournal(file: string, expected: string, identity: string, hooks: 
     const [headerText, ...rest] = lines;
     if (headerText === undefined || sha256(headerText) !== expected) throw refusal("its journal was replaced or lost its header");
     const header = JSON.parse(headerText) as unknown;
+    // v1 journals had no chain, so a lost or reordered line could not be seen.
+    const recordedFormat = isObject(header) && typeof header.format === "string" ? header.format : undefined;
+    const format = recordedFormat === undefined ? null : FORMAT_PATTERN.exec(recordedFormat);
+    if (format && recordedFormat !== FORMAT) throw refusal(`its journal was written in format ${format[1]}, which this Fabric cannot verify`);
     if (!isObject(header) || header.h !== 1 || header.format !== FORMAT || !isObject(header.versions) ||
       typeof header.identity !== "string" || !isIndex(header.seed) || typeof header.startedAt !== "number" ||
       !Number.isFinite(header.startedAt)) {
@@ -384,9 +403,12 @@ function resumeJournal(file: string, expected: string, identity: string, hooks: 
     if (header.identity !== identity) throw refusal("the program, its payloads, or its execution settings changed since the journal was recorded");
     const intents = new Map<number, string>();
     const completions: CompletionRecord[] = [];
+    let previous = headerText;
     for (const text of rest) {
       const value = JSON.parse(text) as unknown;
-      if (isObject(value) && isIndex(value.i) && typeof value.ref === "string") intents.set(value.i, value.ref);
+      if (!isObject(value) || value.p !== chainLink(previous)) throw refusal("its journal is damaged");
+      previous = text;
+      if (isIndex(value.i) && typeof value.ref === "string") intents.set(value.i, value.ref);
       else if (isCompletion(value)) completions.push(value);
       else throw refusal("its journal is damaged");
     }
@@ -400,7 +422,7 @@ function resumeJournal(file: string, expected: string, identity: string, hooks: 
       }
     }
     if (size < fstatSync(fd).size) ftruncateSync(fd, size);
-    return new FabricExecJournal(fd, header as unknown as JournalHeader, true, completions, intents, hooks);
+    return new FabricExecJournal(fd, header as unknown as JournalHeader, true, completions, intents, hooks, previous);
   } catch (error) {
     closeSync(fd);
     throw error instanceof FabricJournalRefusal
