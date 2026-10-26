@@ -81,14 +81,44 @@ switches receive fresh request identities and do not replay old answers.
 Old leaf-adapter locators/journals are not silently migrated into worker stores.
 
 Worker retries retain the original prompt identity, so a completed journal can
-restore its answer even if the parent died before saving completion. Automatic
-reattachment after the owning Fabric/resident process restarts currently covers
-hosted adapters, not this built-in worker; `agents.wait` on such a run fails at
-once when its resident host is gone. Recovery of completed conversations
+restore its answer even if the parent died before saving completion. By
+default, automatic reattachment after the owning Fabric/resident process
+restarts covers hosted adapters, not this built-in worker; `agents.wait` on such
+a run fails at once when its resident host is gone. Recovery of completed conversations
 with additional steering/follow-up user messages also remains incomplete: strict
 transcript correlation fails closed to avoid attributing a stale answer.
 Control acknowledgements do not provide an end-to-end exactly-once delivery
 contract; do not blindly resubmit a command whose acknowledgement was lost.
+
+## Opt-in: reattach after a resident host restart
+
+Set `agents.durableWorkerRecovery: true` to let a resident host recover its
+own unfinished `pi-durable` worker runs. It applies only to runs launched with
+`residency: "durable"`, runner `pi-durable`, and the `process` transport, on
+POSIX. Each such launch writes `worker-recovery.json` beside the run: the run
+id, the absolute deadline, the current worker PID, and the worker launch. Every
+settlement this host makes, including an explicit stop, deletes the file first,
+so a later host never recovers a run Fabric already finished or stopped.
+
+When the host closes, it leaves these workers running. The next resident host,
+whether started by a new session or by `agents.wait` after the old host died,
+reads each file and decides:
+
+- **Worker still running.** Fabric checks the PID and that its command line
+  still carries `--id <run id>`. It then adopts the worker and waits for its
+  result. Nothing is relaunched.
+- **Worker gone.** Fabric relaunches the same launch in the same run directory,
+  with the same prompt and the progress so far carried over. `pi-durable`
+  reopens its journal, so completed work is not repeated.
+- **Deadline passed, or liveness cannot be verified.** This covers a PID owned
+  by another user and an unreadable command line. The run settles `failed` with
+  `outcome: "indeterminate"` and a reason, and `agents.wait` returns that
+  result instead of throwing.
+
+The option is off by default; with it off, no file is written and behaviour is
+unchanged. A run launched while the option was on keeps its file, so turning
+the option off later does not strand that run. Windows, other transports, and
+waits from another session of the project (`waitProjectAgent`) are not covered.
 
 ## Advanced: manually registered leaf adapter
 

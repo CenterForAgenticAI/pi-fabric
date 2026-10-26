@@ -215,6 +215,11 @@ export interface FabricAgentConfig {
   extensions: boolean;
   defaultTools: string[];
   retainRuns: boolean;
+  /**
+   * Opt-in: a resident host re-attaches its unfinished built-in pi-durable
+   * worker runs after a restart, or relaunches them on their journal.
+   */
+  durableWorkerRecovery?: boolean;
   notifyOnComplete: boolean;
   budgetUsd: number;
   maxTokensPerChild: number;
@@ -549,6 +554,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     extensions: true,
     defaultTools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
     retainRuns: false,
+    durableWorkerRecovery: false,
     notifyOnComplete: true,
     budgetUsd: 0,
     maxTokensPerChild: 0,
@@ -1248,6 +1254,10 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       extensions: booleanValue(agents.extensions, DEFAULT_FABRIC_CONFIG.agents.extensions),
       defaultTools: configuredTools,
       retainRuns: booleanValue(agents.retainRuns, DEFAULT_FABRIC_CONFIG.agents.retainRuns),
+      durableWorkerRecovery: booleanValue(
+        agents.durableWorkerRecovery,
+        DEFAULT_FABRIC_CONFIG.agents.durableWorkerRecovery ?? false,
+      ),
       notifyOnComplete: booleanValue(
         agents.notifyOnComplete,
         DEFAULT_FABRIC_CONFIG.agents.notifyOnComplete,

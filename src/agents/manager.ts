@@ -59,6 +59,14 @@ import {
 import type { FabricTokenUsagePayload } from "../lifecycle/types.js";
 import { AgentAdmission, assertAgentTask, beginAgentSettlement, createAgentLifecycle, finishAgentSettlement, terminalAgentStatuses, type AgentLifecycleState } from "./lifecycle.js";
 import { removeTree } from "./rm.js";
+import {
+  adoptedWorkerHandle,
+  probeWorker,
+  readWorkerRecovery,
+  removeWorkerRecovery,
+  writeWorkerRecovery,
+  WORKER_RECOVERY_FORMAT,
+} from "./worker-recovery.js";
 import { HerdrTransport } from "./transports/herdr-transport.js";
 import { LocaltermTransport } from "./transports/localterm-transport.js";
 import { ProcessTransport } from "./transports/process-transport.js";
@@ -202,6 +210,11 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
   runnerAdapter: FabricRunnerAdapter;
   /** Adapter-owned run: never relaunched or re-prompted by Fabric. */
   hosted?: HostedRun;
+  /** Opt-in pi-durable recovery (agents.durableWorkerRecovery): the absolute
+   *  launch deadline persisted in worker-recovery.json beside the run. */
+  workerRecovery?: { deadlineAt: number };
+  /** Left running by a closing durable host for the next host to re-attach. */
+  workerDetached?: boolean;
   kernel?: FabricKernel;
   recursive: boolean;
   residency: "session" | "durable";
@@ -257,6 +270,14 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
 }
 
 const terminalStatuses = terminalAgentStatuses;
+
+const fileSize = (filePath: string): number => {
+  try {
+    return fs.statSync(filePath).size;
+  } catch {
+    return 0;
+  }
+};
 
 // Hosted runs have no Fabric transport to relaunch through.
 const HOSTED_TRANSPORT: AgentTransportAdapter = {
@@ -1271,6 +1292,16 @@ export class AgentManager {
       }
       this.#runs.set(id, managed);
       this.#unregisteredTransports.delete(transport);
+      if (
+        this.config.durableWorkerRecovery === true &&
+        residency === "durable" &&
+        runner === "pi-durable" &&
+        adapter.kind === "process" &&
+        process.platform !== "win32"
+      ) {
+        managed.workerRecovery = { deadlineAt: Date.now() + timeoutMs };
+        this.#persistWorkerRecovery(managed);
+      }
       this.#invalidateUiList();
       void this.#monitor(managed, timeoutMs);
       return this.#handleInfo(managed, "running");
@@ -1483,6 +1514,152 @@ export class AgentManager {
       managed = this.#adoptHosted(hosted, { release: () => {}, recovered: true });
       await hosted.attach();
       void this.#monitor(managed, Math.max(0, state.context.deadlineAt - Date.now()));
+      recovered.push(entry);
+    }
+    return recovered;
+  }
+
+  #persistWorkerRecovery(managed: ManagedAgent): void {
+    if (!managed.workerRecovery) return;
+    const pid = Number(managed.transport.sessionId);
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      // Without a PID no later host can tell a live worker from a dead one.
+      delete managed.workerRecovery;
+      removeWorkerRecovery(managed.runDirectory);
+      return;
+    }
+    writeWorkerRecovery(managed.runDirectory, {
+      format: WORKER_RECOVERY_FORMAT,
+      id: managed.id,
+      runner: "pi-durable",
+      deadlineAt: managed.workerRecovery.deadlineAt,
+      pid,
+      launch: {
+        id: managed.launch.id,
+        name: managed.launch.name,
+        cwd: managed.launch.cwd,
+        workerPath: managed.launch.workerPath,
+        workerArguments: [...managed.launch.workerArguments],
+      },
+      writtenAt: Date.now(),
+    });
+  }
+
+  /**
+   * Re-attach opted-in pi-durable worker runs (agents.durableWorkerRecovery)
+   * left unfinished under this run root by an earlier host. A verified live
+   * worker is adopted; a dead one is relaunched on its own durable journal
+   * with its progress carried over; a run whose deadline passed, or whose
+   * worker Fabric cannot verify either way, settles failed with outcome
+   * "indeterminate" instead of being guessed at.
+   */
+  async recoverWorkerRuns(): Promise<string[]> {
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(this.#runRoot);
+    } catch {
+      return [];
+    }
+    const recovered: string[] = [];
+    for (const entry of entries) {
+      if (this.#closing || this.#runs.has(entry) || !/^[0-9a-f]{32}$/.test(entry)) continue;
+      const runDirectory = path.join(this.#runRoot, entry);
+      const recovery = readWorkerRecovery(runDirectory);
+      if (!recovery || recovery.id !== entry) continue;
+      const statusFile = path.join(runDirectory, "status.json");
+      const record = readRecord(statusFile);
+      if (!record || record.id !== entry || record.hosted) continue;
+      // A worker-written "stopped" beside a recovery file was an outside
+      // signal (every Fabric settlement removes the file first).
+      if (terminalStatuses.has(record.status) && record.status !== "stopped") {
+        removeWorkerRecovery(runDirectory);
+        continue;
+      }
+      const now = Date.now();
+      const indeterminate = (reason: string): void => {
+        const { currentTool: _tool, blockedOn: _blocked, sleeping: _sleeping, ...rest } = record;
+        removeWorkerRecovery(runDirectory);
+        writeRecord(statusFile, {
+          ...rest,
+          status: "failed",
+          error: `${reason}; the run outcome is indeterminate`,
+          outcome: "indeterminate",
+          finishedAt: now,
+          updatedAt: now,
+        });
+      };
+      const runnerAdapter = getAgentRunner("pi-durable");
+      if (runnerAdapter?.kind !== "worker") {
+        indeterminate("The pi-durable runner is not registered in this process");
+        continue;
+      }
+      if (recovery.deadlineAt <= now) {
+        indeterminate("The durable worker run passed its deadline while no resident host owned it");
+        continue;
+      }
+      const liveness = record.status === "stopped" ? "dead" : probeWorker(recovery.pid, entry);
+      if (liveness === "unknown") {
+        indeterminate(`Fabric cannot verify whether worker process ${recovery.pid} is still running`);
+        continue;
+      }
+      if (liveness === "dead" && !fs.existsSync(recovery.launch.workerPath)) {
+        indeterminate(`The worker entry ${recovery.launch.workerPath} no longer exists`);
+        continue;
+      }
+      const adapter = await this.#resolveTransport("process");
+      const managed: ManagedAgent = {
+        id: entry,
+        name: record.name,
+        task: record.task,
+        runner: "pi-durable",
+        runnerAdapter,
+        ...(record.kernel ? { kernel: record.kernel } : {}),
+        recursive: record.recursive === true,
+        residency: "durable",
+        cwd: record.cwd,
+        statusFile,
+        lifecycleFile: path.join(runDirectory, "lifecycle.jsonl"),
+        // Events before this point reached the previous host's ledger.
+        lifecycleOffset: fileSize(path.join(runDirectory, "lifecycle.jsonl")),
+        lifecycleRemainder: Buffer.alloc(0),
+        runDirectory,
+        transport: adoptedWorkerHandle(recovery.pid, entry),
+        adapter,
+        launch: recovery.launch,
+        startupAttempts: 1,
+        ...createAgentLifecycle<AgentRunResult>(() => {}),
+        abortSignal: undefined,
+        abortHandler: undefined,
+        ...(record.model ? { model: record.model } : {}),
+        ...(record.thinking ? { thinking: record.thinking } : {}),
+        ...(record.branch ? { branch: record.branch } : {}),
+        ...(record.worktree ? { worktree: record.worktree } : {}),
+        workerRecovery: { deadlineAt: recovery.deadlineAt },
+        settled: false,
+        background: true,
+        lastLivenessCheckAt: 0,
+        resumeAttempts: 0,
+        stopRequested: false,
+        observedProgress: { turns: record.turns, toolCalls: record.toolCalls, usage: { ...record.usage } },
+        usageEmitted: { ...record.usage },
+      };
+      this.#runs.set(entry, managed);
+      this.#invalidateUiList();
+      if (liveness === "dead") {
+        managed.resumeAttempts += 1;
+        const { turns, toolCalls, usage } = managed.observedProgress;
+        // Same prompt, same run directory: pi-durable reopens its journal.
+        const relaunched = await this.#relaunch(managed, record, {
+          task: managed.task,
+          carryOver: { turns, toolCalls, usage: { ...usage } },
+        });
+        if (!relaunched) {
+          const failed = readRecord(statusFile) ?? record;
+          this.#settle(managed, this.#withTransportMetadata(failed, managed) as AgentRunResult);
+          continue;
+        }
+      }
+      void this.#monitor(managed, Math.max(0, recovery.deadlineAt - Date.now()));
       recovered.push(entry);
     }
     return recovered;
@@ -1831,13 +2008,28 @@ export class AgentManager {
       (managed) => !managed.settled && managed.hosted && managed.residency === "durable",
     );
     for (const managed of detached) managed.hosted!.detach();
+    // An opted-in pi-durable worker keeps running too; the next host re-attaches
+    // it from worker-recovery.json, or relaunches it on its journal.
+    for (const managed of this.#runs.values()) {
+      if (
+        !managed.settled &&
+        !managed.stopRequested &&
+        managed.workerRecovery &&
+        managed.residency === "durable"
+      ) {
+        managed.workerDetached = true;
+        detached.push(managed);
+      }
+    }
     const running = [...this.#runs.values()].filter((managed) => !managed.settled && !detached.includes(managed));
     for (const managed of running) managed.hosted?.markShutdown();
     await Promise.allSettled(running.map((managed) => this.stop(managed.id)));
     await Promise.allSettled([...this.#spawns]);
     await Promise.allSettled([...this.#launches]);
     const all = [...this.#runs.values()];
-    await Promise.allSettled(all.map((managed) => this.#waitForTransportExit(managed)));
+    await Promise.allSettled(
+      all.filter((managed) => !managed.workerDetached).map((managed) => this.#waitForTransportExit(managed)),
+    );
     const transports = [...all.map((managed) => managed.transport), ...this.#unregisteredTransports];
     const alive = await Promise.all(transports.map((transport) => transport.isAlive().catch(() => true)));
     // A failed stop is not authority to delete a child's working files.
@@ -2058,6 +2250,7 @@ export class AgentManager {
       if (managed.settled || this.#closing || managed.stopRequested) return false;
       managed.transport = await this.#launchTransport(managed.adapter, managed.launch);
       this.#unregisteredTransports.delete(managed.transport);
+      if (managed.workerRecovery) this.#persistWorkerRecovery(managed);
       if (managed.settled || this.#closing || managed.stopRequested) {
         // A stop landed while the relaunch was in flight. Release the child we
         // just started so it cannot outlive the monitor and the stop path can
@@ -2106,6 +2299,7 @@ export class AgentManager {
     while (!managed.settled) {
       // A detached durable hosted run is re-attached by the next host.
       if (managed.hosted?.detached) return;
+      if (managed.workerDetached) return;
       this.#drainLifecycle(managed);
       const record = readRecord(managed.statusFile);
       if (record) {
@@ -2229,6 +2423,10 @@ export class AgentManager {
 
   #settle(managed: ManagedAgent, result: AgentRunResult): void {
     if (managed.settled) return;
+    // Settled by this host: no later host may recover it. Removed before the
+    // terminal record lands, so a recovery file never sits beside a host-written
+    // terminal status.
+    if (managed.workerRecovery) removeWorkerRecovery(managed.runDirectory);
     if (managed.worktreeResult) result.worktreeResult = managed.worktreeResult;
     // Every terminal path (including explicit stop and lost transport) gets a
     // final unthrottled read before freezing the nested status tree.

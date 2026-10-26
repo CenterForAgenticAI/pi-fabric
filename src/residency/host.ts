@@ -825,6 +825,8 @@ class ResidentHost {
     }
     for (const module of modules) await loadRunnerModule(module).catch(() => undefined);
     await this.agents.recoverHostedRuns().catch(() => []);
+    // Opted-in pi-durable worker runs (agents.durableWorkerRecovery at launch).
+    await this.agents.recoverWorkerRuns().catch(() => []);
   }
 
   #recoverInterruptedRequests(): void {

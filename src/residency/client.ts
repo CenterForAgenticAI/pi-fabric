@@ -12,6 +12,7 @@ import { readChildToolAllowlist } from "../core/child-tool-allowlist.js";
 import { resolveAgentCwd } from "../agents/manager.js";
 import { BUILT_IN_RUNNER_IDS, requireAgentRunner } from "../agents/runner-registry.js";
 import { isFabricWorktreePath } from "../agents/worktree-paths.js";
+import { hasWorkerRecovery } from "../agents/worker-recovery.js";
 import { executeFile, processIsAlive, spawnDetached } from "../agents/transports/process-utils.js";
 import { readJsonlPage } from "../log-tail.js";
 import type { FabricOwnedModelGuidance } from "../components/model-guidance.js";
@@ -374,9 +375,13 @@ export class ResidencyClient {
       if (!this.#liveOwner()) {
         const current = this.statusAgent(id);
         if (terminal(current.status) && "startedAt" in current) continue;
-        // A new host re-attaches only hosted runs (AgentManager.recoverHostedRuns).
-        // Nothing settles any other run once its host is gone, so fail now.
-        if (!("hosted" in current && current.hosted)) {
+        // A new host re-attaches hosted runs (AgentManager.recoverHostedRuns)
+        // and opted-in pi-durable worker runs that left a recovery file
+        // (AgentManager.recoverWorkerRuns). Nothing settles any other run once
+        // its host is gone, so fail now.
+        const runDirectory = this.#metadata(id)?.runDirectory;
+        const recoverableWorker = typeof runDirectory === "string" && hasWorkerRecovery(runDirectory);
+        if (!("hosted" in current && current.hosted) && !recoverableWorker) {
           throw new Error(
             `Durable Fabric agent ${id} (runner ${current.runner}) cannot finish: its resident host ${this.hostId} stopped, and a new host re-attaches only hosted runs`,
           );
