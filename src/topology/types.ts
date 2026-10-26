@@ -104,7 +104,7 @@ export interface FabricDepartedParticipant {
 }
 
 export interface FabricDepartedListOptions {
-  /** Most entries returned, newest first. Defaults to the configured tombstone limit. */
+  /** Most entries returned, newest first. Defaults to the configured tombstone limit, or 32 when that limit is 0. */
   limit?: number;
 }
 

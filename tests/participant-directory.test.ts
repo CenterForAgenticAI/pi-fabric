@@ -601,6 +601,32 @@ describe("ParticipantDirectory departed sessions", () => {
     expect(viewer.departed()).toEqual([]);
   });
 
+  it("reports a root lost after a resume over its older stopped tombstone", async () => {
+    const meshRoot = meshRootFor();
+    const viewer = createSession(meshRoot, "viewer");
+    await viewer.start();
+    const first = createSession(meshRoot, "resumed");
+    await first.start();
+    await first.close();
+    await vi.waitFor(() => expect(viewer.departed().map((item) => item.status)).toEqual(["stopped"]), {
+      timeout: 5_000,
+      interval: 50,
+    });
+    const stoppedAt = viewer.departed()[0]!.lastSeenAt;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const second = createSession(meshRoot, "resumed");
+    await second.start();
+    await vi.waitFor(() => expect(viewer.sessions().map((item) => item.id)).toContain("session:resumed"), {
+      timeout: 5_000,
+      interval: 50,
+    });
+    // The resumed session never closes; once its lease expires it is lost, not stopped.
+    const lost = viewer.departed({}, Date.now() + 60_000);
+    expect(lost.map((item) => item.id)).toEqual(["session:resumed"]);
+    expect(lost[0]).toMatchObject({ status: "lost" });
+    expect(lost[0]!.lastSeenAt).toBeGreaterThan(stoppedAt);
+  });
+
   it("prunes tombstones beyond the configured count and age", async () => {
     const meshRoot = meshRootFor();
     for (const name of ["one", "two", "three"]) {
@@ -636,6 +662,8 @@ describe("ParticipantDirectory departed sessions", () => {
     const silent = createSession(meshRoot, "silent", { departedLimit: 0 });
     await silent.start();
     expect(silent.mesh.listAll("topology/tombstones/")).toHaveLength(1);
+    // A write limit of 0 does not hide other sessions' departures from reads.
+    expect(silent.departed().map((item) => item.id)).toEqual(["session:departed"]);
     await silent.close();
     expect(silent.mesh.listAll("topology/tombstones/")).toHaveLength(1);
   });

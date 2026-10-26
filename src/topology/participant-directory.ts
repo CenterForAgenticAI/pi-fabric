@@ -573,13 +573,19 @@ export class ParticipantDirectory implements FabricParticipantSource {
       const heartbeat = owner?.identity.id === participant.ownerIdentityId ? owner.updatedAt : 0;
       byId.set(participant.id, departedFromRoot(participant, "lost", Math.max(participant.updatedAt, heartbeat)));
     }
-    // A tombstone records a clean stop, so it wins over a leftover record.
+    // A tombstone records a clean stop, so it wins over a leftover record that
+    // is no newer. A newer record means the root ran again after that stop and
+    // was then lost, so the stale tombstone must not hide the crash.
     for (const entry of this.mesh.listAll(TOMBSTONE_PREFIX)) {
       const tombstone = tombstoneFromEntry(entry);
-      if (tombstone) byId.set(tombstone.id, tombstone);
+      if (!tombstone) continue;
+      const lost = byId.get(tombstone.id);
+      if (!lost || tombstone.lastSeenAt >= lost.lastSeenAt) byId.set(tombstone.id, tombstone);
     }
     const cutoff = now - this.#departedRetentionMs;
-    const limit = Math.max(0, Math.floor(options.limit ?? this.#departedLimit));
+    // A write limit of 0 only stops this session writing tombstones; reads
+    // still default to the standard limit so other sessions' departures show.
+    const limit = Math.max(0, Math.floor(options.limit ?? (this.#departedLimit || DEPARTED_LIMIT)));
     return [...byId.values()]
       .filter((participant) => !live.has(participant.id) && participant.lastSeenAt >= cutoff)
       .sort((left, right) => right.lastSeenAt - left.lastSeenAt || left.id.localeCompare(right.id))

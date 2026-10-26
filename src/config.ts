@@ -334,7 +334,7 @@ export interface FabricMeshConfig {
   actorContextEntries: number;
   /** Tell a root session's model when other root sessions join or leave the project. */
   peerNotices: boolean;
-  /** Most stopped-session tombstones kept for agents.departed(); 0 keeps none. */
+  /** Most stopped-session tombstones kept for agents.departed(); 0 writes none but still reads others'. */
   departedLimit: number;
   /** Age after which stopped and lost sessions leave agents.departed(). */
   departedRetentionMs: number;
