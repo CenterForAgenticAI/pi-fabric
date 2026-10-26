@@ -252,6 +252,32 @@ const journalOffer = (fence: DurableToolFence | undefined): FabricJournalOffer |
 // Actions that only stage work committed when the run ends. A crash discards
 // the staging, so a resume may repeat them.
 const stagedActionRefs: ReadonlySet<string> = new Set(["native.store", "agents.handoff"]);
+// Calls whose effect lives only in this process. A served call skips its
+// provider, so a resume runs these again from their recorded arguments.
+const processLocalRedoRefs: ReadonlySet<string> = new Set(["compact.request", "compact.cancel", "prewalk.plan"]);
+// Calls that write a session entry and set live state from it. A surviving
+// session restores both, so a resume redoes them only when the entry is gone.
+const sessionRedoRefs: ReadonlySet<string> = new Set(["compact.carry", "thinking.set", "thinking.reset"]);
+interface SessionMark { session: string; leaf: string | null }
+const sessionMark = (context: ExtensionContext): SessionMark | undefined => {
+  const manager = (context as Partial<ExtensionContext>).sessionManager;
+  try {
+    return manager ? { session: manager.getSessionId(), leaf: manager.getLeafId() } : undefined;
+  } catch {
+    return undefined;
+  }
+};
+// True when the session still holds the entries written up to the mark.
+const sessionHolds = (context: ExtensionContext, mark: unknown): boolean => {
+  const manager = (context as Partial<ExtensionContext>).sessionManager;
+  if (!manager || typeof mark !== "object" || mark === null) return false;
+  const { session, leaf } = mark as Partial<SessionMark>;
+  try {
+    return typeof leaf === "string" ? manager.getEntry(leaf) !== undefined : leaf === null && manager.getSessionId() === session;
+  } catch {
+    return false;
+  }
+};
 const presentationBridgeRefs: ReadonlySet<string> = new Set([
   "fabric.$progress", "fabric.$configure", "fabric.$phase", "fabric.$item",
   "fabric.$event", "fabric.$spanStart", "fabric.$spanEnd",
@@ -522,6 +548,8 @@ export class FabricExecutionService {
     let agentCalls = 0;
     let handoffRequest: Record<string, unknown> | undefined;
     let handoffSeq: number | undefined;
+    // Session position after each journaled call in sessionRedoRefs.
+    const sessionMarks = new Map<number, SessionMark>();
     const maxAgentCalls = Math.max(
       1,
       Math.min(
@@ -736,7 +764,7 @@ export class FabricExecutionService {
       }
       const participants = this.#participants;
       const separator = ref.indexOf(".");
-      return this.registry.invoke(ref, args, {
+      const value = await this.registry.invoke(ref, args, {
         ...callContext,
         // The registry resolves `provider.action` by this exact prefix, so the
         // view is bound to the provider that receives it.
@@ -789,6 +817,11 @@ export class FabricExecutionService {
         traceOperation,
         observeInvocation,
       });
+      if (journal && callContext.journalSeq !== undefined && sessionRedoRefs.has(ref)) {
+        const mark = sessionMark(options.context);
+        if (mark) sessionMarks.set(callContext.journalSeq, mark);
+      }
+      return value;
     };
     const nativeTransaction = this.nativeCodemode.begin(options.parentToolCallId, options.context, !python && codemodeProfile === "native");
     const loadNativeCatalog = async (context: typeof baseContext) => {
@@ -943,6 +976,16 @@ export class FabricExecutionService {
       if (offer) {
         const journals = await import("./runtime/exec-journal.js");
         const servedSignal = options.signal ?? new AbortController().signal;
+        // Run a recorded call's provider again. It was approved when it first
+        // ran; policy still applies, and nothing is journaled or audited.
+        const redo = (ref: string, args: Record<string, unknown>): Promise<unknown> => this.registry.invoke(ref, args, {
+          ...baseContext,
+          signal: servedSignal,
+          ...(this.authorizer ? { authorize: async (action: ResolvedFabricAction) => await this.authorizer!.authorize(action.ref, options.parentToolCallId) } : {}),
+          approve: async () => undefined,
+          audits: [],
+          maxResultChars: this.config.executor.maxNestedResultChars,
+        });
         try {
           journal = await journals.openFabricExecJournal(offer, {
             code: options.code,
@@ -960,6 +1003,16 @@ export class FabricExecutionService {
               const targetArgs = delivery.ref === "fabric.$call" && typeof args.args === "object" && args.args !== null
                 ? args.args as Record<string, unknown>
                 : args;
+              if (delivery.outcome.ok && (processLocalRedoRefs.has(target) || sessionRedoRefs.has(target))) {
+                if (sessionRedoRefs.has(target) && sessionHolds(options.context, delivery.local)) return;
+                // A plan goes only to an arm that owes one after the restart.
+                if (target === "prewalk.plan") {
+                  const status = await redo("prewalk.status", {}) as { planRequired?: unknown } | undefined;
+                  if (status?.planRequired !== true) return;
+                }
+                await redo(target, targetArgs);
+                return;
+              }
               if (presentationBridgeRefs.has(delivery.ref)) {
                 await hostCall?.(delivery.ref, args, servedSignal).catch(() => undefined);
               } else if (delivery.outcome.ok && target === "native.store") {
@@ -970,7 +1023,7 @@ export class FabricExecutionService {
                 handoffSeq = delivery.seq;
               }
             },
-            local: (seq: number) => seq === handoffSeq ? handoffRequest : undefined,
+            local: (seq: number) => seq === handoffSeq ? handoffRequest : sessionMarks.get(seq),
           });
         } catch (error) {
           if (!(error instanceof journals.FabricJournalRefusal)) throw error;

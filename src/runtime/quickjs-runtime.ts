@@ -1191,7 +1191,12 @@ export class QuickJsRuntime {
           return driver.diverged(delivery, actual ? { ref: actual.ref, args: actual.args } : undefined);
         }
         held.delete(delivery.seq);
-        await driver.served(delivery, call.args);
+        try {
+          await driver.served(delivery, call.args);
+        } catch (error) {
+          // A failed restore stops the run like a divergence: nothing after it runs.
+          return error instanceof Error ? error.message : String(error);
+        }
         if (cancelled || timedOut || closing || call.promise.alive === false) return undefined;
         logicalNow = delivery.at;
         cpuDeadlineAt = Date.now() + (options.maxCpuSliceMs ?? Infinity);

@@ -72,6 +72,9 @@ export class FabricJournalRefusal extends Error {}
 const refusal = (reason: string): FabricJournalRefusal =>
   new FabricJournalRefusal(`fabric_exec could not resume after an interruption: ${reason}. Nothing was rerun.`);
 
+const refusalAfter = (delivery: FabricJournalDelivery, error: unknown): FabricJournalRefusal =>
+  new FabricJournalRefusal(`fabric_exec could not resume after an interruption: redoing its recorded ${delivery.target ?? delivery.ref} call failed: ${error instanceof Error ? error.message : String(error)}. No call after it ran.`);
+
 interface JournalHeader {
   h: 1;
   format: string;
@@ -281,8 +284,13 @@ export class FabricExecJournal implements FabricJournalDriver {
     return at;
   }
 
-  served(delivery: FabricJournalDelivery, args: Record<string, unknown>): void | Promise<void> {
-    return this.#hooks.served(delivery, args);
+  /** Restore host-local state for a served call; a failure stops the resume. */
+  async served(delivery: FabricJournalDelivery, args: Record<string, unknown>): Promise<void> {
+    try {
+      await this.#hooks.served(delivery, args);
+    } catch (error) {
+      throw refusalAfter(delivery, error);
+    }
   }
 
   frontier(held: ReadonlyArray<{ seq: number; ref: string; args: Record<string, unknown> }>): FabricJournalStop | undefined {
