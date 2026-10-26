@@ -18,12 +18,7 @@ import {
   withCodePreviewShell,
 } from "./ui/code-preview-shell.js";
 import { fabricExecTitleHintCached } from "./ui/fabric-title-hint.js";
-import { piTerminalTitle } from "./ui/pi-terminal-title.js";
-import {
-  FabricTerminalTitle,
-  terminalCallTitle,
-  withTerminalTitle,
-} from "./ui/terminal-title.js";
+import type { FabricTerminalTitle } from "./ui/terminal-title.js";
 import { Type } from "typebox";
 import {
   createFabricPersistedExecutionDetails,
@@ -149,6 +144,7 @@ export const createFabricExecTool = (
   pendingHandoffs: Map<string, PendingFabricHandoff>,
   decorateShell: FabricToolShellDecorator = withCodePreviewShell,
   toolDisplay?: FabricToolDisplayController,
+  terminalTitle?: FabricTerminalTitle,
 ): ToolDefinition<any, any, any> => {
   const python = toolKernel(state) === "python";
   const monty = python && state.config.executor.pythonRuntime === "monty";
@@ -866,22 +862,10 @@ export const createFabricExecTool = (
       const runDisplay = normalizeRunDisplay(params.display);
       const tokenBudget = "tokenBudget" in params && typeof params.tokenBudget === "number"
         ? params.tokenBudget : undefined;
-      // The declared milestone (or the static hint) is what the card shows
-      // before the first nested call, and it is the honest title meanwhile.
-      const intentTitle = runDisplay?.name?.trim()
-        || fabricExecTitleHintCached(code, python ? "python" : "typescript")
-        || (python ? "Python program" : "Fabric");
-      // Only an interactive host owns a window title to borrow. The run hands
-      // it back when the program stops, so a stale call title never outlives
-      // the card that showed it, and parallel runs share one title.
-      const liveTitle = state.config.ui.enabled && state.config.ui.terminalTitle &&
-          context.mode === "tui" && context.hasUI
-        ? new FabricTerminalTitle({
-            setTitle: (title) => context.ui.setTitle(title),
-            base: () => piTerminalTitle(context),
-          })
-        : undefined;
-      const result = await withTerminalTitle(liveTitle, intentTitle, () => state.execution.execute({
+      // The declared milestone is the window title, and it holds until the next
+      // declared one: nested call detail never flickers in the tab.
+      terminalTitle?.show(context, runDisplay?.name);
+      const result = await state.execution.execute({
         code,
         ...(strings ? { strings } : {}),
         signal,
@@ -900,12 +884,6 @@ export const createFabricExecTool = (
             }
           : {}),
         onPartial(snapshot) {
-          const latest = snapshot.audits.at(-1);
-          liveTitle?.show(
-            latest
-              ? terminalCallTitle(latest, { cwd: context.cwd, settings: codePreviewSettings })
-              : intentTitle,
-          );
           onUpdate?.({
             content: [{ type: "text", text: snapshot.progress ?? "" }],
             details: {
@@ -915,7 +893,7 @@ export const createFabricExecTool = (
             },
           });
         },
-      }));
+      });
 
       const selectedResultFormat =
         params.resultFormat ?? state.config.executor.resultFormat;

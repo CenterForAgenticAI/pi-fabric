@@ -106,6 +106,7 @@ import {
 } from "./budget-ledger.js";
 import type { BudgetLedgerDetail } from "./budget-ledger.js";
 import type { BudgetLedgerState } from "./budget-ledger.js";
+import { budgetAdmits } from "../verified/budget.js";
 import { readJsonlPage } from "../log-tail.js";
 import {
   FABRIC_RUN_ROOT_PREFIX,
@@ -715,6 +716,11 @@ export class AgentManager {
     return resolveAgentCwd(this.cwd, requestedCwd);
   }
 
+  /** The project root Fabric already uses for the mesh; named agent files live under its .pi folder. */
+  get projectRoot(): string {
+    return this.#projectRoot;
+  }
+
   #inheritedSessionPins(request: AgentRunRequest): InheritedSessionPin[] | undefined {
     const explicit = request.inheritedSessionPins;
     if (explicit && explicit.length > 0) return explicit;
@@ -918,7 +924,7 @@ export class AgentManager {
     }
     if (this.#budget) {
       const spent = readBudgetLedger(this.#budget.file).cost;
-      if (spent >= this.#budget.budget) {
+      if (!budgetAdmits(spent, this.#budget.budget)) {
         throw new Error(
           `Fabric recursion budget exceeded: spent $${spent.toFixed(6)} of $${this.#budget.budget.toFixed(6)}. Increase agents.budgetUsd or simplify the task.`,
         );

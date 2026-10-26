@@ -1,48 +1,51 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { defaultCodePreviewSettings } from "../src/ui/code-preview.js";
-import type { FabricRenderAudit } from "../src/ui/fabric-render.js";
-import { piAppTitle, piTerminalTitle } from "../src/ui/pi-terminal-title.js";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { describe, expect, it } from "vitest";
 import {
   FabricTerminalTitle,
-  installTerminalTitleRelease,
+  installTerminalTitle,
   MAX_TERMINAL_TITLE_CHARS,
-  releaseTerminalTitle,
-  terminalCallTitle,
+  TERMINAL_TITLE_ENTRY_TYPE,
   terminalTitleText,
-  withTerminalTitle,
 } from "../src/ui/terminal-title.js";
 
-const audit = (overrides: Partial<FabricRenderAudit>): FabricRenderAudit => ({
-  ref: "pi.read",
-  provider: "pi",
-  tool: "read",
-  args: {},
-  ...overrides,
+const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+const entry = (title: unknown) => ({
+  type: "custom",
+  customType: TERMINAL_TITLE_ENTRY_TYPE,
+  data: { version: 1, title },
 });
 
-const scratch: string[] = [];
-
-afterEach(() => {
-  for (const directory of scratch.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
-});
-
-const hostPackage = (entry: string, manifest: unknown): string => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-host-"));
-  scratch.push(root);
-  fs.mkdirSync(path.join(root, path.dirname(entry)), { recursive: true });
-  fs.writeFileSync(path.join(root, entry), "");
-  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify(manifest));
-  return path.join(root, entry);
+const harness = (options: {
+  entries?: unknown[];
+  enabled?: boolean;
+  mode?: string;
+  hasUI?: boolean;
+} = {}) => {
+  const applied: string[] = [];
+  const appended: Array<{ customType: string; data: unknown }> = [];
+  const enabled = options.enabled ?? true;
+  const controller = new FabricTerminalTitle(
+    { appendEntry: (customType, data) => { appended.push({ customType, data }); } },
+    () => enabled,
+  );
+  const context = {
+    mode: options.mode ?? "tui",
+    hasUI: options.hasUI ?? true,
+    cwd: "/work/pi-fabric",
+    sessionManager: {
+      getEntries: () => options.entries ?? [],
+      getSessionName: () => "titles",
+    },
+    ui: { setTitle: (title: string) => applied.push(title) },
+  } as unknown as ExtensionContext;
+  return { applied, appended, controller, context };
 };
 
 describe("terminalTitleText", () => {
   it("drops styling and control characters a raw OSC title cannot carry", () => {
-    expect(terminalTitleText("\u001b[1;36mread\u001b[0m src/config.ts")).toBe("read src/config.ts");
-    expect(terminalTitleText("  read\n\tsrc/config.ts  ")).toBe("read src/config.ts");
-    expect(terminalTitleText("scan\u0007\u001b]0;pwned")).toBe("scan ]0;pwned");
+    expect(terminalTitleText("\u001b[1;36mrecord release evidence\u001b[0m")).toBe("record release evidence");
+    expect(terminalTitleText("  record\n\trelease  ")).toBe("record release");
     expect(terminalTitleText(undefined)).toBe("");
   });
 
@@ -53,177 +56,129 @@ describe("terminalTitleText", () => {
   });
 });
 
-describe("terminalCallTitle", () => {
-  it("reuses the transcript's nested call vocabulary without escapes", () => {
-    const core = { cwd: "/work/pi-fabric", settings: defaultCodePreviewSettings() };
-    expect(terminalCallTitle(audit({ args: { path: "src/config.ts", offset: 10, limit: 40 } }), core))
-      .toBe("read src/config.ts:10-49 · typescript");
-    expect(terminalCallTitle(audit({
-      ref: "pi.grep", tool: "grep", args: { pattern: "fallback", path: "src" },
-    }), core)).toBe("grep /fallback/ in src");
-    expect(terminalCallTitle(audit({
-      ref: "pi.bash", tool: "bash", args: { command: "bun run build" },
-    }), core)).toBe("bash $ bun run build");
-  });
-
-  it("keeps a control character in a path inert", () => {
-    const title = terminalCallTitle(
-      audit({ args: { path: "src/\u001b[31mred\u001b[0m.ts" } }),
-      { cwd: "/work/pi-fabric", settings: defaultCodePreviewSettings() },
-    );
-    expect(title).not.toContain("\u001b");
-    expect(title).toBe("read src/␛[31mred␛[0m.ts · typescript");
-  });
-});
-
 describe("FabricTerminalTitle", () => {
-  it("shows the latest call title, coalesces repeats, and hands the title back once", async () => {
-    const applied: string[] = [];
-    const run = new FabricTerminalTitle({
-      setTitle: (title) => applied.push(title),
-      base: () => "π - my project",
+  it("shows the declared title, records it, and coalesces repeats", () => {
+    const { applied, appended, controller, context } = harness();
+
+    controller.show(context, "record release evidence");
+    controller.show(context, "record release evidence");
+    controller.show(context, "  ");
+
+    expect(applied).toEqual(["record release evidence"]);
+    expect(appended).toEqual([
+      { customType: TERMINAL_TITLE_ENTRY_TYPE, data: { version: 1, title: "record release evidence" } },
+    ]);
+  });
+
+  it("holds the last title instead of reverting", () => {
+    const { applied, controller, context } = harness();
+    controller.show(context, "record release evidence");
+    controller.reassert(context);
+    expect(applied).toEqual(["record release evidence", "record release evidence"]);
+    expect(controller.current()).toBe("record release evidence");
+  });
+
+  it("adopts the newest recorded title on resume without recording again", () => {
+    const { applied, appended, controller, context } = harness({
+      entries: [entry("older run"), entry("record release evidence"), { type: "session_info", name: "x" }],
     });
-    run.show("read src/a.ts");
-    run.show("read src/a.ts");
-    run.show("bash $ bun run build");
-    expect(applied).toEqual(["read src/a.ts", "bash $ bun run build"]);
 
-    await run.restore();
-    await run.restore();
-    expect(applied).toEqual(["read src/a.ts", "bash $ bun run build", "π - my project"]);
+    controller.resume(context);
 
-    run.show("read src/late.ts");
-    expect(applied).toHaveLength(3);
+    expect(applied).toEqual(["record release evidence"]);
+    expect(appended).toEqual([]);
+    expect(controller.current()).toBe("record release evidence");
   });
 
-  it("keeps Pi's title away while a parallel run still holds it", async () => {
+  it("ignores an unreadable recorded title and an unrecorded session", () => {
+    const missing = harness({ entries: [entry(42), entry("")] });
+    missing.controller.resume(missing.context);
+    expect(missing.applied).toEqual([]);
+
+    const empty = harness();
+    empty.controller.resume(empty.context);
+    empty.controller.reassert(empty.context);
+    expect(empty.applied).toEqual([]);
+  });
+
+  it("leaves headless hosts, disabled runs, and unnamed runs alone", () => {
+    const rpc = harness({ mode: "rpc" });
+    rpc.controller.show(rpc.context, "record release evidence");
+    expect(rpc.applied).toEqual([]);
+
+    const headless = harness({ hasUI: false });
+    headless.controller.show(headless.context, "record release evidence");
+    expect(headless.applied).toEqual([]);
+
+    const disabled = harness({ enabled: false });
+    disabled.controller.show(disabled.context, "record release evidence");
+    expect(disabled.applied).toEqual([]);
+    expect(disabled.appended).toEqual([]);
+
+    const unnamed = harness();
+    unnamed.controller.show(unnamed.context, undefined);
+    expect(unnamed.applied).toEqual([]);
+  });
+
+  it("keeps the live title when the session refuses the entry", () => {
     const applied: string[] = [];
-    const options = { setTitle: (title: string) => applied.push(title), base: () => "π - my project" };
-    const first = new FabricTerminalTitle(options);
-    const second = new FabricTerminalTitle(options);
-    first.show("read src/a.ts");
-    second.show("bash $ bun run build");
+    const controller = new FabricTerminalTitle(
+      { appendEntry: () => { throw new Error("read-only session"); } },
+      () => true,
+    );
+    const context = {
+      mode: "tui",
+      hasUI: true,
+      sessionManager: { getEntries: () => [], getSessionName: () => undefined },
+      ui: { setTitle: (title: string) => applied.push(title) },
+    } as unknown as ExtensionContext;
 
-    await first.restore();
-    expect(applied).toEqual(["read src/a.ts", "bash $ bun run build"]);
-
-    await second.restore();
-    expect(applied.at(-1)).toBe("π - my project");
-  });
-
-  it("stays inert without a host setter", async () => {
-    const run = new FabricTerminalTitle();
-    expect(() => run.show("read src/a.ts")).not.toThrow();
-    await expect(run.restore()).resolves.toBeUndefined();
-  });
-
-  it("restores the title when the program throws", async () => {
-    const applied: string[] = [];
-    const run = new FabricTerminalTitle({
-      setTitle: (title) => applied.push(title),
-      base: async () => "π - my project",
-    });
-    await expect(withTerminalTitle(run, "Reading", async () => {
-      throw new Error("aborted");
-    })).rejects.toThrow("aborted");
-    expect(applied).toEqual(["Reading", "π - my project"]);
-  });
-
-  it("runs without borrowing the title", async () => {
-    await expect(withTerminalTitle(undefined, "Reading", async () => 7)).resolves.toBe(7);
+    controller.show(context, "record release evidence");
+    expect(applied).toEqual(["record release evidence"]);
   });
 });
 
-describe("session boundary release", () => {
-  const host = (options: { applied?: string[]; mode?: string; hasUI?: boolean } = {}) => {
-    const applied = options.applied ?? [];
-    return {
-      applied,
-      mode: options.mode ?? "tui",
-      hasUI: options.hasUI ?? true,
-      cwd: "/work/pi-fabric",
-      sessionManager: { getSessionName: () => "titles" },
-      ui: { setTitle: (title: string) => applied.push(title) },
-    };
+describe("installTerminalTitle", () => {
+  const handlers = () => {
+    const registered = new Map<string, (event: unknown, context: unknown) => void>();
+    installTerminalTitle(
+      {
+        on: (event: string, handler: (event: unknown, context: unknown) => void) => {
+          registered.set(event, handler);
+          return () => {};
+        },
+      } as never,
+      new FabricTerminalTitle({ appendEntry: () => undefined }, () => true),
+    );
+    return registered;
   };
 
-  it("hands the title back when a run never settles", () => {
-    const leaked = new FabricTerminalTitle({ setTitle: vi.fn(), base: () => "π - stale" });
-    leaked.show("bash $ bun run build");
-    const context = host();
-
-    expect(releaseTerminalTitle(context as never)).toBe(true);
-    expect(context.applied).toEqual(["π - titles - pi-fabric"]);
-
-    // The released run cannot put a stale title back.
-    leaked.show("read src/late.ts");
-    expect(context.applied).toHaveLength(1);
-  });
-
-  it("leaves a title it does not hold alone", () => {
-    expect(releaseTerminalTitle(host() as never)).toBe(false);
-  });
-
-  it("does not let a leaked run block a later restore", async () => {
-    const leaked = new FabricTerminalTitle({ setTitle: vi.fn(), base: () => "π - stale" });
-    leaked.show("bash $ sleep 1");
-    const applied: string[] = [];
-    const run = new FabricTerminalTitle({
-      setTitle: (title) => applied.push(title),
-      base: () => "π - mine",
-    });
-
-    run.show("read src/a.ts");
-    await run.restore();
-
-    expect(applied).toEqual(["read src/a.ts", "π - mine"]);
-    leaked.detach();
-  });
-
-  it("registers both session boundaries and leaves non-TUI hosts alone", () => {
-    const handlers = new Map<string, (event: unknown, context: never) => void>();
-    installTerminalTitleRelease({
-      on: (event: string, handler: (event: unknown, context: never) => void) => {
-        handlers.set(event, handler);
-        return () => {};
-      },
-    } as never);
-    expect([...handlers.keys()]).toEqual(["session_shutdown", "agent_settled"]);
+  it("adopts the title on start and branch switch, and reasserts after Pi retitles", async () => {
+    const registered = handlers();
+    expect([...registered.keys()].sort()).toEqual([
+      "agent_settled",
+      "session_info_changed",
+      "session_start",
+      "session_tree",
+    ]);
 
     const applied: string[] = [];
-    const run = new FabricTerminalTitle({ setTitle: vi.fn(), base: () => "π - stale" });
-    run.show("read src/a.ts");
+    const context = {
+      mode: "tui",
+      hasUI: true,
+      sessionManager: { getEntries: () => [entry("record release evidence")], getSessionName: () => undefined },
+      ui: { setTitle: (title: string) => applied.push(title) },
+    } as unknown as ExtensionContext;
 
-    const rpc = host({ applied, mode: "rpc" });
-    for (const handler of handlers.values()) handler({}, rpc as never);
+    registered.get("session_start")!({}, context);
     expect(applied).toEqual([]);
-
-    const tui = host({ applied });
-    for (const handler of handlers.values()) handler({}, tui as never);
-    expect(applied).toEqual(["π - titles - pi-fabric"]);
-  });
-});
-
-describe("piTerminalTitle", () => {
-  const context = (sessionName: string | undefined) => ({
-    cwd: "/work/pi-fabric",
-    sessionManager: { getSessionName: () => sessionName },
+    await tick();
+    expect(applied).toEqual(["record release evidence"]);
   });
 
-  it("mirrors Pi's own session and cwd title shape", () => {
-    expect(piTerminalTitle(context("titles"))).toBe("π - titles - pi-fabric");
-    expect(piTerminalTitle(context("  "))).toBe("π - pi-fabric");
-    expect(piTerminalTitle(context(undefined))).toBe("π - pi-fabric");
-  });
-
-  it("reads a branded app name from the running host manifest", () => {
-    const bundled = hostPackage(path.join("dist", "bundle", "index.js"), {
-      name: "@earendil-works/pi-coding-agent",
-      piConfig: { name: "tee" },
-    });
-    expect(piAppTitle(bundled)).toBe("tee");
-    expect(piAppTitle(hostPackage(path.join("dist", "index.js"), { name: "pi" }))).toBe("π");
-    expect(piAppTitle(path.join(os.tmpdir(), "missing", "dist", "index.js"))).toBe("π");
-    expect(piAppTitle(undefined)).toBe("π");
+  it("tolerates an event with no context", async () => {
+    const registered = handlers();
+    for (const handler of registered.values()) handler({}, undefined);
+    await tick();
   });
 });
