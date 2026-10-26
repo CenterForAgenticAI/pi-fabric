@@ -87,6 +87,25 @@ export class FooterDock {
   }
 
   /**
+   * Fullscreen stacks shrink every input-dock child when overfull, including
+   * one-line status widgets. Give our list only the rows left after Pi's own
+   * editor, widgets and footer, reserving the transcript's native minimum row.
+   * Regular mode scrolls the transcript instead and needs no extra cap.
+   */
+  availableRows(width: number): number | undefined {
+    const parent = this.#parent;
+    const rows = this.tui.terminal?.rows;
+    if (!parent || parent === (this.tui as unknown) || !this.#docked(this.#roots()) ||
+      rows === undefined || !Number.isFinite(rows) || rows <= 0) return;
+    const occupied = childrenOf(parent).reduce<number>((total, child) => {
+      if (child === this.component) return total;
+      const sibling = child as Partial<Component> | undefined;
+      return total + (typeof sibling?.render === "function" ? sibling.render(width).length : 0);
+    }, 0);
+    return Math.max(0, Math.floor(rows) - 1 - occupied);
+  }
+
+  /**
    * Keep the component after the footer: `docked` when it already is, `moved`
    * when this call placed it, `unavailable` when the layout is not Pi's.
    */

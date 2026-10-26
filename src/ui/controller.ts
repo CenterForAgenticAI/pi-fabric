@@ -1006,6 +1006,7 @@ export class FabricUiController {
               release: (forward) => this.#releaseWidget(forward),
               requestRender: () => tui.requestRender(),
               rendered: () => this.#keepWidgetLast(context),
+              availableRows: (width) => this.#footerDock?.availableRows(width),
             },
           );
           // The registered widget is a zero-height anchor; the list itself docks

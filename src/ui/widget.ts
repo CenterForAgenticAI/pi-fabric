@@ -88,6 +88,8 @@ export interface FabricWidgetInteraction {
   requestRender: () => void;
   /** Called after each render, so the host can check where the widget sits. */
   rendered?: () => void;
+  /** Space left after native UI and other extensions; zero temporarily hides the list. */
+  availableRows?: (width: number) => number | undefined;
   /** The participant on screen; its row keeps the filled circle. Undefined means the main session. */
   viewing?: () => string | undefined;
   /** The main session's id, which makes the header a row to select, for windows Main is a place to return to. */
@@ -348,15 +350,20 @@ export class FabricWidget implements Component, Focusable {
 
   /** Focused keyboard traversal can scroll; pointer targets remain viewport-only. */
   #selectableRows(): FabricWidgetRow[] {
+    const budget = this.#rowLimit();
+    if (budget === 0) return [];
     const { rows } = this.#content(this.snapshot(), Number.MAX_SAFE_INTEGER);
-    const limit = Math.max(1, this.#rowLimit() - 1);
+    const limit = Math.max(1, budget - 1);
     return this.focused && limit > 1 ? rows : rows.filter((row) => row.line < limit);
   }
 
-  #rowLimit(): number {
-    return this.focused
+  #rowLimit(width = this.#lastWidth): number {
+    const limit = this.focused
       ? widgetFocusedRowLimit(this.maxRows, this.terminalRows?.())
       : widgetRowLimit(this.maxRows, this.terminalRows?.());
+    const available = width === undefined ? undefined : this.interaction?.availableRows?.(width);
+    return available === undefined || !Number.isFinite(available)
+      ? limit : Math.min(limit, Math.max(0, Math.floor(available)));
   }
 
   #lastWidth: number | undefined;
@@ -372,7 +379,7 @@ export class FabricWidget implements Component, Focusable {
     const snapshot = this.snapshot();
     // The pane can shrink between renders, so the row budget is part of the
     // cache key: a box measured against a taller terminal must not be reused.
-    const limit = this.#rowLimit();
+    const limit = this.#rowLimit(width);
     const interactionChanged = this.#renderedInteraction !== this.#interactionKey();
     if (interactionChanged) this.#pending = undefined;
     const lines =
@@ -424,6 +431,7 @@ export class FabricWidget implements Component, Focusable {
    * budget drops it and keeps the header.
    */
   #renderLines(snapshot: FabricDashboardSnapshot, width: number, limit: number): string[] {
+    if (limit === 0) { this.#rows = []; this.#spacerRows = 0; return []; }
     const spacer = limit >= 2 ? 1 : 0;
     const body = Math.max(1, limit - spacer);
     let { lines, rows } = this.#content(snapshot, width);
