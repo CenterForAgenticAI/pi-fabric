@@ -16,6 +16,7 @@ import {
   migrateFabricConfigDocument,
 } from "./config-migrations.js";
 import type { FabricComponentEntry } from "./components/types.js";
+import type { MeshDurability } from "./mesh/store.js";
 import type { FabricRisk } from "./protocol.js";
 import type { FabricKernel } from "./runtime/kernel.js";
 import {
@@ -334,6 +335,8 @@ export interface FabricMeshConfig {
   actorContextEntries: number;
   /** Tell a root session's model when other root sessions join or leave the project. */
   peerNotices: boolean;
+  /** `"fsync"` flushes every committed mesh write to stable storage before the call returns. */
+  durability: MeshDurability;
 }
 
 interface FabricRepairsConfig {
@@ -614,6 +617,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     eventContextChars: 40_000,
     actorContextEntries: 14,
     peerNotices: true,
+    durability: "default",
   },
   models: {
     aliases: {},
@@ -850,6 +854,9 @@ const compactionPressureBandsValue = (
 
 const actorScopeValue = (value: unknown, fallback: FabricActorScope): FabricActorScope =>
   value === "project" || value === "session" ? value : fallback;
+
+const meshDurabilityValue = (value: unknown, fallback: MeshDurability): MeshDurability =>
+  value === "default" || value === "fsync" ? value : fallback;
 
 const schemaModeValue = (value: unknown, fallback: FabricSchemaMode): FabricSchemaMode =>
   value === "off" || value === "audit" || value === "enforce" ? value : fallback;
@@ -1424,6 +1431,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         100,
       ),
       peerNotices: booleanValue(mesh.peerNotices, DEFAULT_FABRIC_CONFIG.mesh.peerNotices),
+      durability: meshDurabilityValue(mesh.durability, DEFAULT_FABRIC_CONFIG.mesh.durability),
     },
     models: {
       aliases: normalizeModelAliases(modelsSection.aliases),

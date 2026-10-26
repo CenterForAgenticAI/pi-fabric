@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  fsyncDirectory,
   writeFileAtomic,
   encodeOwnerIdentityLine,
   lockOwnerLiveness,
@@ -110,7 +111,14 @@ export interface MeshStoreOptions {
   maxStateTombstones?: number;
   lockTimeoutMs?: number;
   staleLockMs?: number;
+  /**
+   * `"fsync"` flushes every committed write (event append, state, sequence,
+   * schedules, grants, compaction) to stable storage before the call returns.
+   */
+  durability?: MeshDurability;
 }
+
+export type MeshDurability = "default" | "fsync";
 
 const TOPIC_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/;
 const KEY_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$/;
@@ -253,12 +261,17 @@ const readState = (filePath: string, maxBytes: number, recoverDamage = true): Me
   }
 };
 
-const atomicWrite = (filePath: string, value: unknown, maxBytes = Number.POSITIVE_INFINITY): void => {
+const atomicWrite = (
+  filePath: string,
+  value: unknown,
+  maxBytes = Number.POSITIVE_INFINITY,
+  fsync = false,
+): void => {
   const serialized = JSON.stringify(value, null, 2);
   if (Buffer.byteLength(serialized, "utf8") > maxBytes) {
     throw new Error(`Fabric mesh state exceeds ${maxBytes} bytes`);
   }
-  writeFileAtomic(filePath, serialized);
+  writeFileAtomic(filePath, serialized, { fsync });
 };
 
 // Host invariant for the proved reducer: the persisted clock covers every
@@ -338,6 +351,8 @@ export class MeshStore {
   readonly #maxStateTombstones: number;
   readonly #lockTimeoutMs: number;
   readonly #staleLockMs: number;
+  /** Whether committed writes are flushed to stable storage before returning. */
+  readonly durable: boolean;
   #stateCache:
     | { device: number; inode: number; size: number; modifiedAt: number; state: MeshStateFile }
     | undefined;
@@ -381,6 +396,7 @@ export class MeshStore {
     );
     this.#lockTimeoutMs = Math.max(100, Math.floor(options.lockTimeoutMs ?? LOCK_TIMEOUT_MS));
     this.#staleLockMs = Math.max(100, Math.floor(options.staleLockMs ?? STALE_LOCK_MS));
+    this.durable = options.durability === "fsync";
     fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   }
 
@@ -445,8 +461,8 @@ export class MeshStore {
     if (Buffer.byteLength(line, "utf8") > limit) {
       throw new Error(`Mesh event exceeds ${limit} bytes`);
     }
-    fs.appendFileSync(this.#eventsPath, `${line}\n`, { encoding: "utf8", mode: 0o600 });
-    atomicWrite(this.#counterPath, sequence);
+    this.#appendEventLine(`${line}\n`);
+    atomicWrite(this.#counterPath, sequence, Number.POSITIVE_INFINITY, this.durable);
     this.#compactEventLog();
     return event;
   }
@@ -630,10 +646,11 @@ export class MeshStore {
   #writeSchedules(schedules: MeshSchedule[]): void {
     if (schedules.length === 0) {
       fs.rmSync(this.#schedulesPath, { force: true });
+      if (this.durable) fsyncDirectory(this.root);
       this.#scheduleCache = undefined;
       return;
     }
-    atomicWrite(this.#schedulesPath, { format: 1, schedules }, MAX_SCHEDULE_FILE_BYTES);
+    atomicWrite(this.#schedulesPath, { format: 1, schedules }, MAX_SCHEDULE_FILE_BYTES, this.durable);
     this.#scheduleCache = undefined;
   }
 
@@ -898,7 +915,7 @@ export class MeshStore {
       state.highWater = plan.highWater;
       state.tombstoneOrder = (state.tombstoneOrder ?? []).filter((key) => key !== plan.key);
       compactStateTombstones(state, this.#maxStateTombstones);
-      atomicWrite(this.#statePath, state, this.#maxStateBytes);
+      atomicWrite(this.#statePath, state, this.#maxStateBytes, this.durable);
       this.#cacheState(state);
       return jsonClone(entry);
     });
@@ -935,7 +952,7 @@ export class MeshStore {
         plan.key,
       ];
       compactStateTombstones(state, this.#maxStateTombstones);
-      atomicWrite(this.#statePath, state, this.#maxStateBytes);
+      atomicWrite(this.#statePath, state, this.#maxStateBytes, this.durable);
       this.#cacheState(state);
       return { deleted: true, version: plan.version };
     });
@@ -1098,6 +1115,22 @@ export class MeshStore {
     };
   }
 
+  #appendEventLine(line: string): void {
+    if (!this.durable) {
+      fs.appendFileSync(this.#eventsPath, line, { encoding: "utf8", mode: 0o600 });
+      return;
+    }
+    const created = !fs.existsSync(this.#eventsPath);
+    const descriptor = fs.openSync(this.#eventsPath, "a", 0o600);
+    try {
+      fs.writeFileSync(descriptor, line, "utf8");
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    if (created) fsyncDirectory(this.root);
+  }
+
   #compactEventLog(): void {
     let descriptor: number | undefined;
     try {
@@ -1120,12 +1153,23 @@ export class MeshStore {
       const temporaryPath =
         this.#eventsPath + "." + process.pid + "." + randomUUID() + ".tmp";
       try {
-        fs.writeFileSync(temporaryPath, retained, { mode: 0o600 });
+        if (this.durable) {
+          const temporary = fs.openSync(temporaryPath, "wx", 0o600);
+          try {
+            fs.writeFileSync(temporary, retained);
+            fs.fsyncSync(temporary);
+          } finally {
+            fs.closeSync(temporary);
+          }
+        } else {
+          fs.writeFileSync(temporaryPath, retained, { mode: 0o600 });
+        }
         fs.renameSync(temporaryPath, this.#eventsPath);
+        if (this.durable) fsyncDirectory(this.root);
       } finally {
         try { fs.rmSync(temporaryPath, { force: true }); } catch {}
       }
-      atomicWrite(this.#generationPath, this.#readGeneration() + 1);
+      atomicWrite(this.#generationPath, this.#readGeneration() + 1, Number.POSITIVE_INFINITY, this.durable);
     } catch (error) {
       if (errorCode(error) !== "ENOENT") throw error;
     } finally {
@@ -1147,6 +1191,7 @@ export class MeshStore {
       fs.readSync(descriptor, tail, 0, readBytes, size - readBytes);
       const newline = tail.lastIndexOf(0x0a);
       fs.ftruncateSync(descriptor, newline >= 0 ? size - readBytes + newline + 1 : 0);
+      if (this.durable) fs.fsyncSync(descriptor);
     } catch (error) {
       if (errorCode(error) !== "ENOENT") throw error;
     } finally {

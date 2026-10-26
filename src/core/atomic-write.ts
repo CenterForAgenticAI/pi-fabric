@@ -14,6 +14,9 @@ export interface AtomicWriteOptions {
   // of times with linear backoff before surfacing the error.
   renameRetries?: number;
   renameRetryDelayMs?: number;
+  // Flush the temporary file before the rename and the parent directory
+  // after it, so the committed contents survive a power loss or kernel panic.
+  fsync?: boolean;
 }
 
 const RETRYABLE_RENAME_CODES = new Set(["EPERM", "EACCES", "EEXIST", "EBUSY"]);
@@ -58,6 +61,26 @@ export const renameAtomic = (
   }
 };
 
+const UNSUPPORTED_DIRECTORY_FSYNC_CODES = new Set(["EINVAL", "ENOTSUP", "EISDIR", "EPERM", "EACCES"]);
+
+/**
+ * Flushes a directory entry table so a create or rename in it is durable.
+ * Platforms that cannot open or flush a directory (Windows, some network
+ * filesystems) report an error code that is ignored here.
+ */
+export const fsyncDirectory = (directory: string): void => {
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(directory, "r");
+    fs.fsyncSync(descriptor);
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === undefined || !UNSUPPORTED_DIRECTORY_FSYNC_CODES.has(code)) throw error;
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+};
+
 export const writeFileAtomic = (
   filePath: string,
   contents: string,
@@ -69,11 +92,22 @@ export const writeFileAtomic = (
   });
   const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    fs.writeFileSync(temporary, contents, {
-      encoding: "utf8",
-      mode: options?.mode ?? 0o600,
-    });
+    if (options?.fsync) {
+      const descriptor = fs.openSync(temporary, "wx", options.mode ?? 0o600);
+      try {
+        fs.writeFileSync(descriptor, contents, "utf8");
+        fs.fsyncSync(descriptor);
+      } finally {
+        fs.closeSync(descriptor);
+      }
+    } else {
+      fs.writeFileSync(temporary, contents, {
+        encoding: "utf8",
+        mode: options?.mode ?? 0o600,
+      });
+    }
     renameAtomic(temporary, filePath, options);
+    if (options?.fsync) fsyncDirectory(path.dirname(filePath));
   } finally {
     // No-op right after a successful rename; removes the temp on failure.
     fs.rmSync(temporary, { force: true });

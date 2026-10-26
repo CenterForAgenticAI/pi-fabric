@@ -88,12 +88,12 @@ const readGrants = (store: Pick<MeshStore, "root">): MeshGrantFile => {
   throw new Error("Failed to read Fabric mesh grants: invalid format");
 };
 
-const writeGrants = (store: Pick<MeshStore, "root">, grants: MeshGrantRecord[]): void => {
+const writeGrants = (store: Pick<MeshStore, "root" | "durable">, grants: MeshGrantRecord[]): void => {
   const serialized = JSON.stringify({ format: 1, grants }, null, 2);
   if (Buffer.byteLength(serialized, "utf8") > MAX_GRANT_FILE_BYTES) {
     throw new Error(`Fabric mesh grants exceed ${MAX_GRANT_FILE_BYTES} bytes`);
   }
-  writeFileAtomic(grantsPath(store), serialized, { mode: 0o600 });
+  writeFileAtomic(grantsPath(store), serialized, { mode: 0o600, fsync: store.durable });
 };
 
 const info = (grant: MeshGrantRecord): MeshGrantInfo => ({
@@ -121,7 +121,7 @@ export const validateMeshKind = (kind: string): string => {
 
 /** Mints a grant; the token is returned once and never persisted. */
 export async function createMeshGrant(
-  store: Pick<MeshStore, "root" | "maxEventBytes" | "transact">,
+  store: Pick<MeshStore, "root" | "durable" | "maxEventBytes" | "transact">,
   input: { topic: string; kind?: string; ttlMs: number; uses?: number; createdBy: MeshIdentity },
   now = Date.now(),
 ): Promise<{ grant: MeshGrantInfo; token: string }> {
@@ -153,7 +153,7 @@ export async function createMeshGrant(
 }
 
 export async function revokeMeshGrant(
-  store: Pick<MeshStore, "root" | "transact">,
+  store: Pick<MeshStore, "root" | "durable" | "transact">,
   grantId: string,
   now = Date.now(),
 ): Promise<{ revoked: boolean }> {
@@ -181,7 +181,7 @@ export function listMeshGrants(store: Pick<MeshStore, "root">, now = Date.now())
  * decrements in the same locked write as the append.
  */
 export async function postWithMeshGrant(
-  store: Pick<MeshStore, "root" | "transact">,
+  store: Pick<MeshStore, "root" | "durable" | "transact">,
   input: { token: string; topic?: string; kind?: string; data?: unknown },
   now = Date.now(),
 ): Promise<{ event: MeshEvent; grant: MeshGrantInfo }> {

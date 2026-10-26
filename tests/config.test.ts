@@ -370,6 +370,13 @@ describe("Fabric configuration", () => {
     ).toBe(60 * 60 * 1_000);
   });
 
+  it("defaults mesh durability to default and accepts only known modes", () => {
+    expect(DEFAULT_FABRIC_CONFIG.mesh.durability).toBe("default");
+    expect(normalizeFabricConfig({ mesh: { durability: "fsync" } }).mesh.durability).toBe("fsync");
+    expect(normalizeFabricConfig({ mesh: { durability: "sync" } }).mesh.durability).toBe("default");
+    expect(normalizeFabricConfig({ mesh: { durability: true } }).mesh.durability).toBe("default");
+  });
+
   it("defaults actor scope to project and validates the value", () => {
     expect(DEFAULT_FABRIC_CONFIG.mesh.actorScope).toBe("project");
     const session = normalizeFabricConfig({ mesh: { actorScope: "session" } });

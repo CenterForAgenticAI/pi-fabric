@@ -704,6 +704,7 @@ export class FabricRuntimeState {
       meshRoot,
       this.#config.mesh.maxEventBytes,
       this.#config.mesh.maxReadEvents,
+      { durability: this.#config.mesh.durability },
     );
     const hostId = identity.kind === "main" ? mainAgentId : `runtime:${sessionId}`;
     this.#control = new FabricControlPlane(this.#mesh, identity, {

@@ -56,6 +56,52 @@ describe("MeshStore", () => {
     expect(secondTail.nextOffset).toBe(store.latestOffset());
   });
 
+  it("flushes appends, state, sequence and schedules only when durability is fsync", async () => {
+    const relaxed = createStore();
+    const relaxedSpy = vi.spyOn(fs, "fsyncSync");
+    await relaxed.publish({ topic: "team.auth", from: identity, text: "one" });
+    await relaxed.put({ key: "claims/a", value: 1, identity });
+    expect(relaxed.durable).toBe(false);
+    expect(relaxedSpy).not.toHaveBeenCalled();
+    relaxedSpy.mockRestore();
+
+    const store = createStore({ durability: "fsync" });
+    expect(store.durable).toBe(true);
+    const flushed: string[] = [];
+    const realOpen = fs.openSync;
+    const descriptors = new Map<number, string>();
+    vi.spyOn(fs, "openSync").mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+      const descriptor = (realOpen as (...args: unknown[]) => number)(target, ...rest);
+      descriptors.set(descriptor, path.basename(String(target)));
+      return descriptor;
+    }) as typeof fs.openSync);
+    const realFsync = fs.fsyncSync;
+    vi.spyOn(fs, "fsyncSync").mockImplementation((descriptor: number) => {
+      flushed.push(descriptors.get(descriptor) ?? "?");
+      realFsync(descriptor);
+    });
+
+    // Windows cannot open a directory for fsync, so Fabric skips the directory flush there.
+    const flushesDirectories = process.platform !== "win32";
+    await store.publish({ topic: "team.auth", from: identity, text: "one" });
+    expect(flushed).toContain("events.jsonl");
+    expect(flushed.some((name) => name.startsWith("sequence."))).toBe(true);
+    if (flushesDirectories) expect(flushed).toContain(path.basename(store.root));
+
+    flushed.length = 0;
+    await store.put({ key: "claims/a", value: 1, identity });
+    expect(flushed.some((name) => name.startsWith("state.json."))).toBe(true);
+    if (flushesDirectories) expect(flushed).toContain(path.basename(store.root));
+
+    flushed.length = 0;
+    await store.schedule({ topic: "team.auth", from: identity, text: "later", dueAt: Date.now() + 60_000, key: "later" });
+    expect(flushed.some((name) => name.startsWith("schedules.json."))).toBe(true);
+
+    flushed.length = 0;
+    await expect(store.unschedule("later")).resolves.toEqual({ removed: true });
+    if (flushesDirectories) expect(flushed).toContain(path.basename(store.root));
+  });
+
   it("repairs an interrupted append without reusing sequence numbers", async () => {
     const store = createStore();
     await store.publish({ topic: "team.auth", from: identity, text: "one" });

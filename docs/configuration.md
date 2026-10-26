@@ -231,7 +231,8 @@ where absent values do not participate, and time spent inside a `humanWaitRefs` 
     "actorPollMs": 250,
     "actorQueueLimit": 32,
     "eventContextChars": 40000,
-    "peerNotices": true
+    "peerNotices": true,
+    "durability": "default"
   },
   "memory": {
     "enabled": true,
@@ -749,6 +750,8 @@ call override → session binding → project default → Fabric default
 `mesh.eventContextChars` bounds the sanitized JSON context attached to each host-event activation. Over the limit, Fabric drops the oldest transcript lines first and keeps the digest. It shortens the digest, and marks it `truncated: true`, only when the digest alone exceeds the limit. Fabric extracts images first. It stores redacted image descriptors in the mailbox and registry, then sends the raw images to the actor out of band. The character limit never truncates image base64 because base64 is not part of that JSON context.
 
 `mesh.peerNotices` (default `true`) tells the model of a root session with a UI when another root Pi session joins or leaves the project. The notice is appended to the transcript and never changes the system prompt. See [peer presence notices](agents.md#peer-presence-notices).
+
+`mesh.durability` is `"default"` or `"fsync"`. With `"default"`, mesh writes reach the operating system before a call returns, so they survive a crash of the Pi process but can be lost on a power failure or kernel panic. With `"fsync"`, every committed write (event appends, shared state, the sequence counter, schedules, grants, and event-log compaction) is passed to `fsync`, together with its directory entry, before `mesh.publish`, `mesh.put`, `mesh.delete`, a grant, or a revocation returns. Each write then waits for the disk, so busy topics pay a per-event cost. On macOS, `fsync` does not flush the drive's own cache (Node cannot issue `F_FULLFSYNC`), and Windows skips the directory flush. The resident host uses the same setting. The `pi-fabric mesh` and `pi-fabric decisions` commands do not read Fabric configuration, so their writes keep the default. A change applies to sessions started after it.
 
 Mesh topics, shared state, and the participant directory remain project-scoped. Every runtime publishes one short-lived host lease and records for the roots, agents, and actors it owns. `agents.members()` and `mesh.members()` read those records. `agents.main()` and `agents.peers()` project roots. When a lease expires, its records leave normal discovery together. `mesh.actorPollMs` controls fallback polling for actor events and owner-addressed commands when filesystem notifications are unavailable.
 
