@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AgentManager } from "../src/agents/manager.js";
 import { CapturedToolCatalog } from "../src/capture/catalog.js";
 import { normalizeFabricConfig } from "../src/config.js";
 import { FabricRuntimeState } from "../src/fabric-runtime-state.js";
@@ -65,7 +66,6 @@ const startRuntime = async (
   const runtime = new FabricRuntimeState(pi, new CapturedToolCatalog(), {
     paths: { extension: fixture, worker: fixture, residentHost: fixture, skills: cwd },
   });
-  // The footer is set synchronously once the label is minted at startup.
   await runtime.initialize(context, config);
   return { runtime, setStatus };
 };
@@ -74,15 +74,42 @@ const labelStatuses = (setStatus: ReturnType<typeof vi.fn>): unknown[] =>
   setStatus.mock.calls.filter(([key]) => key === SESSION_LABEL_STATUS_KEY).map(([, text]) => text);
 
 describe("Fabric runtime session label", () => {
-  it("shows a root session's minted label in the footer and clears it on shutdown", async () => {
+  it("takes a label at the session's first Fabric use, shows it, and clears it on shutdown", async () => {
     const { runtime, setStatus } = await startRuntime();
     try {
-      expect(labelStatuses(setStatus)).toEqual([expect.stringMatching(/^Fabric [A-Z]+-\d+$/)]);
+      // Opening Pi takes no number: an idle session has no label.
+      await runtime.participantInfos();
+      expect(runtime.sessionLabel()).toBeUndefined();
+      expect(runtime.sessionLabelPending()).toBe(false);
+      expect(labelStatuses(setStatus)).toEqual([]);
+      runtime.activity.start("first-run", { name: "first use" });
+      await vi.waitFor(() => expect(labelStatuses(setStatus)).toEqual([expect.stringMatching(/^Fabric [A-Z]+-1$/)]));
     } finally {
       await runtime.shutdown();
     }
     expect(labelStatuses(setStatus).at(-1)).toBeUndefined();
     expect(labelStatuses(setStatus)).toHaveLength(2);
+  });
+
+  it("takes no number for store notifications alone, only once an agent runs", async () => {
+    const uiListeners: Array<() => void> = [];
+    vi.spyOn(AgentManager.prototype, "subscribeUi").mockImplementation((listener: () => void) => {
+      uiListeners.push(listener);
+      return () => undefined;
+    });
+    const { runtime, setStatus } = await startRuntime();
+    try {
+      // Startup notifications, such as loading idle actors or retained runs, are not use.
+      for (const listener of uiListeners) listener();
+      await runtime.participantInfos();
+      expect(runtime.sessionLabel()).toBeUndefined();
+      vi.spyOn(runtime.agents, "activity").mockReturnValue([{ id: "agent-1", name: "worker" }]);
+      for (const listener of uiListeners) listener();
+      await vi.waitFor(() => expect(labelStatuses(setStatus)).toEqual([expect.stringMatching(/^Fabric [A-Z]+-1$/)]));
+    } finally {
+      await runtime.shutdown();
+      vi.restoreAllMocks();
+    }
   });
 
   it("keeps the footer empty when the footer setting is off", async () => {
