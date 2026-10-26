@@ -122,13 +122,14 @@ describe("ActionRegistry authority integration", () => {
   });
 
   it("refuses widening, forged/copied/cross-registry views and cascades parent release", async () => {
-    const registry = create(); registry.register(fixture().provider);
+    const registry = create(); const { provider } = fixture(); registry.register(provider);
     const parent = await registry.acquireCapabilityView(["demo.run"], context);
     const ctx = { ...context, capabilityView: parent.view! };
     expect((await registry.acquireCapabilityView(["demo.alias"], ctx)).satisfied).toBe(false);
     const child = await registry.acquireCapabilityView(["demo.run"], ctx);
     const empty = await registry.acquireCapabilityView([], ctx);
     expect(empty.satisfied).toBe(true);
+    expect(Object.isFrozen(parent.view)).toBe(true);
     expect(Object.isFrozen(parent.view!.bindings["demo.run"])).toBe(true);
     const other = create(); other.register(fixture().provider);
     for (const [target, view] of [[registry, structuredClone(parent.view!)], [other, parent.view!]] as const) {
@@ -136,9 +137,11 @@ describe("ActionRegistry authority integration", () => {
     }
     await parent.release();
     for (const view of [parent.view!, child.view!, empty.view!]) {
+      await expect(registry.invoke("demo.run", {}, invocation({ capabilityView: view }))).rejects.toThrow(/released|revoked/);
       await expect(registry.acquireCapabilityView([], { ...context, capabilityView: view })).rejects.toThrow(/released/);
       expect(() => registry.providers({ ...context, capabilityView: view })).toThrow(/released/);
     }
+    expect(provider.invoke).not.toHaveBeenCalled();
     await child.release(); await empty.release();
     expect(await registry.invoke("demo.run", {}, invocation())).toEqual({});
   });

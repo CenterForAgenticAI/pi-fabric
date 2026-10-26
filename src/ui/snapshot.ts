@@ -129,8 +129,9 @@ export const createDashboardSnapshot = (
     ? state.componentGraph() : { components: [], edges: [], cycles: [] };
   const meshEntries = state.config.mesh.enabled ? state.mesh.list("", 200) : [];
   const shells = state.shellJobs?.list().filter(job => job.spilledAt !== undefined || job.monitor) ?? [];
+  const sessionLabel = typeof state.sessionLabel === "function" ? state.sessionLabel() : undefined;
   const inputs = { runs, agentRecords, actorRecords, participants, main, peers, shells,
-    globalActors, componentGraph, meshEntries, events, widgetDismissedAt: state.widgetDismissedAt };
+    globalActors, componentGraph, meshEntries, events, widgetDismissedAt: state.widgetDismissedAt, sessionLabel };
   const previous = cache?.get(inputs);
   if (previous) return previous;
   const agentLinks: Array<{ runId: string; call: FabricActivityRun["calls"][number] }> = [];
@@ -191,6 +192,7 @@ export const createDashboardSnapshot = (
       updatedAt: record.updatedAt,
       ...(record.finishedAt !== undefined ? { finishedAt: record.finishedAt } : {}),
       ...(record.currentTool ? { currentTool: record.currentTool } : {}),
+      ...(record.milestone ? { milestone: record.milestone } : {}),
       turns: record.turns,
       toolCalls: record.toolCalls,
       usage: { ...record.usage },
@@ -332,6 +334,7 @@ export const createDashboardSnapshot = (
     main,
     peers,
     participants,
+    ...(sessionLabel ? { sessionLabel } : {}),
     widgetDismissedAt: state.widgetDismissedAt,
     globalActors,
     agents: visibleAgents,
