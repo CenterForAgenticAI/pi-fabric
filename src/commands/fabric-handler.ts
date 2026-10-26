@@ -336,7 +336,7 @@ export async function runFabricCommand(
   }
   if (command === "decisions") {
     const { openFabricDecisions } = await import("../decisions/command.js");
-    await openFabricDecisions(state.mesh, context, argumentsList[0]);
+    await openFabricDecisions(state.mesh, context, argumentsList[0], pi.events);
     return;
   }
   if (command === "programs" || command === "run") {

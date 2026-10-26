@@ -122,7 +122,7 @@ By default a child Pi run cancels every dialog (`select`, `confirm`, `input`, `e
 
 1. The worker writes a lifecycle record `{ event: "question", data: { requestId, method, title, message?, options?, placeholder?, prefill?, timeout } }` and sets `blockedOn: { since }` on the run record.
 2. The parent AgentManager asks through its own interactive UI when it has one, with the child's name prefixed to the title. A parent that is itself an RPC child asks through its own UI channel, so questions climb to the first session with a person or a headless root.
-3. Without an interactive UI, the parent raises a `kind: "question"` decision held by `"root"`. `select` options become `o1`, `o2`, … (the first 12), and `confirm` becomes `yes`/`no`. The run record then shows `blockedOn: { decisionId, since }`.
+3. With a decision store, the parent raises a `kind: "question"` decision held by `"root"`. `select` options become `o1`, `o2`, …, and `confirm` becomes `yes`/`no`. The run record then shows `blockedOn: { decisionId, since }`. A parent with an interactive UI offers the decision to a [question renderer](#question-renderers), and shows it with its own dialog when none claims it. Without an interactive UI, it waits for `/fabric decisions` or the CLI. The first answer from any of these settles the decision, and the child gets what the record says. A text answer the store refuses (over 4,000 characters) cancels it. A `select` with more than 12 options is not recorded; it goes straight to the parent's dialog. A nested child forwards its own children's questions to its parent's UI unrecorded, so each question raises one decision, at the main session.
 4. The answer goes back through the run's steer channel as `{ type: "ui_response", requestId, value? | confirmed? | cancelled? }`, and the worker forwards it to the child as `extension_ui_response`.
 
 The deadline is the dialog's own timeout, or `agents.childQuestionTimeoutMs` (default 10 minutes). The worker owns that deadline and answers `cancelled` when it passes, so a child never waits on a parent that has gone away. A settled run cancels its open question decision. The `pi` and `pi-durable` runners route dialogs.
@@ -140,9 +140,41 @@ Fabric copies only those question fields. The decision is always held by `"user"
 
 `source` names the asking extension, for example its package name. The record stores it as `raisedBy.participantId: "extension:<source>"` next to the session id, so a person can see who asked. It must match `[A-Za-z0-9@][A-Za-z0-9@._/-]{0,63}`; any other value is refused before a decision is raised. Without `source`, the session is the raiser.
 
+## Question renderers
+
+Before Fabric shows a decision with its own `ctx.ui` dialogs, it emits `pi-fabric:questions:render:v1` (`FABRIC_QUESTION_RENDER_EVENT`, exported from `pi-fabric/protocol`) on `pi.events`. It does this for routed child questions in a session with a UI, and for the decision picked in `/fabric decisions`. Another extension, such as a question tool with a richer interface, can render the decision instead.
+
+The request carries `surface` (`"child-question"` or `"decisions-command"`), the session `context`, a copy of the `decision` (`id`, `kind`, `title`, `body?`, `input`, `options?`, `holder`, `raisedBy`, `createdAt`, `deadline?`), a `signal`, and `claim(render)`. A renderer calls `claim` synchronously inside its handler with a function `(signal) => result | Promise<result>`; the first claim wins. The result is one of:
+
+- `{ status: "answered", decisionId, answer: { optionId?, text? } }`
+- `{ status: "cancelled", decisionId }`: the person cancelled the decision.
+- `{ status: "dismissed", decisionId }`: the person closed the renderer without deciding. A child question is cancelled; in `/fabric decisions` the decision stays open.
+
+```ts
+import { FABRIC_QUESTION_RENDER_EVENT, type FabricQuestionRenderRequestV1 } from "pi-fabric/protocol";
+
+pi.events.on(FABRIC_QUESTION_RENDER_EVENT, (value) => {
+  const request = value as FabricQuestionRenderRequestV1;
+  if (request.version !== 1) return;
+  request.claim(async (signal) => {
+    const optionId = await showMyQuestionUi(request.decision, signal);
+    return optionId
+      ? { status: "answered", decisionId: request.decision.id, answer: { optionId } }
+      : { status: "dismissed", decisionId: request.decision.id };
+  });
+});
+```
+
+Fabric writes the result to the store itself, with `via: "tui"` and the OS user as `answeredBy`. The record stays authoritative:
+
+- Fabric copies only `optionId` and `text` from the answer. A renderer cannot change the holder, the raiser, the deadline, or who is recorded as answering, and editing its copy of the decision changes nothing.
+- A result whose `decisionId` names another decision is ignored, so a renderer can only answer or cancel the decision it was handed.
+- No claim, a `render` that throws or rejects, a malformed or mismatched result, or an answer the store refuses (an unknown option, text over the limit) all fall back to Fabric's own dialog.
+- `signal` aborts when the decision is answered, cancelled, or expires elsewhere, or when the asking child run settles. Fabric then stops waiting for the renderer and uses the record.
+
 ## Human surfaces
 
-- `/fabric decisions [id]` lists open decisions, then answers the picked one through native dialogs (`select` for options, and `input` or `editor` for text). Both kinds offer a "Cancel this decision" entry. A text or editor decision first asks "Answer this question" or "Cancel this decision", so an empty answer and a cancel never look the same. Answers and cancels record `via: "tui"`.
+- `/fabric decisions [id]` lists open decisions, then answers the picked one through native dialogs (`select` for options, and `input` or `editor` for text). Both kinds offer a "Cancel this decision" entry. A text or editor decision first asks "Answer this question" or "Cancel this decision", so an empty answer and a cancel never look the same. Answers and cancels record `via: "tui"`. A [question renderer](#question-renderers) can take the picked decision's dialog over.
 - `pi-fabric decisions list --root <meshRoot> [--status open|answered|expired|cancelled|all] [--holder h] [--limit n] [--json]` prints decisions from outside any Pi session. `--root` defaults to `$PI_FABRIC_MESH_ROOT`. The project mesh root is `.pi/fabric/mesh` unless `mesh.root` says otherwise.
 - `pi-fabric decisions answer --root <meshRoot> <id> (--option <id> | --text <t>) [--json]` answers one decision with `via: "cli"` and the OS user name as `answeredBy`. Exit code 1 reports a refused answer (not open, unknown option), and 2 reports a usage error.
 - `pi-fabric decisions cancel --root <meshRoot> <id> [--json]` cancels one open decision with `via: "cli"` and the OS user name as `answeredBy`. Use it to clear a decision whose asker has gone away, such as a `pi -p` run stopped with Ctrl+C. Cancelling a decision that is not open exits 1, like answering one twice.

@@ -546,6 +546,60 @@ export const readFabricDecisionRequestV1 = (
   return value as FabricDecisionRequestV1;
 };
 
+export const FABRIC_QUESTION_RENDER_EVENT = "pi-fabric:questions:render:v1";
+
+/** Where Fabric is about to show a decision to the person at this terminal. */
+export type FabricQuestionRenderSurfaceV1 = "child-question" | "decisions-command";
+
+/** A copy of the stored decision. Changing it changes nothing in the store. */
+export interface FabricQuestionDecisionV1 {
+  id: string;
+  kind: "approval" | "question" | "escalation";
+  title: string;
+  body?: string;
+  input: FabricDecisionInputV1;
+  /** Present for `select` and `confirm`; an answer must use one of these ids. */
+  options?: Array<{ id: string; label: string }>;
+  holder: string;
+  raisedBy: { participantId: string; runId?: string; sessionId?: string };
+  createdAt: number;
+  /** Epoch ms after which the decision expires and the render is aborted. */
+  deadline?: number;
+}
+
+/**
+ * What a renderer reports. `decisionId` must name the decision it was handed;
+ * any other value, or a malformed result, makes Fabric show its own dialog.
+ * `dismissed` means the person closed the renderer without deciding.
+ */
+export type FabricQuestionRenderResultV1 =
+  | { status: "answered"; decisionId: string; answer: { optionId?: string; text?: string } }
+  | { status: "cancelled"; decisionId: string }
+  | { status: "dismissed"; decisionId: string };
+
+export type FabricQuestionRenderV1 = (
+  signal: AbortSignal,
+) => FabricQuestionRenderResultV1 | Promise<FabricQuestionRenderResultV1>;
+
+/**
+ * Host-local request emitted before Fabric shows a decision with `ctx.ui`.
+ * A renderer claims it synchronously by passing its render function; the
+ * first claim wins. Fabric calls `render`, checks the result against the
+ * decision, and writes the answer to the store itself, so the stored record
+ * stays authoritative. An unclaimed request, a thrown or rejected render, or
+ * a result that does not fit the decision falls back to Fabric's own dialog.
+ * `signal` aborts when the decision is answered, cancelled, or expires
+ * elsewhere, or when its asker goes away.
+ */
+export interface FabricQuestionRenderRequestV1 {
+  version: 1;
+  surface: FabricQuestionRenderSurfaceV1;
+  context: ExtensionContext;
+  decision: FabricQuestionDecisionV1;
+  signal: AbortSignal;
+  claim: (render: FabricQuestionRenderV1) => boolean;
+}
+
 /** Identifies host-side tool lifecycle events replayed for a nested Fabric call. */
 export const FABRIC_NESTED_TOOL_CALL_ID_PREFIX = "fabric_";
 

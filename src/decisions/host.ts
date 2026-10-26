@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentChildQuestionRequest, AgentChildQuestionResponse } from "../agents/types.js";
 import type { ResolvedFabricAction } from "../core/action-registry.js";
+import { renderDecision, terminalOperator, watchDecision, type DecisionBy, type RenderEvents } from "./render.js";
 import {
   MAX_DECISION_BODY_CHARS,
   MAX_DECISION_OPTIONS,
@@ -97,6 +98,20 @@ const parseChildQuestion = (value: Record<string, unknown>): ChildQuestion | und
   };
 };
 
+/** A UI answer as the decision answer it records; undefined records a cancel. */
+const decisionAnswerFromUi = (
+  question: ChildQuestion,
+  response: AgentChildQuestionResponse,
+): { optionId?: string; text?: string } | undefined => {
+  if ("confirmed" in response) return { optionId: response.confirmed ? "yes" : "no" };
+  if (!("value" in response)) return undefined;
+  if (question.method === "select") {
+    const index = question.options!.indexOf(response.value);
+    return index >= 0 ? { optionId: `o${index + 1}` } : undefined;
+  }
+  return { text: response.value };
+};
+
 const askViaUi = async (
   ui: ExtensionContext["ui"],
   label: string,
@@ -147,40 +162,116 @@ const responseFromDecision = (
   return text === undefined ? CANCELLED : { value: text };
 };
 
+const childDecisionInput = (label: string, question: ChildQuestion, holder: "root"): DecisionRaiseInput => ({
+  kind: "question",
+  title: clip(label, MAX_DECISION_TITLE_CHARS),
+  ...(question.message ? { body: clip(question.message, MAX_DECISION_BODY_CHARS) } : {}),
+  ...(question.method === "select"
+    ? {
+        input: "select",
+        options: question.options!.slice(0, MAX_DECISION_OPTIONS).map((option, index) => ({
+          id: `o${index + 1}`,
+          label: clip(option || `Option ${index + 1}`, MAX_DECISION_TITLE_CHARS),
+        })),
+      }
+    : { input: question.method === "input" ? "text" : question.method }),
+  holder,
+  timeoutMs: Math.max(1_000, question.timeout),
+  onExpire: "cancel",
+});
+
 /**
- * Answer one routed child dialog: through the parent's interactive UI when it
- * has one, otherwise through a root-held decision. Missing UI and store, a
- * malformed request, or any failure cancels the child's dialog.
+ * Show a recorded child question to the person at this terminal: through a
+ * claimed `pi-fabric:questions:render:v1` renderer, else through `ctx.ui`.
+ * The first answer wins, whether from here, `/fabric decisions`, or the CLI;
+ * the child always gets what the record says.
+ */
+const askRecorded = async (
+  request: AgentChildQuestionRequest,
+  deps: { context: Pick<ExtensionContext, "hasUI" | "ui">; store: DecisionStore; events?: RenderEvents },
+  label: string,
+  question: ChildQuestion,
+): Promise<AgentChildQuestionResponse> => {
+  const { store } = deps;
+  const record = await store.raise(
+    childDecisionInput(label, question, "root"),
+    { participantId: request.actorId ?? request.runId, runId: request.runId },
+  );
+  request.onDecision(record.id);
+  const by: DecisionBy = { answeredBy: terminalOperator(), via: "tui" };
+  const watch = watchDecision(store, record.id, request.signal);
+  const settle = async (answer: { optionId?: string; text?: string } | undefined): Promise<DecisionRecord> => {
+    try {
+      return answer ? await store.answer(record.id, answer, by) : await store.cancel(record.id, by);
+    } catch {
+      // Settled elsewhere first, or an answer the store refuses (for example
+      // text over its limit): the record decides what the child receives.
+      const latest = await store.get(record.id);
+      if (latest && latest.status !== "open") return latest;
+      return store.cancel(record.id, by);
+    }
+  };
+  try {
+    const rendered = await renderDecision({
+      events: deps.events,
+      surface: "child-question",
+      context: deps.context as ExtensionContext,
+      store,
+      record,
+      watch,
+      by,
+    });
+    // The asker went away: the catch below cancels the record as an abort.
+    request.signal.throwIfAborted();
+    let settled: DecisionRecord;
+    if (rendered.kind === "settled") settled = rendered.record;
+    else if (rendered.kind === "dismissed") settled = await settle(undefined);
+    else if (rendered.kind === "aborted") settled = watch.current() ?? await settle(undefined);
+    else {
+      const response = await askViaUi(deps.context.ui, label, question, watch.signal);
+      request.signal.throwIfAborted();
+      settled = watch.current() ?? await settle(decisionAnswerFromUi(question, response));
+    }
+    return responseFromDecision(question, settled);
+  } catch (error) {
+    await store.cancel(record.id, { answeredBy: store.identity.id, via: "abort" }).catch(() => undefined);
+    throw error;
+  } finally {
+    watch.stop();
+  }
+};
+
+/**
+ * Answer one routed child dialog. With a decision store, the question is
+ * always recorded as a root-held decision: an interactive parent shows it
+ * through a registered renderer or its own UI, and a parent without UI waits
+ * for `/fabric decisions` or the CLI. A select with more options than a
+ * decision holds keeps the direct UI path, and so does a nested child whose UI
+ * forwards to its own parent (`relayUi`), so one question raises one record
+ * at the main session. Missing UI and store, a malformed
+ * request, or any failure cancels the child's dialog.
  */
 export const routeChildQuestion = async (
   request: AgentChildQuestionRequest,
-  deps: { context: Pick<ExtensionContext, "hasUI" | "ui">; store?: DecisionStore },
+  deps: {
+    context: Pick<ExtensionContext, "hasUI" | "ui">;
+    store?: DecisionStore;
+    events?: RenderEvents;
+    relayUi?: boolean;
+  },
 ): Promise<AgentChildQuestionResponse> => {
   const question = parseChildQuestion(request.question);
   if (!question || request.signal.aborted) return CANCELLED;
   const label = `${request.name}: ${question.title || "question"}`;
-  if (deps.context.hasUI) return askViaUi(deps.context.ui, label, question, request.signal);
+  const recordable = question.method !== "select" || question.options!.length <= MAX_DECISION_OPTIONS;
+  if (deps.context.hasUI) {
+    if (!deps.store || !recordable || deps.relayUi) return askViaUi(deps.context.ui, label, question, request.signal);
+    return askRecorded(request, { ...deps, store: deps.store }, label, question);
+  }
   if (!deps.store) return CANCELLED;
-  const input: DecisionRaiseInput = {
-    kind: "question",
-    title: clip(label, MAX_DECISION_TITLE_CHARS),
-    ...(question.message ? { body: clip(question.message, MAX_DECISION_BODY_CHARS) } : {}),
-    ...(question.method === "select"
-      ? {
-          input: "select",
-          options: question.options!.slice(0, MAX_DECISION_OPTIONS).map((option, index) => ({
-            id: `o${index + 1}`,
-            label: clip(option || `Option ${index + 1}`, MAX_DECISION_TITLE_CHARS),
-          })),
-        }
-      : { input: question.method === "input" ? "text" : question.method }),
-    holder: "root",
-    timeoutMs: Math.max(1_000, question.timeout),
-    onExpire: "cancel",
-  };
   const decision = await raiseAndWait(
     deps.store,
-    input,
+    childDecisionInput(label, question, "root"),
     { participantId: request.actorId ?? request.runId, runId: request.runId },
     request.signal,
     request.onDecision,

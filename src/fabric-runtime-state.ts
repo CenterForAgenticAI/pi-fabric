@@ -864,7 +864,13 @@ export class FabricRuntimeState {
       onBackgroundComplete: (result) => completionInbox.enqueue(result),
       onResultConsumed: (id) => completionInbox.acknowledge(id),
       onChildQuestion: (request) =>
-        routeChildQuestion(request, { context, ...(this.#decisions ? { store: this.#decisions } : {}) }),
+        routeChildQuestion(request, {
+          context,
+          ...(this.#decisions ? { store: this.#decisions } : {}),
+          ...(this.pi.events ? { events: this.pi.events } : {}),
+          // A child's UI forwards to its parent, which records the question.
+          relayUi: identity.kind !== "main",
+        }),
       resolveChildTraceContext: (launch) =>
         requestChildTraceContext((event, value) => this.pi.events?.emit(event, value), launch),
     });
