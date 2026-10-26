@@ -173,6 +173,34 @@ describe("idle cache warming while spilled work can wake the owner", () => {
     expect(decide(h, { ...idleStop, missCost: 0, warmCost: 0 })).toBeUndefined();
   });
 
+  it("suppresses refreshes on provider failure and resumes only after recovery or input", () => {
+    const h = harness(); h.idle(); const build = h.begin(); h.begin("wake");
+    h.emit("turn_end", { message: { stopReason: "error" } });
+    expect(decide(h)).toBeUndefined();
+    h.emit("turn_end", { message: { stopReason: "stop" } });
+    expect(decide(h)).toEqual({ action: "warm" });
+    h.emit("turn_end", { message: { stopReason: "error" } });
+    h.emit("agent_settled", { aborted: false });
+    expect(decide(h)).toBeUndefined();
+    h.emit("input");
+    expect(build.abort.signal.aborted).toBe(false);
+    expect(decide(h)).toEqual({ action: "warm" });
+  });
+
+  it("checks the current decision signal and remains inert for an in-flight callback after close", () => {
+    const h = harness(); h.idle(); h.begin();
+    const controller = new AbortController(); controller.abort();
+    Object.assign(h.ctx, { signal: controller.signal });
+    expect(decide(h)).toBeUndefined();
+    Object.assign(h.ctx, { signal: undefined });
+    expect(decide(h)).toEqual({ action: "warm" });
+    const inFlight = h.handlers.get("cache_warming_decision")!;
+    h.inbox.close();
+    expect(inFlight(idleStop, h.ctx)).toBeUndefined();
+    expect(h.sendMessage).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("does not warm after interruption, branch navigation, or close", () => {
     const h = harness(); h.idle(); h.begin();
     h.emit("turn_end", { message: { stopReason: "aborted" } });

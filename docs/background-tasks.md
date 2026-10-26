@@ -87,11 +87,43 @@ probability 1 against Pi's own $0.05 savings threshold, returning `warm` if it
 clears.
 
 It never downgrades `warm` or touches streaming-phase decisions, and counts the
-same jobs as the reminder above minus UI-only monitors. It needs
-`cacheWarming: "idle"`: Pi's default `"streaming"` mode stops warming when the
-run settles, before any extension is asked. Pi's 30-minute idle horizon still
-applies, so longer jobs resume against a cold cache. Refreshes are ordinary paid
-`cache_warm` usage.
+same jobs as the reminder above minus UI-only monitors. Refreshes are ordinary
+paid `cache_warm` usage, not a guarantee of a cache hit or net savings. Fabric
+neither changes Pi's warming setting nor bypasses native request eligibility.
+
+To opt in, merge these fields into Pi's **global** `~/.pi/agent/settings.json`
+(or the settings file under your custom Pi agent directory), not project settings:
+
+```json
+{
+  "cacheWarming": "idle",
+  "showCacheMissNotices": true
+}
+```
+
+`showCacheMissNotices` is optional diagnostics. Restart Pi after a file edit and
+send a new real request; changing the policy cannot revive an already stopped
+warmer or recover a cache entry that has expired. Pi's default `"streaming"` mode
+stops warming when the run settles, before any extension is asked. `"off"`
+remains off. No extra Fabric setting or `cache.hold` call is required for this
+idle-decision override; scoped leases are a separate optional capability.
+
+For the five-minute cache tier, Pi's first refresh is due at 270 seconds after
+the real request. Fabric's default 120-second shell spill can settle the run
+before then, which explains why streaming warming records no refresh while the
+agent waits. With idle warming enabled, `/session` shows the native warming
+state/decision; successful refreshes appear as `cache_warm` usage, and
+`cache.status()` exposes their receipts in its bounded observation window.
+A missing receipt alone does not prove a cache miss: small prompts, unsupported
+models, unsafe replays, changed context, or expired refresh deadlines can prevent
+warming.
+
+Pi's 30-minute idle safety horizon still applies, measured from the real request
+that started warming, **not** from spill or the latest refresh. Jobs may outlast
+both warming and the cache TTL; this patch does not keep them warm indefinitely.
+`tests/shell-cache-warming-sdk.test.ts` exercises native scheduling, replay,
+receipts, completion wakeup, default/off/UI-only exclusions, and the safety
+horizon with an offline provider; it does not measure live-provider cache hits.
 
 ## Inspection and control
 
