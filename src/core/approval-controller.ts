@@ -32,6 +32,14 @@ import {
   type FabricAutoApprovalDecision,
   type FabricAutoApprovalVerdicts,
 } from "./auto-approval-classifier.js";
+import type { FabricActionPolicyVerdict } from "./action-policy-hooks.js";
+
+/** Opt-in extension policy at the approve stage, bound to one call site. */
+export interface FabricActionPolicyGate {
+  /** True when at least one hook may answer, so approve() may wait on it. */
+  readonly active: boolean;
+  evaluate(action: ResolvedFabricAction, args: Record<string, unknown>): Promise<FabricActionPolicyVerdict | undefined>;
+}
 
 const inheritedRisks = (): FabricRisk[] => {
   const allowed = new Set<FabricRisk>(["read", "write", "execute", "network", "agent"]);
@@ -94,10 +102,14 @@ export class ApprovalController {
     readonly brokeredNetwork?: (provider: string) => boolean,
     /** approvals.headless "decision": resolve to true only on an explicit approve. */
     readonly headless?: (action: ResolvedFabricAction, reason?: string) => Promise<boolean>,
+    /** Extension policy hooks; absent unless approvals.policyHooks is true. */
+    readonly policyGate?: FabricActionPolicyGate,
   ) {}
 
   /** Policy only: true when approve() settles without a prompt or classifier call. */
   decidesWithoutInteraction(action: ResolvedFabricAction): boolean {
+    // A hook may hold any action for a person, so its answer is never known in advance.
+    if (this.policyGate?.active) return false;
     return this.#policyDecision(action) !== "interactive";
   }
 
@@ -127,14 +139,33 @@ export class ApprovalController {
     args: Record<string, unknown> = {},
     humanWait?: FabricHumanWait,
   ): Promise<void> {
+    // Extension hooks run first. Their deny is absolute; their allow and hold
+    // never lift a configured deny below.
+    const hook = this.policyGate?.active ? await this.policyGate.evaluate(action, args) : undefined;
+    if (hook?.decision === "deny") {
+      throw new FabricTraceSafeError(
+        `${action.ref} is denied by the Fabric action policy hook ${hook.hook}: ${hook.reason ?? "no reason given"}`,
+      );
+    }
     const policy = this.#policyDecision(action);
     if (policy === "deny-action") {
       throw new FabricTraceSafeError(`${action.ref} is denied by the Fabric approvals.actions policy`);
     }
-    if (policy === "allow") return;
     if (policy === "deny-risk") {
       throw new FabricTraceSafeError(`${action.ref} is denied by the Fabric ${action.risk} policy`);
     }
+    if (hook?.decision === "hold") {
+      // Ask even when configuration or a session grant would allow the action.
+      await this.sessionApprovals.serialize(() => this.#requestApproval(
+        action,
+        `Held by policy hook ${hook.hook}: ${hook.reason ?? "no reason given"}`,
+        humanWait,
+      ));
+      return;
+    }
+    if (policy === "allow") return;
+    // A hook allow settles an ask or auto prompt only.
+    if (hook?.decision === "allow") return;
     const mode = actionApprovalOverride(this.config.actions, action.ref) ?? this.config[action.risk];
 
     await this.sessionApprovals.serialize(async () => {
