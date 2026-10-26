@@ -48,12 +48,17 @@ every ticket, reachable or not.
 registered module:
 
 1. Proves each law, step law, k-step law and decision. A claim counts only when
-   the verdict is `proven && checked`. `checked` is the kernel's verdict on the
-   proof tree that the untrusted prover produced.
+   the verdict is `proven && checked && !assumes`. `checked` is the kernel's
+   verdict on the proof tree that the untrusted prover produced. The generator
+   calls `proveSteps` with `{from: 'any'}`: the step laws must hold from every
+   state the laws allow, including host-supplied states unreachable from `init`.
+   Search still looks for breaking runs and state-independent lemmas. A verdict
+   with `assumes` depends on reachability and counts as unproven.
 2. Proves each registered deliberately broken variant (such as "a span may
    straddle the boundary", "stale writes pass", or "derivation checks one
-   grant"). Every variant must leave at least one claim unproven. This replaces
-   the old negative-mutation script.
+   grant"). Every variant must be refuted with a counterexample (a run or a
+   state), leaving at least one claim unproven. This replaces the old
+   negative-mutation script.
 3. Replays every claim on concrete runs with `crossCheck` and
    `crossCheckDecision`. The builders are untrusted, so this catches a builder
    whose expression differs from what its callback computed.

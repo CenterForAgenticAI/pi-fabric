@@ -23,7 +23,8 @@ function evaluate(task: ProofTask): ProofResult {
     for (const bug of module.bugs) {
       // Identical machines were proved by the required kernel jobs. Skipping
       // them cannot introduce a false refusal of a changed broken machine.
-      const rejected = module.kernels(bug).some(kernel => compiled(kernel) !== shipped.get(kernel.id) && prove(kernel).some(verdict => !verdict.proven));
+      // Preserve upstream's stronger refusal: a counterexample, not a timeout.
+      const rejected = module.kernels(bug).some(kernel => compiled(kernel) !== shipped.get(kernel.id) && prove(kernel).some(verdict => !verdict.proven && verdict.stuck === "sat"));
       if (rejected) refused++;
       else failures.push(`${module.stem}: broken variant "${bug}" was not refused`);
     }
