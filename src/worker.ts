@@ -7,6 +7,7 @@ import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { assertWorkerRuntime, writeWorkerStartupFailure } from "./worker/startup.js";
 import { MODEL_PIN_ENV, MODEL_PIN_EXIT_CODE, modelPinFailure, parseModelPinViolation } from "./agents/model-pin.js";
 import { explainMissingInstall } from "./worker/missing-install.js";
+import { normalizeRunDisplay } from "./run-display.js";
 
 import { StringDecoder } from "node:string_decoder";
 import type { ImageContent } from "@earendil-works/pi-ai";
@@ -14,6 +15,9 @@ import type {
   AgentRunRecord,
   AgentRunStatus,
 } from "./agents/types.js";
+
+/** A milestone is one row of the parent's agent list. */
+const MAX_MILESTONE_CHARS = 160;
 
 let crossSpawn: typeof import("cross-spawn");
 
@@ -1065,6 +1069,13 @@ const main = async (): Promise<void> => {
         record.currentTool = event.toolName;
         process.stdout.write(`→ ${event.toolName}\n`);
       }
+      // The declared fabric_exec milestone holds until the next declared one, as
+      // the parent's terminal title does, so the agent list says what it is doing.
+      const args = event.args as { display?: unknown } | undefined;
+      const milestone = event.toolName === "fabric_exec"
+        ? normalizeRunDisplay(args?.display)?.name?.replace(/\s+/g, " ").trim().slice(0, MAX_MILESTONE_CHARS)
+        : undefined;
+      if (milestone) record.milestone = milestone;
       update();
       return;
     }

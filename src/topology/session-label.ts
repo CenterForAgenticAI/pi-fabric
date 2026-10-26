@@ -1,6 +1,24 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { herdrSocketRequest } from "../agents/transports/herdr-socket.js";
 import type { FabricSessionLabelConfig, FabricSessionLabelHerdrTarget } from "./session-label-settings.js";
+import { FABRIC_PEER_ENTRY_TYPE, FABRIC_PEER_LABEL_SEQUENCE, type FabricPeerEntryV1 } from "../protocol.js";
+
+/**
+ * The label a session recorded for `participantId` in its `pi-fabric-peer`
+ * entries, newest first. Forks and clones carry the entry but get a new id,
+ * and labels from an older counter generation are retired.
+ */
+export const recordedPeerLabel = (context: ExtensionContext, participantId: string): string | undefined => {
+  const entries = context.sessionManager?.getBranch?.() ?? context.sessionManager?.getEntries?.() ?? [];
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry?.type !== "custom" || entry.customType !== FABRIC_PEER_ENTRY_TYPE) continue;
+    const data = entry.data as Partial<FabricPeerEntryV1> | undefined;
+    if (data?.participantId !== participantId || typeof data.label !== "string") continue;
+    return data.sequence === FABRIC_PEER_LABEL_SEQUENCE ? data.label : undefined;
+  }
+  return undefined;
+};
 
 /** Footer status key; Pi sorts extension statuses by key. */
 export const SESSION_LABEL_STATUS_KEY = "fabric-label";
@@ -21,8 +39,16 @@ interface AppliedName {
 export interface SessionLabelPresenterOptions {
   /** The minted peer label, once the participant directory has one. */
   label: () => string | undefined;
+  /** This session's participant id, recorded beside the label for headless hosts. */
+  participantId?: () => string | undefined;
   /** Read on every sync, so a config reload takes effect on the next one. */
   settings: () => FabricSessionLabelConfig;
+  /**
+   * True while Fabric's TUI widget heads its agent list with the label. The
+   * footer then stays empty, so the label shows once. RPC clients have no
+   * widget and always get the footer status.
+   */
+  shownInWidget?: () => boolean;
   environment?: NodeJS.ProcessEnv;
   /** 0 disables the timer; tests drive sync() directly. */
   intervalMs?: number;
@@ -62,12 +88,13 @@ export class SessionLabelPresenter {
   #timer: ReturnType<typeof setInterval> | undefined;
   #eventTimer: ReturnType<typeof setTimeout> | undefined;
   #footer: string | undefined;
+  #recordedPeer: string | undefined;
   #syncing: Promise<void> | undefined;
   #syncAgain = false;
   #closed = false;
 
   constructor(
-    pi: ExtensionAPI,
+    private readonly pi: ExtensionAPI,
     private readonly context: ExtensionContext,
     private readonly options: SessionLabelPresenterOptions,
   ) {
@@ -84,6 +111,16 @@ export class SessionLabelPresenter {
       this.#timer = setInterval(() => void this.sync(), intervalMs);
       this.#timer.unref?.();
     }
+  }
+
+  /** The label the session shows, or undefined while unminted or turned off by `ui.sessionLabel.footer`. */
+  get visibleLabel(): string | undefined {
+    return this.#closed || !this.options.settings().footer ? undefined : this.options.label();
+  }
+
+  /** True while the session will show a label the directory has not minted yet. */
+  get labelPending(): boolean {
+    return !this.#closed && this.options.settings().footer && this.options.label() === undefined;
   }
 
   /** True when this process may rename Herdr names: an interactive Pi inside Herdr. */
@@ -150,7 +187,9 @@ export class SessionLabelPresenter {
   async #syncOnce(): Promise<void> {
     const settings = this.options.settings();
     const label = this.options.label();
-    this.#setFooter(settings.footer && label ? `Fabric ${label}` : undefined);
+    if (label) this.#recordPeer(label);
+    const inWidget = this.context.mode === "tui" && this.options.shownInWidget?.() === true;
+    this.#setFooter(settings.footer && label && !inWidget ? `Fabric ${label}` : undefined);
     const wanted = new Set<HerdrName>(label && this.herdrAvailable ? targets(settings.herdr) : []);
     try {
       for (const [key, name] of [...this.#applied]) {
@@ -164,6 +203,23 @@ export class SessionLabelPresenter {
     } catch {
       // Herdr is unreachable or refused; the next sync reads the live names again.
     }
+  }
+
+  /**
+   * Record the label as a session entry for RPC clients (`get_entries`). It is
+   * data, not display, so `ui.sessionLabel` settings never suppress it, and a
+   * resumed session that recorded the same label appends nothing.
+   */
+  #recordPeer(label: string): void {
+    const participantId = this.options.participantId?.();
+    const pi = this.pi as Partial<Pick<ExtensionAPI, "appendEntry">>;
+    if (!participantId || typeof pi.appendEntry !== "function") return;
+    const key = `${participantId}\n${label}`;
+    if (key === this.#recordedPeer) return;
+    this.#recordedPeer = key;
+    if (recordedPeerLabel(this.context, participantId) === label) return;
+    const entry: FabricPeerEntryV1 = { version: 1, sequence: FABRIC_PEER_LABEL_SEQUENCE, participantId, label };
+    pi.appendEntry(FABRIC_PEER_ENTRY_TYPE, entry);
   }
 
   #setFooter(text: string | undefined): void {

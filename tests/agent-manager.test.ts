@@ -1373,6 +1373,20 @@ describe("AgentManager", () => {
     );
   });
 
+  it("refuses a nonfinite accumulated budget observation before spawning a child", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-budget-invalid-"));
+    roots.push(root);
+    process.env.PI_FABRIC_BUDGET = "0.05";
+    process.env.PI_FABRIC_BUDGET_FILE = path.join(root, "tree-cost.jsonl");
+    process.env.PI_FABRIC_BUDGET_ID = "invalid-observation";
+    fs.writeFileSync(process.env.PI_FABRIC_BUDGET_FILE, '{"cost":"Infinity"}\n{"cost":"-Infinity"}\n');
+    try {
+      const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, { workerPath: path.resolve("tests/fixtures/fake-worker-budget.mjs"), runRoot: root });
+      managers.push(manager);
+      await expect(manager.spawn({ task: "must not run", transport: "process" })).rejects.toThrow(/budget exceeded/);
+    } finally { clearOwnedBudgetEnv(); }
+  });
+
   it("inherits a budget ledger from the environment for recursive children", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-budget-"));
     roots.push(root);

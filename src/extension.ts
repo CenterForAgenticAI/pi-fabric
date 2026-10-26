@@ -94,7 +94,7 @@ import { installFabricShellHangKeys } from "./ui/shell-hang-keys.js";
 import { FabricToolDisplayController } from "./ui/tool-display.js";
 import { configureHighlighting } from "./ui/highlight.js";
 import { registerHandoffCompletionRenderer } from "./ui/handoff-completion.js";
-import { installTerminalTitleRelease } from "./ui/terminal-title.js";
+import { FabricTerminalTitle, installTerminalTitle } from "./ui/terminal-title.js";
 import { formatFabricValue } from "./ui/structured.js";
 import { truncateMiddle } from "./util.js";
 import path from "node:path";
@@ -347,12 +347,19 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     return { skillPaths: fabricSkillPaths(FABRIC_SKILLS_DIR, state.config.executor.kernel) };
   });
 
+  // The window title is the declared milestone, not nested call detail: it
+  // holds until the next declaration and is adopted again on resume.
+  const fabricTerminalTitle = new FabricTerminalTitle(pi, () => {
+    const ui = state.bootstrapped ? state.config.ui : DEFAULT_FABRIC_CONFIG.ui;
+    return ui.enabled && ui.terminalTitle;
+  });
   const fabricTool = createFabricExecTool(
     state,
     codePreviewSettings,
     pendingHandoffs,
     decorateShell,
     toolDisplay,
+    fabricTerminalTitle,
   );
   const refreshCodePreviewSettings = (): void => {
     Object.assign(codePreviewSettings, state.config.codePreview);
@@ -394,7 +401,14 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     toolCapture.setPolicy(capturePolicy());
     Object.assign(
       fabricTool,
-      createFabricExecTool(state, codePreviewSettings, pendingHandoffs, decorateShell, toolDisplay),
+      createFabricExecTool(
+        state,
+        codePreviewSettings,
+        pendingHandoffs,
+        decorateShell,
+        toolDisplay,
+        fabricTerminalTitle,
+      ),
     );
     pi.registerTool(fabricTool);
     toolOwnership.apply(
@@ -1160,9 +1174,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     state.dispatchHostEvent(eventName, event, context);
   });
 
-  // A killed turn can abandon a fabric_exec promise before it hands the window
-  // title back. Both boundaries are no-ops while no run holds the title.
-  installTerminalTitleRelease(pi);
+  installTerminalTitle(pi, fabricTerminalTitle);
 
   pi.on("session_shutdown", async (_event, context) => {
     entropyStopping = true;

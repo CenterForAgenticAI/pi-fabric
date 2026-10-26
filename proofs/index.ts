@@ -3,6 +3,9 @@
 // `src/verified/generated/<module>.js`.
 import { authorityKernels, AUTHORITY_BUGS } from "./authority.js";
 import { compactionKernels, CUT_BUGS } from "./compaction.js";
+import { budgetKernels, BUDGET_BUGS } from "./budget.js";
+import { grantKernels, GRANT_BUGS } from "./grants.js";
+import { speculationKernels, SPECULATION_BUGS } from "./speculation.js";
 import type { Kernel } from "./kernel.js";
 import { lifecycleKernels, LIFECYCLE_BUGS } from "./lifecycle.js";
 import { policyKernels, POLICY_BUGS } from "./policy.js";
@@ -29,4 +32,7 @@ export const modules: readonly KernelModule[] = [
   { stem: "storage", source: "proofs/storage.ts", kernels: storageKernels as any, bugs: STORAGE_BUGS },
   { stem: "provider", source: "proofs/provider.ts", kernels: providerKernels as any, bugs: PROVIDER_BUGS },
   { stem: "authority", source: "proofs/authority.ts", kernels: authorityKernels as any, bugs: AUTHORITY_BUGS },
+  { stem: "grants", source: "proofs/grants.ts", kernels: grantKernels as any, bugs: GRANT_BUGS },
+  { stem: "speculation", source: "proofs/speculation.ts", kernels: speculationKernels as any, bugs: SPECULATION_BUGS },
+  { stem: "budget", source: "proofs/budget.ts", kernels: budgetKernels as any, bugs: BUDGET_BUGS },
 ];

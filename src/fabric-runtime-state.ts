@@ -139,7 +139,7 @@ import {
 import { AgentManager } from "./agents/manager.js";
 import { AgentCompletionInbox } from "./agents/completion-inbox.js";
 import { PeerPresenceNotifier } from "./topology/peer-presence.js";
-import { SessionLabelPresenter } from "./topology/session-label.js";
+import { recordedPeerLabel, SessionLabelPresenter } from "./topology/session-label.js";
 import { sessionLabelSettings } from "./topology/session-label-settings.js";
 import type { HerdrAgentStatus } from "./agents/herdr-status.js";
 import { ShellEventInbox } from "./core/shell-inbox.js";
@@ -225,6 +225,10 @@ export class FabricRuntimeState {
   #completionInbox: AgentCompletionInbox | undefined;
   #peerPresence: PeerPresenceNotifier | undefined;
   #sessionLabel: SessionLabelPresenter | undefined;
+  /** Set at the session's first Fabric use; a new number is taken only then. */
+  #labelWanted = false;
+  #recordedLabel: string | undefined;
+  #labelUseStop: (() => void) | undefined;
   #herdrStatus: HerdrAgentStatus | undefined;
   #herdrStatusLoad: Promise<void> | undefined;
   #herdrStatusWanted = false;
@@ -433,6 +437,32 @@ export class FabricRuntimeState {
     return this.#participants?.list(options) ?? [];
   }
 
+  #wantLabel(): void {
+    if (this.#labelWanted) return;
+    this.#labelWanted = true;
+    this.#labelUseStop?.();
+    this.#labelUseStop = undefined;
+    // Publish now and show the new label at once, not at the next heartbeat. A
+    // refresh already in flight began before this use, so it may mint nothing.
+    const participants = this.#participants;
+    void (async () => {
+      await participants?.refresh();
+      if (participants && !participants.self().label) await participants.refresh();
+      await this.#sessionLabel?.sync();
+    })().catch(() => undefined);
+  }
+
+  /** A root session's own peer label, such as `FAB-3`, while `ui.sessionLabel.footer` shows it. */
+  sessionLabel(): string | undefined {
+    return this.#sessionLabel?.visibleLabel;
+  }
+
+  /** True while a root session waits for the directory to mint the label it will show. */
+  sessionLabelPending(): boolean {
+    // A label comes only from a recorded one or at first use; until then nothing is pending.
+    return (this.#labelWanted || this.#recordedLabel !== undefined) && (this.#sessionLabel?.labelPending ?? false);
+  }
+
   async queueUserMessage(
     targetId: string,
     message: string,
@@ -629,6 +659,8 @@ export class FabricRuntimeState {
     }
     const sessionId = context.sessionManager.getSessionId();
     const { identity, mainAgentId } = resolveFabricIdentity(sessionId);
+    this.#labelWanted = false;
+    this.#recordedLabel = recordedPeerLabel(context, mainAgentId);
     await builtins.install(createProviderComponent({
       provider: "cache",
       description: "Local prompt-cache observations and scoped native warming",
@@ -686,6 +718,8 @@ export class FabricRuntimeState {
       rootId: mainAgentId,
       identity,
       ownerIncarnation: this.#control.incarnation,
+      recordedLabel: () => this.#recordedLabel,
+      labelWanted: () => this.#labelWanted,
       ...(process.env.PI_FABRIC_OWNER_HOST_ID
         ? { selfOwnerHostId: process.env.PI_FABRIC_OWNER_HOST_ID }
         : {}),
@@ -1002,6 +1036,15 @@ export class FabricRuntimeState {
       ),
     );
     this.#agents.subscribeUi(() => this.#participants?.scheduleRefresh());
+    // First Fabric use is a fabric_exec run or a running agent (actor workers
+    // run as agents). Store notifications alone are not use: loading idle
+    // actors or retained runs at startup must not take a number.
+    const agents = this.#agents;
+    const labelUse = [
+      this.activity.subscribe(() => { if (this.activity.runSummaries().length > 0) this.#wantLabel(); }),
+      agents.subscribeUi(() => { if (agents.activity().length > 0) this.#wantLabel(); }),
+    ];
+    this.#labelUseStop = () => { for (const stop of labelUse.splice(0)) stop?.(); };
     // Herdr reports this pane idle when the root turn ends; tell it about the
     // agents still running. Only a root shows them, and the presenter loads on
     // the first run so sessions outside Herdr never pay for it.
@@ -1057,7 +1100,12 @@ export class FabricRuntimeState {
     if (mainAgent.local) {
       this.#sessionLabel = new SessionLabelPresenter(this.pi, context, {
         label: () => this.#participants?.self().label,
+        participantId: () => this.#participants?.self().id,
         settings: () => sessionLabelSettings((this.#config ?? DEFAULT_FABRIC_CONFIG).ui.sessionLabel),
+        shownInWidget: () => {
+          const ui = (this.#config ?? DEFAULT_FABRIC_CONFIG).ui;
+          return ui.enabled && ui.widget !== "hidden";
+        },
       });
       void this.#sessionLabel.sync();
     }
@@ -1593,6 +1641,8 @@ export class FabricRuntimeState {
   }
 
   async shutdown(): Promise<void> {
+    this.#labelUseStop?.();
+    this.#labelUseStop = undefined;
     await this.#closeHerdr();
     this.#completionInbox?.close();
     this.#completionInbox = undefined;
@@ -1724,6 +1774,8 @@ export class FabricRuntimeState {
   async #closeInternal(): Promise<void> {
     this.#completionInbox?.close();
     this.#completionInbox = undefined;
+    this.#labelUseStop?.();
+    this.#labelUseStop = undefined;
     await this.#closeHerdr();
     this.#shellInbox?.close();
     this.#shellInbox = undefined;
