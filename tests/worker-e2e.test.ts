@@ -599,6 +599,19 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     }
   });
 
+  it("keeps the declared fabric_exec display name as the run's milestone", async () => {
+    process.env.FAKE_PI_BEHAVIOR = "milestone";
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
+    roots.push(root);
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi" as const, timeoutMs: 5_000, maxConcurrent: 1 };
+    const manager = new AgentManager(process.cwd(), config, { workerPath, piBinary, runRoot: root });
+    managers.push(manager);
+    const result = await manager.run({ task: "declare a milestone", transport: "process" });
+    expect(result.status).toBe("completed");
+    // Whitespace collapses, and later calls without a declaration leave it in place.
+    expect(result.milestone).toBe("Trace token refresh");
+  });
+
   it("emits attributed tokens.usage events live and lands them in the budget ledger", async () => {
     process.env.FAKE_PI_BEHAVIOR = "usage-flow";
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));

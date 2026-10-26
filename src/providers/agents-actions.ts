@@ -12,6 +12,11 @@ const RUNNER_ID_SOURCE = "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$";
 
 const runProperties = {
   task: { type: "string", description: "A self-contained task for the child agent" },
+  agent: {
+    type: "string",
+    minLength: 1,
+    description: "Name of an agent file (see agents.definitions()) whose instructions, model, tools, thinking and runtimes.fabric settings fill this request. Any field passed here wins over the file. An unknown name fails before the child starts.",
+  },
   name: { type: "string" },
   runner: {
     type: "string",
@@ -308,6 +313,12 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
   {
     name: "sessions",
     description: "List all live root Pi session agents in the project, including the current lineage root and peers, with symmetric participant identities.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    risk: "read",
+  },
+  {
+    name: "definitions",
+    description: "List the named agent files that agents.run and agents.spawn accept in agent: name, description, path, scope (user or project), the file it shadows, and warnings for ignored fields. A file that cannot be read appears with an error.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     risk: "read",
   },

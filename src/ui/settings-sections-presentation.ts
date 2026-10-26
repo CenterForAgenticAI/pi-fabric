@@ -101,7 +101,7 @@ export const buildUiSection = (
           values: BOOLEANS,
         }),
         setting("ui.widget", "Widget", config.ui.widget, {
-          description: "When to show the activity widget above the editor.",
+          description: "When to show the activity widget below the editor.",
           values: WIDGET_MODES,
         }),
         setting("ui.toolDisplay", "Tool display", config.ui.toolDisplay, {
@@ -120,7 +120,7 @@ export const buildUiSection = (
           config.ui.terminalTitle ? "true" : "false",
           {
             description:
-              "Show the latest nested tool call as the terminal window title while a fabric_exec program runs; Pi's own title returns when it stops.",
+              "Keep the latest fabric_exec display name as the terminal window title, including after a resume.",
             values: BOOLEANS,
           },
         ),

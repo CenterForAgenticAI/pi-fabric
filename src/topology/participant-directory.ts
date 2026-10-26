@@ -12,10 +12,13 @@ import type {
 } from "./types.js";
 
 import { peerLabelPrefix } from "./peer-settle.js";
+import { FABRIC_PEER_LABEL_SEQUENCE } from "../protocol.js";
 
 const PARTICIPANT_PREFIX = "topology/participants/";
 /** Project-scoped monotonic counter backing Linear-style peer labels. Never shrinks. */
-const PEER_SEQ_KEY = "topology/peer-seq";
+const PEER_SEQ_KEY = `topology/peer-seq/${FABRIC_PEER_LABEL_SEQUENCE}`;
+/** Fresh numbers tried before a pass gives up, when live sessions hold the first ones. */
+const MAX_HELD_LABEL_SKIPS = 64;
 const HOST_PREFIX = "topology/hosts/";
 const LEGACY_SESSION_PREFIX = "sessions/";
 const LEGACY_ACTOR_PREFIX = "actors/";
@@ -246,9 +249,31 @@ export interface ParticipantDirectoryOptions {
   ownerIncarnation?: string;
   heartbeatMs?: number;
   leaseMs?: number;
+  /**
+   * The label this root recorded in its own session for its id, if any. A
+   * resumed session keeps it, so reopening Pi does not take a new number.
+   */
+  recordedLabel?: () => string | undefined;
+  /**
+   * False until the session first uses Fabric: only then does it take a new
+   * number, so idle sessions leave the counter alone. A recorded label is
+   * reused at once, since that takes no number. Defaults to true.
+   */
+  labelWanted?: () => boolean;
 }
 
 export type ParticipantSnapshotSource = () => FabricParticipantRecord[];
+
+/** A participant is live while its owner host holds an unexpired lease for the same identity and root. */
+const liveOwner = (
+  participant: FabricParticipantRecord,
+  hosts: Map<string, FabricHostRecord>,
+  now: number,
+): boolean => {
+  const owner = hosts.get(participant.ownerHostId);
+  return !!owner && owner.expiresAt >= now && owner.identity.id === participant.ownerIdentityId &&
+    owner.rootId === participant.rootId;
+};
 
 export class ParticipantDirectory implements FabricParticipantSource {
   readonly #sources = new Set<ParticipantSnapshotSource>();
@@ -345,24 +370,12 @@ export class ParticipantDirectory implements FabricParticipantSource {
       if (!options.kinds || options.kinds.includes(self.kind)) byId.set(self.id, self);
       return [...byId.values()];
     }
-    const hosts = new Map(
-      this.mesh
-        .listAll(HOST_PREFIX)
-        .flatMap((entry) => {
-          const host = hostFromEntry(entry);
-          return host ? [[host.id, host] as const] : [];
-        }),
-    );
+    const hosts = this.#hosts();
     const byId = new Map<string, FabricParticipantInfo>();
     for (const entry of this.mesh.listAll(PARTICIPANT_PREFIX)) {
       const participant = participantFromEntry(entry);
       if (!participant) continue;
-      const owner = hosts.get(participant.ownerHostId);
-      const stale =
-        !owner ||
-        owner.expiresAt < now ||
-        owner.identity.id !== participant.ownerIdentityId ||
-        owner.rootId !== participant.rootId;
+      const stale = !liveOwner(participant, hosts, now);
       if (stale && !options.includeStale) continue;
       if (options.scope === "local" && participant.ownerHostId !== this.options.hostId) continue;
       if (options.scope === "lineage" && participant.rootId !== this.options.rootId) continue;
@@ -687,9 +700,49 @@ export class ParticipantDirectory implements FabricParticipantSource {
         record.label = existing.label;
         continue;
       }
-      const seq = await this.#claimPeerSeq();
-      if (seq !== undefined) record.label = `${peerLabelPrefix(record.cwd)}-${seq}`;
+      // Shutdown deletes the record, so a resumed session finds its label in its
+      // own session file. Numbers are never minted twice, so only a live
+      // participant of another id could hold it; then the session takes a new one.
+      const recorded = this.options.recordedLabel?.();
+      if (recorded && this.#reusableLabel(recorded, record)) {
+        record.label = recorded;
+        continue;
+      }
+      if (this.options.labelWanted?.() === false) continue;
+      // A new counter generation restarts at 1 while sessions labelled by an
+      // older one may still run: skip numbers a live participant holds.
+      for (let attempt = 0; attempt < MAX_HELD_LABEL_SKIPS; attempt += 1) {
+        const seq = await this.#claimPeerSeq();
+        if (seq === undefined) break;
+        const label = `${peerLabelPrefix(record.cwd)}-${seq}`;
+        if (this.#heldByOther(label, record.id)) continue;
+        record.label = label;
+        break;
+      }
     }
+  }
+
+  /** A recorded label fits this project and no other participant holds it. */
+  #reusableLabel(label: string, record: FabricParticipantRecord): boolean {
+    return new RegExp(`^${peerLabelPrefix(record.cwd)}-[1-9][0-9]*$`).test(label) && !this.#heldByOther(label, record.id);
+  }
+
+  /** A live participant of another id holds the label; a dead session's leftover record does not. */
+  #heldByOther(label: string, id: string): boolean {
+    const hosts = this.#hosts();
+    const now = Date.now();
+    return this.mesh.listAll(PARTICIPANT_PREFIX).some((entry) => {
+      const participant = participantFromEntry(entry);
+      return participant !== undefined && participant.id !== id && participant.label === label &&
+        liveOwner(participant, hosts, now);
+    });
+  }
+
+  #hosts(): Map<string, FabricHostRecord> {
+    return new Map(this.mesh.listAll(HOST_PREFIX).flatMap((entry) => {
+      const host = hostFromEntry(entry);
+      return host ? [[host.id, host] as const] : [];
+    }));
   }
 
   /** CAS-claim the next project-wide peer sequence number. ifVersion 0 creates. */

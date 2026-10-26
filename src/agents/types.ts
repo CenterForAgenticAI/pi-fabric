@@ -185,6 +185,8 @@ export interface AgentRunRecord {
   updatedAt: number;
   finishedAt?: number;
   currentTool?: string;
+  /** Latest declared fabric_exec display name; it holds until the next declaration. */
+  milestone?: string;
   turns: number;
   toolCalls: number;
   text: string;

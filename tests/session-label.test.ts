@@ -5,7 +5,8 @@ import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FabricSessionLabelConfig } from "../src/topology/session-label-settings.js";
-import { SESSION_LABEL_STATUS_KEY, SessionLabelPresenter } from "../src/topology/session-label.js";
+import { recordedPeerLabel, SESSION_LABEL_STATUS_KEY, SessionLabelPresenter } from "../src/topology/session-label.js";
+import { FABRIC_PEER_ENTRY_TYPE, FABRIC_PEER_LABEL_SEQUENCE } from "../src/protocol.js";
 
 interface HerdrRequest {
   method: string;
@@ -94,6 +95,7 @@ const present = (options: {
   hasUI?: boolean;
   on?: ExtensionAPI["on"];
   theme?: ExtensionContext["ui"]["theme"];
+  shownInWidget?: () => boolean;
 }) => {
   const setStatus = vi.fn();
   const context = {
@@ -107,6 +109,7 @@ const present = (options: {
     settings: options.settings,
     environment: options.environment ?? {},
     intervalMs: 0,
+    ...(options.shownInWidget ? { shownInWidget: options.shownInWidget } : {}),
   });
   presenters.push(presenter);
   return { presenter, setStatus };
@@ -151,6 +154,82 @@ describe("session label footer", () => {
     const plain = present({ settings: () => settings() });
     await plain.presenter.sync();
     expect(plain.setStatus).toHaveBeenCalledWith(SESSION_LABEL_STATUS_KEY, "Fabric FAB-3");
+  });
+
+  it("reads the label recorded for this participant, newest first, ignoring a fork's parent", () => {
+    const entry = (participantId: string, label: string, sequence = FABRIC_PEER_LABEL_SEQUENCE) =>
+      ({ type: "custom", customType: FABRIC_PEER_ENTRY_TYPE, data: { version: 1, ...(sequence ? { sequence } : {}), participantId, label } });
+    const context = (entries: unknown[]) => ({ sessionManager: { getBranch: () => entries } }) as unknown as ExtensionContext;
+    const entries = [entry("session:abc", "FAB-3"), { type: "message" }, entry("session:abc", "FAB-4"), entry("session:parent", "FAB-1")];
+    expect(recordedPeerLabel(context(entries), "session:abc")).toBe("FAB-4");
+    expect(recordedPeerLabel(context(entries), "session:fork")).toBeUndefined();
+    expect(recordedPeerLabel({} as ExtensionContext, "session:abc")).toBeUndefined();
+    // A label from an older counter generation is retired, even behind a current one.
+    expect(recordedPeerLabel(context([entry("session:abc", "FAB-2"), entry("session:abc", "FAB-341", 0)]), "session:abc")).toBeUndefined();
+    expect(recordedPeerLabel(context([entry("session:abc", "FAB-1", FABRIC_PEER_LABEL_SEQUENCE - 1)]), "session:abc")).toBeUndefined();
+  });
+
+  it("records the peer label once as a session entry for headless RPC hosts", async () => {
+    const entries: Array<{ type: string; customType: string; data: unknown }> = [];
+    const appendEntry = vi.fn((customType: string, data: unknown) => { entries.push({ type: "custom", customType, data }); });
+    let label: string | undefined;
+    const current = settings({ footer: false });
+    const make = () => {
+      const context = {
+        mode: "rpc", hasUI: true, ui: { setStatus: vi.fn() },
+        sessionManager: { getBranch: () => entries },
+      } as unknown as ExtensionContext;
+      const presenter = new SessionLabelPresenter({ on: () => () => undefined, appendEntry } as unknown as ExtensionAPI, context, {
+        label: () => label, participantId: () => "session:abc", settings: () => current, environment: {}, intervalMs: 0,
+      });
+      presenters.push(presenter);
+      return presenter;
+    };
+    const presenter = make();
+    await presenter.sync();
+    expect(appendEntry).not.toHaveBeenCalled();
+    // Data, not display: ui.sessionLabel.footer: false does not suppress it.
+    label = "FAB-3";
+    await presenter.sync();
+    await presenter.sync();
+    expect(appendEntry.mock.calls).toEqual([[FABRIC_PEER_ENTRY_TYPE, { version: 1, sequence: FABRIC_PEER_LABEL_SEQUENCE, participantId: "session:abc", label: "FAB-3" }]]);
+    // A resumed session that already recorded this label appends nothing.
+    await make().sync();
+    expect(appendEntry).toHaveBeenCalledTimes(1);
+    label = "FAB-4";
+    await presenter.sync();
+    expect(appendEntry).toHaveBeenLastCalledWith(FABRIC_PEER_ENTRY_TYPE, { version: 1, sequence: FABRIC_PEER_LABEL_SEQUENCE, participantId: "session:abc", label: "FAB-4" });
+  });
+
+  it("leaves the TUI footer to the widget header but keeps the RPC status", async () => {
+    let widget = true;
+    const tui = present({ settings: () => settings(), shownInWidget: () => widget });
+    await tui.presenter.sync();
+    expect(tui.setStatus).not.toHaveBeenCalled();
+    expect(tui.presenter.visibleLabel).toBe("FAB-3");
+    // ui.widget: "hidden" gives the label back to the footer.
+    widget = false;
+    await tui.presenter.sync();
+    expect(tui.setStatus).toHaveBeenLastCalledWith(SESSION_LABEL_STATUS_KEY, "Fabric FAB-3");
+
+    const rpc = present({ settings: () => settings(), mode: "rpc", shownInWidget: () => true });
+    await rpc.presenter.sync();
+    expect(rpc.setStatus).toHaveBeenCalledWith(SESSION_LABEL_STATUS_KEY, "Fabric FAB-3");
+  });
+
+  it("reports a pending label until minted and none while the setting is off", async () => {
+    let label: string | undefined;
+    const current = settings();
+    const { presenter } = present({ label: () => label, settings: () => current, shownInWidget: () => true });
+    expect(presenter.labelPending).toBe(true);
+    expect(presenter.visibleLabel).toBeUndefined();
+    label = "FAB-3";
+    expect(presenter.labelPending).toBe(false);
+    expect(presenter.visibleLabel).toBe("FAB-3");
+    current.footer = false;
+    expect(presenter.visibleLabel).toBeUndefined();
+    label = undefined;
+    expect(presenter.labelPending).toBe(false);
   });
 
   it("waits for the label to be minted and hides it when the setting is off", async () => {
