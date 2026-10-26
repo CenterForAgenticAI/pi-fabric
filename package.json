@@ -29,6 +29,10 @@
       "types": "./dist/durable.d.ts",
       "import": "./dist/durable.js"
     },
+    "./durable-host": {
+      "types": "./dist/durable-host.d.ts",
+      "import": "./dist/durable-host.js"
+    },
     "./mcp": {
       "types": "./dist/mcp.d.ts",
       "import": "./dist/mcp.js"

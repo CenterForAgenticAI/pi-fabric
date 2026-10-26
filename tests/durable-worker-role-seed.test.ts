@@ -5,7 +5,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { writeForkSession, writeHandoffSession } from "../src/agents/handoff.js";
 import type { AgentToolResultMessage } from "../src/agents/types.js";
-import { createDurableSessionFile } from "../src/durable/worker-role-seed.js";
+import { createDurableSessionFile, declareWorkerSessionRole } from "../src/durable/worker-role-seed.js";
 
 // The literal payload pi-context-aware reads as the host-declared worker role.
 // Written out here on purpose: never imported from the code under test.
@@ -295,5 +295,23 @@ describe.each(["fork", "handoff in-memory", "handoff persisted"] as const)("a pl
     expect(normalized(explicitlyOff.file)).toBe(absent);
     expect(policies(parse(plain.file))).toEqual([]);
     expect(parse(plain.file)[1]).toMatchObject({ id: plain.first, parentId: null });
+  });
+});
+
+describe("declareWorkerSessionRole (embedding host)", () => {
+  it("writes the worker policy entry once and nothing on a repeat call", () => {
+    const manager = SessionManager.inMemory("/tmp");
+    expect(declareWorkerSessionRole(manager)).toBe("seeded");
+    expect(declareWorkerSessionRole(manager)).toBe("already-seeded");
+    const written = manager.getEntries().filter(isPolicy);
+    expect(written).toHaveLength(1);
+    expect((written[0] as any).data).toEqual(workerPolicy);
+  });
+
+  it("still writes when the only policy on the session declares another role", () => {
+    const manager = SessionManager.inMemory("/tmp");
+    manager.appendCustomEntry("context-aware.policy.v1", { schemaVersion: 1, layer: "host", values: { sessionRole: "foreground" } });
+    expect(declareWorkerSessionRole(manager)).toBe("seeded");
+    expect(manager.getEntries().filter(isPolicy)).toHaveLength(2);
   });
 });
