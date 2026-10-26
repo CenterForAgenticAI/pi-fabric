@@ -79,6 +79,7 @@ import {
   type FabricModelCandidate,
 } from "../core/model-resolution.js";
 import { loadModelUsage } from "../core/model-usage.js";
+import { resolveAgentDir } from "../core/agent-dir.js";
 import { AGENTS_ACTION_DESCRIPTORS } from "./agents-actions.js";
 import { FabricTraceSafeError } from "../audit/trace.js";
 import { actionArgNormalizer } from "./arg-normalization.js";
@@ -483,6 +484,40 @@ export class AgentsProvider implements FabricProvider {
     return `${resolved.provider}/${resolved.id}`;
   }
 
+  /** Roots for named agent files. Project files load only for a project the host trusts. */
+  #agentFileRoots(context: FabricInvocationContext) {
+    const trusted = context.extensionContext?.isProjectTrusted;
+    return {
+      agentDir: resolveAgentDir(),
+      projectRoot: this.manager.projectRoot,
+      projectTrusted: typeof trusted === "function" && trusted.call(context.extensionContext) === true,
+    };
+  }
+
+  /**
+   * Resolve args.agent into the request before anything else reads it, so model aliases,
+   * runner checks and the durable-spawn refusal all see the file's values. The loader is
+   * imported here, at first use; a call without agent never touches it.
+   */
+  async #applyAgentFile(
+    args: Record<string, unknown>,
+    context: FabricInvocationContext,
+    residency?: unknown,
+  ): Promise<Record<string, unknown>> {
+    if (args.agent === undefined) return args;
+    const { resolveAgentFile, applyAgentDefinition } = await import("../agents/agent-files.js");
+    const definition = resolveAgentFile(String(args.agent), this.#agentFileRoots(context));
+    if (residency === "durable" && definition.request.systemPrompt !== undefined && args.systemPrompt === undefined) {
+      throw new Error(
+        `Agent "${definition.name}" (${definition.path}) has instructions, which a durable agents.spawn does not accept. Spawn without residency: "durable" or remove the file body.`,
+      );
+    }
+    if (definition.warnings.length > 0) {
+      context.update(`Agent "${definition.name}" (${definition.path}): ${definition.warnings.join("; ")}`);
+    }
+    return applyAgentDefinition(args, definition);
+  }
+
   #resolvePiModelArgs(
     args: Record<string, unknown>,
     context: FabricInvocationContext,
@@ -642,10 +677,11 @@ export class AgentsProvider implements FabricProvider {
   ): Promise<unknown> {
     switch (actionName) {
       case "run": {
+        const runArgs = await this.#applyAgentFile(args, context);
         const handle = await this.manager.spawn(
           this.#applySeed(
-            args,
-            runRequest(this.#resolvePiModelArgs(args, context), context, this.manager, this.modelsConfig()),
+            runArgs,
+            runRequest(this.#resolvePiModelArgs(runArgs, context), context, this.manager, this.modelsConfig()),
             context,
           ),
           context.signal,
@@ -669,9 +705,10 @@ export class AgentsProvider implements FabricProvider {
       case "handoff":
         return this.handoff(args, context);
       case "spawn": {
+        const spawnArgs = await this.#applyAgentFile(args, context, args.residency);
         const request = this.#applySeed(
-          args,
-          runRequest(this.#resolvePiModelArgs(args, context), context, this.manager, this.modelsConfig()),
+          spawnArgs,
+          runRequest(this.#resolvePiModelArgs(spawnArgs, context), context, this.manager, this.modelsConfig()),
           context,
         );
         if (request.residency === "durable") this.#assertUnconfinedDurable();
@@ -803,6 +840,10 @@ export class AgentsProvider implements FabricProvider {
           this.participants.list({ scope: "project", kinds: ["root"] });
       case "peers":
         return this.participants.peers();
+      case "definitions": {
+        const { listAgentFiles } = await import("../agents/agent-files.js");
+        return listAgentFiles(this.#agentFileRoots(context), (notice) => context.update(notice));
+      }
       case "subscribe": {
         const events = Array.isArray(args.events)
           ? args.events.filter(isFabricLifecycleEventType)

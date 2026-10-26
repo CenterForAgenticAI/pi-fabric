@@ -277,6 +277,19 @@ switch (behavior) {
     emit({ type: "agent_settled" });
     process.exit(0);
   }
+  case "milestone":
+    // A declared fabric_exec display name, then calls that declare none: the name holds.
+    emit({ type: "agent_start" });
+    emit({ type: "tool_execution_start", toolName: "fabric_exec", toolCallId: "m1", args: { display: { name: "Trace  token\nrefresh" } } });
+    emit({ type: "tool_execution_end", toolName: "fabric_exec", toolCallId: "m1", isError: false });
+    emit({ type: "tool_execution_start", toolName: "read", toolCallId: "r1", args: { path: "a.ts" } });
+    emit({ type: "tool_execution_end", toolName: "read", toolCallId: "r1", isError: false });
+    emit({ type: "tool_execution_start", toolName: "fabric_exec", toolCallId: "m2", args: { code: "return 1" } });
+    emit({ type: "tool_execution_end", toolName: "fabric_exec", toolCallId: "m2", isError: false });
+    emit({ type: "message_end", message: { role: "assistant", content: "done" } });
+    emit({ type: "agent_settled" });
+    process.exit(0);
+    break;
   case "success":
   default:
     emit({ type: "message_end", message: { role: "assistant", content: "hi" } });
