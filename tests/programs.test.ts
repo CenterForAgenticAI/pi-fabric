@@ -697,6 +697,28 @@ describe("host program runs", () => {
     // Lets any further, unexpected reply arrive before a test counts replies.
     const drained = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
+    it("claims a request synchronously for callers that pass claim, and stays silent when claim returns false", async () => {
+      const { listener, shutdown } = await boot();
+      try {
+        const events: string[] = [];
+        const answered = nextReply();
+        listener({ ref: "hello", claim: () => { events.push("claim"); return true; }, reply: (result: FabricProgramRunReplyV1) => { events.push("reply"); answered.reply(result); } });
+        expect(events).toEqual(["claim"]);
+        await answered.done;
+        expect(events).toEqual(["claim", "reply"]);
+
+        const declined = vi.fn();
+        listener({ ref: "hello", claim: () => false, reply: declined });
+        const plain = nextReply();
+        listener({ ref: "hello", reply: plain.reply });
+        const throwing = nextReply();
+        listener({ ref: "hello", claim: () => { throw new Error("boom"); }, reply: throwing.reply });
+        await Promise.all([plain.done, throwing.done]);
+        await drained();
+        expect(declined).not.toHaveBeenCalled();
+      } finally { await shutdown(); }
+    });
+
     it("still answers once, on the original reply, when the caller deletes or replaces it after emitting", async () => {
       const { listener, shutdown } = await boot();
       try {

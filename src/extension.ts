@@ -337,6 +337,16 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     },
   );
 
+  // Calls a caller's optional `claim` once, synchronously. A missing, unreadable or
+  // throwing claim counts as claimed; only an explicit `false` leaves the request to
+  // another responder.
+  const claimProgramRun = (value: unknown): boolean => {
+    let claim: unknown;
+    try { claim = (value as { claim?: unknown } | null)?.claim; } catch { return true; }
+    if (typeof claim !== "function") return true;
+    try { return Reflect.apply(claim, value, []) !== false; } catch { return true; }
+  };
+
   // Host program runs (daemons, embedders) use the live session's context.
   let programRunContext: ExtensionContext | undefined;
   const unsubscribeProgramRun = pi.events.on(FABRIC_PROGRAM_RUN_EVENT, (value: unknown) => {
@@ -346,6 +356,9 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     const request = snapshotFabricProgramRunRequestV1(value);
     // No readable `reply`: the request cannot be answered.
     if (!request) return;
+    // caair-build only: callers written for the claim form (pi-stack's fabric-client)
+    // start their own fallback unless Fabric claims the request before its first await.
+    if (!claimProgramRun(value)) return;
     void import("./programs/host.js").then(
       ({ handleFabricProgramRunEvent }) => handleFabricProgramRunEvent(request, { state, pi, context: programRunContext }),
       (error: unknown) => request.respond({ ok: false, error: `Fabric program host unavailable: ${String(error)}` }),
