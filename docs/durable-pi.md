@@ -96,9 +96,12 @@ Set `agents.durableWorkerRecovery: true` to let a resident host recover its
 own unfinished `pi-durable` worker runs. It applies only to runs launched with
 `residency: "durable"`, runner `pi-durable`, and the `process` transport, on
 POSIX. Each such launch writes `worker-recovery.json` beside the run: the run
-id, the absolute deadline, the current worker PID, and the worker launch. Every
-settlement this host makes, including an explicit stop, deletes the file first,
-so a later host never recovers a run Fabric already finished or stopped.
+id, the absolute deadline, the current worker PID, and the worker launch. An
+explicit stop deletes the file as soon as it is requested, before Fabric
+signals the worker, so a host that dies partway through a stop leaves nothing
+to recover. Every other settlement this host makes deletes the file before it
+writes the terminal record. A later host therefore never recovers a run Fabric
+already finished or stopped.
 
 When the host closes, it leaves these workers running. The next resident host,
 whether started by a new session or by `agents.wait` after the old host died,
@@ -108,8 +111,18 @@ reads each file and decides:
   still carries `--id <run id>`. It then adopts the worker and waits for its
   result. Nothing is relaunched.
 - **Worker gone.** Fabric relaunches the same launch in the same run directory,
-  with the same prompt and the progress so far carried over. `pi-durable`
+  with the same prompt and the progress so far carried over, and with
+  `--timeout-ms` set to what remains of the original deadline. `pi-durable`
   reopens its journal, so completed work is not repeated.
+- **Worker recorded a stop but is still running.** Fabric waits up to seven
+  seconds for it to exit and then relaunches it. If it is still running, the run
+  settles `indeterminate` rather than putting two writers on one journal.
+- **Recovery file does not match this host.** The launch must use this host's
+  worker entry and the run's own working directory, and its `--id` must name
+  the run. Its `--status-file`, `--lifecycle-file`, `--task-file` and
+  `--log-file` must stay inside the run directory. Any other file settles the
+  run `indeterminate` without starting anything. Files over 8 MiB, malformed
+  files, and files whose id does not name their run directory are ignored.
 - **Deadline passed, or liveness cannot be verified.** This covers a PID owned
   by another user and an unreadable command line. The run settles `failed` with
   `outcome: "indeterminate"` and a reason, and `agents.wait` returns that
@@ -119,6 +132,12 @@ The option is off by default; with it off, no file is written and behaviour is
 unchanged. A run launched while the option was on keeps its file, so turning
 the option off later does not strand that run. Windows, other transports, and
 waits from another session of the project (`waitProjectAgent`) are not covered.
+
+Lifecycle events that the worker wrote but the old host had not read when it
+died are not replayed. The new host starts reading `lifecycle.jsonl` from its
+size at recovery. The run's status, turns, tool calls and usage are unaffected,
+because they come from `status.json`; only those intermediate `pi.*` events
+and their token-usage ledger entries are lost.
 
 ## Advanced: manually registered leaf adapter
 

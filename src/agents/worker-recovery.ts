@@ -9,9 +9,11 @@ import type { AgentTransportHandle, AgentTransportLaunch } from "./types.js";
  * host that launched them stops (`agents.durableWorkerRecovery`).
  *
  * The file below is the per-run authority: a run recovers only when its launch
- * wrote one, and every settlement deletes it first. A recovery file beside a
- * worker-written terminal "stopped" record therefore means the stop came from
- * outside Fabric (a reboot or logout signal), never from an operator stop.
+ * wrote one. An explicit stop deletes it as soon as the stop is requested,
+ * before Fabric signals the worker, and every other settlement deletes it
+ * before the terminal record lands. A recovery file beside a worker-written
+ * terminal "stopped" record therefore means the stop came from outside Fabric
+ * (a reboot or logout signal), never from an operator stop.
  */
 export const WORKER_RECOVERY_FILE = "worker-recovery.json";
 export const WORKER_RECOVERY_FORMAT = 1;
@@ -30,6 +32,8 @@ export interface WorkerRecoveryRecord {
 
 const MAX_ARGUMENTS = 4_096;
 const MAX_STRING = 1_048_576;
+/** Larger files are refused unread: a launch is far smaller than this. */
+export const WORKER_RECOVERY_MAX_BYTES = 8 * 1_048_576;
 
 const boundedString = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= MAX_STRING;
@@ -48,11 +52,31 @@ export const removeWorkerRecovery = (runDirectory: string): void => {
 export const hasWorkerRecovery = (runDirectory: string): boolean =>
   fs.existsSync(workerRecoveryPath(runDirectory));
 
-/** Strict reader: copies named, validated fields; anything else is undefined. */
+const readBounded = (file: string): string | undefined => {
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(file, "r");
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile() || stat.size > WORKER_RECOVERY_MAX_BYTES) return undefined;
+    return fs.readFileSync(descriptor, "utf8");
+  } catch {
+    return undefined;
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+};
+
+/**
+ * Strict reader: copies named, validated fields; anything else is undefined.
+ * The record's id must name the run directory it sits in, so a file copied
+ * from another run is never read as this one.
+ */
 export const readWorkerRecovery = (runDirectory: string): WorkerRecoveryRecord | undefined => {
+  const content = readBounded(workerRecoveryPath(runDirectory));
+  if (content === undefined) return undefined;
   let raw: unknown;
   try {
-    raw = JSON.parse(fs.readFileSync(workerRecoveryPath(runDirectory), "utf8"));
+    raw = JSON.parse(content);
   } catch {
     return undefined;
   }
@@ -62,6 +86,7 @@ export const readWorkerRecovery = (runDirectory: string): WorkerRecoveryRecord |
   if (
     value.format !== WORKER_RECOVERY_FORMAT ||
     !boundedString(value.id) ||
+    value.id !== path.basename(runDirectory) ||
     value.runner !== "pi-durable" ||
     typeof value.deadlineAt !== "number" || !Number.isFinite(value.deadlineAt) ||
     typeof value.pid !== "number" || !Number.isSafeInteger(value.pid) || value.pid <= 0 ||
@@ -92,6 +117,57 @@ export const readWorkerRecovery = (runDirectory: string): WorkerRecoveryRecord |
       workerArguments: [...(launch.workerArguments as string[])],
     },
   };
+};
+
+/** Pairs exactly as the worker's own argument parser reads them (last wins). */
+const workerArgumentMap = (args: readonly string[]): Map<string, string> | undefined => {
+  if (args.length % 2 !== 0) return undefined;
+  const result = new Map<string, string>();
+  for (let index = 0; index < args.length; index += 2) {
+    const key = args[index]!;
+    if (!key.startsWith("--")) return undefined;
+    result.set(key.slice(2), args[index + 1]!);
+  }
+  return result;
+};
+
+const insideDirectory = (directory: string, file: string): boolean => {
+  if (!path.isAbsolute(file)) return false;
+  const relative = path.relative(path.resolve(directory), path.resolve(file));
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+};
+
+/**
+ * Why a recovery file must not be acted on by this host, or undefined when it
+ * may. The file sits in the run directory, so anything that can write there
+ * could otherwise point a relaunch at another program, working directory, run
+ * id, or status file. The launch must use this host's worker, name this run,
+ * and keep every file the worker writes inside the run directory, at the paths
+ * this host reads.
+ */
+export const workerRecoveryMismatch = (
+  recovery: WorkerRecoveryRecord,
+  expected: { runDirectory: string; workerPath: string; cwd: string },
+): string | undefined => {
+  const { launch } = recovery;
+  if (path.basename(expected.runDirectory) !== recovery.id || launch.id !== recovery.id) return "run id";
+  if (path.resolve(launch.workerPath) !== path.resolve(expected.workerPath)) return "worker path";
+  const args = workerArgumentMap(launch.workerArguments);
+  if (!args) return "worker arguments";
+  if (args.get("id") !== recovery.id) return "--id";
+  if (!path.isAbsolute(launch.cwd) || launch.cwd !== expected.cwd || args.get("cwd") !== launch.cwd) return "working directory";
+  const pinned: Array<[string, string | undefined]> = [
+    ["status-file", path.join(expected.runDirectory, "status.json")],
+    ["lifecycle-file", path.join(expected.runDirectory, "lifecycle.jsonl")],
+    ["task-file", undefined],
+    ["log-file", undefined],
+  ];
+  for (const [name, exact] of pinned) {
+    const value = args.get(name);
+    if (value === undefined || !insideDirectory(expected.runDirectory, value)) return `--${name}`;
+    if (exact !== undefined && path.resolve(value) !== path.resolve(exact)) return `--${name}`;
+  }
+  return undefined;
 };
 
 export type WorkerLiveness = "alive" | "dead" | "unknown";

@@ -4,9 +4,11 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentManager } from "../src/agents/manager.js";
 import {
+  adoptedWorkerHandle,
   probeWorker,
   readWorkerRecovery,
   WORKER_RECOVERY_FILE,
+  WORKER_RECOVERY_MAX_BYTES,
 } from "../src/agents/worker-recovery.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 
@@ -56,6 +58,37 @@ const readStatus = (runDirectory: string): Record<string, unknown> | undefined =
   }
 };
 
+const writeStatus = (runDirectory: string, patch: Record<string, unknown>): void => {
+  fs.writeFileSync(path.join(runDirectory, "status.json"), JSON.stringify({ ...readStatus(runDirectory), ...patch }));
+};
+
+const attempts = (runDirectory: string): string =>
+  fs.readFileSync(path.join(runDirectory, "reattach-attempts"), "utf8");
+
+const argument = (args: readonly string[], name: string): string | undefined => {
+  const index = args.indexOf(`--${name}`);
+  return index >= 0 ? args[index + 1] : undefined;
+};
+
+/** Rewrite worker-recovery.json in place, as anything able to write the run directory could. */
+const tamper = (runDirectory: string, edit: (value: { launch: { workerPath: string; cwd: string; workerArguments: string[] } }) => void): void => {
+  const file = path.join(runDirectory, WORKER_RECOVERY_FILE);
+  const value = JSON.parse(fs.readFileSync(file, "utf8"));
+  edit(value);
+  fs.writeFileSync(file, JSON.stringify(value));
+};
+
+const setArgument = (args: string[], name: string, value: string): void => {
+  const index = args.indexOf(`--${name}`);
+  if (index < 0) throw new Error(`no --${name}`);
+  args[index + 1] = value;
+};
+
+const killWorker = async (pid: number): Promise<void> => {
+  process.kill(-pid, "SIGKILL");
+  await until(() => !alive(pid), "the worker to die");
+};
+
 /** Launch a durable pi-durable REATTACH run and close its host, leaving the worker. */
 const orphanedRun = async (durableWorkerRecovery = true) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-worker-recovery-"));
@@ -73,7 +106,7 @@ const orphanedRun = async (durableWorkerRecovery = true) => {
   const recovery = readWorkerRecovery(runDirectory);
   if (recovery) pids.push(recovery.pid);
   await first.close();
-  return { root, id: handle.id, runDirectory, pid: recovery?.pid };
+  return { root, id: handle.id, runDirectory, pid: recovery?.pid, recovery };
 };
 
 afterEach(async () => {
@@ -86,6 +119,7 @@ afterEach(async () => {
     }
   }
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -111,15 +145,22 @@ describe.skipIf(process.platform === "win32")("pi-durable worker recovery after 
   }, 30_000);
 
   it("relaunches a dead durable worker on the same run directory with its progress carried over", async () => {
-    const { root, id, runDirectory, pid } = await orphanedRun();
+    const { root, id, runDirectory, pid, recovery } = await orphanedRun();
     process.kill(-pid!, "SIGKILL");
     await until(() => !alive(pid!), "the worker to die");
 
     const second = manager(root, true);
+    const before = Date.now();
     expect(await second.recoverWorkerRuns()).toEqual([id]);
     const relaunched = readWorkerRecovery(runDirectory);
     expect(relaunched?.pid).not.toBe(pid);
     pids.push(relaunched!.pid);
+    // The relaunch gets only what is left of the original deadline.
+    expect(relaunched!.deadlineAt).toBe(recovery!.deadlineAt);
+    const remaining = Number(argument(relaunched!.launch.workerArguments, "timeout-ms"));
+    expect(remaining).toBeGreaterThan(0);
+    expect(remaining).toBeLessThanOrEqual(recovery!.deadlineAt - before);
+    expect(remaining).toBeLessThan(Number(argument(recovery!.launch.workerArguments, "timeout-ms")));
     fs.writeFileSync(path.join(runDirectory, "release"), "");
     const result = await second.wait(id);
 
@@ -170,6 +211,108 @@ describe.skipIf(process.platform === "win32")("pi-durable worker recovery after 
     expect(readStatus(runDirectory)?.status).toBe("stopped");
   }, 30_000);
 
+  it("removes the recovery file the moment a stop is requested, so a host that dies mid-stop leaves nothing to relaunch", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-worker-recovery-"));
+    roots.push(root);
+    vi.stubEnv("PI_FABRIC_DEPTH", "0");
+    const first = manager(root, true);
+    const handle = await first.spawn({ task: "REATTACH", runner: "pi-durable", residency: "durable", extensions: false });
+    const runDirectory = path.join(root, handle.id);
+    const file = path.join(runDirectory, WORKER_RECOVERY_FILE);
+    await until(() => readStatus(runDirectory)?.status === "running", "the worker to start");
+    pids.push(readWorkerRecovery(runDirectory)!.pid);
+
+    const stopping = first.stop(handle.id);
+    // Checked before stop() reaches any transport work or #settle.
+    expect(fs.existsSync(file)).toBe(false);
+    // A host that takes over inside the stop window finds nothing to recover.
+    const second = manager(root, true);
+    expect(await second.recoverWorkerRuns()).toEqual([]);
+    await stopping;
+    expect(readStatus(runDirectory)?.status).toBe("stopped");
+    expect(attempts(runDirectory)).toBe("1");
+    expect(fs.existsSync(file)).toBe(false);
+  }, 30_000);
+
+  it("waits for a worker that recorded a stop but is still exiting before relaunching it", async () => {
+    const { root, id, runDirectory, pid } = await orphanedRun();
+    writeStatus(runDirectory, { status: "stopped", finishedAt: Date.now() });
+    let killedAt = Number.POSITIVE_INFINITY;
+    const exit = setTimeout(() => {
+      killedAt = Date.now();
+      process.kill(-pid!, "SIGKILL");
+    }, 600);
+
+    const second = manager(root, true);
+    try {
+      expect(await second.recoverWorkerRuns()).toEqual([id]);
+    } finally {
+      clearTimeout(exit);
+    }
+    const relaunched = readWorkerRecovery(runDirectory);
+    pids.push(relaunched!.pid);
+    await until(() => readStatus(runDirectory)?.status === "running", "the relaunched attempt to start");
+    expect(attempts(runDirectory)).toBe("2");
+    // The new attempt started only after the old worker was gone.
+    expect(Number(readStatus(runDirectory)?.startedAt)).toBeGreaterThanOrEqual(killedAt);
+    fs.writeFileSync(path.join(runDirectory, "release"), "");
+    expect((await second.wait(id)).text).toBe("reattach attempt 2");
+  }, 30_000);
+
+  it("settles a worker that recorded a stop but never exits as indeterminate instead of relaunching", async () => {
+    const { root, runDirectory, pid } = await orphanedRun();
+    writeStatus(runDirectory, { status: "stopped", finishedAt: Date.now() });
+
+    const second = manager(root, true);
+    expect(await second.recoverWorkerRuns()).toEqual([]);
+    const status = readStatus(runDirectory);
+    expect(status?.status).toBe("failed");
+    expect(status?.outcome).toBe("indeterminate");
+    expect(status?.error).toBe(
+      `Worker process ${pid} recorded a stop but did not exit; the run outcome is indeterminate`,
+    );
+    expect(attempts(runDirectory)).toBe("1");
+    expect(alive(pid!)).toBe(true);
+    expect(fs.existsSync(path.join(runDirectory, WORKER_RECOVERY_FILE))).toBe(false);
+  }, 30_000);
+
+  it.each([
+    ["a tampered worker path", (root: string) => (value: Parameters<Parameters<typeof tamper>[1]>[0]) => {
+      const copy = path.join(root, "other-worker.mjs");
+      fs.copyFileSync(path.resolve("tests/fixtures/fake-worker.mjs"), copy);
+      value.launch.workerPath = copy;
+    }],
+    ["a --status-file outside the run directory", (root: string) => (value: Parameters<Parameters<typeof tamper>[1]>[0]) => {
+      setArgument(value.launch.workerArguments, "status-file", path.join(root, "elsewhere.json"));
+    }],
+    ["a --task-file that climbs out of the run directory", (root: string) => (value: Parameters<Parameters<typeof tamper>[1]>[0]) => {
+      const taskFile = argument(value.launch.workerArguments, "task-file")!;
+      fs.writeFileSync(path.join(root, "task.txt"), "REATTACH");
+      setArgument(value.launch.workerArguments, "task-file", path.join(path.dirname(taskFile), "..", "task.txt"));
+    }],
+    ["a different --id", () => (value: Parameters<Parameters<typeof tamper>[1]>[0]) => {
+      setArgument(value.launch.workerArguments, "id", "b".repeat(32));
+    }],
+    ["a different working directory", (root: string) => (value: Parameters<Parameters<typeof tamper>[1]>[0]) => {
+      value.launch.cwd = root;
+      setArgument(value.launch.workerArguments, "cwd", root);
+    }],
+  ])("refuses to relaunch a recovery file with %s", async (_label, edit) => {
+    const { root, runDirectory, pid } = await orphanedRun();
+    await killWorker(pid!);
+    tamper(runDirectory, edit(root));
+
+    const second = manager(root, true);
+    expect(await second.recoverWorkerRuns()).toEqual([]);
+    const status = readStatus(runDirectory);
+    expect(status?.status).toBe("failed");
+    expect(status?.outcome).toBe("indeterminate");
+    expect(status?.error).toBe("The recovery file does not match this host; the run outcome is indeterminate");
+    expect(attempts(runDirectory)).toBe("1");
+    expect(fs.existsSync(path.join(root, "elsewhere.json"))).toBe(false);
+    expect(fs.existsSync(path.join(runDirectory, WORKER_RECOVERY_FILE))).toBe(false);
+  }, 30_000);
+
   it("keeps today's behaviour when agents.durableWorkerRecovery is off", async () => {
     const { root, runDirectory } = await orphanedRun(false);
     expect(fs.existsSync(path.join(runDirectory, WORKER_RECOVERY_FILE))).toBe(false);
@@ -203,5 +346,76 @@ describe("probeWorker", () => {
   });
   it("sees this process's own command line through the default probes", () => {
     expect(probeWorker(process.pid, id)).toBe("dead");
+  });
+});
+
+describe("readWorkerRecovery", () => {
+  const id = "d".repeat(32);
+  const valid = () => ({
+    format: 1,
+    id,
+    runner: "pi-durable",
+    deadlineAt: Date.now() + 60_000,
+    pid: 4242,
+    writtenAt: Date.now(),
+    launch: { id, name: "n", cwd: "/work", workerPath: "/x/worker.js", workerArguments: ["--id", id] },
+  });
+  const runDirectory = (): string => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-worker-recovery-read-"));
+    roots.push(root);
+    const directory = path.join(root, id);
+    fs.mkdirSync(directory);
+    return directory;
+  };
+  const write = (directory: string, content: string): void => {
+    fs.writeFileSync(path.join(directory, WORKER_RECOVERY_FILE), content);
+  };
+
+  it("reads a well-formed record", () => {
+    const directory = runDirectory();
+    write(directory, JSON.stringify(valid()));
+    expect(readWorkerRecovery(directory)?.pid).toBe(4242);
+  });
+  it("rejects malformed content", () => {
+    const directory = runDirectory();
+    write(directory, "{not json");
+    expect(readWorkerRecovery(directory)).toBeUndefined();
+    write(directory, JSON.stringify({ ...valid(), pid: -1 }));
+    expect(readWorkerRecovery(directory)).toBeUndefined();
+    write(directory, JSON.stringify({ ...valid(), launch: { ...valid().launch, workerArguments: [1] } }));
+    expect(readWorkerRecovery(directory)).toBeUndefined();
+  });
+  it("refuses an oversized file without parsing it", () => {
+    const directory = runDirectory();
+    write(directory, JSON.stringify(valid()) + " ".repeat(WORKER_RECOVERY_MAX_BYTES));
+    expect(readWorkerRecovery(directory)).toBeUndefined();
+  });
+  it("rejects a record whose id does not name its run directory or its launch", () => {
+    const directory = runDirectory();
+    const other = "e".repeat(32);
+    write(directory, JSON.stringify({ ...valid(), id: other, launch: { ...valid().launch, id: other } }));
+    expect(readWorkerRecovery(directory)).toBeUndefined();
+    write(directory, JSON.stringify({ ...valid(), launch: { ...valid().launch, id: other } }));
+    expect(readWorkerRecovery(directory)).toBeUndefined();
+  });
+});
+
+describe("adoptedWorkerHandle", () => {
+  const id = "a".repeat(32);
+  it("does not signal a PID whose command line no longer carries the run id", async () => {
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    await adoptedWorkerHandle(4242, id, {
+      signal: () => "exists",
+      commandLine: () => `/usr/bin/node /x/worker.js --id ${"c".repeat(32)}`,
+    }).stop();
+    expect(kill).not.toHaveBeenCalled();
+  });
+  it("signals the worker's process group while the command line still matches", async () => {
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    await adoptedWorkerHandle(4242, id, {
+      signal: () => "exists",
+      commandLine: () => `/usr/bin/node /x/worker.js --id ${id}`,
+    }).stop();
+    expect(kill).toHaveBeenCalledWith(process.platform === "win32" ? 4242 : -4242, "SIGTERM");
   });
 });

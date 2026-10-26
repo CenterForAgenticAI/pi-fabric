@@ -64,8 +64,10 @@ import {
   probeWorker,
   readWorkerRecovery,
   removeWorkerRecovery,
+  workerRecoveryMismatch,
   writeWorkerRecovery,
   WORKER_RECOVERY_FORMAT,
+  type WorkerLiveness,
 } from "./worker-recovery.js";
 import { HerdrTransport } from "./transports/herdr-transport.js";
 import { LocaltermTransport } from "./transports/localterm-transport.js";
@@ -1521,6 +1523,12 @@ export class AgentManager {
 
   #persistWorkerRecovery(managed: ManagedAgent): void {
     if (!managed.workerRecovery) return;
+    // A requested stop or a settlement already removed the file; a relaunch
+    // racing it must not write it back.
+    if (managed.stopRequested || managed.settled) {
+      removeWorkerRecovery(managed.runDirectory);
+      return;
+    }
     const pid = Number(managed.transport.sessionId);
     if (!Number.isSafeInteger(pid) || pid <= 0) {
       // Without a PID no later host can tell a live worker from a dead one.
@@ -1597,7 +1605,23 @@ export class AgentManager {
         indeterminate("The durable worker run passed its deadline while no resident host owned it");
         continue;
       }
-      const liveness = record.status === "stopped" ? "dead" : probeWorker(recovery.pid, entry);
+      if (workerRecoveryMismatch(recovery, { runDirectory, workerPath: this.#workerPath, cwd: record.cwd })) {
+        // Checked before anything is adopted or started: whatever can write the
+        // run directory could otherwise point a relaunch at another program,
+        // directory, or run.
+        indeterminate("The recovery file does not match this host");
+        continue;
+      }
+      let liveness = probeWorker(recovery.pid, entry);
+      if (record.status === "stopped" && liveness === "alive") {
+        // The worker wrote its terminal record and may still be exiting; a
+        // relaunch now would put two writers on one journal.
+        liveness = await this.#waitForWorkerExit(recovery.pid, entry);
+        if (liveness === "alive") {
+          indeterminate(`Worker process ${recovery.pid} recorded a stop but did not exit`);
+          continue;
+        }
+      }
       if (liveness === "unknown") {
         indeterminate(`Fabric cannot verify whether worker process ${recovery.pid} is still running`);
         continue;
@@ -1854,6 +1878,10 @@ export class AgentManager {
     // A requested stop is terminal: record the intent before any transport work
     // so recovery never restarts a run the operator, a tool, or shutdown ended.
     managed.stopRequested = true;
+    // Remove the recovery file before any transport work too: a host that
+    // dies between here and #settle must not leave it beside the "stopped"
+    // record the worker writes, or the next host would relaunch the run.
+    if (managed.workerRecovery) removeWorkerRecovery(managed.runDirectory);
     if (managed.settled) return this.wait(id);
     managed.background = false;
     const existing = readRecord(managed.statusFile);
@@ -2106,6 +2134,17 @@ export class AgentManager {
       .catch(() => undefined);
   }
 
+  /** Bounded like #waitForTransportExit; returns the last liveness seen. */
+  async #waitForWorkerExit(pid: number, id: string): Promise<WorkerLiveness> {
+    const deadline = Date.now() + TRANSPORT_EXIT_GRACE_MS * 7;
+    let liveness = probeWorker(pid, id);
+    while (liveness === "alive" && Date.now() < deadline && !this.#closing) {
+      await delay(AGENT_STATUS_POLL_INTERVAL_MS);
+      liveness = probeWorker(pid, id);
+    }
+    return liveness;
+  }
+
   async #waitForTransportExit(managed: ManagedAgent): Promise<void> {
     const deadline = Date.now() + TRANSPORT_EXIT_GRACE_MS * 7;
     const pollIntervalMs =
@@ -2219,6 +2258,14 @@ export class AgentManager {
           managed.launch.workerArguments.splice(modelIndex, 2);
           delete managed.model;
         }
+      }
+      if (managed.workerRecovery) {
+        // A recovery relaunch has only the original deadline's remainder left.
+        setWorkerArgument(
+          managed.launch.workerArguments,
+          "timeout-ms",
+          String(Math.max(1, managed.workerRecovery.deadlineAt - Date.now())),
+        );
       }
       if (resume) {
         fs.writeFileSync(path.join(managed.runDirectory, "task.txt"), resume.task, {
