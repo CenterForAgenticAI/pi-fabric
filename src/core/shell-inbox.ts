@@ -1,4 +1,4 @@
-import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { CacheWarmingDecisionEvent, CacheWarmingDecisionEventResult, ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { FabricShellJobEvent, FabricShellJobStore } from "./shell-jobs.js";
 
 export const SHELL_MESSAGE_TYPE = "pi-fabric-shell-event";
@@ -6,6 +6,8 @@ export const SHELL_AWARENESS_MESSAGE_TYPE = "pi-fabric-shell-awareness";
 const clean = (text: string): string => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
 type Message = { customType: string; content: string; display: boolean; details: { ids: string[] } };
 type AwarenessMessage = Message & { role: "custom"; timestamp: number };
+/** Pi's own refresh threshold (`CACHE_WARMING_MINIMUM_EXPECTED_SAVINGS`); not exported by the host. */
+const CACHE_WARMING_MINIMUM_EXPECTED_SAVINGS = 0.05;
 
 /** Event-driven delivery to this runtime's owning Pi session, never a global Main. */
 export class ShellEventInbox {
@@ -66,6 +68,10 @@ export class ShellEventInbox {
       this.#flush(value => { message = value; });
       return message ? { message } : undefined;
     });
+    on("cache_warming_decision", (event: CacheWarmingDecisionEvent, ctx): CacheWarmingDecisionEventResult | undefined => {
+      this.#context = ctx;
+      return this.#warmingOverride(event);
+    });
     on("session_tree", (_event, ctx) => {
       this.#context = ctx;
       // Old-frontier jobs can finish, but must not wake a different branch.
@@ -74,12 +80,33 @@ export class ShellEventInbox {
     });
   }
 
+  /** Spilled, still-running jobs this runtime still owns; their outcomes are deliverable here. */
+  #liveSpilled() {
+    return this.jobs.live().filter(job => job.spilled && !job.abort.signal.aborted && !this.#ignored.has(job.id));
+  }
+
+  /**
+   * Pi prices an idle refresh with a fixed, low continuation probability. A
+   * spilled job whose completion will wake this agent makes the next real
+   * request near-certain, so re-price the refresh at probability 1 against
+   * Pi's own threshold. Only ever upgrades `stop` to `warm` while idle;
+   * Pi keeps eligibility, scheduling, TTLs, and its idle safety horizon.
+   */
+  #warmingOverride(event: CacheWarmingDecisionEvent): CacheWarmingDecisionEventResult | undefined {
+    if (event.action === "warm" || !(event.continuationProbability < 1)) return;
+    if (this.#closed || this.#suspended || this.#failed || this.#context.signal?.aborted) return;
+    if (!this.#liveSpilled().some(job => job.options.monitor?.delivery !== "ui")) return;
+    const savings = event.missCost - event.warmCost;
+    if (!Number.isFinite(savings) || savings < CACHE_WARMING_MINIMUM_EXPECTED_SAVINGS) return;
+    return { action: "warm" };
+  }
+
   #liveAwareness(): AwarenessMessage | undefined {
     if (this.#closed || this.#suspended || this.#failed || this.#context.signal?.aborted) {
       this.#awareness = undefined;
       return;
     }
-    const live = this.jobs.live().filter(job => job.spilled && !job.abort.signal.aborted && !this.#ignored.has(job.id));
+    const live = this.#liveSpilled();
     if (!live.length) { this.#awareness = undefined; return; }
     const uiOnly = live.filter(job => job.options.monitor?.delivery === "ui").length;
     const wake = live.length - uiOnly;
