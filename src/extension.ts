@@ -531,7 +531,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     if (!current()) return false;
     const entropy = await import("./entropy/index.js");
     if (!current()) return false;
-    const { comparableCompiledSurfaceScore, entropyRepairRows, formatEntropyCompileNotice,
+    const { entropyRepairRows,
       liveSurfaceSnapshot, loadCompiledSurfaceAsync, saveCompiledSurfaceAsync,
       updateObservationPoolAsync, sessionWindowEvidenceAsync } = entropy;
     let retry = false;
@@ -572,14 +572,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
         if (current()) {
           // Activate even when another process already persisted identical bytes.
           setActiveCompiledSurface(saved.file);
-          const previousScore = comparableCompiledSurfaceScore(loaded.file, saved.file.metricVersion);
-          if (previousScore !== undefined && outcome.report.score < previousScore && context.hasUI) {
-            context.ui.notify(formatEntropyCompileNotice({
-              beforeScore: previousScore,
-              afterScore: outcome.report.score,
-              normalizations: saved.file.normalizations?.length ?? 0,
-            }), "info");
-          }
+          // Background optimization stays silent; inspect it with /fabric entropy.
         }
       } catch (error) {
         if (!(error instanceof FileLockTimeoutError)) throw error;
