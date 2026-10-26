@@ -12,7 +12,7 @@ if (mode === "--help") {
   console.log("--proofs: complete proof:check with 1 versus 4 workers; --ci-tests: identical fixed CI suites in 3 versus 1 Vitest launches. No retries or full-suite fallback.");
   process.exit(0);
 }
-const fixed = ["verified-kernels", "verified-resources", "verified-providers", "verified-authority", "verified-lifecycle", "verified-storage", "verified-grants", "verified-speculation", "verified-budget", "verified-artifact", "verified-kernel-pool"].map(name => `tests/${name}.test.ts`);
+const fixed = ["verified-kernels", "verified-resources", "verified-providers", "verified-authority", "verified-lifecycle", "verified-storage", "verified-grants", "verified-speculation", "verified-budget", "verified-artifact", "verified-proof-scope", "verified-kernel-pool"].map(name => `tests/${name}.test.ts`);
 const workflow = ["tests/ci-workflows.test.ts"], python = ["tests/kernel-errors.test.ts"];
 const vitest = files => ["bunx", ["vitest", "run", ...files]];
 const cases = mode === "--proofs" ? [

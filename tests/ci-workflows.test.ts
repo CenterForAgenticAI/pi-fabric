@@ -34,7 +34,7 @@ describe("CI Node runtime prerequisites", () => {
   it("keeps every fixed assurance floor unconditional in one Vitest launch", () => {
     const workflow = parse(fs.readFileSync(new URL(".github/workflows/test.yml", root), "utf8"));
     const steps = workflow.jobs.check.steps as Step[];
-    const required = ["ci-workflows", "kernel-errors", "verified-kernels", "verified-resources", "verified-providers", "verified-authority", "verified-lifecycle", "verified-storage", "verified-grants", "verified-speculation", "verified-budget", "verified-artifact", "verified-kernel-pool"];
+    const required = ["ci-workflows", "kernel-errors", "verified-kernels", "verified-resources", "verified-providers", "verified-authority", "verified-lifecycle", "verified-storage", "verified-grants", "verified-speculation", "verified-budget", "verified-artifact", "verified-proof-scope", "verified-kernel-pool"];
     const batches = steps.filter(step => step.run?.startsWith("bunx vitest run ") && step.run.includes("tests/verified-kernels.test.ts"));
     expect(batches).toHaveLength(1); expect(batches[0]!.if).toBeUndefined();
     const files = batches[0]!.run!.split(/\s+/).slice(3);

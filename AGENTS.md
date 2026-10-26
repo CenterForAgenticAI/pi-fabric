@@ -110,8 +110,9 @@ weaken a law, or delete a broken variant, to make an implementation pass. When
 a law is refused, read the verdict first: add a missing helper law beside it, or
 fix the rule.
 
-`bun run proof:generate` proves every law (`proven && checked`), requires every
-broken variant to be refused, cross-checks the builders against the
+`bun run proof:generate` proves every law (`proven && checked && !assumes`)
+from every state the laws allow, requires every broken variant to be refused
+with a counterexample (`stuck: 'sat'`), cross-checks the builders against the
 interpreter, and compiles the shipped machines into `src/verified/generated/`
 with a SHA-256 receipt. Independent kernels and mutation batches run in at most
 four isolated workers; every kernel keeps its full invariant context. Use
