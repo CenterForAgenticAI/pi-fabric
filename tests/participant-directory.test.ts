@@ -482,3 +482,199 @@ describe("ParticipantDirectory", () => {
     expect(directory.mesh.listAll("topology/participants/")).toHaveLength(1);
   });
 });
+
+const sessionIdentity = (name: string): MeshIdentity => ({
+  id: `session:${name}`,
+  name: "main",
+  kind: "main",
+  sessionId: name,
+});
+
+const createSession = (
+  meshRoot: string,
+  name: string,
+  options: { departedLimit?: number; departedRetentionMs?: number } = {},
+): ParticipantDirectory => {
+  const identity = sessionIdentity(name);
+  const directory = new ParticipantDirectory(new MeshStore(meshRoot, 64 * 1024, 1_000), {
+    enabled: true,
+    hostId: identity.id,
+    rootId: identity.id,
+    identity,
+    heartbeatMs: 100,
+    leaseMs: 300,
+    ...options,
+  });
+  directory.registerSource(() => [
+    { ...rootRecord(identity.id, identity.id, name), label: `PRJ-${name}` },
+    agentRecord(`agent:${name}-child`, identity.id, identity.id, identity.id),
+  ]);
+  directories.push(directory);
+  return directory;
+};
+
+const meshRootFor = (): string => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-departed-"));
+  roots.push(root);
+  return path.join(root, "mesh");
+};
+
+describe("ParticipantDirectory departed sessions", () => {
+  it("replaces a closed root with a stopped tombstone that live discovery never returns", async () => {
+    const meshRoot = meshRootFor();
+    const viewer = createSession(meshRoot, "viewer");
+    const leaving = createSession(meshRoot, "leaving");
+    await viewer.start();
+    await leaving.start();
+    await vi.waitFor(() => expect(viewer.sessions().map((item) => item.id)).toContain("session:leaving"), {
+      timeout: 5_000,
+      interval: 50,
+    });
+    expect(viewer.departed()).toEqual([]);
+
+    const before = Date.now();
+    await leaving.close();
+    const after = Date.now();
+
+    await vi.waitFor(() => expect(viewer.departed()).toHaveLength(1), { timeout: 5_000, interval: 50 });
+    const [stopped] = viewer.departed();
+    expect(stopped).toMatchObject({
+      id: "session:leaving",
+      kind: "root",
+      status: "stopped",
+      sessionId: "leaving",
+      cwd: "/tmp/project",
+      label: "PRJ-leaving",
+      ownerIdentityId: "session:leaving",
+    });
+    expect(stopped!.lastSeenAt).toBeGreaterThanOrEqual(before);
+    expect(stopped!.lastSeenAt).toBeLessThanOrEqual(after);
+    // Only the root is tombstoned; the child agent simply leaves.
+    expect(viewer.departed().map((item) => item.id)).not.toContain("agent:leaving-child");
+    // Live discovery is unchanged: the record is gone, even with includeStale.
+    const everything = viewer.list({ scope: "project", includeStale: true }).map((item) => item.id);
+    expect(everything).not.toContain("session:leaving");
+    expect(viewer.peers().map((peer) => peer.id)).not.toContain("session:leaving");
+  });
+
+  it("reports a root whose lease expired without closing as lost, with its last heartbeat", async () => {
+    const meshRoot = meshRootFor();
+    const viewer = createSession(meshRoot, "viewer");
+    const crashed = createSession(meshRoot, "crashed");
+    await viewer.start();
+    await crashed.start();
+    await vi.waitFor(() => expect(viewer.sessions().map((item) => item.id)).toContain("session:crashed"), {
+      timeout: 5_000,
+      interval: 50,
+    });
+    // While the lease holds, the session is live, not departed.
+    expect(viewer.departed()).toEqual([]);
+
+    const hosts = viewer.mesh.listAll("topology/hosts/").map((entry) => entry.value as { id: string; updatedAt: number });
+    const heartbeat = hosts.find((host) => host.id === "session:crashed")!.updatedAt;
+    const later = Date.now() + 60_000;
+    const lost = viewer.departed({}, later);
+    expect(lost.map((item) => item.id)).toEqual(["session:crashed"]);
+    expect(lost[0]).toMatchObject({ status: "lost", sessionId: "crashed", label: "PRJ-crashed" });
+    expect(lost[0]!.lastSeenAt).toBeGreaterThanOrEqual(heartbeat);
+    // The viewer's own root is never reported as departed.
+    expect(lost.map((item) => item.id)).not.toContain("session:viewer");
+  });
+
+  it("drops a tombstone from departed once the same root is live again", async () => {
+    const meshRoot = meshRootFor();
+    const viewer = createSession(meshRoot, "viewer");
+    await viewer.start();
+    const first = createSession(meshRoot, "resumed");
+    await first.start();
+    await first.close();
+    await vi.waitFor(() => expect(viewer.departed().map((item) => item.id)).toEqual(["session:resumed"]), {
+      timeout: 5_000,
+      interval: 50,
+    });
+    const second = createSession(meshRoot, "resumed");
+    await second.start();
+    await vi.waitFor(() => expect(viewer.sessions().map((item) => item.id)).toContain("session:resumed"), {
+      timeout: 5_000,
+      interval: 50,
+    });
+    expect(viewer.departed()).toEqual([]);
+  });
+
+  it("prunes tombstones beyond the configured count and age", async () => {
+    const meshRoot = meshRootFor();
+    for (const name of ["one", "two", "three"]) {
+      const session = createSession(meshRoot, name, { departedLimit: 2 });
+      await session.start();
+      await session.close();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const viewer = createSession(meshRoot, "viewer", { departedLimit: 2, departedRetentionMs: 60_000 });
+    await viewer.start();
+    await vi.waitFor(() => expect(viewer.mesh.listAll("topology/tombstones/")).toHaveLength(2), {
+      timeout: 5_000,
+      interval: 50,
+    });
+    expect(viewer.departed().map((item) => item.id)).toEqual(["session:three", "session:two"]);
+    expect(viewer.departed({ limit: 1 }).map((item) => item.id)).toEqual(["session:three"]);
+    expect(viewer.departed({}, Date.now() + 61_000)).toEqual([]);
+  });
+
+  it("writes no tombstone when the limit is zero", async () => {
+    const meshRoot = meshRootFor();
+    const session = createSession(meshRoot, "silent", { departedLimit: 0 });
+    await session.start();
+    await session.close();
+    expect(session.mesh.listAll("topology/tombstones/")).toEqual([]);
+  });
+
+  it("keeps other sessions' tombstones when a session with limit zero closes", async () => {
+    const meshRoot = meshRootFor();
+    const departed = createSession(meshRoot, "departed");
+    await departed.start();
+    await departed.close();
+    const silent = createSession(meshRoot, "silent", { departedLimit: 0 });
+    await silent.start();
+    expect(silent.mesh.listAll("topology/tombstones/")).toHaveLength(1);
+    await silent.close();
+    expect(silent.mesh.listAll("topology/tombstones/")).toHaveLength(1);
+  });
+
+  it("ignores a tombstone written by an identity other than its owner", async () => {
+    const meshRoot = meshRootFor();
+    const viewer = createSession(meshRoot, "viewer");
+    await viewer.start();
+    const victim = createSession(meshRoot, "victim");
+    await victim.start();
+    await victim.close();
+    await vi.waitFor(() => expect(viewer.departed()).toHaveLength(1), { timeout: 5_000, interval: 50 });
+    const [entry] = viewer.mesh.listAll("topology/tombstones/");
+    await viewer.mesh.put({
+      key: entry!.key,
+      value: { ...(entry!.value as object), cwd: "/forged" },
+      identity: sessionIdentity("forger"),
+    });
+    expect(viewer.departed()).toEqual([]);
+  });
+
+  it("keeps tombstones out of the live discovery path", async () => {
+    const meshRoot = meshRootFor();
+    const viewer = createSession(meshRoot, "viewer");
+    await viewer.start();
+    const gone = createSession(meshRoot, "gone");
+    await gone.start();
+    await gone.close();
+    await vi.waitFor(() => expect(viewer.departed()).toHaveLength(1), { timeout: 5_000, interval: 50 });
+    const listAll = vi.spyOn(viewer.mesh, "listAll");
+    viewer.list({ scope: "project", includeStale: true });
+    viewer.sessions();
+    viewer.peers();
+    viewer.get("session:gone");
+    await viewer.refresh();
+    const prefixes = listAll.mock.calls.map(([prefix]) => prefix);
+    expect(prefixes.length).toBeGreaterThan(0);
+    expect(prefixes.filter((prefix) => !prefix || prefix.startsWith("topology/tombstones/"))).toEqual([]);
+    expect(viewer.get("session:gone")).toBeUndefined();
+  });
+});
+

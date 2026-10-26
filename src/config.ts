@@ -334,6 +334,10 @@ export interface FabricMeshConfig {
   actorContextEntries: number;
   /** Tell a root session's model when other root sessions join or leave the project. */
   peerNotices: boolean;
+  /** Most stopped-session tombstones kept for agents.departed(); 0 keeps none. */
+  departedLimit: number;
+  /** Age after which stopped and lost sessions leave agents.departed(). */
+  departedRetentionMs: number;
 }
 
 interface FabricRepairsConfig {
@@ -614,6 +618,8 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     eventContextChars: 40_000,
     actorContextEntries: 14,
     peerNotices: true,
+    departedLimit: 32,
+    departedRetentionMs: 7 * 24 * 60 * 60 * 1_000,
   },
   models: {
     aliases: {},
@@ -1424,6 +1430,18 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         100,
       ),
       peerNotices: booleanValue(mesh.peerNotices, DEFAULT_FABRIC_CONFIG.mesh.peerNotices),
+      departedLimit: boundedInteger(
+        mesh.departedLimit,
+        DEFAULT_FABRIC_CONFIG.mesh.departedLimit,
+        0,
+        1_000,
+      ),
+      departedRetentionMs: boundedInteger(
+        mesh.departedRetentionMs,
+        DEFAULT_FABRIC_CONFIG.mesh.departedRetentionMs,
+        60_000,
+        90 * 24 * 60 * 60 * 1_000,
+      ),
     },
     models: {
       aliases: normalizeModelAliases(modelsSection.aliases),

@@ -501,6 +501,7 @@ globalThis.agents = Object.freeze({
   main: () => __call("agents.main", {}),
   sessions: () => __call("agents.sessions", {}),
   peers: () => __call("agents.peers", {}),
+  departed: (args = {}) => __call("agents.departed", args),
   definitions: () => __call("agents.definitions", {}),
   subscribe: (args) => __call("agents.subscribe", args),
   subscriptions: (args = {}) => __call("agents.subscriptions", args),
