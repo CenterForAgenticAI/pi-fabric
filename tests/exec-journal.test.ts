@@ -83,6 +83,48 @@ describe("fabric_exec crash journal", () => {
     expect(again.value).toEqual(value);
   });
 
+  it("leaves no nondeterministic guest global under a journal", async () => {
+    // Every source the guest could read that a replay would not reproduce.
+    const probe = `const t0 = Date.now(); const d0 = new Date().getTime();
+let spin = 0; for (let i = 0; i < 2e6; i++) spin += i;
+const p = typeof performance === "object" && performance !== null && typeof performance.now === "function" ? [performance.now(), performance.now()] : null;
+const c = typeof crypto === "object" && crypto !== null && typeof crypto.getRandomValues === "function" ? Array.from(crypto.getRandomValues(new Uint32Array(4))) : null;
+return { clock: [t0, d0, Date.now(), new Date().getTime(), String(Date())], zone: [new Date(0).getTimezoneOffset(), new Date(0).getHours(), new Date(2020, 0, 1).getTime(), new Date("2020-01-01T00:00:00").getTime()],
+  random: [Math.random(), Math.random(), Math.random()], weak: [typeof WeakRef, typeof FinalizationRegistry], p, c, spin: spin > 0 };`;
+    const previousZone = process.env.TZ;
+    process.env.TZ = "America/New_York";
+    try {
+      const runs: Array<Record<string, unknown[] | null>> = [];
+      const digests: string[] = [];
+      for (let n = 0; n < 2; n++) {
+        const file = journalFile();
+        const { digest, result } = await record(file, probe, () => async () => undefined);
+        expect(result.terminationReason, result.error).toBe("completed");
+        runs.push(result.value as Record<string, unknown[] | null>);
+        digests.push(digest);
+        // The replay reads exactly what the recording read.
+        const again = await resume(file, digest, probe, neverCalled);
+        expect(again.value).toEqual(result.value);
+      }
+      for (const run of runs) {
+        const clock = run.clock as number[];
+        // The clock does not move while the guest computes.
+        expect(clock.slice(0, 4).every((value) => value === clock[0])).toBe(true);
+        // The zone is UTC whatever the host zone is.
+        expect(run.zone).toEqual([0, 0, Date.UTC(2020, 0, 1), Date.UTC(2020, 0, 1)]);
+        expect(clock[4]).toMatch(/GMT\+0000$/);
+        expect(run.weak).toEqual(["undefined", "undefined"]);
+        // Any timer or random source the guest has must also be frozen or seeded.
+        if (run.p) expect(run.p[0]).toBe(run.p[1]);
+      }
+      // Two journals draw different seeds, so randomness is seeded, not constant.
+      expect(runs[0]!.random).not.toEqual(runs[1]!.random);
+      if (runs[0]!.c) expect(runs[0]!.c).not.toEqual(runs[1]!.c);
+    } finally {
+      if (previousZone === undefined) delete process.env.TZ; else process.env.TZ = previousZone;
+    }
+  });
+
   it("runs the calls after the last recorded result live and keeps recording", async () => {
     const file = journalFile();
     const controller = new AbortController();
