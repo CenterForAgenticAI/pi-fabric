@@ -40,20 +40,47 @@ const TEMP_NAME = /^tmp-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[
 
 const currentUid = (): number | undefined => (typeof process.getuid === "function" ? process.getuid() : undefined);
 
+/** The one payload of the worker-role entry: plain JSON, shared by every writer. */
+const workerRolePolicyData = () => ({
+  schemaVersion: 1,
+  layer: "host",
+  declaredBy: DURABLE_WORKER_DECLARED_BY,
+  values: { sessionRole: "worker" },
+});
+
 /** The one builder for the worker-role entry: plain JSON, shared by the durable-session writer and the seed writers. */
 export const workerRoleEntry = (id: string, parentId: string | null, timestamp: string) => ({
   type: "custom",
   customType: DURABLE_WORKER_POLICY_ENTRY_TYPE,
-  data: {
-    schemaVersion: 1,
-    layer: "host",
-    declaredBy: DURABLE_WORKER_DECLARED_BY,
-    values: { sessionRole: "worker" },
-  },
+  data: workerRolePolicyData(),
   id,
   parentId,
   timestamp,
 });
+
+/** The structural slice of a Pi `SessionManager` that `declareWorkerSessionRole` needs. */
+export interface WorkerRoleSessionManager {
+  appendCustomEntry(customType: string, data?: unknown): unknown;
+  getEntries(): ReadonlyArray<{ type: string; customType?: string; data?: unknown }>;
+}
+
+const declaresWorker = (entry: { type: string; customType?: string; data?: unknown }): boolean => {
+  if (entry.type !== "custom" || entry.customType !== DURABLE_WORKER_POLICY_ENTRY_TYPE) return false;
+  const data = entry.data as { schemaVersion?: unknown; layer?: unknown; values?: { sessionRole?: unknown } } | undefined;
+  return data?.schemaVersion === 1 && data.layer === "host" && data.values?.sessionRole === "worker";
+};
+
+/**
+ * For an embedding host that owns its session: add the worker-role entry to an open
+ * `SessionManager` before the first prompt. It appends, so call it on a new session if
+ * the entry should be the tree root. Idempotent: returns "already-seeded" when an entry
+ * on the session already declares the worker role, and "seeded" after writing one.
+ */
+export const declareWorkerSessionRole = (sessionManager: WorkerRoleSessionManager): "seeded" | "already-seeded" => {
+  if (sessionManager.getEntries().some(declaresWorker)) return "already-seeded";
+  sessionManager.appendCustomEntry(DURABLE_WORKER_POLICY_ENTRY_TYPE, workerRolePolicyData());
+  return "seeded";
+};
 
 /** An entry id Pi would accept (8 hex characters) that no existing entry uses. */
 export const freshEntryId = (taken: ReadonlySet<string>): string => {
