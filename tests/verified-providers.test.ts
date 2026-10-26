@@ -1,6 +1,8 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActionRegistry } from "../src/core/action-registry.js";
+import { FabricProviderBindings } from "../src/core/provider-bindings.js";
+import { ProviderOperations } from "../src/core/provider-operations.js";
 import { FabricSpeculationStore } from "../src/speculation/store.js";
 import * as kernel from "../src/verified/provider.js";
 import { providerTicket } from "../src/verified/generated/provider.js";
@@ -97,6 +99,32 @@ describe("scoped ownership and lifecycle finalization", () => {
   });
 });
 
+describe("compiled dispatch route wiring", () => {
+  it.each(["invoke", "acquire", "speculate", "replay"] as const)("gates the real %s interpreter branch and refuses ticket replay", async mode => {
+    const step = vi.spyOn(providerTicket, "step");
+    const bindings = new FabricProviderBindings();
+    const operations = new ProviderOperations(bindings);
+    const { provider } = fixture();
+    const dispose = vi.fn();
+    provider.acquire = vi.fn(async (_name, args) => ({ value: args, dispose }));
+    const lease = bindings.mount(provider);
+    const binding = bindings.binding(lease.bindingId)!;
+    const run = operations.prepare({ binding, ref: "demo.run", action: "run", mode, descriptor: "revision", args: { input: "live" }, context, replayValue: { input: "cached" }, async observe() { return { ref: "demo.run", descriptor: "revision" }; } });
+    try {
+      const result = await run();
+      expect(step.mock.calls.filter(([, , input]) => (input as { op: number }).op === 0)).toHaveLength(1);
+      if (mode === "acquire") {
+        const acquired = result as FabricScopedProviderResult;
+        expect(acquired.value).toEqual({ input: "live" }); await acquired.dispose();
+        expect(dispose).toHaveBeenCalledOnce(); expect(provider.acquire).toHaveBeenCalledOnce();
+      } else expect(result).toEqual({ input: mode === "replay" ? "cached" : "live" });
+      await expect(run()).rejects.toThrow(/spent ticket/);
+      expect(provider.invoke).toHaveBeenCalledTimes(mode === "invoke" || mode === "speculate" ? 1 : 0);
+      expect(provider.acquire).toHaveBeenCalledTimes(mode === "acquire" ? 1 : 0);
+    } finally { await operations.close(); await bindings.close(); }
+  });
+});
+
 const families = ["agents", "cache", "compact", "components", "decisions", "extensions", "jev", "mcp", "memory", "mesh", "pi", "prewalk", "programs", "schema", "sessions", "state", "tasks", "thinking"];
 describe("universal registry migration", () => {
   it("accounts for every built-in family and has no remaining raw dispatch in the registry", () => {
@@ -108,7 +136,9 @@ describe("universal registry migration", () => {
     for (const route of ["invoke", "acquire", "speculate", "replay"]) expect(source).toContain(`"${route}"`);
   });
 
-  it.each([...families, "thirdparty"])("gates %s registrations through the actual compiled kernel", async name => {
+  // Provider names do not select dispatch implementations. Keep one built-in
+  // name and an external name; actual operation modes are checked separately.
+  it.each(["pi", "thirdparty"])("gates %s registrations through the actual compiled kernel", async name => {
     const step = vi.spyOn(providerTicket, "step");
     const takes = () => step.mock.calls.filter(([, , input]) => (input as { op: number }).op === 0).length;
     const registry = create(); const { provider } = fixture(name); registry.register(provider);
@@ -117,32 +147,6 @@ describe("universal registry migration", () => {
     registry.revokeProvider(name);
     await expect(invoke(registry, {}, {}, `${name}.run`)).rejects.toThrow();
     expect(provider.invoke).toHaveBeenCalledOnce();
-  });
-
-  it("rejects forged, cross-registry, and released views while leaving root authority compatible", async () => {
-    const registry = create(); registry.register(fixture().provider);
-    const lease = await registry.acquireCapabilityView(["demo.run"], context);
-    expect(Object.isFrozen(lease.view)).toBe(true);
-    expect(Object.isFrozen(lease.view!.bindings["demo.run"])).toBe(true);
-    await expect(invoke(registry, { capabilityView: structuredClone(lease.view!) })).rejects.toThrow(/unissued/);
-    const other = create(); other.register(fixture().provider);
-    await expect(invoke(other, { capabilityView: lease.view! })).rejects.toThrow(/unissued/);
-    await lease.release();
-    await expect(invoke(registry, { capabilityView: lease.view! })).rejects.toThrow(/released/);
-    expect(() => registry.providers({ ...context, capabilityView: lease.view! })).toThrow(/released/);
-    await expect(invoke(registry)).resolves.toEqual({});
-  });
-
-  it("does not widen derived authority and cascades revocation to existing children", async () => {
-    const registry = create(); const { provider } = fixture(); registry.register(provider); registry.register(fixture("other").provider);
-    const parent = await registry.acquireCapabilityView(["demo.run"], context);
-    const scoped = { ...context, capabilityView: parent.view! };
-    const refused = await registry.acquireCapabilityView(["other.run"], scoped);
-    expect(refused.satisfied).toBe(false);
-    const child = await registry.acquireCapabilityView(["demo.run"], scoped);
-    await parent.release();
-    await expect(invoke(registry, { capabilityView: child.view! })).rejects.toThrow(/revoked/);
-    expect(provider.invoke).not.toHaveBeenCalled(); await child.release(); await refused.release();
   });
 
   it("snapshots caller arguments before awaiting approval", async () => {

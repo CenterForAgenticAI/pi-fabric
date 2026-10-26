@@ -58,6 +58,8 @@ interface FabricAgentRequest {
   /** Omitted/inherit uses caller executor.kernel; concrete choices require Pi with extensions. */
   kernel?: FabricKernel | "inherit";
   task: string;
+  /** Name of an agent file listed by agents.definitions(); fields passed here win over the file. */
+  agent?: string;
   name?: string;
   runner?: FabricAgentRunner;
   transport?: FabricTransport;
@@ -750,6 +752,18 @@ interface FabricActorMessage {
 }
 // agentId/agent_id spellings repair to id during agent arg normalization.
 type FabricAgentTargetArgs = { id: string; agentId?: string; agent_id?: string };
+interface FabricAgentDefinition {
+  name: string;
+  description: string;
+  path: string;
+  scope: "user" | "project";
+  /** Path of the lower-precedence file with the same name that this one replaces. */
+  shadows?: string;
+  /** One entry per ignored field. */
+  warnings: string[];
+  /** Set when the file cannot be used; name is then the file name without .md. */
+  error?: string;
+}
 interface FabricAgentsApi {
   run(args: FabricAgentRequest): Promise<FabricAgentResult>;
   /** Hosted capability only; resumes a paused direct child without exposing its checkpoint. */
@@ -770,6 +784,8 @@ interface FabricAgentsApi {
   main(): Promise<FabricMainAgentInfo>;
   sessions(): Promise<FabricParticipantInfo[]>;
   peers(): Promise<FabricPeerInfo[]>;
+  /** Named agent files that agents.run and agents.spawn accept in agent. */
+  definitions(): Promise<FabricAgentDefinition[]>;
   subscribe(args: {
     from: string;
     events: FabricLifecycleEventType[];

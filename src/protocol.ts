@@ -488,6 +488,32 @@ export const readFabricPrewalkRequestV1 = (
 export const FABRIC_PEER_CARDS_EVENT = "pi-fabric:peers:cards:v1";
 export const FABRIC_PEER_AWAIT_SETTLE_EVENT = "pi-fabric:peer:await-settle:v1";
 
+/**
+ * Custom session entry a root Fabric session appends once the project mesh
+ * mints its peer label, and again only if the label changes. Headless hosts
+ * read it with Pi's RPC `get_entries`: unlike the `fabric-label` footer status,
+ * it is structured, outlives the event stream, and does not depend on
+ * `ui.sessionLabel.footer`.
+ */
+export const FABRIC_PEER_ENTRY_TYPE = "pi-fabric-peer";
+
+/**
+ * Generation of the project-wide label counter. Raising it restarts numbering
+ * at 1 and retires every label an older generation recorded. Generation 3 is
+ * the first that takes a number only at a session's first Fabric use.
+ */
+export const FABRIC_PEER_LABEL_SEQUENCE = 3;
+
+export interface FabricPeerEntryV1 {
+  version: 1;
+  /** Counter generation that minted the label; a resumed session reuses only the current one. */
+  sequence: number;
+  /** Participant id other sessions and the mesh use for this session. */
+  participantId: string;
+  /** Linear-style project label (e.g. "PQS-2"). */
+  label: string;
+}
+
 /** One root peer session on the project mesh, for pickers and status lines. */
 export interface FabricPeerCardV1 {
   id: string;

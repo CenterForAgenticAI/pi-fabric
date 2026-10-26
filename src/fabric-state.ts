@@ -275,6 +275,8 @@ export class FabricState {
 
   mainAgentInfo(context?: ExtensionContext): FabricMainAgentInfo { return this.#required().mainAgentInfo(context); }
   peerInfos(): FabricPeerInfo[] { return this.#current()?.peerInfos() ?? []; }
+  sessionLabel(): string | undefined { return this.#current()?.sessionLabel(); }
+  sessionLabelPending(): boolean { return this.#current()?.sessionLabelPending() ?? false; }
   /** Managed hosts do not expose decisions, matching the `decisions.*` provider. */
   decisionStore(): DecisionStore | undefined {
     return this.#managedHost ? undefined : this.#current()?.decisionStore();
