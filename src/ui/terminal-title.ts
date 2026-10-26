@@ -1,15 +1,5 @@
-import type {
-  AgentSettledEvent,
-  ExtensionAPI,
-  ExtensionContext,
-  SessionShutdownEvent,
-  Theme,
-} from "@earendil-works/pi-coding-agent";
-import type { CodePreviewSettings } from "./code-preview.js";
-import { nestedCallTitle, type FabricRenderAudit } from "./fabric-render.js";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { safeText } from "./format.js";
-import { observedThemeVariant } from "./highlight.js";
-import { piTerminalTitle } from "./pi-terminal-title.js";
 
 /** Window and tab chrome clips titles far earlier than the transcript does. */
 export const MAX_TERMINAL_TITLE_CHARS = 120;
@@ -17,7 +7,7 @@ export const MAX_TERMINAL_TITLE_CHARS = 120;
 /**
  * A terminal title is written as one raw OSC string, so it cannot carry the
  * transcript's styling: theme escapes would render as literal glyphs in the
- * tab. `safeText` also keeps a nested call's arguments from smuggling control
+ * tab. `safeText` also keeps a declared display name from smuggling control
  * characters into the terminal.
  */
 export const terminalTitleText = (value: string | undefined): string => {
@@ -26,153 +16,113 @@ export const terminalTitleText = (value: string | undefined): string => {
   return `${Array.from(text).slice(0, MAX_TERMINAL_TITLE_CHARS - 1).join("").trimEnd()}…`;
 };
 
-// Nested call titles style with fg/bold only. A paint-free theme reuses that
-// exact vocabulary without emitting escapes; terminalTitleText strips what
-// Shiki still highlights into a bash command title. The theme carries the
-// variant already in force so the core tool title cannot re-sync it.
-const plainTitleTheme = (): Theme => ({
-  name: observedThemeVariant(),
-  fg: (_color: string, text: string) => text,
-  bold: (text: string) => text,
-} as unknown as Theme);
+/** Session entry that carries the latest declared display title across resumes. */
+export const TERMINAL_TITLE_ENTRY_TYPE = "pi-fabric-terminal-title";
 
-export type TerminalTitleCore = {
-  cwd: string;
-  settings: CodePreviewSettings;
-};
-
-/** A nested call's display title as plain text, e.g. `read src/index.ts`. */
-export const terminalCallTitle = (
-  audit: FabricRenderAudit,
-  core?: TerminalTitleCore,
-): string =>
-  terminalTitleText(nestedCallTitle(
-    audit,
-    plainTitleTheme(),
-    undefined,
-    // A window title that counted seconds would flicker; the card keeps timing.
-    core ? { cwd: core.cwd, settings: { ...core.settings, toolCallTiming: false } } : undefined,
-  ));
-
-export type FabricTerminalTitleOptions = {
-  /** Host title setter. Headless hosts resolve it to a no-op. */
-  setTitle?: ((title: string) => void) | undefined;
-  /** Pi's own window title, recomputed on restore so a renamed session wins. */
-  base?: (() => string | Promise<string>) | undefined;
-};
-
-// A closed or redirected terminal can fail the write; decoration must never
-// fail the program that is doing the work.
-const applyTitle = (setTitle: (title: string) => void, text: string): void => {
-  try {
-    setTitle(text);
-  } catch {
-    // Ignore: the transcript already carries the same information.
-  }
-};
+type TitleEntryHost = Pick<ExtensionAPI, "appendEntry">;
 
 /**
- * The run that last wrote the title, and so the only one that may hand it back.
- * A run that never settles — a killed turn, an abandoned tool promise — stops
- * blocking later runs as soon as a newer one takes the title, and a session
- * boundary can release the title outright.
+ * The title this session recorded last. Entries are branch-aware, so a session
+ * fork carries the title its branch last declared.
  */
-let titleOwner: FabricTerminalTitle | undefined;
-
-/** Run `body` while owning the window title, handing it back on any exit. */
-export const withTerminalTitle = async <T>(
-  title: FabricTerminalTitle | undefined,
-  intent: string,
-  body: () => Promise<T>,
-): Promise<T> => {
-  title?.show(intent);
-  try {
-    return await body();
-  } finally {
-    await title?.restore();
+const recordedTitle = (context: ExtensionContext): string | undefined => {
+  // A host that emits a boundary without a readable session still owns the
+  // window; a missing entry list simply means nothing was recorded yet.
+  const entries = context.sessionManager?.getEntries?.() ?? [];
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry?.type !== "custom" || entry.customType !== TERMINAL_TITLE_ENTRY_TYPE) continue;
+    const recorded = (entry.data as { title?: unknown } | undefined)?.title;
+    const text = typeof recorded === "string" ? terminalTitleText(recorded) : "";
+    if (text) return text;
   }
+  return undefined;
 };
 
 /**
- * Lends the window title to a live Fabric program. Parallel `fabric_exec`
- * calls share one title: whichever run still holds it decides when Pi's own
- * title returns.
+ * Keeps the declared `fabric_exec` display title in the terminal chrome. The
+ * title is sticky by design: it holds until the next declared title, outlives
+ * the run that set it, and is adopted again when the session is resumed. Nested
+ * call detail never reaches the window, because the declared milestone is the
+ * one line a tab has room for.
  */
 export class FabricTerminalTitle {
-  readonly #setTitle: ((title: string) => void) | undefined;
-  readonly #base: (() => string | Promise<string>) | undefined;
-  #applied: string | undefined;
-  #settled = false;
+  readonly #host: TitleEntryHost;
+  readonly #enabled: () => boolean;
+  #title: string | undefined;
 
-  constructor(options: FabricTerminalTitleOptions = {}) {
-    this.#setTitle = options.setTitle;
-    this.#base = options.base;
+  constructor(host: TitleEntryHost, enabled: () => boolean) {
+    this.#host = host;
+    this.#enabled = enabled;
   }
 
-  /** Show the latest nested call's display title, coalescing repeats. */
-  show(title: string | undefined): void {
-    const setTitle = this.#setTitle;
-    if (!setTitle || this.#settled) return;
+  /** Adopt the title this session recorded, after Pi applies its own. */
+  resume(context: ExtensionContext): void {
+    if (!this.#enabled()) return;
+    const recorded = recordedTitle(context);
+    if (!recorded) return;
+    this.#title = recorded;
+    this.#write(context, recorded);
+  }
+
+  /** Show the declared display title for a run and record it for resumes. */
+  show(context: ExtensionContext, title: string | undefined): void {
+    if (!this.#enabled()) return;
     const text = terminalTitleText(title);
-    if (!text || text === this.#applied) return;
-    this.#applied = text;
-    titleOwner = this;
-    applyTitle(setTitle, text);
+    if (!text || text === this.#title) return;
+    this.#title = text;
+    this.#write(context, text);
+    try {
+      this.#host.appendEntry(TERMINAL_TITLE_ENTRY_TYPE, { version: 1, title: text });
+    } catch {
+      // A session that refuses the entry keeps the live title for this run.
+    }
   }
 
-  /** Hand the window title back to Pi once this run has stopped. */
-  async restore(): Promise<void> {
-    if (this.#settled) return;
-    this.#settled = true;
-    // A parallel run took the title after this one last wrote it; that run
-    // decides when Pi's own title returns.
-    if (titleOwner !== this) return;
-    titleOwner = undefined;
-    const setTitle = this.#setTitle;
-    const base = await this.#base?.();
-    // A newer run may have claimed the title while the base resolved.
-    if (!setTitle || titleOwner !== undefined) return;
-    const text = terminalTitleText(base);
-    if (text) applyTitle(setTitle, text);
+  /** Put the sticky title back after Pi rewrites its own. */
+  reassert(context: ExtensionContext): void {
+    if (!this.#enabled() || !this.#title) return;
+    this.#write(context, this.#title);
   }
 
-  /** Give the title up without writing: a session boundary released it. */
-  detach(): void {
-    this.#settled = true;
-    this.#applied = undefined;
-    if (titleOwner === this) titleOwner = undefined;
+  /** The title currently held, for callers that need to compare. */
+  current(): string | undefined {
+    return this.#title;
+  }
+
+  #write(context: ExtensionContext, text: string): void {
+    // Only an interactive host owns an OS window title.
+    if (context.mode !== "tui" || !context.hasUI) return;
+    try {
+      context.ui.setTitle(text);
+    } catch {
+      // A closed or redirected terminal must not fail the run.
+    }
   }
 }
 
 /**
- * Hand the window title back at a session boundary. A `fabric_exec` promise Pi
- * abandoned (Escape halt, cancelled turn, crash) never reaches its own restore,
- * so the last call title would otherwise outlive the session in the tab.
+ * Re-adopt the recorded title whenever Pi re-applies its own: on session start
+ * and branch switches, and again after a rename or a settled turn. Both are
+ * deferred one macrotask because Pi titles the window after the extension
+ * handlers for the same event have run.
  */
-export const releaseTerminalTitle = (context: {
-  ui: { setTitle(title: string): void };
-  cwd: string;
-  sessionManager: { getSessionName(): string | undefined };
-}): boolean => {
-  const held = titleOwner;
-  if (!held) return false;
-  held.detach();
-  const text = terminalTitleText(piTerminalTitle(context));
-  if (text) applyTitle((title) => context.ui.setTitle(title), text);
-  return true;
-};
-
-/** Register the boundaries that release a title no run handed back. */
-export const installTerminalTitleRelease = (pi: ExtensionAPI): void => {
-  const release = (
-    _event: SessionShutdownEvent | AgentSettledEvent,
-    context: ExtensionContext | undefined,
-  ): void => {
-    // Only an interactive host owns an OS window title; a headless host, or a
-    // caller that emits without a context, leaves the chrome alone.
-    if (context?.mode !== "tui" || !context.hasUI) return;
-    releaseTerminalTitle(context);
-  };
-  pi.on("session_shutdown", release);
-  pi.on("agent_settled", release);
+export const installTerminalTitle = (pi: ExtensionAPI, title: FabricTerminalTitle): void => {
+  const later = (action: (context: ExtensionContext) => void) =>
+    (_event: unknown, context: ExtensionContext | undefined): void => {
+      if (!context) return;
+      // Deferred work must never surface as an unhandled rejection: the title
+      // is decoration, and the run it belongs to has already finished.
+      setImmediate(() => {
+        try {
+          action(context);
+        } catch {
+          // Ignore.
+        }
+      });
+    };
+  pi.on("session_start", later((context) => title.resume(context)));
+  pi.on("session_tree", later((context) => title.resume(context)));
+  pi.on("session_info_changed", later((context) => title.reassert(context)));
+  pi.on("agent_settled", later((context) => title.reassert(context)));
 };
