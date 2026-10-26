@@ -61,7 +61,23 @@ the program sees it, and results reach the program one at a time. Before an
 effect runs, Fabric records an intent and syncs it to disk. On recovery the same
 program runs again with the same clock and random seed. Recorded results are
 served from the journal, so no provider, approval, or prompt runs again. Calls
-after the last recorded result then run live. If a call has an intent but no
+after the last recorded result then run live.
+
+A few served calls changed state that lived only in the worker process, so
+Fabric redoes them from their recorded arguments, once each and in their
+recorded order, before the program sees their result. `compact.request` and
+`compact.cancel` are always redone. `prewalk.plan` is redone when the
+restarted session's prewalk arm owes a plan, and skipped otherwise.
+`compact.carry`, `thinking.set`, and `thinking.reset` are redone only when
+the session entry they wrote did not survive, as in a worker without a session
+file, so a surviving session never gets a second entry. A redo runs the
+provider again under the current policy, without asking for approval again. If
+a redo fails, the program stops, reports that call and its error, and runs
+nothing after it. State, mesh, saved programs, and cache releases are already on
+disk or safe to skip and are not redone. Schema hypotheses and certificates are
+stored in the mesh and bound to the tool call, so a resumed `schema.commit`
+still checks the recorded certificate: it is refused once the certificate has
+expired or the workspace or state changed since verification. If a call has an intent but no
 result, it may have taken effect. Fabric asks whether to run that call again
 as a `select` dialog, and pauses the program deadline while it waits (a
 `timeout_ms` hard deadline keeps running). Only "Run it again" repeats the
