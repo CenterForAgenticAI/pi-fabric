@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -359,6 +360,50 @@ describe("DurableAgent", () => {
     const exhausted = await interruptFabricExec(armed, 4, true);
     expect(exhausted.seen).toHaveLength(4);
     expect(exhausted.results[0]).toMatchObject({ isError: true, details: { interrupted: true } });
+  });
+
+  it("deletes the fabric_exec journal once its result is committed, on success and after a resume", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "durable-agent-")); dirs.push(dir);
+    const journalDirectory = join(dir, "fabric-journal");
+    const paths: string[] = [];
+    const program: AgentTool = { ...tool(async () => {
+      const offer = fenceStore()!.getStore()!.journal!;
+      paths.push(offer.path);
+      await mkdir(journalDirectory, { recursive: true }); await writeFile(offer.path, "secret tool output\n");
+      return { content: [{ type: "text", text: "done" }], details: {} };
+    }), name: "fabric_exec" };
+    const { agent, faux } = setup(await openNodeJsonlStorage(dir, BACKGROUND_CONTEXT), [program], undefined, journalDirectory);
+    faux.setResponses([fauxAssistantMessage(fauxToolCall("fabric_exec", {}, { id: "program" }), { stopReason: "toolUse" }), fauxAssistantMessage("done")]);
+    await agent.prompt("go");
+    expect(paths).toHaveLength(1);
+    expect(existsSync(paths[0]!)).toBe(false);
+
+    // An interrupted call keeps its journal until the resumed result commits.
+    const resumed = await interruptFabricExec(async fence => {
+      await fence!.accept(); await fence!.journal!.accept("d".repeat(64));
+      await mkdir(join(fence!.journal!.path, ".."), { recursive: true }); await writeFile(fence!.journal!.path, "secret\n");
+      paths.push(fence!.journal!.path);
+    }, 1, true);
+    expect(resumed.seen[1]!.journal).toMatchObject({ path: paths[1], digest: "d".repeat(64) });
+    expect(resumed.results).toHaveLength(1);
+    expect(existsSync(paths[1]!)).toBe(false);
+  });
+
+  it("deletes the fabric_exec journal when the call is aborted", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "durable-agent-")); dirs.push(dir);
+    const journalDirectory = join(dir, "fabric-journal");
+    const entered = deferred(); let file = "";
+    const program: AgentTool = { ...tool(async (_id, _args, signal) => {
+      file = fenceStore()!.getStore()!.journal!.path;
+      await mkdir(journalDirectory, { recursive: true }); await writeFile(file, "secret tool output\n");
+      entered.resolve(); await new Promise<void>(r => signal?.addEventListener("abort", () => r(), { once: true }));
+      return { content: [], details: {} };
+    }), name: "fabric_exec" };
+    const { agent, faux } = setup(await openNodeJsonlStorage(dir, BACKGROUND_CONTEXT), [program], undefined, journalDirectory);
+    faux.setResponses([fauxAssistantMessage(fauxToolCall("fabric_exec", {}, { id: "program" }), { stopReason: "toolUse" })]);
+    const run = agent.prompt("go"); await entered.promise; agent.abort(); await run; await agent.waitForIdle();
+    expect(file).not.toBe("");
+    expect(existsSync(file)).toBe(false);
   });
 
   it("offers the rerun fence only to fabric_exec", async () => {

@@ -73,9 +73,16 @@ session asks its person or raises a root-held decision. Fabric also
 refuses to resume, and runs nothing, when the program or its settings changed, the runtime or a pinned engine version
 changed, the program stops repeating its recorded calls, the journal is missing
 or damaged, or a recorded result named work such as a child agent or background
-task that does not survive a restart. A call resumes at most three times. The
-journal holds tool results, so it is private to its owner (mode `0600`) and is
-deleted a day after its last write.
+task that does not survive a restart. A call resumes at most three times.
+
+The journal holds the program's identity digest, its random seed and start
+time, and for every host call its reference, an argument digest, and the full
+result or error the program received. Tool output can include secrets, so the
+journal is private to its owner (mode `0600`). The worker deletes it as soon as
+the call's final result is committed to the durable store, whether the call
+succeeded, failed, was stopped as interrupted, or was aborted. It is never
+deleted before that commit. If the worker crashes between the commit and the
+delete, a sweep at worker start deletes any journal a day after its last write.
 
 Monty programs keep the earlier fence. Before the first effect, Fabric arms the
 fence and the worker commits that mark. On recovery, an accepted fence that was
