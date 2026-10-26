@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { assertWorkerRuntime, writeWorkerStartupFailure } from "./worker/startup.js";
 import { MODEL_PIN_ENV, MODEL_PIN_EXIT_CODE, modelPinFailure, parseModelPinViolation } from "./agents/model-pin.js";
+import { createDurableSessionFile } from "./durable/worker-role-seed.js";
 import { explainMissingInstall } from "./worker/missing-install.js";
 import { normalizeRunDisplay } from "./run-display.js";
 
@@ -211,6 +212,16 @@ const terminateChild = (child: ChildProcess, signal: NodeJS.Signals): void => {
 
 
 
+/**
+ * A pi-durable child's journal restores messages only. Without a session file,
+ * a resumed child loses every entry extensions saved (custom entries, context
+ * edits, compaction). Keep a private file with the run so retention removes it
+ * with the run. The file is created complete (Pi header plus worker-role entry)
+ * and a relaunched attempt reopens it: never truncate.
+ */
+const durableSessionFile = (statusFile: string, cwd: string): string =>
+  createDurableSessionFile(path.dirname(statusFile), cwd);
+
 let crashContext: { statusFile: string; record: AgentRunRecord } | undefined;
 let runRecordHelpers: WorkerRunRecordModule | undefined;
 let terminalWritten = false;
@@ -323,7 +334,14 @@ const main = async (): Promise<void> => {
     ? fs.readFileSync(options.schemaFile, "utf8")
     : undefined;
   const piArguments = ["--mode", "rpc"];
-  if (options.sessionFile) piArguments.push("--session", options.sessionFile);
+  // The worker never edits a session file. A pi-durable child without a
+  // session file gets a new one that already carries the worker-role entry as
+  // its tree root (src/durable/worker-role-seed.ts); a fork or handoff seed
+  // already carries it (the manager asked the seed writer for it); a
+  // caller-supplied file is used as it is.
+  const piSessionFile = options.sessionFile ??
+    (options.runner === "pi-durable" ? durableSessionFile(options.statusFile, options.cwd) : undefined);
+  if (piSessionFile) piArguments.push("--session", piSessionFile);
   else piArguments.push("--no-session");
   if (!options.extensions) {
     piArguments.push("--no-extensions");
