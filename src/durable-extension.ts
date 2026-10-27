@@ -115,6 +115,9 @@ export class FabricDurableRefusal extends Error {
   override readonly name = "FabricDurableRefusal";
 }
 
+/** A nested tool's own error text, shown to the program as the tool reported it. */
+class NestedToolError extends Error {}
+
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -286,7 +289,7 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
         throw new FabricDurableRefusal(`Fabric action ${resolved} failed`);
       }
     };
-    return async (ref, args) => {
+    const dispatch: FabricHostCall = async (ref, args) => {
       switch (ref) {
         case "fabric.$piAllTools":
           return (await tools()).map((tool) => ({ name: tool.name, description: tool.description }));
@@ -308,7 +311,7 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
           const result = await api.executeTool(tool.name, copied, context);
           const outcome = outcomeOf(tool.name, tool.structuredOutputSchema !== undefined, result);
           call.ok = outcome.ok;
-          if (!outcome.ok) throw new Error(outcome.message);
+          if (!outcome.ok) throw new NestedToolError(outcome.message);
           return outcome.value;
         }
         case "fabric.$providers":
@@ -318,6 +321,17 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
         default:
           // pi.*, agents.*, memory.*, mcp.*, jev.*, mesh.*, native.*, models and every other fabric.$ ref.
           throw new FabricDurableRefusal(`Not available in this durable host: ${ref}`);
+      }
+    };
+    // Only refusals and a tool's own error text reach the program; any other host error (storage, a bug, an
+    // abort) may hold paths or secrets, so it goes to onError and the program sees a fixed message.
+    return async (ref, args, ...rest) => {
+      try {
+        return await dispatch(ref, args, ...rest);
+      } catch (error) {
+        if (error instanceof FabricDurableRefusal || error instanceof NestedToolError) throw error;
+        report(error, info);
+        throw new FabricDurableRefusal("Fabric host call failed");
       }
     };
   };
