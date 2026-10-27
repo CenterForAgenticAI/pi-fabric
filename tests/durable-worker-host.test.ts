@@ -248,17 +248,24 @@ describe("durable native RPC worker", () => {
 
   it("stops at an effect the crash interrupted and never repeats it", async () => {
     const effect = path.join(root, "fabric-uncertain", "effect.txt");
-    // A Node script records its effect, then hangs until the kill lands mid-call.
+    // A Node script records its effect and pid, then hangs until the kill lands mid-call.
+    // Killing the worker does not reach the command it started, so the test kills the
+    // script itself, and the script exits on its own if the test dies first.
     // It avoids shell syntax that differs between POSIX shells and Windows.
     fs.mkdirSync(path.dirname(effect), { recursive: true });
     const hang = path.join(path.dirname(effect), "hang.mjs");
-    fs.writeFileSync(hang, `import fs from "node:fs";\nfs.appendFileSync(${JSON.stringify(effect)}, "effect\\n");\nsetInterval(() => {}, 1000);\n`);
+    const hangPid = path.join(path.dirname(effect), "hang.pid");
+    fs.writeFileSync(hang, `import fs from "node:fs";\nfs.writeFileSync(${JSON.stringify(hangPid)}, String(process.pid));\nfs.appendFileSync(${JSON.stringify(effect)}, "effect\\n");\nsetTimeout(() => process.exit(0), 60000);\n`);
     const code = `await pi.bash({ cmd: ${JSON.stringify(`"${process.execPath}" "${hang}"`)}, timeout: 120 });\nreturn "program-done";`;
     const first = await fabricWorker("fabric-uncertain", code);
     try {
       first.send({ type: "prompt", id: "uncertain", message: "fabric fixture" });
       await expect.poll(() => fs.existsSync(effect), { timeout: 15000 }).toBe(true);
-    } finally { await first.stop(true); }
+    } finally {
+      await first.stop(true);
+      const pid = fs.existsSync(hangPid) ? Number(fs.readFileSync(hangPid, "utf8")) : 0;
+      if (pid > 0) try { process.kill(pid, "SIGKILL"); } catch { /* It may already have exited. */ }
+    }
     const resumed = await fabricWorker("fabric-uncertain", code);
     try {
       resumed.send({ type: "prompt", id: "uncertain", message: "fabric fixture" });
