@@ -767,9 +767,6 @@ export class FabricExecutionService {
       const providers = ["pi", "extensions"];
       const actions = (await Promise.all(providers.filter(provider => this.registry.has(provider))
         .map(provider => this.registry.list({provider, limit: 1_000}, context)))).flat();
-      if (actions.length === 0 && this.registry.has("mcp")) {
-        actions.push(...await this.registry.list({ provider: "mcp", limit: 1_000 }, context));
-      }
       const refs = new Set(actions.map(action => action.ref));
       // Host registrations beyond the Fabric discovery page remain reachable.
       for (const definition of definitions) {
@@ -777,6 +774,12 @@ export class FabricExecutionService {
         if (refs.has(ref)) continue;
         refs.add(ref);
         try { actions.push(await this.registry.describe(ref, context)); } catch { /* hidden or unavailable */ }
+      }
+      // Registered host definitions may resolve to Pi-owned MCP actions even
+      // when pi/extensions list no actions. Resolve them before the fallback
+      // so discovery never starts a redundant ambient MCP transport.
+      if (actions.length === 0 && this.registry.has("mcp")) {
+        actions.push(...await this.registry.list({ provider: "mcp", limit: 1_000 }, context));
       }
       const entries = api.nativeToolCatalog(actions.filter(action => effectiveFullCodeMode || !fullCodeProvider(action.provider)), definitions, nativeMcpIdentity);
       nativeCallRefs.clear();
