@@ -25,6 +25,34 @@ const createStore = (options?: MeshStoreOptions): MeshStore => {
   return new MeshStore(root, 64 * 1024, 100, options);
 };
 
+type TracedIo =
+  | { op: "fsync"; path: string; flags: string }
+  | { op: "rename"; from: string; to: string };
+
+/** Records fsync and rename calls in order, resolving each fsynced descriptor to its path and open flags. */
+const traceDurableIo = (): TracedIo[] => {
+  const trace: TracedIo[] = [];
+  const descriptors = new Map<number, { path: string; flags: string }>();
+  const realOpen = fs.openSync;
+  vi.spyOn(fs, "openSync").mockImplementation(((target: fs.PathLike, flags?: unknown, ...rest: unknown[]) => {
+    const descriptor = (realOpen as (...args: unknown[]) => number)(target, flags, ...rest);
+    descriptors.set(descriptor, { path: String(target), flags: String(flags ?? "r") });
+    return descriptor;
+  }) as typeof fs.openSync);
+  const realFsync = fs.fsyncSync;
+  vi.spyOn(fs, "fsyncSync").mockImplementation((descriptor: number) => {
+    const opened = descriptors.get(descriptor) ?? { path: "?", flags: "?" };
+    trace.push({ op: "fsync", path: opened.path, flags: opened.flags });
+    realFsync(descriptor);
+  });
+  const realRename = fs.renameSync;
+  vi.spyOn(fs, "renameSync").mockImplementation((from: fs.PathLike, to: fs.PathLike) => {
+    trace.push({ op: "rename", from: String(from), to: String(to) });
+    realRename(from, to);
+  });
+  return trace;
+};
+
 afterEach(() => {
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
@@ -295,6 +323,49 @@ describe("MeshStore", () => {
     expect(tail.events.at(-1)?.text).toBe("event-29");
     expect(recent.map((event) => event.text)).toEqual(["event-27", "event-28", "event-29"]);
     expect(tail.nextOffset).toBe(store.latestOffset());
+  });
+
+  // Windows cannot open a directory for fsync (fsyncDirectory ignores EPERM), so the
+  // post-rename root flush this test requires is never observable there.
+  it.skipIf(process.platform === "win32")("flushes durable compaction before and after rename", async () => {
+    const meshRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-mesh-bounded-"));
+    roots.push(meshRoot);
+    const store = new MeshStore(meshRoot, 512, 100, {
+      durability: "fsync",
+      maxEventLogBytes: 2_000,
+      retainedEventLogBytes: 800,
+    });
+    const eventsPath = path.join(meshRoot, "events.jsonl");
+    const trace = traceDurableIo();
+    for (let index = 0; index < 30; index += 1) {
+      await store.publish({ topic: "team.auth", from: identity, text: `event-${index}` });
+    }
+    expect(fs.statSync(eventsPath).size).toBeLessThanOrEqual(2_000);
+
+    const renameIndex = trace.findIndex((entry) => entry.op === "rename" && entry.to === eventsPath);
+    expect(renameIndex).toBeGreaterThanOrEqual(0);
+    const rename = trace[renameIndex] as Extract<TracedIo, { op: "rename" }>;
+    expect(rename.from.startsWith(eventsPath + ".")).toBe(true);
+    expect(rename.from.endsWith(".tmp")).toBe(true);
+    // The compaction temp file is flushed before it replaces the log...
+    expect(trace.slice(0, renameIndex)).toContainEqual({ op: "fsync", path: rename.from, flags: "wx" });
+    // ...and the root directory is flushed right after, before any later write.
+    expect(trace[renameIndex + 1]).toEqual({ op: "fsync", path: meshRoot, flags: "r" });
+  });
+
+  it("flushes the repaired event log in durable mode", async () => {
+    const store = createStore({ durability: "fsync" });
+    await store.publish({ topic: "team.auth", from: identity, text: "one" });
+    const eventsPath = path.join(store.root, "events.jsonl");
+    fs.appendFileSync(eventsPath, '{"sequence":999');
+
+    const trace = traceDurableIo();
+    await store.publish({ topic: "team.auth", from: identity, text: "two" });
+
+    // The repair truncates through an "r+" descriptor; appends use "a", so this
+    // entry is the repair flush and not the later append flush.
+    expect(trace).toContainEqual({ op: "fsync", path: eventsPath, flags: "r+" });
+    expect(store.read().map((event) => event.text)).toEqual(["one", "two"]);
   });
 
   it("caps deleted-key version tombstones", async () => {
