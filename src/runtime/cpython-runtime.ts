@@ -197,7 +197,9 @@ export class CPythonRuntime implements FabricKernelRuntime {
       const fail = (message: string): void => void finish({ value: undefined, terminationReason: "runtime_error", error: message });
       const scheduleDeadline = (): void => {
         if (deadline) clearTimeout(deadline);
-        if (settled || !Number.isFinite(deadlineAt)) return;
+        if (settled) return;
+        options.onDeadline?.(Number.isFinite(deadlineAt) ? deadlineAt : undefined);
+        if (!Number.isFinite(deadlineAt)) return;
         deadline = setTimeout(() => void finish({
           value: undefined, terminationReason: "timed_out", error: `Execution timed out after ${deadlineAt - startedAt}ms`,
         }), Math.max(0, deadlineAt - Date.now()));
@@ -208,6 +210,7 @@ export class CPythonRuntime implements FabricKernelRuntime {
         suspend: () => {
           if (deadline) clearTimeout(deadline);
           deadlineAt = Infinity;
+          options.onDeadline?.(undefined);
         },
         resume: (remainingMs) => {
           deadlineAt = Date.now() + remainingMs;

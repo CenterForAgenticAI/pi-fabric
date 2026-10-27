@@ -37,6 +37,9 @@ export interface FabricSandboxOptions {
   /** True for a host call that waits for a person (executor.humanWaitRefs).
    * The program deadline is paused while any such call is in flight. */
   isHumanWaitHostCall?(ref: string, args: Record<string, unknown>): boolean;
+  /** Receives the running program deadline (epoch ms) each time it is set,
+   * raised or resumed, and undefined while a human wait pauses it. */
+  onDeadline?(deadlineAt: number | undefined): void;
   /** Declared core override fields must not be consumed as built-in aliases. */
   piToolCanonicalFields?: Record<string, string[]>;
   /**
