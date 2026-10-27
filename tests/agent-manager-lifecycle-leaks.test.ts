@@ -52,4 +52,31 @@ describe("AgentManager lifecycle leaks", () => {
     const result = await manager.run({ task: "second", extensions: false });
     expect(result.status).toBe("completed");
   });
+
+  it("resolves a pending wait when settlement cleanup fails", async () => {
+    const manager = setup(tempRoot());
+    const handle = await manager.spawn({ task: "HANG", extensions: false });
+    // Settlement removes images.json; a directory there makes that removal throw.
+    fs.mkdirSync(path.join(manager.runDirectory(handle.id)!, "images.json", "blocker"), { recursive: true });
+    const pending = manager.wait(handle.id);
+
+    const stopped = await manager.stop(handle.id);
+
+    expect(stopped.status).toBe("stopped");
+    await expect(pending).resolves.toMatchObject({ id: handle.id, status: "stopped" });
+  });
+
+  it("settles a run as failed when its monitor throws", async () => {
+    const manager = setup(tempRoot(), "tests/fixtures/fake-worker-transport-death.mjs");
+    const handle = await manager.spawn({ task: "Terminal boot death", extensions: false });
+    // The worker exits without writing status.json. With a directory in its
+    // place, the startup retry cannot rewrite the record and throws out of
+    // the monitor loop.
+    fs.mkdirSync(path.join(manager.runDirectory(handle.id)!, "status.json", "blocker"), { recursive: true });
+
+    const result = await manager.wait(handle.id);
+
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("Agent monitor failed");
+  });
 });
