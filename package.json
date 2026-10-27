@@ -29,6 +29,10 @@
       "types": "./dist/durable.d.ts",
       "import": "./dist/durable.js"
     },
+    "./durable-extension": {
+      "types": "./dist/durable-extension.d.ts",
+      "import": "./dist/durable-extension.js"
+    },
     "./mcp": {
       "types": "./dist/mcp.d.ts",
       "import": "./dist/mcp.js"

@@ -20,6 +20,8 @@ const primaryEntryPoints = [
   "src/runners.ts",
   // Opt-in durable Pi adapter; never reachable from the extension entry.
   "src/durable.ts",
+  // fabric_exec as a pi-durable registry extension for hosts without Pi.
+  "src/durable-extension.ts",
   "src/jev.ts",
   "src/assessment.ts",
   // Public `pi-fabric/scope`; also the extension's first-use scope parser.

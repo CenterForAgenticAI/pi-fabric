@@ -24,6 +24,7 @@ const stable = [
   "core/provider-operations.js",
   "worker.js",
   "durable/worker.js",
+  "durable-extension.js",
   "residency/host.js",
   "compaction/hook.js",
   "core/action-registry.js",
