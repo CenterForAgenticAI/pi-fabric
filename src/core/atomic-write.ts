@@ -94,13 +94,20 @@ export const fsyncDirectory = (directory: string): void => {
  * existing directory costs nothing beyond the mkdir.
  */
 export const mkdirDurable = (directory: string, mode: number, fsync: boolean): void => {
-  const created = fs.mkdirSync(directory, { recursive: true, mode });
-  if (!fsync || created === undefined) return;
-  const first = path.resolve(created);
-  for (let current = path.resolve(directory); ; current = path.dirname(current)) {
-    fsyncDirectory(path.dirname(current));
-    if (current === first || path.dirname(current) === current) break;
+  if (!fsync) {
+    fs.mkdirSync(directory, { recursive: true, mode });
+    return;
   }
+  // Find the missing levels ourselves rather than comparing against the path
+  // mkdirSync returns: on Windows that path can use another spelling (8.3
+  // short names, case) than `directory`, and the walk would never stop.
+  const missing: string[] = [];
+  for (let current = path.resolve(directory); !fs.existsSync(current); current = path.dirname(current)) {
+    missing.push(current);
+    if (path.dirname(current) === current) break;
+  }
+  fs.mkdirSync(directory, { recursive: true, mode });
+  for (const created of missing) fsyncDirectory(path.dirname(created));
 };
 
 export const writeFileAtomic = (

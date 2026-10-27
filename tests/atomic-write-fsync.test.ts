@@ -54,7 +54,8 @@ describe("writeFileAtomic fsync", () => {
     expect(fs.readFileSync(target, "utf8")).toBe("two");
     expect(path.basename(flushed[0]!)).toMatch(/^value\.json\..+\.tmp$/);
     expect(flushed.slice(1)).toEqual([root]);
-    expect(fs.statSync(target).mode & 0o777).toBe(0o600);
+    // Windows does not keep POSIX permission bits.
+    if (process.platform !== "win32") expect(fs.statSync(target).mode & 0o777).toBe(0o600);
     expect(fs.readdirSync(root)).toEqual(["value.json"]);
   });
 
