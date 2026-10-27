@@ -36,7 +36,13 @@ const runProperties = {
   model: {
     type: "string",
     description:
-      "Pi provider/id copied from agents.models({ runner: \"pi\" }), a configured models.aliases name, or a search term resolved to the closest authenticated model (recency from pi-model-sort breaks ties). Reuse returned keys; never infer version numbers from agent names. Exact keys win; near-miss IDs resolve to the closest visible model on the same provider. Handles report the canonical model. Claude runtime value or Veda backend model/alias are forwarded verbatim.",
+      "Pi provider/id copied from agents.models({ runner: \"pi\" }), a configured models.aliases name, or a search term resolved to the closest authenticated model (recency from pi-model-sort breaks ties). Reuse returned keys; never infer version numbers from agent names. Exact keys win; near-miss IDs resolve to the closest visible model on the same provider. Handles report the canonical model. Claude runtime value or Veda backend model/alias are forwarded verbatim. Set modelMatch: \"exact\" to turn off aliases and near-miss resolution.",
+  },
+  modelMatch: {
+    type: "string",
+    enum: ["exact"],
+    description:
+      "Pi runners only (pi, pi-durable). \"exact\" requires model as a provider/id listed by agents.models({ runner: \"pi\" }) and runs exactly that model: no models.aliases step (an alias named like the model is ignored), no closest or fuzzy match, and no alias thinking level. An unlisted model or any other selector is refused before a child starts, as is any other runner. Omit it for the default resolution.",
   },
   persona: {
     type: "string",
@@ -365,12 +371,19 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
   {
     name: "models",
     description:
-      "List models exposed by the selected runner. Claude models are enumerated from the installed Claude Code runtime, not hard-coded.",
+      "List models exposed by the selected runner. Claude models are enumerated from the installed Claude Code runtime, not hard-coded. Pass model to look up one exact key instead of reading the whole list.",
     inputSchema: {
       type: "object",
       properties: {
         runner: { type: "string", pattern: RUNNER_ID_SOURCE, maxLength: 64 },
         refresh: { type: "boolean" },
+        model: {
+          type: "string",
+          minLength: 1,
+          maxLength: 256,
+          description:
+            "Exact model key (the key field of an unfiltered entry, e.g. provider/id or claude/<value>). Returns only the entries whose key matches exactly and case-sensitively, with no alias or fuzzy resolution; an unknown key returns [].",
+        },
       },
       additionalProperties: false,
     },
