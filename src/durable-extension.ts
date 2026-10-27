@@ -26,6 +26,7 @@ import type {
   ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
+import { callPreview, FabricDurableJournal, FabricDurableJournalRefusal, FABRIC_DURABLE_JOURNAL_FORMAT, maybeRanReport } from "./durable-journal.js";
 import { describeFabricActionDeclaration } from "./runtime/dynamic-guest-types.js";
 import type { FabricHostCall, FabricKernelRuntime, FabricSandboxOptions, FabricSandboxResult } from "./runtime/kernel.js";
 
@@ -35,10 +36,21 @@ export type FabricDurableAction = (
   call: { readonly api: ToolExecutionApi; readonly context: Context },
 ) => unknown | Promise<unknown>;
 
+/**
+ * A granted action with its replay rule. `repeatable: true` says running it twice does no harm (a read), so after a
+ * restart an interrupted call simply runs again. Otherwise it counts as an effect: an intent is recorded before it runs,
+ * and if a restart interrupts it, the program stops and the model is told it may have run.
+ */
+export interface FabricDurableActionEntry {
+  readonly run: FabricDurableAction;
+  readonly repeatable?: boolean;
+}
+
 /** A provider the host grants to programs, reachable as `<name>.<action>(args)` or `fabric.tools.call({ ref: "<name>.<action>", args })`. */
 export interface FabricDurableProvider {
   readonly description?: string;
-  readonly actions: Readonly<Record<string, FabricDurableAction>>;
+  /** A bare function is an effect (not repeatable). */
+  readonly actions: Readonly<Record<string, FabricDurableAction | FabricDurableActionEntry>>;
 }
 
 /** Where an internal failure happened, for `onError`. Holds no program source or arguments. */
@@ -106,6 +118,14 @@ const DEFAULT_SEARCH_LIMIT = 8;
 const MAX_LISTED_CALLS = 20;
 const CHARS_PER_TOKEN = 4;
 const TEXT_OUTPUT_SCHEMA = { type: "string" } as const;
+/** pi-durable's diagnostic code for a nested call a restart interrupted after it may have started its effect. */
+const INTERRUPTED_CODE = "interrupted";
+
+/**
+ * Names what replays a recorded run: the journal format, this package's version and the guest engine. A resume
+ * recorded under another value is refused. tests/durable-extension-replay.test.ts checks it against package.json.
+ */
+export const FABRIC_DURABLE_ENGINE = `${FABRIC_DURABLE_JOURNAL_FORMAT}/pi-fabric@0.127.1/quickjs-singlefile-0.32`;
 
 /**
  * Refusal raised to the program; its message reaches the program as an Error. A granted provider action may throw
@@ -114,6 +134,9 @@ const TEXT_OUTPUT_SCHEMA = { type: "string" } as const;
 export class FabricDurableRefusal extends Error {
   override readonly name = "FabricDurableRefusal";
 }
+
+/** Thrown into the program after the run was stopped; the model sees the stop report instead. */
+class ProgramStop extends Error {}
 
 /** A nested tool's own error text, shown to the program as the tool reported it. */
 class NestedToolError extends Error {}
@@ -256,7 +279,14 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
     return JSON.parse(json) as JsonObject;
   };
 
-  const hostCall = (api: ToolExecutionApi, context: Context, calls: CallRecord[]): FabricHostCall => {
+  const hostCall = (
+    api: ToolExecutionApi,
+    context: Context,
+    calls: CallRecord[],
+    journal: FabricDurableJournal | undefined,
+    stop: (report: string) => never,
+    stopped: () => boolean,
+  ): FabricHostCall => {
     const info = { conversationId: api.conversationId, callId: api.callId };
     // Per program: the catalog is read from this call's own conversation and never shared.
     let catalog: Promise<ToolRegistration[]> | undefined;
@@ -266,20 +296,23 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
       if (tool === undefined) throw new FabricDurableRefusal(`Tool not granted by this host: ${String(toolNameArg)}`);
       return tool;
     };
-    const grantedAction = (ref: unknown): { ref: string; action: FabricDurableAction } => {
+    const grantedAction = (ref: unknown): { ref: string; action: FabricDurableAction; repeatable: boolean } => {
       if (typeof ref !== "string") throw new FabricDurableRefusal("Fabric ref must be a string");
       const dot = ref.indexOf(".");
       const provider = dot < 0 ? ref : ref.slice(0, dot);
       const actionName = dot < 0 ? "" : ref.slice(dot + 1);
       const grantedProvider = providers.get(provider);
       if (grantedProvider === undefined) throw new FabricDurableRefusal(`Fabric provider not granted by this host: ${provider}`);
-      const action = ACTION_NAME.test(actionName) && Object.hasOwn(grantedProvider.actions, actionName) ? grantedProvider.actions[actionName] : undefined;
-      if (typeof action !== "function") throw new FabricDurableRefusal(`Fabric action not granted by this host: ${ref}`);
-      return { ref, action };
+      const entry = ACTION_NAME.test(actionName) && Object.hasOwn(grantedProvider.actions, actionName) ? grantedProvider.actions[actionName] : undefined;
+      const action = typeof entry === "function" ? entry : isObject(entry) && typeof entry.run === "function" ? entry.run as FabricDurableAction : undefined;
+      if (action === undefined) throw new FabricDurableRefusal(`Fabric action not granted by this host: ${ref}`);
+      return { ref, action, repeatable: typeof entry === "object" && entry.repeatable === true };
     };
-    const runAction = async (ref: unknown, args: unknown): Promise<unknown> => {
-      const { ref: resolved, action } = grantedAction(ref);
+    const runAction = async (ref: unknown, args: unknown, seq: number | undefined): Promise<unknown> => {
+      const { ref: resolved, action, repeatable } = grantedAction(ref);
       const copied = copyArguments(args, resolved);
+      // An effect is recorded before it runs, so a resume knows it may have run and does not repeat it.
+      if (!repeatable && journal !== undefined && seq !== undefined) await journal.intent(seq, resolved);
       try {
         const value = await action(copied, { api, context });
         return value === undefined ? null : JSON.parse(JSON.stringify(value)) as unknown;
@@ -289,7 +322,7 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
         throw new FabricDurableRefusal(`Fabric action ${resolved} failed`);
       }
     };
-    const dispatch: FabricHostCall = async (ref, args) => {
+    const dispatch: FabricHostCall = async (ref, args, _signal, _humanWait, call) => {
       switch (ref) {
         case "fabric.$piAllTools":
           return (await tools()).map((tool) => ({ name: tool.name, description: tool.description }));
@@ -306,18 +339,32 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
         case "fabric.$nativeTool": {
           const tool = await granted(args.name);
           const copied = copyArguments(args.args, tool.name);
-          const call: CallRecord = { name: tool.name };
-          calls.push(call);
-          const result = await api.executeTool(tool.name, copied, context);
+          const record: CallRecord = { name: tool.name };
+          calls.push(record);
+          // The issue number keys the nested call, so a resumed program gets the same call back, finished or still
+          // running, and never starts a second one.
+          let result: NestedToolExecutionResult;
+          try {
+            result = await api.executeTool(tool.name, copied, context, call === undefined ? {} : { key: `f${call.seq}` });
+          } catch (error) {
+            if (call !== undefined && error instanceof Error && /already made with another tool or other arguments/.test(error.message)) {
+              stop(`fabric_exec could not resume after an interruption: the program did not repeat its recorded call ${call.seq + 1}. No call after the divergence ran.`);
+            }
+            throw error;
+          }
+          if (result.diagnostics.some((item) => item.code === INTERRUPTED_CODE)) {
+            // A restart cut this call off after it may have taken effect: stop rather than guess.
+            stop(maybeRanReport(callPreview("fabric.$nativeTool", { name: tool.name, args: copied }), journal?.replayedCalls() ?? 0));
+          }
           const outcome = outcomeOf(tool.name, tool.structuredOutputSchema !== undefined, result);
-          call.ok = outcome.ok;
+          record.ok = outcome.ok;
           if (!outcome.ok) throw new NestedToolError(outcome.message);
           return outcome.value;
         }
         case "fabric.$providers":
           return [...providers].map(([provider, entry]) => ({ name: provider, description: entry.description ?? "", actions: Object.keys(entry.actions) }));
         case "fabric.$call":
-          return runAction(args.ref, args.args);
+          return runAction(args.ref, args.args, call?.seq);
         default:
           // pi.*, agents.*, memory.*, mcp.*, jev.*, mesh.*, native.*, models and every other fabric.$ ref.
           throw new FabricDurableRefusal(`Not available in this durable host: ${ref}`);
@@ -326,17 +373,21 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
     // Only refusals and a tool's own error text reach the program; any other host error (storage, a bug, an
     // abort) may hold paths or secrets, so it goes to onError and the program sees a fixed message.
     return async (ref, args, ...rest) => {
+      // Once the run is stopped, nothing more reaches the host, even if the program caught the stop.
+      if (stopped()) throw new ProgramStop("fabric_exec stopped");
       try {
         return await dispatch(ref, args, ...rest);
       } catch (error) {
-        if (error instanceof FabricDurableRefusal || error instanceof NestedToolError) throw error;
+        if (error instanceof FabricDurableRefusal || error instanceof NestedToolError || error instanceof ProgramStop) throw error;
         report(error, info);
         throw new FabricDurableRefusal("Fabric host call failed");
       }
     };
   };
 
-  const formatResult = (result: FabricSandboxResult, calls: readonly CallRecord[]): ToolExecutionResult => {
+  const formatResult = (result: FabricSandboxResult, calls: readonly CallRecord[], stopReport: string | undefined): ToolExecutionResult => {
+    // A resume that stopped (a call that may have run, a divergence) shows only its report.
+    if (stopReport !== undefined) return { output: [{ type: "text", text: cut(stopReport, maxResultChars, `${toolName} output`) }], isError: true };
     const parts = [...result.logs];
     const failed = result.terminationReason !== "completed";
     if (failed) {
@@ -363,8 +414,9 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
       code: Type.String({ description: "TypeScript function body; top-level await and return are supported." }),
       payloads: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Named strings readable as π.<key>." })),
     }),
-    // A program's side effects are not journaled: never rerun one after a restart.
-    replay: "unsafe",
+    // Rerun after a restart: the journal serves every recorded result, nested calls keep their keys, and a call that
+    // may have taken effect stops the program instead of running twice.
+    replay: "safe",
     // Programs cannot start programs.
     callers: ["model"],
     // This tool cuts its own output with a notice; the Harness limit only stops a runaway.
@@ -374,7 +426,31 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
         const input = args as { code: string; payloads?: Record<string, string> };
         const runtime = options.runtime ?? await loadKernel(options.quickJsWasmModule);
         const calls: CallRecord[] = [];
+        const info = { conversationId: api.conversationId, callId: api.callId };
+        const identity = {
+          code: input.code,
+          payloads: input.payloads ?? {},
+          limits: [timeoutMs, memoryLimitBytes, maxLogChars],
+          tools: toolAllowlist === undefined ? null : [...toolAllowlist].sort(),
+          providers: [...providers].map(([provider, entry]) => [provider, Object.keys(entry.actions).sort()]),
+        };
+        let journal: FabricDurableJournal;
+        try {
+          journal = await FabricDurableJournal.open(api, context, identity, FABRIC_DURABLE_ENGINE, { onWriteError: (error) => report(error, info) });
+        } catch (error) {
+          if (error instanceof FabricDurableJournalRefusal) return { output: [{ type: "text", text: error.message }], isError: true };
+          throw error;
+        }
+        let stopReport: string | undefined;
+        const halt = new AbortController();
+        const stop = (text: string): never => {
+          stopReport ??= text;
+          halt.abort(new Error(text));
+          throw new ProgramStop(text);
+        };
+        const signal = context.abortSignal === undefined ? halt.signal : AbortSignal.any([context.abortSignal, halt.signal]);
         const sandbox: FabricSandboxOptions = {
+          journal,
           timeoutMs,
           memoryLimitBytes,
           maxLogChars,
@@ -384,10 +460,10 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
           nativeStoreEnabled: false,
           providerGlobals: [...providers.keys()],
           ...(input.payloads === undefined ? {} : { strings: { ...input.payloads } }),
-          ...(context.abortSignal === undefined ? {} : { signal: context.abortSignal }),
+          signal,
         };
-        const result = await runtime.execute(input.code, hostCall(api, context, calls), sandbox);
-        return formatResult(result, calls);
+        const result = await runtime.execute(input.code, hostCall(api, context, calls, journal, stop, () => stopReport !== undefined), sandbox);
+        return formatResult(result, calls, stopReport ?? journal.stopReport);
       } catch (error) {
         report(error, { conversationId: api.conversationId, callId: api.callId });
         return internalError;

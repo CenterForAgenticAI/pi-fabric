@@ -1,5 +1,5 @@
 // F-067: what createFabricExtension does across conversations, restarts, cancellation,
-// fork and compaction, and on Node and Bun (criteria C11, D13-D16 and E18 of the F-067 brief).
+// fork and compaction, and on Node and Bun (criteria C11, D13-D16 and E18 of the F-067 brief; D13 is now the replay-safe resume).
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -81,15 +81,14 @@ describe("C11: no state crosses conversations or tenants in one process", () => 
   }, 30_000);
 });
 
-describe("D13: fabric_exec is replay-unsafe across a real process kill", () => {
-  it("ends the interrupted program as interrupted, reruns no nested call, and the conversation continues", async () => {
-    const root = tempRoot("kill");
-    const db = path.join(root, "harness.db");
-    const effects = path.join(root, "effects");
-    const ready = path.join(root, "ready");
-    const script = path.join(root, "child.ts");
-    const dependency = (name: string) => JSON.stringify(path.join(project, "node_modules", name));
-    fs.writeFileSync(script, `
+/** One child process that starts a fabric_exec program and dies inside its second nested call. */
+const killMidProgram = async (root: string, secondReplay: "safe" | "unsafe") => {
+  const db = path.join(root, "harness.db");
+  const effects = path.join(root, "effects");
+  const ready = path.join(root, "ready");
+  const script = path.join(root, "child.ts");
+  const dependency = (name: string) => JSON.stringify(path.join(project, "node_modules", name));
+  fs.writeFileSync(script, `
 import fs from "node:fs";
 import { BACKGROUND_CONTEXT as ctx } from ${dependency("@earendil-works/chord/dist/context/index.js")};
 import { Type, createModels, fauxProvider, fauxAssistantMessage, fauxToolCall } from ${dependency("@earendil-works/pi-ai/dist/index.js")};
@@ -100,82 +99,117 @@ const models = createModels();
 const faux = fauxProvider({ provider: "test", models: [{ id: "scripted" }] });
 models.setProvider(faux.provider);
 faux.setResponses([fauxAssistantMessage(fauxToolCall("fabric_exec", {
-  code: "const a = await tools.effect({ n: 1 }); const b = await tools.effect({ n: 2 }); return [a, b];",
+  code: "const a = await tools.first({ n: 1 }); const b = await tools.second({ n: 2 }); return [a, b, Date.now() > 0];",
 }, { id: "call_kill" }), { stopReason: "toolUse" })]);
 const registry = createRegistry();
-registry.install(defineExtension({ name: "host-tools", tools: [defineTool({ name: "effect", description: "effect",
-  parameters: Type.Object({ n: Type.Number() }),
-  execute: async (args) => {
-    fs.appendFileSync(${JSON.stringify(effects)}, "effect " + args.n + "\\n");
-    // The second call never returns: the process dies inside it.
-    if (args.n === 2) { fs.writeFileSync(${JSON.stringify(ready)}, "1"); await new Promise(() => {}); }
-    return { output: [{ type: "text", text: "done " + args.n }] };
-  } })] }));
+const log = (line) => fs.appendFileSync(${JSON.stringify(effects)}, line + "\\n");
+registry.install(defineExtension({ name: "host-tools", tools: [
+  defineTool({ name: "first", description: "first", parameters: Type.Object({ n: Type.Number() }),
+    execute: async (args) => { log("first " + args.n); return { output: [{ type: "text", text: "done " + args.n }] }; } }),
+  defineTool({ name: "second", description: "second", replay: ${JSON.stringify(secondReplay)}, parameters: Type.Object({ n: Type.Number() }),
+    execute: async (args) => {
+      log("second " + args.n);
+      // The process dies inside this call.
+      fs.writeFileSync(${JSON.stringify(ready)}, "1"); await new Promise(() => {});
+    } }),
+] }));
 registry.install(createFabricExtension({ timeoutMs: 60000 }));
 const harness = await Harness.open(await openNodeSqliteStorage(${JSON.stringify(db)}), { models, registry }, ctx);
 const conversation = await harness.root(ctx, { agent: { model: { provider: "test", modelId: "scripted" } } });
 await conversation.submit({ type: "input", content: "go" }, ctx);
 setInterval(() => {}, 1000);
 `);
-    const child = spawn("bun", [script], { stdio: ["ignore", "ignore", "pipe"] });
-    let errors = "";
-    child.stderr.on("data", (chunk) => { errors = (errors + String(chunk)).slice(-4000); });
-    const exited = once(child, "exit");
-    try {
-      const deadline = Date.now() + 20_000;
-      while (!fs.existsSync(ready)) {
-        if (child.exitCode !== null || Date.now() > deadline) throw new Error(`Child did not reach the second call: ${errors}`);
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-    } finally {
-      child.kill("SIGKILL");
-      await exited;
+  const child = spawn("bun", [script], { stdio: ["ignore", "ignore", "pipe"] });
+  let errors = "";
+  child.stderr.on("data", (chunk) => { errors = (errors + String(chunk)).slice(-4000); });
+  const exited = once(child, "exit");
+  try {
+    const deadline = Date.now() + 20_000;
+    while (!fs.existsSync(ready)) {
+      if (child.exitCode !== null || Date.now() > deadline) throw new Error(`Child did not reach the second call: ${errors}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    expect(child.signalCode).toBe("SIGKILL");
+  } finally {
+    child.kill("SIGKILL");
+    await exited;
+  }
+  expect(child.signalCode).toBe("SIGKILL");
+  return { db, effects };
+};
 
-    // Restart: same storage, same extensions, a model that answers the interrupted call.
-    const requests: Message[][] = [];
-    const models = createModels();
-    const faux = fauxProvider({ provider: "test", models: [{ id: "scripted" }] });
-    models.setProvider(faux.provider);
-    faux.setResponses(Array.from({ length: 4 }, () => (context: { messages: Message[] }) => {
-      requests.push([...context.messages]);
-      return fauxAssistantMessage(fauxText("after restart"));
-    }));
-    const registry = createRegistry();
-    registry.install(defineExtension({ name: "host-tools", tools: [defineTool({ name: "effect", description: "effect",
-      parameters: Type.Object({ n: Type.Number() }),
-      execute: async (args) => { fs.appendFileSync(effects, `REPLAY ${args.n}\n`); return ok("replayed"); } })] }));
-    registry.install(createFabricExtension({ timeoutMs: 60_000 }));
-    const storage = await openNodeSqliteStorage(db);
-    const harness = await Harness.open(storage, { models, registry }, ctx);
+/** Reopen the killed child's storage with the same extensions and let recovery run. */
+const reopen = async (db: string, effects: string, secondReplay: "safe" | "unsafe") => {
+  const requests: Message[][] = [];
+  const models = createModels();
+  const faux = fauxProvider({ provider: "test", models: [{ id: "scripted" }] });
+  models.setProvider(faux.provider);
+  faux.setResponses(Array.from({ length: 4 }, () => (context: { messages: Message[] }) => {
+    requests.push([...context.messages]);
+    return fauxAssistantMessage(fauxText("after restart"));
+  }));
+  const log = (line: string) => fs.appendFileSync(effects, `${line}\n`);
+  const registry = createRegistry();
+  registry.install(defineExtension({ name: "host-tools", tools: [
+    defineTool({ name: "first", description: "first", parameters: Type.Object({ n: Type.Number() }),
+      execute: async (args) => { log(`AGAIN first ${args.n}`); return ok("first again"); } }),
+    defineTool({ name: "second", description: "second", replay: secondReplay, parameters: Type.Object({ n: Type.Number() }),
+      execute: async (args) => { log(`AGAIN second ${args.n}`); return ok(`second rerun ${args.n}`); } }),
+  ] }));
+  registry.install(createFabricExtension({ timeoutMs: 60_000 }));
+  const storage = await openNodeSqliteStorage(db);
+  const harness = await Harness.open(storage, { models, registry }, ctx);
+  const conversation = await harness.root(ctx);
+  await conversation.waitForIdle(ctx);
+  const tasks = (await storage.scanTasks({ conversationId: conversation.id, kind: "pi.tool" }, 100, undefined, ctx)).items;
+  const result = requests[0]?.find((message) => message.role === "toolResult") as { toolCallId: string; isError: boolean; content: { text: string }[] } | undefined;
+  return { harness, conversation, tasks, requests, result, text: result?.content.map((item) => item.text).join("\n") ?? "" };
+};
+
+describe("D13: fabric_exec resumes from its journal across a real process kill", () => {
+  it("replays the finished call, gets the interrupted replay-safe call back, and finishes the program", async () => {
+    const root = tempRoot("kill-safe");
+    const { db, effects } = await killMidProgram(root, "safe");
+    const run = await reopen(db, effects, "safe");
     try {
-      const conversation = await harness.root(ctx);
-      await conversation.waitForIdle(ctx);
-      const tasks = (await storage.scanTasks({ conversationId: conversation.id, kind: "pi.tool" }, 100, undefined, ctx)).items;
-      const program = tasks.find((task) => (task.input as { kind?: string }).kind === "model");
-      const nested = tasks.filter((task) => (task.input as { kind?: string }).kind === "nested");
-      // pi-durable's replay-unsafe contract: the program ends failed as interrupted, its live nested
-      // call is aborted with reason "restart", and the one that finished keeps its result.
-      expect(program?.state).toMatchObject({ status: "terminal", outcome: { status: "failed", error: { message: "Tool fabric_exec was interrupted and may have partially run" } } });
-      expect(nested.map((task) => [(task.input as { key: string }).key, task.state.status === "terminal" ? task.state.outcome.status : task.state.status, task.abortReason]))
-        .toEqual([["1", "completed", undefined], ["2", "aborted", "restart"]]);
-      // No nested call ran twice, and the program itself did not rerun.
-      expect(fs.readFileSync(effects, "utf8")).toBe("effect 1\neffect 2\n");
-      // The model saw the interruption as the call's error, and answered.
-      const result = requests[0]?.find((message) => message.role === "toolResult") as { toolCallId: string; isError: boolean; content: { text: string }[] } | undefined;
-      expect(result).toMatchObject({ toolCallId: "call_kill", isError: true });
-      expect(JSON.stringify(result?.content)).toContain("interrupted");
-      // The conversation continues.
-      const next = await (await conversation.submit({ type: "input", content: "next" }, ctx)).wait(ctx);
+      // The program reran: the finished first call came from the journal, and pi-durable reran only the
+      // replay-safe second call, once.
+      expect(fs.readFileSync(effects, "utf8")).toBe("first 1\nsecond 2\nAGAIN second 2\n");
+      expect(run.result).toMatchObject({ toolCallId: "call_kill", isError: false });
+      expect(parsed(run.text)).toEqual(["done 1", "second rerun 2", true]);
+      const program = run.tasks.find((task) => (task.input as { kind?: string }).kind === "model");
+      expect(program?.state).toMatchObject({ status: "terminal", outcome: { status: "completed" } });
+      // Two nested calls, keyed by issue number (0 is the guest's catalog read): the rerun made no third one.
+      expect(run.tasks.filter((task) => (task.input as { kind?: string }).kind === "nested").map((task) => (task.input as { key: string }).key).sort())
+        .toEqual(["f1", "f2"]);
+      const next = await (await run.conversation.submit({ type: "input", content: "next" }, ctx)).wait(ctx);
       expect(next.status).toBe("done");
-      expect(requests).toHaveLength(2);
     } finally {
-      await harness.close(ctx);
+      await run.harness.close(ctx);
     }
-  }, 60_000);
-});
+  });
 
+  it("stops at an interrupted call that may have run, repeats nothing, tells the model, and the conversation continues", async () => {
+    const root = tempRoot("kill-unsafe");
+    const { db, effects } = await killMidProgram(root, "unsafe");
+    const run = await reopen(db, effects, "unsafe");
+    try {
+      // Neither call ran again.
+      expect(fs.readFileSync(effects, "utf8")).toBe("first 1\nsecond 2\n");
+      expect(run.result).toMatchObject({ toolCallId: "call_kill", isError: true });
+      expect(run.text).toContain("fabric_exec was interrupted during this call, which may have run:\n  second({\"n\":2})");
+      expect(run.text).toContain("1 earlier tool call finished before the interruption and was replayed from the journal without running again.");
+      expect(run.text).toContain("Check whether it took effect, or ask the user, before running it or the rest of the program again.");
+      const nested = run.tasks.filter((task) => (task.input as { kind?: string }).kind === "nested");
+      expect(nested.map((task) => [(task.input as { key: string }).key, task.state.status === "terminal" ? task.state.outcome.status : task.state.status]).sort())
+        .toEqual([["f1", "completed"], ["f2", "failed"]]);
+      const next = await (await run.conversation.submit({ type: "input", content: "next" }, ctx)).wait(ctx);
+      expect(next.status).toBe("done");
+      expect(run.requests).toHaveLength(2);
+    } finally {
+      await run.harness.close(ctx);
+    }
+  });
+});
 describe("D14: cancelling the turn", () => {
   it("aborts the in-flight nested call and the program, and leaves no kernel running", async () => {
     const started = latch();
