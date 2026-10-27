@@ -1019,9 +1019,15 @@ export const createFabricExecTool = (
       // request follows naturally. Terminating here would strand the
       // continuation — no queued turn remains to carry it.
       const inPlaceContinuation = pendingHandoff?.kind === "prewalk-in-place";
+      // A successful nested tool result with Pi's `terminate: true` ends the
+      // turn too. The program still runs to completion first; a failed program
+      // keeps the turn so the model sees the error.
+      const nestedTerminate = result.success &&
+        result.audits.some((audit) => audit.terminate === true && audit.success === true);
       const terminate =
         !inPlaceContinuation &&
         (pendingHandoff !== undefined ||
+          nestedTerminate ||
           (result.success &&
             typeof result.value === "object" &&
             result.value !== null &&

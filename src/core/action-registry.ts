@@ -110,6 +110,8 @@ export interface FabricCallAudit {
   speculated?: boolean;
   /** Spelled action name that repaired to the canonical one at resolve (e.g. search → recall). */
   repairedFrom?: string;
+  /** The provider reported a nested result with Pi's `terminate: true`. In memory only. */
+  terminate?: true;
 }
 
 export type FabricRegistryActivityEvent =
@@ -1149,6 +1151,7 @@ export class ActionRegistry {
             if (served.replay.mediaNote) activeAudit.mediaNote = served.replay.mediaNote;
           }
           if (served.replay.preview !== undefined) activeAudit.preview = served.replay.preview;
+          if (served.replay.terminate) activeAudit.terminate = true;
         }
       }
         if (!servedFromSpeculation) {
@@ -1198,6 +1201,10 @@ export class ActionRegistry {
           attachPreview(preview) {
             if (!invocationActive) return;
             activeAudit.preview = preview;
+          },
+          requestTerminate() {
+            if (!invocationActive) return;
+            activeAudit.terminate = true;
           },
           }).finally(() => {
             if (effect.kind !== "none") this.#speculation?.bumpEpoch();
@@ -1341,6 +1348,7 @@ export class ActionRegistry {
         attachMedia(blocks, note) { replay.media = [...(replay.media ?? []), ...blocks]; if (note) replay.mediaNote = note; },
         updateArguments(updatedArgs) { replay.updatedArgs = updatedArgs; },
         attachPreview(preview) { replay.preview = preview; },
+        requestTerminate() { replay.terminate = true; },
       }));
       return {
         get preparedArgs() { return snapshotArguments(repairedArgs); },
