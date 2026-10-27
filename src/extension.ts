@@ -303,8 +303,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     return (name) => {
       if (allowlist && !allowlist.has(name)) return false;
       const captured = capturedTools.get(name) !== undefined;
-      const provider = PI_CORE_TOOL_NAME_SET.has(name) ? "pi" : "extensions";
-      if (hostPolicy.denial({ ref: `${provider}.${name}`, provider, name, risk: "read" })) return false;
+      if (hostPolicy.previewDenial(PI_CORE_TOOL_NAME_SET.has(name) ? "pi" : "extensions", name)) return false;
       if (PI_CORE_TOOL_NAME_SET.has(name)) {
         if (!registry.has("pi")) return false;
         if (options.managedHost) return captured;
@@ -334,13 +333,18 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     },
   );
 
-  // An embedding host narrows this instance before handing it to a model. The
-  // reply is the acknowledgement that the policy is already in force.
+  // An embedding host narrows this instance before it runs anything (from its
+  // extension factory or session_start). Fabric replies before emit returns;
+  // accepted means the policy is in force. The first program or provider call
+  // seals it, so a later request is refused instead of racing admitted work.
   const unsubscribeHostPolicy = pi.events.on(FABRIC_HOST_POLICY_EVENT, (value: unknown) => {
-    const request = readFabricHostPolicyRequestV1(value);
-    if (!request) throw new Error("Invalid Pi Fabric host policy request");
-    hostPolicy.apply(request.policy);
-    request.reply({ version: 1, accepted: true });
+    const read = readFabricHostPolicyRequestV1(value);
+    if (!read) return;
+    if (!read.ok) {
+      read.reply({ version: 1, accepted: false, reason: `Invalid Pi Fabric host policy: ${read.reason}` });
+      return;
+    }
+    read.request.reply(hostPolicy.apply(read.request.policy));
   });
 
   // Host program runs (daemons, embedders) use the live session's context.

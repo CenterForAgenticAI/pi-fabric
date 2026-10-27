@@ -315,8 +315,9 @@ export class FabricExecutionService {
     const nativeExecutor = executor.kernel === "python"
       ? executor.pythonRuntime !== "monty"
       : this.config.schema.mode !== "enforce" && executor.runtime !== "quickjs";
-    const hostExecutorDenial = nativeExecutor ? this.registry.hostPolicy?.executorDenial() : undefined;
-    if (hostExecutorDenial) throw new Error(hostExecutorDenial);
+    // Reading the denial seals the host policy before this program can run.
+    const hostExecutorDenial = this.registry.hostPolicy?.executorDenial();
+    if (nativeExecutor && hostExecutorDenial) throw new Error(hostExecutorDenial);
     if (process.env.PI_FABRIC_WRITE_POLICY && nativeExecutor) {
       // Native executors bypass a confined child's tool_call write guard.
       const { readWritePolicy } = await import("./agents/write-guard.js");

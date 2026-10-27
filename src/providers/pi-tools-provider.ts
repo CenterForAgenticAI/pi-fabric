@@ -120,6 +120,8 @@ const MAX_REPLACE_ALL_FILE_CHARS = 2_000_000;
 
 interface PiToolsProviderHostCapabilities {
   requireCapturedOverrides?: boolean;
+  /** True when a host policy relies on Pi tool_call hooks; non-read tools then never run without them. */
+  requireToolHooks?: () => boolean;
   powerShellToolDefinitionFactory: ShellDefinitionFactory | undefined;
   getShellHangMs?: () => number;
   shellJobs?: FabricShellJobStore;
@@ -296,6 +298,7 @@ export class PiToolsProvider implements FabricProvider {
   readonly #shellJobs: FabricShellJobStore;
   readonly #ownsShellJobs: boolean;
   readonly #getShellHangMs: (() => number) | undefined;
+  readonly #requireToolHooks: (() => boolean) | undefined;
 
   constructor(
     cwd: string,
@@ -305,6 +308,7 @@ export class PiToolsProvider implements FabricProvider {
   ) {
     this.#cwd = cwd;
     this.#requireCapturedOverrides = hostCapabilities.requireCapturedOverrides === true;
+    this.#requireToolHooks = hostCapabilities.requireToolHooks;
     const powerShellFactory = hostCapabilities.powerShellToolDefinitionFactory;
     this.#powershellDefinitions = powerShellFactory
       ? new PowerShellCwdDefinitions(powerShellFactory)
@@ -667,8 +671,9 @@ export class PiToolsProvider implements FabricProvider {
     // Running a mutating tool here would silently skip that preflight, so fail
     // closed for non-read tools and let the model retry once hooks are live.
     // The no-catalog path (tests, embeds) has no extension system to guard and
-    // keeps the direct-execute fallback below unchanged.
-    if (this.#catalog && !runner && !this.#requireCapturedOverrides && riskForTool(name) !== "read") {
+    // keeps the direct-execute fallback below unchanged, unless a host policy
+    // relies on those hooks: then a non-read tool never runs without them.
+    if ((this.#catalog || this.#requireToolHooks?.()) && !runner && !this.#requireCapturedOverrides && riskForTool(name) !== "read") {
       throw new Error(
         `Pi tool ${name} is unavailable until extension tool hooks initialize; retry once tools are ready`,
       );
