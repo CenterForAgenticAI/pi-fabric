@@ -78,6 +78,8 @@ Pi's native MCP can optionally supply selected servers beneath the same Fabric A
 
 Requires Node.js 24+ and Pi 1.0.0+. Monty's optional native package installs on supported platforms; only the explicit CPython escape hatch requires CPython 3.10+. Fabric warns when a detectable host is older than the required native loadout and nested-execution contracts.
 
+**0.126.1: quieter background optimization.** Automatic entropy improvement notices no longer interrupt the conversation. Background compilation, saved plans, and activation continue unchanged; use `/fabric entropy` to inspect entropy on demand.
+
 **0.126.0: idle warming for background work.** With Pi's `cacheWarming: "idle"` enabled, wake-capable spilled shell jobs re-price idle cache refreshes at certain continuation while preserving Pi's savings threshold and 30-minute idle horizon. UI-only monitors, interruption, provider errors, and abandoned branches are excluded; refreshes remain paid native `cache_warm` usage. The fullscreen dock now preserves other extensions' status rows. Policy verification also covers mesh grants, speculation, and budget admission, with 27 registered kernels and 75 counterexample-backed broken variants.
 
 **0.125.2: arbitrary-state policy proofs.** The dev-only gdp-wired prover is pinned to 0.30.1. Policy proof runs use `{from: 'any'}` and accept only `proven && checked && !assumes`, with counterexample-backed refusals for all 50 broken variants. Generated kernel bodies are unchanged, and default certificates need no environment override. Windows offline continuation tests use a platform-sized cold-start budget.

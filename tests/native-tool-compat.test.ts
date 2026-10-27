@@ -80,6 +80,25 @@ describe.each(["additive", "native"] as const)("%s native tool compatibility", p
     expect(result.value).toMatchObject({one:expect.stringContaining("answer"),ns:{name:"examples",instructions:"Example namespace",tools:["echo"]},hits:expect.arrayContaining([expect.objectContaining({name:"echo"})]),all:expect.arrayContaining([expect.objectContaining({name:"read"})])});
   });
 
+  it("keeps all raw enum values discoverable when the declaration is truncated", async () => {
+    const values = Array.from({length: 20}, (_, i) => `value_${i}`);
+    const parameters = Type.Object({choice: Type.Unsafe({type: "string", enum: values})});
+    const f = fixture(profile, "quickjs", [defineTool({
+      name: "choose_value", label: "Choose value", description: "Choose one of twenty values",
+      parameters,
+      async execute() { return {content: [{type: "text" as const, text: "ok"}], details: {}}; },
+    })]);
+    const prefix = profile === "native" ? "" : "nativeDiscovery.";
+    const result = await f.run(`return {preview: await ${prefix}describeTool("choose_value"), raw: await fabric.tools.describe({ref: "extensions.choose_value"})};`);
+    expect(result.success, result.error ?? JSON.stringify(result.typeErrors)).toBe(true);
+    const value = result.value as {preview: string; raw: {inputSchema: unknown}};
+    expect(value.preview).toContain("8 enum values omitted");
+    expect(value.preview).toContain("exact raw inputSchema: fabric.tools.describe");
+    expect(value.preview).not.toContain('"value_19"');
+    expect(value.raw.inputSchema).toEqual(parameters);
+    expect(value.raw.inputSchema).toMatchObject({properties: {choice: {enum: values}}});
+  });
+
   it("preserves content-only redaction instead of restoring structured data", async () => {
     const f = fixture(profile);
     vi.mocked(f.runner.emitToolResult).mockResolvedValue({content:[{type:"text",text:"redacted"}]} as any);
