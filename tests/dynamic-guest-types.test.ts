@@ -1,8 +1,112 @@
 import { describe, expect, it } from "vitest";
-import { buildDynamicGuestDeclarations } from "../src/runtime/dynamic-guest-types.js";
+import ts from "typescript";
+import { buildDynamicGuestDeclarations, describeFabricActionDeclaration } from "../src/runtime/dynamic-guest-types.js";
 import { GUEST_TYPE_DECLARATIONS, guestTypeDeclarations } from "../src/runtime/guest-types.js";
 import { typeCheckFabricCode } from "../src/runtime/type-checker.js";
 import { sanitizeMcpRefPart } from "../src/ref-names.js";
+
+describe("bounded schema previews", () => {
+  const values = Array.from({ length: 20 }, (_, i) => `value_${i}`);
+  const guidance = "exact raw inputSchema: fabric.tools.describe";
+  const assertSyntax = (declaration: string) => {
+    const result = ts.transpileModule(`type Preview = { ${declaration} };`, {
+      reportDiagnostics: true,
+      compilerOptions: { target: ts.ScriptTarget.ESNext },
+    });
+    expect(result.diagnostics).toEqual([]);
+  };
+
+  it.each(["enum", "anyOf", "oneOf", "allOf", "tuple"] as const)("marks omitted %s members without modifying the raw schema", kind => {
+    const schema = kind === "enum" ? { enum: values }
+      : kind === "tuple" ? { type: "array", items: values.map(value => ({ const: value })) }
+      : { [kind]: values.map(value => kind === "allOf"
+        ? { properties: { [value]: { type: "string" } } }
+        : { const: value }) };
+    const raw = structuredClone(schema);
+    const preview = describeFabricActionDeclaration("sample", schema);
+    expect(preview).toContain("value_11");
+    expect(preview).not.toContain("value_12");
+    expect(preview).toContain(`8 ${kind === "tuple" ? "tuple items" : kind === "enum" ? "enum values" : kind === "allOf" ? "allOf members" : `${kind} alternatives`} omitted`);
+    expect(preview).toContain(guidance);
+    expect(preview).toContain(kind === "tuple" ? "...unknown[]" : "unknown /* truncated:");
+    assertSyntax(preview);
+    const dynamic = buildDynamicGuestDeclarations({ extensionTools: [{ name: "sample", inputSchema: schema }] });
+    expect(dynamic.extensions).toContain(guidance);
+    const args = kind === "allOf" ? "{}" : kind === "tuple" ? JSON.stringify(values) : '"value_19"';
+    expect(typeCheckFabricCode(`await extensions.sample(${args});`, guestTypeDeclarations(true, { dynamic })).errors).toEqual([]);
+    expect(schema).toEqual(raw);
+  });
+
+  it("does not mark complete 12-member previews", () => {
+    const entries = values.slice(0, 12).map(value => ({ const: value }));
+    for (const schema of [{ enum: values.slice(0, 12) }, { anyOf: entries }, { oneOf: entries }, { allOf: entries }, { type: "array", items: entries }]) {
+      const preview = describeFabricActionDeclaration("sample", schema);
+      expect(preview).not.toContain("truncated");
+      expect(preview).toContain("value_11");
+      assertSyntax(preview);
+    }
+  });
+
+  it("marks depth cuts and preserves valid nested types", () => {
+    let schema: Record<string, unknown> = { type: "string" };
+    for (let i = 0; i < 8; i++) schema = { type: "array", items: schema };
+    const preview = describeFabricActionDeclaration("deep", schema);
+    expect(preview).toContain("unknown /* truncated: depth limit;");
+    expect(preview).toContain(guidance);
+    assertSyntax(preview);
+  });
+
+  it.each(["source", "type"])("marks %s size/property cuts in guest and standalone declarations", limit => {
+    let nested: Record<string, unknown> = { type: "string" };
+    for (let i = 0; i < 8; i++) nested = { properties: { x: nested } };
+    const schema = { properties: Object.fromEntries(Array.from({ length: limit === "source" ? 400 : 12 }, (_, i) => [`property_${i}`, limit === "source" ? { type: "string" } : nested])) };
+    const raw = structuredClone(schema);
+    const preview = describeFabricActionDeclaration("big", schema, schema);
+    expect(preview).toContain(limit === "source" ? "schema source size limit" : "type size limit");
+    expect(preview).toContain("properties/members may be omitted");
+    expect(preview).toContain(guidance);
+    expect(preview.length).toBeLessThan(1000);
+    assertSyntax(preview);
+    const dynamic = buildDynamicGuestDeclarations({ extensionTools: [{ name: "big", inputSchema: schema }] });
+    expect(dynamic.extensions).toContain(guidance);
+    expect(dynamic.extensions).toContain("Record<string, unknown>");
+    expect(schema).toEqual(raw);
+  });
+
+  it("marks section-size exhaustion even below tool count limits", () => {
+    const actions = Array.from({ length: 100 }, (_, i) => ({
+      name: `tool_${String(i).padStart(3, "0")}`,
+      inputSchema: { enum: Array.from({ length: 12 }, (_, j) => `${j}_${"x".repeat(100)}`) },
+    }));
+    const dynamic = buildDynamicGuestDeclarations({
+      extensionTools: actions,
+      providers: [{ provider: "sample", actions }],
+    });
+    for (const section of [dynamic.extensions, dynamic.providers]) {
+      expect(section).toContain("tool_000");
+      expect(section).not.toContain("tool_099");
+      expect(section).toContain("Omitted");
+      expect(section).toContain(guidance);
+      expect(section!.length).toBeLessThan(61_000);
+    }
+    expect(typeCheckFabricCode("return 1;", guestTypeDeclarations(true, { dynamic })).errors).toEqual([]);
+  });
+
+  it("marks overall tool, server and provider action omissions", () => {
+    const actions = Array.from({ length: 300 }, (_, i) => ({ name: `tool_${i}`, inputSchema: { type: "object" } }));
+    const dynamic = buildDynamicGuestDeclarations({
+      extensionTools: actions,
+      mcpServers: Array.from({ length: 70 }, (_, i) => ({ server: `server_${i}`, tools: actions })),
+      providers: [{ provider: "sample", actions }],
+    });
+    for (const section of [dynamic.extensions, dynamic.mcp, dynamic.providers]) {
+      expect(section).toContain("Omitted");
+      expect(section).toContain(guidance);
+      expect(section!.length).toBeLessThan(70_000);
+    }
+    expect(typeCheckFabricCode("return 1;", guestTypeDeclarations(true, { dynamic })).errors).toEqual([]);
+  });
+});
 
 describe("buildDynamicGuestDeclarations", () => {
   const githubServer = {
