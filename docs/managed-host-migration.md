@@ -1,4 +1,16 @@
-# Managed-host migration: 0.119.7 → 0.127.0
+# Managed-host migration: 0.119.7 → 0.127.1
+
+## 0.127.1 follow-up
+
+The factory contract remains **v2** and provider registration remains v1. No option changes or downstream workarounds are needed.
+
+- Native discovery previews retain field descriptions, including usage rules such as page numbering and identifier provenance.
+- Preview limits apply to rendered declarations rather than raw schema JSON. Long description text is shortened first, then dropped before structural information is sacrificed. Oversized enums, unions and tuples are cut by rendered size rather than a fixed member count; short 13–40-value contracts remain complete when they fit.
+- Deeper structural cuts and whole-input fallback remain last resorts. Every lossy preview carries a visible marker and points to `fabric.tools.describe({ ref })` for the exact unmodified `inputSchema`.
+- Public factory declarations explicitly use the embedding application's peer SDK, not Fabric's private worker SDK alias, so older supported hosts can type-check the integration.
+- Managed execution guidance appears once through its guidance slot. Host `guidance` appears once in the system prompt. Tool and `code` descriptions are concise, and `promptGuidelines` contains only independent execution advice. Stable guidance remains byte-identical across turns.
+
+The host should continue to use the v2 options documented below. Applications should not interpret a visibly truncated preview as the authoritative validation schema.
 
 ## 0.127.0 changelog
 
