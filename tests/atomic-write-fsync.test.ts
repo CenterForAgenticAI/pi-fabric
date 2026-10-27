@@ -29,6 +29,9 @@ const trackFsync = (): string[] => {
     names.set(descriptor, String(target));
     return descriptor;
   }) as typeof fs.openSync);
+  // Records every fsync request before it runs. Windows opens a directory
+  // but rejects flushing it with EPERM, which fsyncDirectory ignores, so the
+  // request list is the same on every platform even where the flush fails.
   const flushed: string[] = [];
   const realFsync = fs.fsyncSync;
   vi.spyOn(fs, "fsyncSync").mockImplementation((descriptor: number) => {
@@ -50,8 +53,7 @@ describe("writeFileAtomic fsync", () => {
     writeFileAtomic(target, "two", { fsync: true });
     expect(fs.readFileSync(target, "utf8")).toBe("two");
     expect(path.basename(flushed[0]!)).toMatch(/^value\.json\..+\.tmp$/);
-    // Windows cannot open a directory for fsync, so only the file is flushed there.
-    expect(flushed.slice(1)).toEqual(process.platform === "win32" ? [] : [root]);
+    expect(flushed.slice(1)).toEqual([root]);
     expect(fs.statSync(target).mode & 0o777).toBe(0o600);
     expect(fs.readdirSync(root)).toEqual(["value.json"]);
   });
@@ -98,11 +100,7 @@ describe("writeFileAtomic fsync", () => {
 
     mkdirDurable(leaf, 0o700, true);
     expect(fs.statSync(leaf).isDirectory()).toBe(true);
-    expect(flushed).toEqual(
-      process.platform === "win32"
-        ? []
-        : [path.join(root, "a", "b"), path.join(root, "a"), root],
-    );
+    expect(flushed).toEqual([path.join(root, "a", "b"), path.join(root, "a"), root]);
 
     flushed.length = 0;
     mkdirDurable(leaf, 0o700, true);
