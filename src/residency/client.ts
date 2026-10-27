@@ -114,6 +114,8 @@ export interface ResidencyClientOptions {
   participants: FabricParticipantSource;
   mainAgent: FabricMainAgentTarget;
   piModelState?: () => ResidentPiModelState;
+  /** Extension paths this session loaded; republished with each model snapshot. */
+  parentExtensions?: () => readonly string[] | undefined;
   onBackgroundComplete?: (result: AgentRunResult, delivered: () => void) => void;
   onResultConsumed?: (id: string) => void;
   hostPath?: string;
@@ -244,6 +246,11 @@ export class ResidencyClient {
   #refreshPiModels(): void {
     const state = this.options.piModelState?.();
     if (state) this.options.config.piModels = structuredClone(state);
+    if (this.options.parentExtensions) {
+      const extensions = this.options.parentExtensions();
+      if (extensions) this.options.config.parentExtensions = [...extensions];
+      else delete this.options.config.parentExtensions;
+    }
   }
 
   async ensureActor(id: string): Promise<void> {
