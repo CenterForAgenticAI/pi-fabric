@@ -1050,22 +1050,19 @@ export class FabricExecutionService {
                     const limit = fabricActionListLimit(
                       typeof args.limit === "number" ? args.limit : undefined,
                     );
-                    // Enumerate past the caller's page (hard ceiling 1000, the
-                    // registry's own) so totals reflect post-permission counts.
-                    const { actions: capped } = await this.registry.listDetailed(
-                      { ...request, limit: 1_000 },
+                    // Filter for visibility before the registry pages, so the
+                    // totals count every visible action, not just the first 1000.
+                    const { actions: page, total, truncated } = await this.registry.listDetailed(
+                      { ...request, limit },
                       callContext,
-                    );
-                    const visible = capped.filter(
                       (action) => effectiveFullCodeMode || !fullCodeProvider(action.provider),
                     );
-                    const page = visible.slice(0, limit);
                     return {
                       kind: "pi-fabric.action-list",
                       version: 1,
                       actions: page,
-                      total: visible.length,
-                      truncated: visible.length > page.length,
+                      total,
+                      truncated,
                       limit,
                     };
                   }
