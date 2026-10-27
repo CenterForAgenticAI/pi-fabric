@@ -152,31 +152,6 @@ The reply is `{ version: 1, mode, tools }`. `mode` is `"full-code"`, `"enforce"`
 
 `model` wins when both apply; optional `programCallable` lists the reported `model` tools that a program can also call, such as foreground tools, and is omitted when empty. Omitting `tools` reports every tool registered with Pi; at most 1,024 names of up to 256 characters each are accepted. An invalid query gets no reply. Placement describes state at the time of the query. A later mode change, reload, or tool refresh can change it, so query when you need the answer and do not cache it.
 
-## Host policy
-
-An extension that embeds Fabric for a restricted agent, such as a delegate worker runner, can narrow that instance with `FABRIC_HOST_POLICY_EVENT` (`pi-fabric:host-policy:v1`). Fabric replies synchronously once the policy is in force, so the host can refuse to expose `fabric_exec` when no acknowledgement arrives:
-
-```ts
-import { FABRIC_HOST_POLICY_EVENT, type FabricHostPolicyAckV1 } from "pi-fabric";
-
-let ack: FabricHostPolicyAckV1 | undefined;
-pi.events.emit(FABRIC_HOST_POLICY_EVENT, {
-  policy: { owner: "my-host", reason: "read-only worker", deniedTools: ["write", "edit"] },
-  reply: (value: FabricHostPolicyAckV1) => { ack = value; },
-});
-if (!ack?.accepted) {
-  // Fabric is absent or too old to enforce the policy: do not expose fabric_exec.
-}
-```
-
-A policy only narrows. Fabric checks every applied policy before any provider prepares or runs an action:
-
-- `deniedTools` refuses those names through `pi.*` and `extensions.*`.
-- `deniedProviders` refuses whole providers.
-- Every other provider is refused unless the action's risk is in `allowedUnhookedRisks` (default `["read"]`). These providers do not replay Pi `tool_call` hooks, so a host's own tool guards cannot see their calls. `pi.*` and `extensions.*` calls do replay those hooks and stay allowed.
-- Native executors (CPython, `node-process`, `bun-process`) are refused, because they run outside every tool hook.
-
-A malformed policy is rejected as a whole and receives no acknowledgement.
 
 ## Invocation costs and guarantees
 
@@ -290,6 +265,36 @@ Missing or withdrawn overrides fail closed.
 The host remains responsible for OS isolation, resource loading, broker authorization and
 cancellation, and for exposing only trusted extension code. This option does not sandbox arbitrary
 host-side extensions. In particular, do not auto-load plugins from the agent's computer snapshot.
+
+## Host policy
+
+An extension that embeds Fabric for a restricted agent, such as a worker runner, can narrow that Fabric instance with `FABRIC_HOST_POLICY_EVENT` (`pi-fabric:host-policy:v1`). Unlike `managedHost`, it works for a Fabric that Pi's resource loader loaded, because no factory call is needed. Send it from the host's extension factory, before the instance runs anything. Fabric replies before `emit` returns:
+
+```ts
+import { FABRIC_HOST_POLICY_EVENT, type FabricHostPolicyReplyV1 } from "pi-fabric";
+
+let reply: FabricHostPolicyReplyV1 | undefined;
+pi.events.emit(FABRIC_HOST_POLICY_EVENT, {
+  policy: { owner: "my-host", reason: "read-only worker", deniedTools: ["write", "edit"], allowedRefs: ["agents.status"] },
+  reply: (value: FabricHostPolicyReplyV1) => { reply = value; },
+});
+if (!reply?.accepted) {
+  // Fabric is absent, too old, already sealed, or refused the policy: do not expose fabric_exec.
+}
+```
+
+An accepted reply is `{ version: 1, accepted: true, digest, enforced }`. `enforced` lists every policy field this build enforces. `digest` is a SHA-256 over the accepted policy. A refusal is `{ version: 1, accepted: false, reason }`. Fabric refuses a policy that is malformed, names a field it does not enforce, follows an earlier accepted policy, or arrives after the instance ran a program or a provider call. A request without a `reply` function gets no answer.
+
+The policy is sealed on the first program or provider call. It cannot be replaced, widened or added to after that, so no call admitted before the policy can run under it. It lasts as long as the extension instance: a new session on the same instance keeps it, and `/reload` creates a new instance that starts without one.
+
+Fabric decides from the `provider.action` ref alone, before any provider code runs, including `describe`, `list` and `prepareArguments`:
+
+- `deniedTools` refuses those names through `pi.*` and `extensions.*`. Other `pi.*` and `extensions.*` calls replay Pi `tool_call` hooks, so the host's own guards see them. While a policy is active, a non-read `pi.*` tool fails closed when no hook runner exists.
+- `deniedProviders` refuses whole providers.
+- Every other action is refused unless it matches a host `allowedRefs` entry or is one of Fabric's fixed built-in read-only actions. An entry is an exact ref, or a prefix ending in `.*`, such as `mcp.docs.*`. The fixed set is `cache.status`, `compact.pressure`, `compact.status`, `components.describe`, `components.graph`, `components.list`, `components.status`, `memory.expand`, `memory.recall`, `memory.sessions`, `programs.get`, `programs.list`, `schema.status`, `state.get`, `state.history` and `thinking.status`. Third parties cannot register those provider names. Fabric never uses a provider's own `risk` label to allow an action.
+- Native executors (CPython, `node-process`, `bun-process`) are refused, because they run outside every tool hook.
+
+Refused actions and providers are left out of listings, search, catalogs and program type declarations.
 
 ## Principal and scope
 
