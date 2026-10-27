@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   formatShortLockOwner,
   reapLockByRenameClaim,
+  reapStaleShortLock,
   releaseShortLock,
   sweepStaleLockClaims,
   tryAcquireShortLock,
@@ -13,6 +14,8 @@ import {
 const roots: string[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  vi.resetModules();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -100,5 +103,70 @@ describe("short-lock rename-claim", () => {
     expect(sweepStaleLockClaims(lock, 30_000)).toBe(2);
     expect(claims(lock)).toEqual([path.basename(fresh)]);
     expect(owner(lock).startsWith("held\n")).toBe(true);
+  });
+
+  it("publish: an acquire whose directory was replaced by another owner's renamed-back lock returns false", () => {
+    const lock = lockIn();
+    // A's live lock sits at a reaper's claim; the reaper renames it back over
+    // the empty directory the new acquirer just created.
+    const held = formatShortLockOwner("held");
+    const claim = `${lock}.reap-1-t${Date.now()}-00000000-0000-4000-8000-000000000000`;
+    fs.mkdirSync(claim);
+    fs.writeFileSync(path.join(claim, "owner"), held);
+    const mkdirSync = fs.mkdirSync;
+    vi.spyOn(fs, "mkdirSync").mockImplementationOnce(((directory: fs.PathLike, options?: fs.MakeDirectoryOptions) => {
+      const created = mkdirSync(directory, options);
+      fs.renameSync(claim, lock);
+      return created;
+    }) as typeof fs.mkdirSync);
+    expect(tryAcquireShortLock(lock, formatShortLockOwner("intruder"))).toBe(false);
+    expect(owner(lock)).toBe(held);
+    expect(fs.readdirSync(lock)).toEqual(["owner"]);
+    expect(claims(lock)).toEqual([]);
+  });
+
+  it("rename-claim: a claim whose inode differs from the judged lock is renamed back unread", () => {
+    const lock = lockIn();
+    const stale = `old\n${process.pid}\n${Date.now() - 3_600_000}\n`;
+    fs.mkdirSync(lock);
+    fs.writeFileSync(path.join(lock, "owner"), stale);
+    const live = formatShortLockOwner("live");
+    const renameSync = fs.renameSync;
+    // Between the judgment and the claim, the stale lock is reaped and A
+    // re-acquires the lock path.
+    vi.spyOn(fs, "renameSync").mockImplementationOnce(((source: fs.PathLike, target: fs.PathLike) => {
+      renameSync(lock, path.join(path.dirname(lock), "reaped"));
+      expect(tryAcquireShortLock(lock, live)).toBe(true);
+      renameSync(source, target);
+    }) as typeof fs.renameSync);
+    const readFileSync = fs.readFileSync;
+    const reads: string[] = [];
+    vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options?: unknown) => {
+      reads.push(String(file));
+      return readFileSync(file, options as BufferEncoding);
+    }) as typeof fs.readFileSync);
+    expect(reapStaleShortLock(lock, { staleMs: 1_000 })).toBe(false);
+    expect(reads.filter((file) => file.startsWith(`${lock}.reap-`))).toEqual([]);
+    expect(owner(lock)).toBe(live);
+    expect(claims(lock)).toEqual([]);
+  });
+
+  it("rename-claim: release still waits for a rename-back when no blocking sleep exists", async () => {
+    vi.stubGlobal("SharedArrayBuffer", undefined);
+    vi.resetModules();
+    const fallback = await import("../src/core/atomic-write.js");
+    const lock = lockIn();
+    const started = performance.now();
+    expect(fallback.releaseShortLock(lock, "absent", 25)).toBe(false);
+    expect(performance.now() - started).toBeGreaterThanOrEqual(20);
+  });
+
+  it("rename-claim: release without a blocking sleep stops under a frozen clock", async () => {
+    vi.stubGlobal("SharedArrayBuffer", undefined);
+    vi.resetModules();
+    const fallback = await import("../src/core/atomic-write.js");
+    const lock = lockIn();
+    vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    expect(fallback.releaseShortLock(lock, "absent", 25)).toBe(false);
   });
 });
