@@ -152,7 +152,6 @@ The reply is `{ version: 1, mode, tools }`. `mode` is `"full-code"`, `"enforce"`
 
 `model` wins when both apply; optional `programCallable` lists the reported `model` tools that a program can also call, such as foreground tools, and is omitted when empty. Omitting `tools` reports every tool registered with Pi; at most 1,024 names of up to 256 characters each are accepted. An invalid query gets no reply. Placement describes state at the time of the query. A later mode change, reload, or tool refresh can change it, so query when you need the answer and do not cache it.
 
-
 ## Invocation costs and guarantees
 
 | Access pattern | Work and allocation | Guarantees |
@@ -287,10 +286,10 @@ An accepted reply is `{ version: 1, accepted: true, digest, enforced }`. `enforc
 
 The policy is sealed on the first program or provider call. It cannot be replaced, widened or added to after that, so no call admitted before the policy can run under it. It lasts as long as the extension instance: a new session on the same instance keeps it, and `/reload` creates a new instance that starts without one.
 
-Fabric decides from the `provider.action` ref alone, before any provider code runs, including `describe`, `list` and `prepareArguments`:
+Fabric decides from the `provider.action` ref as the program wrote it, before any provider code runs, including `describe`, `list` and `prepareArguments`. When Fabric repairs a misspelled name, such as `pi.Write` or `pi.save` for `pi.write`, it calls the provider's `describe` and `list` to find the canonical action, then decides again on that action before `prepareArguments` or the provider runs. A repaired name never reaches an action the policy refuses:
 
-- `deniedTools` refuses those names through `pi.*` and `extensions.*`. Other `pi.*` and `extensions.*` calls replay Pi `tool_call` hooks, so the host's own guards see them. While a policy is active, a non-read `pi.*` tool fails closed when no hook runner exists.
-- `deniedProviders` refuses whole providers.
+- `deniedTools` refuses those names through `pi.*` and `extensions.*`. Each entry is a tool name of letters, digits, `_` and `-`. Other `pi.*` and `extensions.*` calls replay Pi `tool_call` hooks, so the host's own guards see them. While a policy is active, a non-read `pi.*` tool fails closed when no hook runner exists.
+- `deniedProviders` refuses whole providers. Each entry must be a valid provider name: lowercase letters, digits, `_` and `-`, starting with a letter. A policy with an entry that breaks either rule, such as `"MCP"` or `"mcp "`, is refused whole.
 - Every other action is refused unless it matches a host `allowedRefs` entry or is one of Fabric's fixed built-in read-only actions. An entry is an exact ref, or a prefix ending in `.*`, such as `mcp.docs.*`. The fixed set is `cache.status`, `compact.pressure`, `compact.status`, `components.describe`, `components.graph`, `components.list`, `components.status`, `memory.expand`, `memory.recall`, `memory.sessions`, `programs.get`, `programs.list`, `schema.status`, `state.get`, `state.history` and `thinking.status`. Third parties cannot register those provider names. Fabric never uses a provider's own `risk` label to allow an action.
 - Native executors (CPython, `node-process`, `bun-process`) are refused, because they run outside every tool hook.
 
