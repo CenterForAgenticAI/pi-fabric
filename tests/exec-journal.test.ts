@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openFabricExecJournal, type FabricExecJournal } from "../src/runtime/exec-journal.js";
-import type { FabricHostCall, FabricSandboxOptions } from "../src/runtime/kernel.js";
+import type { FabricHostCall, FabricJournalDriver, FabricSandboxOptions } from "../src/runtime/kernel.js";
 import { QuickJsRuntime } from "../src/runtime/quickjs-runtime.js";
 
 const roots: string[] = [];
@@ -358,5 +358,106 @@ return { clock: [t0, d0, Date.now(), new Date().getTime(), String(Date())], zone
     if (process.platform === "win32") return;
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
     expect(fs.statSync(path.dirname(file)).mode & 0o777).toBe(0o700);
+  });
+});
+
+// A driver that saves asynchronously, as one backed by a database would. It
+// wraps the file journal so the recorded run can be resumed from disk.
+function asyncDriver(journal: FabricExecJournal, save: (seq: number) => Promise<void>): FabricJournalDriver {
+  return {
+    get shim() { return journal.shim; },
+    get startedAt() { return journal.startedAt; },
+    get resuming() { return journal.resuming; },
+    get replay() { return journal.replay; },
+    digest: (args) => journal.digest(args),
+    complete: async (seq, ref, args, value, outcome) => {
+      await save(seq);
+      return journal.complete(seq, ref, args, value, outcome);
+    },
+    served: (delivery, args) => journal.served(delivery, args),
+    frontier: (held) => journal.frontier(held),
+    diverged: (expected, actual) => journal.diverged(expected, actual),
+  };
+}
+
+describe("fabric_exec journal with an asynchronous save", () => {
+  it("shows the guest a result only after its save finishes", async () => {
+    const file = journalFile();
+    const saved = latch();
+    const calls: number[] = [];
+    let digest = "";
+    const journal = await openFabricExecJournal({ path: file, accept: async (value) => { digest = value; } }, identity, hooks);
+    try {
+      const code = 'const a = await tools.call({ ref: "demo.read", args: { n: 1 } });\nreturn await tools.call({ ref: "demo.read", args: { n: a + 1 } });';
+      const run = new QuickJsRuntime().execute(code, async (_ref, args) => {
+        const n = (args.args as { n: number }).n;
+        calls.push(n);
+        return n;
+      }, { ...options, journal: asyncDriver(journal, (seq) => (seq === 0 ? saved.promise : Promise.resolve())) });
+      await new Promise((done) => setTimeout(done, 50));
+      expect(calls).toEqual([1]);
+      saved.resolve();
+      const result = await run;
+      expect(result.terminationReason, result.error).toBe("completed");
+      expect(result.value).toBe(2);
+      expect(calls).toEqual([1, 2]);
+    } finally { journal.close(); }
+
+    const again = await resume(file, digest, 'const a = await tools.call({ ref: "demo.read", args: { n: 1 } });\nreturn await tools.call({ ref: "demo.read", args: { n: a + 1 } });', neverCalled);
+    expect(again.terminationReason, again.error).toBe("completed");
+    expect(again.value).toBe(2);
+  });
+
+  it("delivers parallel results in the order they finished, even when a later save finishes first", async () => {
+    const file = journalFile();
+    const slowSave = latch();
+    const firstDone = latch();
+    let digest = "";
+    const code = 'const seen = [];\nawait Promise.all([1, 2].map((n) => tools.call({ ref: "demo.read", args: { n } }).then((v) => seen.push(v))));\nreturn seen;';
+    const journal = await openFabricExecJournal({ path: file, accept: async (value) => { digest = value; } }, identity, hooks);
+    try {
+      const result = await new QuickJsRuntime().execute(code, async (_ref, args) => {
+        const n = (args.args as { n: number }).n;
+        // Call 1 finishes first; call 2 finishes after it.
+        if (n === 2) await firstDone.promise;
+        return n;
+      }, {
+        ...options,
+        journal: asyncDriver(journal, async (seq) => {
+          if (seq === 0) {
+            firstDone.resolve();
+            // Hold the first save until the second result has arrived and could overtake it.
+            await new Promise((done) => setTimeout(done, 30));
+            slowSave.resolve();
+          } else {
+            await Promise.resolve();
+          }
+        }),
+      });
+      expect(result.terminationReason, result.error).toBe("completed");
+      expect(result.value).toEqual([1, 2]);
+    } finally { journal.close(); }
+    await slowSave.promise;
+
+    const again = await resume(file, digest, code, neverCalled);
+    expect(again.terminationReason, again.error).toBe("completed");
+    expect(again.value).toEqual([1, 2]);
+  });
+
+  it("stops the program when a save fails, before the guest sees that result", async () => {
+    const file = journalFile();
+    const calls: number[] = [];
+    const journal = await openFabricExecJournal({ path: file, accept: async () => {} }, identity, hooks);
+    try {
+      const code = 'const a = await tools.call({ ref: "demo.read", args: { n: 1 } });\nawait tools.call({ ref: "demo.write", args: { n: a + 1 } });\nreturn "finished";';
+      const result = await new QuickJsRuntime().execute(code, async (_ref, args) => {
+        const n = (args.args as { n: number }).n;
+        calls.push(n);
+        return n;
+      }, { ...options, journal: asyncDriver(journal, async () => { throw new Error("disk full"); }) });
+      expect(result.terminationReason).toBe("runtime_error");
+      expect(result.error).toBe("Fabric could not write its journal: disk full");
+      expect(calls).toEqual([1]);
+    } finally { journal.close(); }
   });
 });

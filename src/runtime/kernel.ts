@@ -61,14 +61,19 @@ export interface FabricJournalDriver {
   readonly resuming: boolean;
   readonly replay: readonly FabricJournalDelivery[];
   digest(args: Record<string, unknown>): string;
-  /** Append a completion before the guest sees it; returns the guest's new clock. */
+  /**
+   * Append a completion before the guest sees it; returns the guest's new
+   * clock. A driver that saves asynchronously returns a promise: the runtime
+   * delivers the result only after it resolves, delivers results in the order
+   * complete() was called, and stops the program when it rejects.
+   */
   complete(
     seq: number,
     ref: string,
     args: Record<string, unknown>,
     value: unknown,
     outcome: FabricJournalOutcome,
-  ): number;
+  ): number | Promise<number>;
   served(delivery: FabricJournalDelivery, args: Record<string, unknown>): void | Promise<void>;
   /** After serving: a stop, or undefined to run the waiting calls live. */
   frontier(

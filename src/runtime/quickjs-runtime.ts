@@ -1080,7 +1080,48 @@ export class QuickJsRuntime {
       errorHandle.dispose();
     };
     // Record a result, hand it to the guest, and let the guest run to idle
-    // before any other result arrives.
+    // before any other result arrives. A driver whose complete() returns a
+    // promise is waited for: the guest sees the result only after it is saved,
+    // and results reach the guest in the order complete() was called.
+    let journalTail: Promise<void> | undefined;
+    const journalStopped = (promise: any): boolean =>
+      closing || promise.alive === false || journalFailure !== undefined || hostAbortController.signal.aborted;
+    const recordAndDeliver = (
+      seq: number,
+      reference: string,
+      args: Record<string, unknown>,
+      promise: any,
+      value: unknown,
+      outcome: () => FabricJournalOutcome,
+    ): void | Promise<void> => {
+      // An aborted call is in flight when the run ends; it is never recorded.
+      if (journalStopped(promise)) return;
+      let result: FabricJournalOutcome;
+      try {
+        result = outcome();
+      } catch (error) {
+        result = errorOutcome(reference, error);
+      }
+      const deliver = (at: number): void => {
+        if (journalStopped(promise)) return;
+        logicalNow = at;
+        cpuDeadlineAt = Date.now() + (options.maxCpuSliceMs ?? Infinity);
+        deliverOutcome(promise, result);
+        pumpJobs();
+      };
+      let saved: number | Promise<number>;
+      try {
+        saved = journal!.complete(seq, reference, args, value, result);
+      } catch (error) {
+        failJournal(error);
+        return;
+      }
+      if (typeof saved === "number") {
+        deliver(saved);
+        return;
+      }
+      return saved.then(deliver, failJournal);
+    };
     const settleJournaled = (
       seq: number,
       reference: string,
@@ -1088,24 +1129,17 @@ export class QuickJsRuntime {
       promise: any,
       value: unknown,
       outcome: () => FabricJournalOutcome,
-    ): void => {
-      // An aborted call is in flight when the run ends; it is never recorded.
-      if (closing || promise.alive === false || journalFailure !== undefined || hostAbortController.signal.aborted) return;
-      let result: FabricJournalOutcome;
-      try {
-        result = outcome();
-      } catch (error) {
-        result = errorOutcome(reference, error);
-      }
-      try {
-        logicalNow = journal!.complete(seq, reference, args, value, result);
-      } catch (error) {
-        failJournal(error);
-        return;
-      }
-      cpuDeadlineAt = Date.now() + (options.maxCpuSliceMs ?? Infinity);
-      deliverOutcome(promise, result);
-      pumpJobs();
+    ): void | Promise<void> => {
+      const run = (): void | Promise<void> => recordAndDeliver(seq, reference, args, promise, value, outcome);
+      const pending = journalTail ? journalTail.then(run) : run();
+      if (pending === undefined) return;
+      const tail: Promise<void> = pending.catch(failJournal).finally(() => {
+        if (journalTail === tail) journalTail = undefined;
+      });
+      journalTail = tail;
+      hostTasks.add(tail);
+      void tail.finally(() => hostTasks.delete(tail));
+      return tail;
     };
     const startTimer = (seq: number, args: Record<string, unknown>, promise: any): void => {
       const ms = Math.max(0, Number(args.ms ?? 0));
