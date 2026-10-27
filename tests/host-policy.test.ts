@@ -111,6 +111,21 @@ describe("host policy request", () => {
       expect(readFabricHostPolicyRequestV1({ policy, reply })?.ok, JSON.stringify(policy).slice(0, 80)).toBe(false);
     }
   });
+
+  it("refuses a provider or tool entry that can never match a name", () => {
+    // A typo such as "MCP" or "mcp " used to be acknowledged and then deny nothing.
+    for (const policy of [
+      { ...workerPolicy, deniedProviders: ["MCP"] },
+      { ...workerPolicy, deniedProviders: ["mcp "] },
+      { ...workerPolicy, deniedProviders: ["mcp.docs"] },
+      { ...workerPolicy, deniedTools: ["write "] },
+      { ...workerPolicy, deniedTools: ["pi.write"] },
+    ]) {
+      expect(readFabricHostPolicyRequestV1({ policy, reply }), JSON.stringify(policy)).toMatchObject({ ok: false });
+    }
+    const valid = { ...workerPolicy, deniedProviders: ["mcp", "web-search_2"], deniedTools: ["Write_File", "mcp__docs__search"] };
+    expect(readFabricHostPolicyRequestV1({ policy: valid, reply })?.ok).toBe(true);
+  });
 });
 
 describe("FabricHostPolicy", () => {
@@ -256,6 +271,93 @@ describe("registry enforcement", () => {
     expect(trace.described).toEqual(["spec.echo"]);
     expect(trace.prepared).toEqual(["spec.echo"]);
     await registry.close(new Set(["spec"]));
+  });
+
+  it("decides again on a repaired action name before preparing or invoking it", async () => {
+    const trace = newTrace();
+    const registry = new ActionRegistry();
+    registry.register(provider("pi", { write: "write", bash: "execute" }, trace));
+    const policy = new FabricHostPolicy();
+    accepted(policy.apply(workerPolicy));
+    registry.setHostPolicy(policy);
+    // Case, separator and synonym-class forms all repair to the denied pi.write.
+    for (const ref of ["pi.Write", "pi.WRITE", "pi.wri_te", "pi.save"]) {
+      await expect(invoke(registry, ref), ref).rejects.toThrow(
+        "pi.write is refused by the Fabric host policy from delegate-runner: tool write is unavailable here",
+      );
+    }
+    expect(trace.prepared).toEqual([]);
+    expect(trace.invoked).toEqual([]);
+    // Repair still reaches a tool the policy allows.
+    expect(await invoke(registry, "pi.Bash")).toBe("ran");
+    expect(trace.invoked).toEqual(["pi.bash"]);
+    await registry.close(new Set(["pi"]));
+  });
+
+  it("refuses a case variant of a denied extension tool", async () => {
+    const trace = newTrace();
+    const registry = new ActionRegistry();
+    registry.register(provider("extensions", { delegate: "agent", lookup: "read" }, trace));
+    const policy = new FabricHostPolicy();
+    accepted(policy.apply(workerPolicy));
+    registry.setHostPolicy(policy);
+    await expect(invoke(registry, "extensions.Delegate")).rejects.toThrow(
+      "extensions.delegate is refused by the Fabric host policy from delegate-runner: tool delegate is unavailable here",
+    );
+    expect(trace.prepared).toEqual([]);
+    expect(trace.invoked).toEqual([]);
+    await registry.close(new Set(["extensions"]));
+  });
+
+  it("decides again on a repaired name in describe and scoped acquisition", async () => {
+    const trace = newTrace();
+    const acquire = vi.fn(async () => ({ value: "lease", dispose: async () => {} }));
+    const scopedWrite: FabricActionDescriptor = {
+      name: "write", description: "write", inputSchema: { type: "object", additionalProperties: false },
+      risk: "write", effect: { kind: "scoped", resources: ["scope"] },
+    };
+    const registry = new ActionRegistry();
+    registry.register(provider("pi", { write: "write" }, trace, {
+      acquire,
+      async list() { return [scopedWrite]; },
+      async describe(action) {
+        trace.described.push(`pi.${action}`);
+        return action === "write" ? scopedWrite : undefined;
+      },
+    }));
+    const policy = new FabricHostPolicy();
+    accepted(policy.apply(workerPolicy));
+    registry.setHostPolicy(policy);
+    await expect(registry.describe("pi.Write", context)).rejects.toThrow("tool write is unavailable here");
+    await expect(registry.acquireScoped("pi.WRITE", {}, context)).rejects.toThrow("tool write is unavailable here");
+    expect(trace.prepared).toEqual([]);
+    expect(acquire).not.toHaveBeenCalled();
+    await registry.close(new Set(["pi"]));
+  });
+
+  it("never speculates a denied tool that a provider describes under another spelling", async () => {
+    const trace = newTrace();
+    const write: FabricActionDescriptor = {
+      name: "write", description: "write", inputSchema: { type: "object", additionalProperties: false },
+      risk: "read", effect: { kind: "none", ordering: "commutative" },
+    };
+    const registry = new ActionRegistry();
+    // This provider answers describe case-insensitively, so pi.Write resolves to write without repair.
+    registry.register(provider("pi", { write: "read" }, trace, {
+      async describe(action) {
+        trace.described.push(`pi.${action}`);
+        return action.toLowerCase() === "write" ? write : undefined;
+      },
+    }));
+    registry.setSpeculation(new FabricSpeculationStore({ maxConcurrent: 4, maxEntries: 8, entryTtlMs: 60_000 }), () => true);
+    const policy = new FabricHostPolicy();
+    accepted(policy.apply(workerPolicy));
+    registry.setHostPolicy(policy);
+    expect(await registry.speculate("pi.Write", {}, context, {})).toBeUndefined();
+    await expect(invoke(registry, "pi.Write")).rejects.toThrow("tool write is unavailable here");
+    expect(trace.prepared).toEqual([]);
+    expect(trace.invoked).toEqual([]);
+    await registry.close(new Set(["pi"]));
   });
 
   it("has no in-flight window: a policy arriving after the first call is refused", async () => {

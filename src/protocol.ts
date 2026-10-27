@@ -321,6 +321,11 @@ export interface FabricHostPolicyRequestV1 {
 
 const HOST_POLICY_FIELD_SET: ReadonlySet<string> = new Set(FABRIC_HOST_POLICY_FIELDS);
 const HOST_POLICY_REF = /^[a-z][a-z0-9_-]*\.(?:\*|[^\s*]+(?:\.\*)?)$/;
+// Same rule as the registry's provider names, so an entry that can never name
+// a provider ("MCP", "mcp ") is refused instead of acknowledged and ignored.
+const HOST_POLICY_PROVIDER = /^[a-z][a-z0-9_-]*$/;
+// Tool names as model APIs accept them: letters, digits, `_` and `-`.
+const HOST_POLICY_TOOL = /^[A-Za-z0-9_-]+$/;
 
 const boundedNames = (value: unknown, pattern?: RegExp): value is string[] =>
   Array.isArray(value) &&
@@ -352,8 +357,8 @@ export const readFabricHostPolicyRequestV1 = (
   const unknown = Object.keys(policy).filter((key) => !HOST_POLICY_FIELD_SET.has(key));
   if (unknown.length > 0) return refuse(`unsupported policy fields: ${unknown.slice(0, 8).join(", ")}`);
   if (!boundedLabel(policy.owner) || !boundedLabel(policy.reason)) return refuse("owner and reason must be non-empty strings of at most 1024 characters");
-  if (policy.deniedTools !== undefined && !boundedNames(policy.deniedTools)) return refuse("deniedTools must be a list of tool names");
-  if (policy.deniedProviders !== undefined && !boundedNames(policy.deniedProviders)) return refuse("deniedProviders must be a list of provider names");
+  if (policy.deniedTools !== undefined && !boundedNames(policy.deniedTools, HOST_POLICY_TOOL)) return refuse("deniedTools must be a list of tool names (letters, digits, _ and -)");
+  if (policy.deniedProviders !== undefined && !boundedNames(policy.deniedProviders, HOST_POLICY_PROVIDER)) return refuse("deniedProviders must be a list of provider names (lowercase letters, digits, _ and -, starting with a letter)");
   if (policy.allowedRefs !== undefined && !boundedNames(policy.allowedRefs, HOST_POLICY_REF)) return refuse("allowedRefs must be a list of provider.action or provider.* refs");
   return {
     ok: true,

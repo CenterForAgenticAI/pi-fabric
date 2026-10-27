@@ -422,6 +422,17 @@ export class ActionRegistry {
     return policy?.active ? actions.filter((action) => !policy.refDenial(action.provider, action.name)) : actions;
   }
 
+  /**
+   * Decide again on the action that resolution produced. Name repair can turn
+   * a ref the policy allowed as written (pi.Write, pi.save) into a denied
+   * canonical action, so every caller checks the resolved name before it
+   * prepares arguments or runs the provider.
+   */
+  #assertResolvedAllowed(action: { provider: string; name: string }): void {
+    const denial = this.#hostPolicy?.refDenial(action.provider, action.name);
+    if (denial) throw new FabricResolutionError(denial);
+  }
+
   markUnavailable(name: string, reason: string): void {
     if (!providerNamePattern.test(name)) {
       throw new Error(`Invalid Fabric provider name: ${name}`);
@@ -842,6 +853,7 @@ export class ActionRegistry {
         throw new FabricResolutionError(formatUnknownActionMessage(ref, resolved.suggestions));
       }
       const action = resolved.action;
+      this.#assertResolvedAllowed(action);
       if (expectedDescriptorHash && actionDescriptorHash(action) !== expectedDescriptorHash) {
         throw new FabricResolutionError(`Fabric capability descriptor changed: ${ref}`);
       }
@@ -917,6 +929,7 @@ export class ActionRegistry {
         throw new FabricResolutionError(formatUnknownActionMessage(ref, resolved.suggestions));
       }
       const action = resolved.action;
+      this.#assertResolvedAllowed(action);
       const providerActionName = resolved.repairedFrom === undefined ? actionName : action.name;
       const authority = { ref: action.ref, descriptor: actionDescriptorHash(action) };
       if (expectedDescriptorHash && actionDescriptorHash(action) !== expectedDescriptorHash) {
@@ -1003,6 +1016,7 @@ export class ActionRegistry {
         throw new FabricResolutionError(formatUnknownActionMessage(ref, resolved.suggestions));
       }
       const action = resolved.action;
+      this.#assertResolvedAllowed(action);
       const providerActionName = resolved.repairedFrom === undefined ? actionName : action.name;
       const authority = { ref: action.ref, descriptor: actionDescriptorHash(action) };
       if (expectedDescriptorHash && actionDescriptorHash(action) !== expectedDescriptorHash) {
@@ -1342,6 +1356,7 @@ export class ActionRegistry {
         this.#providerBindings.trackProvider(provider, () => provider.describe(actionName, context)));
       if (!descriptor) return undefined;
       const action = resolveDescriptor(provider, descriptor);
+      if (this.#hostPolicy?.refDenial(action.provider, action.name)) return undefined;
       if (expectedDescriptorHash && actionDescriptorHash(action) !== expectedDescriptorHash) {
         return undefined;
       }
@@ -1627,8 +1642,10 @@ export class ActionRegistry {
       throw new Error(`Fabric action references must use provider.action: ${ref}`);
     }
     const providerName = ref.slice(0, separator);
-    // The sealed host policy decides from the ref alone, before any provider
-    // code (describe, list or prepareArguments) runs for a refused action.
+    // The sealed host policy decides from the ref as written, before any
+    // provider code (describe, list or prepareArguments) runs for a refused
+    // action. Callers decide again on the resolved name with
+    // #assertResolvedAllowed, because resolution can repair the name.
     const hostDenial = this.#hostPolicy?.refDenial(providerName, ref.slice(separator + 1));
     if (hostDenial) throw new FabricResolutionError(hostDenial);
     const pinned = view ? this.#viewAuthority(view).resolve(ref) : undefined;
