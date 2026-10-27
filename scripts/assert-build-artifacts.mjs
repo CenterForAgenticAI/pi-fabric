@@ -103,6 +103,15 @@ const required = [
 const missing = required.filter((file) => !existsSync(join(dist, file)));
 if (missing.length > 0) throw new Error(`Missing build artifacts:\n${missing.join("\n")}`);
 
+// Inference can choose the private worker alias when package-manager layouts
+// deduplicate it with the development host. Public declarations must bind to
+// the embedding application's peer SDK, including older supported hosts.
+for (const file of ["index.d.ts", "extension-bootstrap.d.ts", "core/host-sdk-runtime.d.ts"]) {
+  if (readFileSync(join(dist, file), "utf8").includes("pi-fabric-worker-sdk")) {
+    throw new Error(`Host-facing declaration imports the private worker SDK: ${file}`);
+  }
+}
+
 const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const targets = (value) => typeof value === "string" ? [value]
   : value && typeof value === "object" ? Object.values(value).flatMap(targets) : [];
