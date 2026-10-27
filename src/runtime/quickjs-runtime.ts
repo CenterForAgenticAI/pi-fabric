@@ -1,5 +1,5 @@
 import releaseSyncVariant from "@jitl/quickjs-singlefile-mjs-release-sync";
-import { newQuickJSWASMModuleFromVariant } from "quickjs-emscripten-core";
+import { newQuickJSWASMModuleFromVariant, newVariant } from "quickjs-emscripten-core";
 import ts from "typescript";
 import { runAbortable, settleWithin } from "../async-settlement.js";
 import { piBashExitMetadata } from "../core/pi-bash-error.js";
@@ -8,7 +8,7 @@ import { PI_CORE_TOOL_NAMES } from "../core/pi-tools.js";
 import { providerGlobalNames } from "../provider-globals.js";
 import { HumanWaitDeadlinePause } from "./deadline-pause.js";
 import { createGuestStackMap, remapGuestErrorText } from "./guest-stack-map.js";
-import { transpileFabricCodeWithSourceMap } from "./type-checker.js";
+import { transpileFabricCodeWithSourceMap } from "./transpile.js";
 
 import type {
   FabricHostCall,
@@ -67,10 +67,32 @@ const missingStringsKeys = (
   return referencedPiKeys(code).filter((key) => !(key in provided));
 };
 
-const quickJsModule = (): Promise<QuickJsModule> => {
-  quickJsModulePromise ??= newQuickJSWASMModuleFromVariant(releaseSyncVariant);
-  return quickJsModulePromise;
+const precompiledModules = new WeakMap<WebAssembly.Module, Promise<QuickJsModule>>();
+// The bundled variant compiles its inlined wasm bytes; hosts that forbid that
+// (Cloudflare Workers) pass a precompiled WebAssembly.Module of the same build.
+const quickJsModule = (wasmModule?: WebAssembly.Module): Promise<QuickJsModule> => {
+  if (wasmModule === undefined) {
+    quickJsModulePromise ??= newQuickJSWASMModuleFromVariant(releaseSyncVariant);
+    return quickJsModulePromise;
+  }
+  let loaded = precompiledModules.get(wasmModule);
+  if (loaded === undefined) {
+    loaded = newQuickJSWASMModuleFromVariant(newVariant(releaseSyncVariant, { wasmModule }));
+    precompiledModules.set(wasmModule, loaded);
+  }
+  return loaded;
 };
+
+/** One macrotask turn; setImmediate is Node/Bun only, Workers have setTimeout. */
+const nextMacrotask = (): Promise<void> => new Promise((resolve) => {
+  if (typeof setImmediate === "function") setImmediate(() => resolve());
+  else setTimeout(resolve, 0);
+});
+
+export interface QuickJsRuntimeOptions {
+  /** A precompiled QuickJS wasm module (the `@jitl/quickjs-singlefile-mjs-release-sync` build), for hosts that cannot compile wasm from bytes. */
+  readonly wasmModule?: WebAssembly.Module;
+}
 
 export const guestSetupSource = (fields?: Record<string, string[]>, nativeStoreEnabled = false, profile = "additive", nativeToolsEnabled = false, providerGlobals: readonly string[] = []): string =>
   `const __piCanonicalFields = ${JSON.stringify(fields ?? {})}; const __nativeStoreEnabled = ${nativeStoreEnabled}; const __nativeProfile = ${profile === "native"}; const __nativeToolsEnabled = ${nativeToolsEnabled}; const __providerGlobals = ${JSON.stringify(providerGlobalNames(providerGlobals))};\n${GUEST_SETUP}`;
@@ -848,6 +870,11 @@ const disposeQuickJsContext = (context: any): void => {
 };
 
 export class QuickJsRuntime {
+  readonly #wasmModule: WebAssembly.Module | undefined;
+  constructor(options: QuickJsRuntimeOptions = {}) {
+    this.#wasmModule = options.wasmModule;
+  }
+
   async execute(
     code: string,
     hostCall: FabricHostCall,
@@ -905,7 +932,7 @@ export class QuickJsRuntime {
         error: "QuickJS memory limit must be an integer between 1 byte and 4294967295 bytes (WASM32 maximum)",
       };
     }
-    const module = await quickJsModule();
+    const module = await quickJsModule(this.#wasmModule);
     const context = module.newContext();
     const runtime = context.runtime;
     const jsonObject = context.getProp(context.global, "JSON");
@@ -1280,7 +1307,7 @@ export class QuickJsRuntime {
         for (const promise of pendingHostPromises) promise.reject(errorHandle);
         errorHandle.dispose();
         pumpJobs();
-        await new Promise((resolve) => setImmediate(resolve));
+        await nextMacrotask();
         const settled = await Promise.race<any>([
           pendingResolution ? pendingResolution.catch(() => undefined) : Promise.resolve(undefined),
           new Promise<undefined>((resolve) => {
