@@ -2107,7 +2107,28 @@ export class AgentManager {
     }
   }
 
+  /**
+   * Monitors start detached, so a throw here would leave the run unsettled and
+   * every wait() pending forever. Settle such a run as failed instead.
+   */
   async #monitor(managed: ManagedAgent, timeoutMs: number): Promise<void> {
+    try {
+      await this.#watch(managed, timeoutMs);
+    } catch (error) {
+      if (managed.settled) return;
+      const message = error instanceof Error ? error.message : String(error);
+      const failed = failedRecord(managed, "failed", `Agent monitor failed: ${message}`);
+      await managed.transport.stop().catch(() => undefined);
+      try {
+        writeRecord(managed.statusFile, failed);
+      } catch {
+        // The settled result below still reaches every waiter.
+      }
+      this.#settle(managed, failed);
+    }
+  }
+
+  async #watch(managed: ManagedAgent, timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs + TRANSPORT_EXIT_GRACE_MS;
     let firstObservedDeadAt: number | undefined;
     while (!managed.settled) {
@@ -2248,7 +2269,12 @@ export class AgentManager {
     // Images are transport inputs, not retained run artifacts. Startup retries
     // have finished by settlement, so remove the owner-only handoff file for
     // every terminal outcome even when retainRuns keeps the rest of the run.
-    fs.rmSync(path.join(managed.runDirectory, "images.json"), { force: true });
+    try {
+      fs.rmSync(path.join(managed.runDirectory, "images.json"), { force: true });
+    } catch {
+      // beginAgentSettlement already marked the run settled: a throw here
+      // would leave every wait() pending forever.
+    }
     this.#emitLifecycle(managed, `run.${result.status}`, result.finishedAt ?? Date.now(), {
       status: result.status,
     });
