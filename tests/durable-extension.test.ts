@@ -332,11 +332,22 @@ describe("C7: a program cannot reach a tool the conversation or host did not all
       expect(lines[0]).toBe('["search_knowledge"]');
       for (const line of lines.slice(1)) expect(line).toMatch(/: refused$/);
       expect(host.calls).toEqual([]);
-      // A model-only tool is never callable from a program.
+      // A model-only tool, fabric_exec included, is never callable from a program, nor listed, found or described.
       const modelOnly = await host.turn(await host.conversation("t_alpha"), "model-only", `
-        try { await fabric.tools.call({ ref: "fabric.$nativeTool", args: { name: "model_only", args: {} } }); return "ran"; } catch { }
-        try { return await nativeTools.model_only({}); } catch { return "refused"; }`);
-      expect(modelOnly.text).toBe("refused");
+        const seen = { keys: Object.keys(tools).sort(), all: ALL_TOOLS.map((tool) => tool.name).sort() };
+        for (const name of ["model_only", "fabric_exec"]) {
+          seen[name + " search"] = (await searchTools(name.replace("_", " "))).map((hit) => hit.name).includes(name);
+          try { await describeTool(name); seen[name + " describe"] = "described"; } catch { seen[name + " describe"] = "refused"; }
+          try { await nativeTools[name]({ code: "1" }); seen[name + " call"] = "ran"; } catch { seen[name + " call"] = "refused"; }
+        }
+        return seen;`);
+      expect(modelOnly.text, modelOnly.text).not.toMatch(/^Error/);
+      expect(parsed(modelOnly.text)).toEqual({
+        keys: ["fail_tool", "search_knowledge", "secret_admin"],
+        all: ["fail_tool", "search_knowledge", "secret_admin"],
+        "model_only search": false, "model_only describe": "refused", "model_only call": "refused",
+        "fabric_exec search": false, "fabric_exec describe": "refused", "fabric_exec call": "refused",
+      });
       expect(host.calls).toEqual([]);
     } finally {
       await host.close();
@@ -369,6 +380,29 @@ describe("C8: providers are default-deny and get copied JSON", () => {
       expect(line).toMatch(/not granted|Not available/);
     }
     expect(lines[9]).toBe("granted: ran");
+  });
+
+  it("copies arguments and results even when a custom runtime passes live objects", async () => {
+    // A runtime override (another isolate, a test double) may hand the host any object: the extension copies it.
+    class Live { n = 1; get computed() { return "getter"; } }
+    const sent = new Live();
+    let received: unknown;
+    let returned: unknown;
+    const shared = { kept: true };
+    const runtime: FabricKernelRuntime = {
+      execute: async (_code, hostCall) => {
+        returned = await hostCall("fabric.$call", { ref: "notes.add", args: sent }, new AbortController().signal);
+        return { value: "ok", logs: [], terminationReason: "completed" };
+      },
+    };
+    await runProgram("return 1", { fabric: { runtime, providers: { notes: { actions: {
+      add: (args) => { received = args; (args as { n: number }).n = 99; return { shared, fn: () => 1, map: new Map([["a", 1]]) }; },
+    } } } } });
+    expect(received).toEqual({ n: 99 });
+    expect(Object.getPrototypeOf(received)).toBe(Object.prototype);
+    expect(sent.n).toBe(1);
+    expect(returned).toEqual({ shared: { kept: true }, map: {} });
+    expect((returned as { shared: unknown }).shared).not.toBe(shared);
   });
 
   it("gives a granted action a plain JSON copy and the program a JSON copy back", async () => {
@@ -426,14 +460,32 @@ describe("C10: no host capabilities in the sandbox", () => {
   });
 
   it("drops pending guest timers when the program ends instead of waiting for them", async () => {
+    // Watch the host's own timers: every timer a program schedules must be cleared when it ends, not left to expire.
+    const created = new Set<unknown>();
+    const cleared = new Set<unknown>();
+    const realSet = globalThis.setTimeout;
+    const realClear = globalThis.clearTimeout;
+    const setSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: () => void, ms?: number) => {
+      const timer = realSet(fn, ms);
+      if (ms === 60_000) created.add(timer);
+      return timer;
+    }) as typeof setTimeout);
+    const clearSpy = vi.spyOn(globalThis, "clearTimeout").mockImplementation(((timer?: Parameters<typeof clearTimeout>[0]) => {
+      cleared.add(timer);
+      realClear(timer);
+    }) as typeof clearTimeout);
     const started = Date.now();
     const run = await runProgram(`
       let fired = false;
       for (let i = 0; i < 10; i++) setTimeout(() => { fired = true; }, 60_000);
       await new Promise((resolve) => setTimeout(resolve, 5));
       return { fired, end: true };`, { fabric: { timeoutMs: 20_000 } });
+    setSpy.mockRestore();
+    clearSpy.mockRestore();
     expect(parsed(run.text)).toEqual({ fired: false, end: true });
     expect(Date.now() - started).toBeLessThan(10_000);
+    expect(created.size).toBe(10);
+    for (const timer of created) expect(cleared.has(timer)).toBe(true);
   });
 });
 
