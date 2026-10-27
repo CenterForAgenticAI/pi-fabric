@@ -2061,8 +2061,13 @@ export class AgentManager {
       // the previous attempt published (token usage above all) before discarding
       // the journal it landed in.
       this.#drainLifecycle(managed);
-      fs.rmSync(managed.statusFile, { force: true });
       if (managed.settled || this.#closing || managed.stopRequested) return false;
+      fs.rmSync(managed.statusFile, { force: true });
+      // Reset the journal before the new child exists: a failure here must not
+      // leave a relaunched child running behind a run that settles failed.
+      managed.lifecycleOffset = 0;
+      managed.lifecycleRemainder = Buffer.alloc(0);
+      fs.rmSync(managed.lifecycleFile, { force: true });
       managed.transport = await this.#launchTransport(managed.adapter, managed.launch);
       this.#unregisteredTransports.delete(managed.transport);
       if (managed.settled || this.#closing || managed.stopRequested) {
@@ -2075,9 +2080,6 @@ export class AgentManager {
       delete managed.latestRecord;
       delete managed.latestUiRecord;
       managed.lastLivenessCheckAt = 0;
-      managed.lifecycleOffset = 0;
-      managed.lifecycleRemainder = Buffer.alloc(0);
-      fs.rmSync(managed.lifecycleFile, { force: true });
       if (resume) {
         this.#emitLifecycle(managed, "run.resumed", Date.now(), {
           data: {
