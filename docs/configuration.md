@@ -38,7 +38,7 @@ Monty is always sandboxed, including under schema enforce, and does not require 
 
 ### Executor timeouts and ceilings
 
-`executor.maxCpuSliceMs` bounds uninterrupted QuickJS guest execution between host yields. The ordinary default is `0` (disabled, preserving previous behavior); positive values are milliseconds. Configuration normalizes finite values to integers in `0..Number.MAX_SAFE_INTEGER`. A tight loop is interrupted with a CPU-limit error rather than blocking the host indefinitely; awaiting host work resets the slice. This is separate from whole-program deadlines and does not interrupt synchronous host-provider code. Managed hosts default to `1000` and can set a positive safe integer with the trusted factory option `managedHost.executor.maxCpuSliceMs`; ambient configuration cannot override it.
+`executor.maxCpuSliceMs` bounds uninterrupted QuickJS guest execution between host yields. The ordinary default is `0` (disabled, preserving previous behavior); positive values are milliseconds. Configuration normalizes finite values to integers in `0..Number.MAX_SAFE_INTEGER`. A tight loop is interrupted with a CPU-limit error, so it cannot block the host indefinitely; awaiting host work resets the slice. This is separate from whole-program deadlines and does not interrupt synchronous host-provider code. Managed hosts default to `1000` and can set a positive safe integer with the trusted factory option `managedHost.executor.maxCpuSliceMs`; ambient configuration cannot override it.
 
 `executor.timeoutMs` (default `120000`) bounds a whole `fabric_exec` program. Two mechanisms can raise it:
 

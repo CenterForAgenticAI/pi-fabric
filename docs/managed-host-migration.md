@@ -8,17 +8,17 @@ The managed-host factory contract is **v2** (`FABRIC_MANAGED_HOST_VERSION === 2`
 
 | Hunk | Upstream replacement |
 | --- | --- |
-| A1 — stale script store after tool receipts | Automatic: later non-store custom entries are allowed on the same branch; aborts, session/generation changes, messages, compaction, navigation and either store writer still invalidate the transaction. |
-| A2 — truncated enum/union/tuple declarations | Automatic: bounded, visibly marked previews. Fetch exact `inputSchema` with `fabric.tools.describe({ ref })`; native `describeTool` returns a bounded declaration, not the raw schema. |
-| A3 — nested validation paths | Automatic: prefer TypeBox `instancePath`, falling back to `path`. |
-| A4 — exact tool discovery | Automatic: trimmed exact name/raw name/ref/final `__` segment takes precedence within the requested namespace. |
-| A5 — Jev in managed mode | Automatic: managed configuration disables Jev. |
-| B1 — direct foreground tools | `managedHost.foreground: ["ask_user_questions", "ai_todo_write", "run_delegated_task"]`; register and activate those names. |
-| B2 — provider-accurate tool and prompt text | Automatic managed metadata; put application policy in `managedHost.guidance` or the existing execution-guidance slot. |
-| B3 — skill reader | `managedHost.skillReader: "mcp.files.read"` (use the host's real callable name), or omit and own skill loading entirely. |
-| B4 — MCP-only native discovery | Automatic MCP fallback when Pi/extension discovery has no actions. |
-| B5 — uninterrupted guest CPU | Managed default is 1000 ms; explicitly use `managedHost.executor: { maxCpuSliceMs: 1000 }`. Ordinary sessions can set `executor.maxCpuSliceMs` (`0` disables it). |
-| B6 — host-owned compaction | `managedHost.compaction: "pi"`; omitted retains `"fabric"`. |
+| A1: stale script store after tool receipts | Automatic: later non-store custom entries are allowed on the same branch; aborts, session/generation changes, messages, compaction, navigation and either store writer still invalidate the transaction. |
+| A2: truncated enum/union/tuple declarations | Automatic: bounded, visibly marked previews. Fetch exact `inputSchema` with `fabric.tools.describe({ ref })`; native `describeTool` returns a bounded declaration, not the raw schema. |
+| A3: nested validation paths | Automatic: prefer TypeBox `instancePath`, falling back to `path`. |
+| A4: exact tool discovery | Automatic: trimmed exact name/raw name/ref/final `__` segment takes precedence within the requested namespace. |
+| A5: Jev in managed mode | Automatic: managed configuration disables Jev. |
+| B1: direct foreground tools | `managedHost.foreground: ["ask_user_questions", "ai_todo_write", "run_delegated_task"]`; register and activate those names. |
+| B2: provider-accurate tool and prompt text | Automatic managed metadata; put application policy in `managedHost.guidance` or the existing execution-guidance slot. |
+| B3: skill reader | `managedHost.skillReader: "mcp.files.read"` (use the host's real callable name), or omit and own skill loading entirely. |
+| B4: MCP-only native discovery | Automatic MCP fallback when Pi/extension discovery has no actions. |
+| B5: uninterrupted guest CPU | Managed default is 1000 ms; explicitly use `managedHost.executor: { maxCpuSliceMs: 1000 }`. Ordinary sessions can set `executor.maxCpuSliceMs` (`0` disables it). |
+| B6: host-owned compaction | `managedHost.compaction: "pi"`; omitted retains `"fabric"`. |
 
 Deliberately not upstreamed: application-specific counting, scope-completion and receipt-reconciliation prose; it belongs in host guidance. The undeclared external schema renderer and 64 KiB per-tool expansion are also not carried forward: Fabric keeps compact previews and exact schema discovery, without a new dependency. Auto-promoting every `model-only` registration is not required: the explicit host foreground list avoids accidentally exposing unrelated tools.
 
