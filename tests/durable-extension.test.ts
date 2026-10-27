@@ -1,15 +1,14 @@
 // F-067: fabric_exec as a pi-durable extension inside a bare Harness, the way
-// revere-pilot's agent host runs chat. Built against pi-durable, chord and
-// pi-ai 1.4.0 (the revere-pilot versions), installed here as aliases next to
-// the fork's 1.3.0 pins.
-import { BACKGROUND_CONTEXT } from "chord-v14/context";
+// revere-pilot's agent host runs chat, on the same pi-durable, chord and
+// pi-ai 1.4 copies the fork itself depends on.
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   createModels,
   fauxAssistantMessage,
   fauxProvider,
   fauxText,
   fauxToolCall,
-} from "pi-ai-v14";
+} from "@earendil-works/pi-ai";
 import {
   createRegistry,
   defineExtension,
@@ -19,7 +18,7 @@ import {
   MemoryStorage,
   ToolTask,
   type Extension,
-} from "pi-durable-v14";
+} from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { createFabricExtension, type FabricExtensionOptions } from "../src/durable-extension.js";
