@@ -134,7 +134,7 @@ const treeEvent = (session: SessionManager): SessionBeforeTreeEvent => ({
   },
 } as unknown as SessionBeforeTreeEvent);
 
-const owner = { name: "pi-context-aware", version: "1.4.0" };
+const owner = { name: "example-owner", version: "1.4.0" };
 
 const claimMessage = (overrides: Record<string, unknown> = {}) => {
   let result: FabricCompactionOwnerClaimResultV1 | undefined;
@@ -176,7 +176,7 @@ describe("compaction owner protocol", () => {
     const raw = {
       version: 1,
       type: "claim",
-      owner: { name: "pi-context-aware", version: "1.4.0", secret: "dropped" },
+      owner: { name: "example-owner", version: "1.4.0", secret: "dropped" },
       actions: { request: { fields: ["seed", "instructions", "seed"], handler } },
       branchSummary: false,
       signal,
@@ -184,7 +184,7 @@ describe("compaction owner protocol", () => {
     };
     const read = readFabricCompactionOwnerMessageV1(raw);
     if (!read.ok || read.message.type !== "claim") throw new Error("expected a claim");
-    expect(read.message.owner).toEqual({ name: "pi-context-aware", version: "1.4.0" });
+    expect(read.message.owner).toEqual({ name: "example-owner", version: "1.4.0" });
     expect(read.message.owner).not.toBe(raw.owner);
     expect(read.message.actions.request?.fields).toEqual(["seed", "instructions"]);
     expect(read.message.actions.request?.handler).toBe(handler);
@@ -218,7 +218,7 @@ describe("compaction owner protocol", () => {
   };
 
   it("stores the owner name and version it checked, even when a getter changes its answer", () => {
-    const name = answers("pi-context-aware", { toString: () => "injected" });
+    const name = answers("example-owner", { toString: () => "injected" });
     const version = answers("1.4.0", ["1", "4"]);
     const read = readFabricCompactionOwnerMessageV1({
       version: 1,
@@ -228,7 +228,7 @@ describe("compaction owner protocol", () => {
       reply: () => undefined,
     });
     if (!read.ok || read.message.type !== "claim") throw new Error(`expected a claim: ${JSON.stringify(read)}`);
-    expect(read.message.owner).toEqual({ name: "pi-context-aware", version: "1.4.0" });
+    expect(read.message.owner).toEqual({ name: "example-owner", version: "1.4.0" });
   });
 
   it("stores the signal it checked, even when a getter changes its answer", () => {
@@ -347,9 +347,9 @@ describe("compaction owner claim", () => {
     expect(second.result()).toMatchObject({ ok: false, holder: owner });
     const error = (second.result() as { error: string }).error;
     expect(error).toContain("other-compactor@0.2.0");
-    expect(error).toContain("pi-context-aware@1.4.0");
+    expect(error).toContain("example-owner@1.4.0");
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("other-compactor@0.2.0"));
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("pi-context-aware@1.4.0"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("example-owner@1.4.0"));
     expect(first.active).toBe(true);
   });
 
@@ -390,7 +390,7 @@ describe("compaction owner claim", () => {
     // made for the owner. Fabric's own entry carries no such mark.
     expect(fallback).toEqual({
       ok: true,
-      compaction: { ...fabricOwn.compaction, details: { ...fabricOwn.compaction.details, claimOwner: "pi-context-aware" } },
+      compaction: { ...fabricOwn.compaction, details: { ...fabricOwn.compaction.details, claimOwner: "example-owner" } },
     });
     expect(fabricOwn.compaction.details).not.toHaveProperty("claimOwner");
     expect(fallback).toMatchObject({
@@ -542,7 +542,7 @@ describe("compact.* under a claim", () => {
     const { controller, provider } = setup({ request: { fields: ["instructions"], handler: request } });
 
     await expect(provider.invoke("request", { instructions: "Keep the plan", seed: "Continue with phase 2" }, invocation()))
-      .rejects.toThrow(/pi-context-aware@1\.4\.0.*"seed"/);
+      .rejects.toThrow(/example-owner@1\.4\.0.*"seed"/);
     expect(request).not.toHaveBeenCalled();
     expect(controller.status().pending).toBeUndefined();
   });
@@ -561,7 +561,7 @@ describe("compact.* under a claim", () => {
     const { provider, appendEntry } = setup({ carry: { fields: ["add"], handler: carry } });
 
     await expect(provider.invoke("carry", { remove: ["Auth regression is still open"] }, invocation()))
-      .rejects.toThrow(/pi-context-aware@1\.4\.0.*"remove"/);
+      .rejects.toThrow(/example-owner@1\.4\.0.*"remove"/);
     expect(carry).not.toHaveBeenCalled();
     expect(appendEntry).not.toHaveBeenCalled();
   });
@@ -571,9 +571,9 @@ describe("compact.* under a claim", () => {
     const branch = { sessionManager: { getBranch: () => [] } } as unknown as ExtensionContext;
 
     await expect(provider.invoke("carry", { add: ["Auth regression is still open"] }, invocation(branch)))
-      .rejects.toThrow(/pi-context-aware@1\.4\.0.*compact\.carry/);
+      .rejects.toThrow(/example-owner@1\.4\.0.*compact\.carry/);
     await expect(provider.invoke("request", { reason: "pressure" }, invocation(branch)))
-      .rejects.toThrow(/pi-context-aware@1\.4\.0.*compact\.request/);
+      .rejects.toThrow(/example-owner@1\.4\.0.*compact\.request/);
     expect(appendEntry).not.toHaveBeenCalled();
   });
 
@@ -586,7 +586,7 @@ describe("compact.* under a claim", () => {
     });
     expect(controller.status().pending).toBeUndefined();
     // Nothing left to cancel and no owner cancel: the call fails.
-    await expect(provider.invoke("cancel", {}, invocation())).rejects.toThrow(/pi-context-aware@1\.4\.0.*compact\.cancel/);
+    await expect(provider.invoke("cancel", {}, invocation())).rejects.toThrow(/example-owner@1\.4\.0.*compact\.cancel/);
   });
 
   it("reports whether Fabric's own request was cleared beside the owner's cancel", async () => {
@@ -621,7 +621,7 @@ describe("compact.* under a claim", () => {
     expect(received?.context).toBe(host);
     expect(received?.signal.aborted).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
-    expect(outcome).toHaveBeenCalledWith("rejected", "compaction owner pi-context-aware@1.4.0: compact.status did not finish within 30 s");
+    expect(outcome).toHaveBeenCalledWith("rejected", "compaction owner example-owner@1.4.0: compact.status did not finish within 30 s");
     expect(received?.signal.aborted).toBe(true);
   });
 
@@ -639,7 +639,7 @@ describe("compact.* under a claim", () => {
 
     program.abort();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(outcome).toHaveBeenCalledWith("rejected", "compaction owner pi-context-aware@1.4.0: compact.request was cancelled by the calling program");
+    expect(outcome).toHaveBeenCalledWith("rejected", "compaction owner example-owner@1.4.0: compact.request was cancelled by the calling program");
     expect(received?.signal.aborted).toBe(true);
   });
 
@@ -687,7 +687,7 @@ describe("compact.* under a claim", () => {
     } as unknown as ExtensionContext;
 
     await expect(provider.invoke("status", {}, invocation(host))).resolves.toMatchObject({
-      claim: { name: "pi-context-aware", version: "1.4.0", branchSummary: false, actions: ["pressure", "status"] },
+      claim: { name: "example-owner", version: "1.4.0", branchSummary: false, actions: ["pressure", "status"] },
       ownerStatus: { stage: "fold" },
     });
     const pressure = await provider.invoke("pressure", {}, invocation(host));
@@ -705,7 +705,7 @@ describe("compact.* under a claim", () => {
       pressure: { handler: () => JSON.parse(`{"stage":"fold","thresholds":{"fold":0.7,${JSON.stringify(name)}:0.5}}`) as never },
     });
     await expect(provider.invoke("pressure", {}, invocation()))
-      .rejects.toThrow(`compaction owner pi-context-aware@1.4.0: compact.pressure threshold name "${name}" is reserved`);
+      .rejects.toThrow(`compaction owner example-owner@1.4.0: compact.pressure threshold name "${name}" is reserved`);
   });
 
   it("leaves status and pressure unchanged without a claim", async () => {

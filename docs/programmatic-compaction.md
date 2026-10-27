@@ -270,7 +270,7 @@ pi.on("session_start", (_event, ctx) => {
   pi.events.emit(FABRIC_COMPACTION_OWNER_EVENT, {
     version: 1,
     type: "claim",
-    owner: { name: "pi-context-aware", version: "1.4.0" },
+    owner: { name: "example-owner", version: "1.4.0" },
     actions: {
       request: { fields: ["instructions", "preserve", "seed"], handler: (request, { signal }) => focus(request, signal) },
       carry: { fields: ["items", "add", "remove", "clear"], handler: (update) => ({ items: carry(update) }) },
@@ -328,7 +328,7 @@ While the claim is held:
 - `compact.request`, `compact.carry`, and `compact.cancel` go to the owner.
   Fabric validates arguments as usual, then passes a fresh copy holding only
   the fields the owner declared. An undeclared action or field fails with an
-  error naming the owner (`compaction owner pi-context-aware@1.4.0: ...`),
+  error naming the owner (`compaction owner example-owner@1.4.0: ...`),
   and nothing is recorded, stored, or forwarded. `request` returns
   `{ requested: true, intent, claim, result? }`. `intent` is a receipt that
   describes what went to the owner; Fabric records none of it, so
