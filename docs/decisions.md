@@ -6,7 +6,7 @@ Four sources raise decisions:
 
 - programs, through `decisions.raise`;
 - headless approvals, when `approvals.headless` is `"decision"`;
-- routed child dialogs, when `agents.childQuestions` is `"route"` and the parent session has no interactive UI;
+- routed child dialogs, when `agents.childQuestions` is `"route"`; the main session records each one (see [Routed child questions](#routed-child-questions));
 - other extensions, through the [extension question events](#extension-questions).
 
 ## Record
