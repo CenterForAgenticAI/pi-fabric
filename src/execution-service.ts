@@ -762,13 +762,14 @@ export class FabricExecutionService {
       const definitions = ((options.context as Partial<import("@earendil-works/pi-coding-agent").ExtensionToolContext>).tools
         ?? this.capturedTools?.registeredTools().map(entry => entry.definition)
         ?? []) as import("@earendil-works/pi-coding-agent").ToolDefinition[];
-      // A native host already supplies its callable catalog. Do not initialize
-      // an independent MCP transport just to alias those registered tools.
-      // Only Pi-native providers contribute aliases. An unrelated provider's
-      // discovery failure or pending connection must not block every program.
-      const providers = definitions.length ? ["pi", "extensions"] : ["pi", "extensions", "mcp"];
+      // Prefer Pi-native aliases. Fall back to MCP only when no actions are
+      // available; an unrelated transport must not block a populated catalog.
+      const providers = ["pi", "extensions"];
       const actions = (await Promise.all(providers.filter(provider => this.registry.has(provider))
         .map(provider => this.registry.list({provider, limit: 1_000}, context)))).flat();
+      if (actions.length === 0 && this.registry.has("mcp")) {
+        actions.push(...await this.registry.list({ provider: "mcp", limit: 1_000 }, context));
+      }
       const refs = new Set(actions.map(action => action.ref));
       // Host registrations beyond the Fabric discovery page remain reachable.
       for (const definition of definitions) {
@@ -795,6 +796,7 @@ export class FabricExecutionService {
       nativeToolsEnabled: !python,
       codemodeProfile,
       memoryLimitBytes: this.config.executor.memoryLimitBytes,
+      maxCpuSliceMs: this.config.executor.maxCpuSliceMs === 0 ? Infinity : this.config.executor.maxCpuSliceMs,
       maxLogChars: this.config.executor.maxOutputChars,
       ...(options.hardTimeoutMs === undefined ? { minimumTimeoutMsForHostCall } : {}),
       ...(options.hardTimeoutMs === undefined && humanWaitRefs.size > 0 ? { isHumanWaitHostCall } : {}),
