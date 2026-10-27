@@ -16,6 +16,12 @@ import type {
 // between these declarations and a live server fails at the usual validate
 // stage rather than silently.
 
+// Every lossy rendering points back to the unmodified schema, not the preview.
+const RAW_SCHEMA_GUIDANCE = "exact raw inputSchema: fabric.tools.describe";
+const truncation = (reason: string): string =>
+  `/* truncated: ${reason}; ${RAW_SCHEMA_GUIDANCE} */`;
+const truncatedUnknown = (reason: string): string => `unknown ${truncation(reason)}`;
+
 const MAX_DEPTH = 6;
 const MAX_UNION_MEMBERS = 12;
 const MAX_SCHEMA_SOURCE_CHARS = 4_096;
@@ -84,13 +90,17 @@ const objectType = (schema: Record<string, unknown>, depth: number): string => {
 };
 
 const schemaType = (schema: unknown, depth: number): string => {
-  if (depth > MAX_DEPTH) return "unknown";
+  if (depth > MAX_DEPTH) return truncatedUnknown("depth limit");
   if (schema === true || schema === undefined) return "unknown";
   if (schema === false) return "never";
   if (!isRecord(schema)) return "unknown";
   if ("const" in schema) return literalType(schema.const);
   if (Array.isArray(schema.enum) && schema.enum.length > 0) {
-    return unionType(schema.enum.slice(0, MAX_UNION_MEMBERS).map(literalType));
+    const parts = schema.enum.slice(0, MAX_UNION_MEMBERS).map(literalType);
+    if (schema.enum.length > MAX_UNION_MEMBERS) {
+      parts.push(truncatedUnknown(`${schema.enum.length - MAX_UNION_MEMBERS} enum values omitted`));
+    }
+    return unionType(parts);
   }
   const alternates = Array.isArray(schema.anyOf)
     ? schema.anyOf
@@ -99,18 +109,24 @@ const schemaType = (schema: unknown, depth: number): string => {
       : undefined;
   if (alternates) {
     if (alternates.length === 0) return "unknown";
-    return unionType(
-      alternates.slice(0, MAX_UNION_MEMBERS).map((entry) => schemaType(entry, depth + 1)),
-    );
+    const parts = alternates.slice(0, MAX_UNION_MEMBERS).map((entry) => schemaType(entry, depth + 1));
+    if (alternates.length > MAX_UNION_MEMBERS) {
+      const keyword = Array.isArray(schema.anyOf) ? "anyOf" : "oneOf";
+      parts.push(truncatedUnknown(`${alternates.length - MAX_UNION_MEMBERS} ${keyword} alternatives omitted`));
+    }
+    return unionType(parts);
   }
   if (Array.isArray(schema.allOf) && schema.allOf.length > 0) {
-    return schema.allOf
+    const parts = schema.allOf
       .slice(0, MAX_UNION_MEMBERS)
       .map((entry) => {
         const rendered = schemaType(entry, depth + 1);
         return rendered.includes(" | ") ? `(${rendered})` : rendered;
-      })
-      .join(" & ");
+      });
+    if (schema.allOf.length > MAX_UNION_MEMBERS) {
+      parts.push(truncatedUnknown(`${schema.allOf.length - MAX_UNION_MEMBERS} allOf members omitted`));
+    }
+    return parts.join(" & ");
   }
   const types = typeList(schema.type);
   if (types.length > 1) {
@@ -127,16 +143,30 @@ const schemaType = (schema: unknown, depth: number): string => {
   if (type === "array") {
     const items = schema.items;
     if (Array.isArray(items)) {
-      return `[${items
-        .slice(0, MAX_UNION_MEMBERS)
-        .map((entry) => schemaType(entry, depth + 1))
-        .join(", ")}]`;
+      const parts = items.slice(0, MAX_UNION_MEMBERS).map((entry) => schemaType(entry, depth + 1));
+      if (items.length > MAX_UNION_MEMBERS) {
+        parts.push(`...unknown[] ${truncation(`${items.length - MAX_UNION_MEMBERS} tuple items omitted`)}`);
+      }
+      return `[${parts.join(", ")}]`;
     }
     return isRecord(items) || items === true
       ? `Array<${schemaType(items, depth + 1)}>`
       : "unknown[]";
   }
   return "unknown";
+};
+
+// Bound both guest declarations and standalone describeTool previews. Never
+// slice generated TypeScript: that can leave an invalid type or hide properties.
+const boundedSchemaType = (schema: unknown): string => {
+  const json = JSON.stringify(schema);
+  if (json && json.length > MAX_SCHEMA_SOURCE_CHARS) {
+    return truncatedUnknown("schema source size limit (properties/members may be omitted)");
+  }
+  const rendered = schemaType(schema, 0);
+  return rendered.length > MAX_MEMBER_TYPE_CHARS
+    ? truncatedUnknown("type size limit (properties/members may be omitted)")
+    : rendered;
 };
 
 interface FabricRenderBudget {
@@ -161,9 +191,13 @@ const renderMember = (
 ): string => {
   const loose = `${propertyKey(name)}(args?: Record<string, unknown>): ${resultType};`;
   const schemaJson = JSON.stringify(source.inputSchema);
-  if (!schemaJson || schemaJson.length > MAX_SCHEMA_SOURCE_CHARS) return loose;
+  if (!schemaJson || schemaJson.length > MAX_SCHEMA_SOURCE_CHARS) {
+    return `${truncation("schema source size limit (properties/members may be omitted)")} ${loose}`;
+  }
   const rendered = schemaType(source.inputSchema, 0);
-  if (rendered.length > MAX_MEMBER_TYPE_CHARS) return loose;
+  if (rendered.length > MAX_MEMBER_TYPE_CHARS) {
+    return `${truncation("type size limit (properties/members may be omitted)")} ${loose}`;
+  }
   return `${propertyKey(name)}(args${hasRequiredArgs(source) ? "" : "?"}: ${rendered}): ${resultType};`;
 };
 
@@ -261,7 +295,7 @@ const renderMcpDeclaration = (
   if (droppedTools > 0) notes.push(`${droppedTools} tool(s) untyped`);
   const note =
     notes.length > 0
-      ? `// Omitted from this surface (${notes.join(", ")}); those calls compile\n// as the loose fallback would and still validate at dispatch.\n`
+      ? `// Omitted from this surface (${notes.join(", ")}); those calls compile\n// as the loose fallback would and still validate at dispatch.\n// ${RAW_SCHEMA_GUIDANCE}.\n`
       : "";
   return (
     "// Generated from the live MCP descriptor cache for this execution. Known\n" +
@@ -288,7 +322,7 @@ const renderExtensionsDeclaration = (
   );
   const note =
     memberBlock.dropped > 0
-      ? `// Omitted ${memberBlock.dropped} tool(s) from this surface; those calls\n// compile as the loose fallback would and still validate at dispatch.\n`
+      ? `// Omitted ${memberBlock.dropped} tool(s) from this surface; those calls\n// compile as the loose fallback would and still validate at dispatch.\n// ${RAW_SCHEMA_GUIDANCE}.\n`
       : "";
   return (
     "// Generated from the captured extension tool catalog for this execution,\n" +
@@ -334,7 +368,7 @@ const renderProviderDeclarations = (
       try {
         line = `  ${renderMember(action.name, action, "Promise<any>")}\n`;
       } catch {
-        line = `  ${propertyKey(action.name)}(args?: Record<string, unknown>): Promise<any>;\n`;
+        line = `  ${truncation("schema could not be rendered")} ${propertyKey(action.name)}(args?: Record<string, unknown>): Promise<any>;\n`;
       }
       if (used + line.length + frame > budget.chars) {
         omitted += 1;
@@ -344,10 +378,11 @@ const renderProviderDeclarations = (
       members.push(line);
     }
     if (members.length === 0) {
-      blocks.push(`declare const ${name}: FabricProviderGlobal;\n`);
+      blocks.push(`${omitted > 0 ? `// Omitted ${omitted} action(s); ${RAW_SCHEMA_GUIDANCE}.\n` : ""}declare const ${name}: FabricProviderGlobal;\n`);
       continue;
     }
     const block =
+      (omitted > 0 ? `// Omitted ${omitted} action(s); ${RAW_SCHEMA_GUIDANCE}.\n` : "") +
       `interface ${interfaceName} {\n${members.join("")}}\n` +
       `declare const ${name}: ${interfaceName}${omitted > 0 ? " & FabricProviderGlobal" : ""};\n`;
     budget.chars -= block.length;
@@ -366,7 +401,7 @@ const renderProviderDeclarations = (
 // the loose static lines survive, matching cold-cache behavior.
 /** Bounded advisory declaration for native describeTool compatibility. */
 export const describeFabricActionDeclaration = (name: string, inputSchema: Record<string, unknown>, outputSchema?: Record<string, unknown>): string =>
-  `${JSON.stringify(name)}: (args: ${schemaType(inputSchema, 0)}) => Promise<${outputSchema ? schemaType(outputSchema, 0) : "unknown"}>`;
+  `${JSON.stringify(name)}: (args: ${boundedSchemaType(inputSchema)}) => Promise<${outputSchema ? boundedSchemaType(outputSchema) : "unknown"}>`;
 
 export const buildDynamicGuestDeclarations = (
   sources: FabricGuestTypeSources,
