@@ -169,6 +169,7 @@ See the [interface & commands reference](docs/interface.md) for every view, keyb
 - [Native codemode APIs](docs/codemode-parity.md): additive native tool aliases or opt-in Pi-compatible scripts, collision-safe Fabric discovery, native models/images, branch-local state, and sPTC.
 - [Prompt cache](docs/prompt-cache.md): honest cache observations and optional, time-bounded native warming leases.
 - [Thinking control](docs/thinking.md): scoped host-session reasoning effort with configured bounds that children inherit and never widen.
+- [Fabric in a pi-durable host](docs/durable-extension.md): `pi-fabric/durable-extension` gives a host's own pi-durable `Harness` the `fabric_exec` tool: its options and defaults (`tools`, `providers`, limits, `quickJsWasmModule`, `onError`), default-deny security, replay-safe durability on a task-document journal, a codemode-style prompt section, and Cloudflare Worker setup with the `pi-fabric/durable-extension/wasm` helper.
 - [Durable Pi runner](docs/durable-pi.md): the default isolated Pi/Fabric host, checkpoint recovery, replay boundaries, and the explicit legacy `pi` option.
 - [Durable decisions](docs/decisions.md): pending approvals and questions in the project mesh, headless approvals, routed child dialogs, `/fabric decisions`, and the `pi-fabric decisions` CLI.
 - [Saved programs](docs/programs.md): content-addressed programs, nested `programs.run` with the caller's capabilities, `/fabric programs`, and host runs through `/fabric run` or an event.

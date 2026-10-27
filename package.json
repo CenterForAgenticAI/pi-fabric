@@ -29,6 +29,14 @@
       "types": "./dist/durable.d.ts",
       "import": "./dist/durable.js"
     },
+    "./durable-extension": {
+      "types": "./dist/durable-extension.d.ts",
+      "import": "./dist/durable-extension.js"
+    },
+    "./durable-extension/wasm": {
+      "types": "./dist/durable-extension-wasm.d.ts",
+      "import": "./dist/durable-extension-wasm.js"
+    },
     "./mcp": {
       "types": "./dist/mcp.d.ts",
       "import": "./dist/mcp.js"
@@ -133,6 +141,7 @@
   },
   "dependencies": {
     "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-codemode": "1.4.0",
     "@earendil-works/pi-durable": "1.4.0",
     "@jitl/quickjs-singlefile-mjs-release-sync": "^0.32.0",
     "@lezer/common": "^1.5.2",
@@ -158,7 +167,10 @@
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
-    "typebox": "*"
+    "typebox": "*",
+    "@earendil-works/chord": ">=1.4.0",
+    "@earendil-works/pi-codemode": ">=1.4.0",
+    "@earendil-works/pi-durable": ">=1.4.0"
   },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "1.4.0",
@@ -186,5 +198,16 @@
   },
   "optionalDependencies": {
     "jev-fabric": "0.8.0"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/chord": {
+      "optional": true
+    },
+    "@earendil-works/pi-codemode": {
+      "optional": true
+    },
+    "@earendil-works/pi-durable": {
+      "optional": true
+    }
   }
 }
