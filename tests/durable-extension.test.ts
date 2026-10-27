@@ -1,5 +1,5 @@
-// F-067: fabric_exec as a pi-durable extension inside a bare Harness (criteria A3, B4-B6,
-// C7-C10, C12 and onError of the F-067 brief). Every test runs a real program in the QuickJS
+// fabric_exec as a pi-durable extension inside a bare Harness: its surface, limits, prompt
+// section, isolation and onError. Every test runs a real program in the QuickJS
 // kernel through a real Harness; see tests/durable-extension-host.ts.
 import { defineTool, type Extension, type ToolRegistration } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
@@ -37,7 +37,7 @@ const recordingRuntime = () => {
 
 const parsed = <T>(text: string): T => JSON.parse(text) as T;
 
-describe("A2/A3: surface, options and defaults", () => {
+describe("surface, options and defaults", () => {
   it("is a pi-durable 1.4 Extension a host installs without a cast", () => {
     const extension: Extension = createFabricExtension();
     expect(extension.name).toBe("pi-fabric");
@@ -212,7 +212,7 @@ describe("onError and internal failures", () => {
   });
 });
 
-describe("B4: program behaviour", () => {
+describe("program behaviour", () => {
   it("returns host tool results and runs Promise.all calls concurrently", async () => {
     // Each tool waits until the other has started: sequential calls would hit the deadline.
     const a = latch();
@@ -253,7 +253,7 @@ describe("B4: program behaviour", () => {
   });
 });
 
-describe("B5: limits", () => {
+describe("limits", () => {
   it("stops an endless loop at the deadline", async () => {
     const started = Date.now();
     const run = await runProgram("while (true) {}", { fabric: { timeoutMs: 300 } });
@@ -276,7 +276,7 @@ describe("B5: limits", () => {
   });
 });
 
-describe("B6: the prompt section", () => {
+describe("the prompt section", () => {
   it("lists only the tools a program may call, as declarations", async () => {
     const run = await runProgram("return 1", { fabric: { tools: ["search_knowledge", "model_only"] } });
     const section = parsed<{ sections: { fabric: string } }[]>(run.prompt)[0]!.sections.fabric;
@@ -344,7 +344,7 @@ describe("B6: the prompt section", () => {
   });
 });
 
-describe("C7: a program cannot reach a tool the conversation or host did not allow", () => {
+describe("a program cannot reach a tool the conversation or host did not allow", () => {
   const attempts = `
     const attempt = async (label, fn) => { try { const value = await fn(); return label + ": ran " + JSON.stringify(value); } catch (error) { return label + ": refused"; } };
     const name = ["secret", "admin"].join("_");
@@ -403,7 +403,7 @@ describe("C7: a program cannot reach a tool the conversation or host did not all
   });
 });
 
-describe("C8: providers are default-deny and get copied JSON", () => {
+describe("providers are default-deny and get copied JSON", () => {
   it("refuses every Fabric namespace and pi.* the host did not grant", async () => {
     const run = await runProgram(`
       const attempt = async (label, fn) => { try { await fn(); return label + ": ran"; } catch (error) { return label + ": " + error.message; } };
@@ -481,7 +481,7 @@ describe("C8: providers are default-deny and get copied JSON", () => {
   });
 });
 
-describe("C9: nested calls pass the host's ToolTask hooks", () => {
+describe("nested calls pass the host's ToolTask hooks", () => {
   it("lets a tenantGuard-shaped hook refuse a call naming another tenant", async () => {
     const run = await runProgram(`
       const own = await tools.search_knowledge({ query: "t_alpha incidents" });
@@ -493,7 +493,7 @@ describe("C9: nested calls pass the host's ToolTask hooks", () => {
   });
 });
 
-describe("C10: no host capabilities in the sandbox", () => {
+describe("no host capabilities in the sandbox", () => {
   it("has no file, process, network or module access and no host object", async () => {
     const run = await runProgram(`
       const names = ["require", "process", "fetch", "Deno", "Bun", "XMLHttpRequest", "WebSocket", "navigator", "Buffer", "WebAssembly", "queueMicrotask", "__fabricHostCall", "__call", "std", "os", "performance"];
@@ -537,7 +537,7 @@ describe("C10: no host capabilities in the sandbox", () => {
   });
 });
 
-describe("C12: results hold no host secrets", () => {
+describe("results hold no host secrets", () => {
   it("shows a program error without host paths", async () => {
     const run = await runProgram('const value = null; return value.missing;');
     expect(run.isError).toBe(true);

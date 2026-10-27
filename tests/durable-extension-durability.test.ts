@@ -1,5 +1,5 @@
-// F-067: what createFabricExtension does across conversations, restarts, cancellation,
-// fork and compaction, and on Node and Bun (criteria C11, D13-D16 and E18 of the F-067 brief; D13 is now the replay-safe resume).
+// What createFabricExtension does across conversations, restarts, cancellation, fork and
+// compaction, and on Node and Bun, including the replay-safe resume after a process kill.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -32,7 +32,7 @@ const textTool = (name: string, execute: ToolRegistration["execute"]): ToolRegis
   defineTool({ name, description: `Test tool ${name}`, parameters: Type.Object({}, { additionalProperties: true }), execute });
 const ok = (text: string) => ({ output: [{ type: "text" as const, text }] });
 
-describe("C11: no state crosses conversations or tenants in one process", () => {
+describe("no state crosses conversations or tenants in one process", () => {
   it("keeps globals, prototypes and module state of two concurrent tenants apart", async () => {
     // Each program writes its marks, then waits until the other tenant's program has written
     // its own, so both run at once and a shared realm would show the other's marks.
@@ -165,7 +165,7 @@ const reopen = async (db: string, effects: string, secondReplay: "safe" | "unsaf
   return { harness, conversation, tasks, requests, result, text: result?.content.map((item) => item.text).join("\n") ?? "" };
 };
 
-describe("D13: fabric_exec resumes from its journal across a real process kill", () => {
+describe("fabric_exec resumes from its journal across a real process kill", () => {
   it("replays the finished call, gets the interrupted replay-safe call back, and finishes the program", async () => {
     const root = tempRoot("kill-safe");
     const { db, effects } = await killMidProgram(root, "safe");
@@ -210,7 +210,7 @@ describe("D13: fabric_exec resumes from its journal across a real process kill",
     }
   });
 });
-describe("D14: cancelling the turn", () => {
+describe("cancelling the turn", () => {
   it("aborts the in-flight nested call and the program, and leaves no kernel running", async () => {
     const started = latch();
     const signals: string[] = [];
@@ -290,7 +290,7 @@ describe("D14: cancelling the turn", () => {
   }, 30_000);
 });
 
-describe("D15: fork and compaction keep fabric_exec and its section", () => {
+describe("fork and compaction keep fabric_exec and its section", () => {
   it("offers fabric_exec with its section in a forked and in a compacted conversation", async () => {
     // Keep almost nothing verbatim, so the compaction summarizes the first turn.
     const host = await openHost({ settings: { compaction: { keepRecentTokens: 1 } } });
@@ -326,7 +326,7 @@ describe("D15: fork and compaction keep fabric_exec and its section", () => {
   }, 30_000);
 });
 
-describe("D16: errors reach onReport and never crash the Harness", () => {
+describe("errors reach onReport and never crash the Harness", () => {
   it("reports a section render failure as extension_error with the extension's name, and the turn still runs", async () => {
     // A host tool whose description getter throws while Fabric renders its section (and only
     // there: pi-durable's own tool list reads it too) makes that render throw.
@@ -361,7 +361,7 @@ describe("D16: errors reach onReport and never crash the Harness", () => {
   }, 30_000);
 });
 
-describe("E18: Node and Bun", () => {
+describe("Node and Bun", () => {
   const built = path.join(project, "dist/durable-extension.js");
   const script = (root: string) => {
     const file = path.join(root, "run.mjs");

@@ -169,7 +169,7 @@ export async function openHost(options: HostOptions = {}) {
   const registry = createRegistry();
   registry.install(hostTools);
   registry.install(guard);
-  // No cast: the extension's types are the host's pi-durable 1.4 types (criterion A2).
+  // No cast: the extension's types are the host's pi-durable 1.4 types.
   // Tests that pass fabric options get exactly those; the rest get a short deadline.
   const fabric = createFabricExtension(options.fabric ?? { timeoutMs: 10_000 });
   registry.install(fabric);
