@@ -975,6 +975,12 @@ export class AgentsProvider implements FabricProvider {
       }
       case "stop":
         return this.stopParticipant(String(args.id));
+      case "sleep":
+      case "wake": {
+        const id = String(args.id);
+        await (actionName === "sleep" ? this.manager.sleep(id) : this.manager.wake(id));
+        return { id, requested: actionName };
+      }
       case "cleanup": {
         const id = String(args.id);
         return this.residency?.hasAgent(id)
