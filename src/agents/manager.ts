@@ -936,12 +936,6 @@ export class AgentManager {
     const id = randomUUID().replaceAll("-", "");
     const name = runName(request);
     const runDirectory = path.join(this.#runRoot, id);
-    fs.mkdirSync(runDirectory, { recursive: true });
-    if (this.#managedTempRoot && !this.#retentionTimer) {
-      this.#retentionTimer = setInterval(() => this.#scheduleRetentionSweep(), RETENTION_SWEEP_INTERVAL_MS);
-      this.#retentionTimer.unref();
-      this.#scheduleRetentionSweep();
-    }
     const taskFile = path.join(runDirectory, "task.txt");
     const statusFile = path.join(runDirectory, "status.json");
     const lifecycleFile = path.join(runDirectory, "lifecycle.jsonl");
@@ -951,18 +945,31 @@ export class AgentManager {
     const imagesFile = request.images && request.images.length > 0
       ? path.join(runDirectory, "images.json")
       : undefined;
-    fs.writeFileSync(taskFile, request.task, { encoding: "utf8", mode: 0o600 });
-    if (imagesFile) {
-      fs.writeFileSync(imagesFile, JSON.stringify(request.images), {
-        encoding: "utf8",
-        mode: 0o600,
-      });
+    try {
+      fs.mkdirSync(runDirectory, { recursive: true });
+      fs.writeFileSync(taskFile, request.task, { encoding: "utf8", mode: 0o600 });
+      if (imagesFile) {
+        fs.writeFileSync(imagesFile, JSON.stringify(request.images), {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+      }
+      if (schemaFile) {
+        fs.writeFileSync(schemaFile, JSON.stringify(request.schema, null, 2), {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+      }
+    } catch (error) {
+      // No child exists yet: give the admitted slot back so later agents
+      // are not held at maxConcurrent by a run that never started.
+      release();
+      throw error;
     }
-    if (schemaFile) {
-      fs.writeFileSync(schemaFile, JSON.stringify(request.schema, null, 2), {
-        encoding: "utf8",
-        mode: 0o600,
-      });
+    if (this.#managedTempRoot && !this.#retentionTimer) {
+      this.#retentionTimer = setInterval(() => this.#scheduleRetentionSweep(), RETENTION_SWEEP_INTERVAL_MS);
+      this.#retentionTimer.unref();
+      this.#scheduleRetentionSweep();
     }
 
     let agentCwd = selectedCwd;
