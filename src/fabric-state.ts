@@ -132,6 +132,10 @@ export class FabricState {
     return this.#config;
   }
 
+  get managedHostOptions(): Readonly<FabricManagedHostOptions> | undefined {
+    return this.#managedHost?.options;
+  }
+
   get cwd(): string | undefined {
     return this.#cwd;
   }
@@ -144,6 +148,7 @@ export class FabricState {
       policy: config.foreground,
       mode: config.schema.mode === "enforce" ? "enforce" : config.fullCodeMode ? "full-code" : "orchestration",
       managedHost: this.#managedHost !== undefined,
+      managedForeground: this.#managedHost?.options.foreground,
       registered: this.pi.getAllTools(),
       active: new Set(active ?? this.pi.getActiveTools()),
       allowlist: readChildToolAllowlist(),

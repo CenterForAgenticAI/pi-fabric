@@ -762,11 +762,9 @@ export class FabricExecutionService {
       const definitions = ((options.context as Partial<import("@earendil-works/pi-coding-agent").ExtensionToolContext>).tools
         ?? this.capturedTools?.registeredTools().map(entry => entry.definition)
         ?? []) as import("@earendil-works/pi-coding-agent").ToolDefinition[];
-      // A native host already supplies its callable catalog. Do not initialize
-      // an independent MCP transport just to alias those registered tools.
-      // Only Pi-native providers contribute aliases. An unrelated provider's
-      // discovery failure or pending connection must not block every program.
-      const providers = definitions.length ? ["pi", "extensions"] : ["pi", "extensions", "mcp"];
+      // Prefer Pi-native aliases. Fall back to MCP only when no actions are
+      // available; an unrelated transport must not block a populated catalog.
+      const providers = ["pi", "extensions"];
       const actions = (await Promise.all(providers.filter(provider => this.registry.has(provider))
         .map(provider => this.registry.list({provider, limit: 1_000}, context)))).flat();
       const refs = new Set(actions.map(action => action.ref));
@@ -776,6 +774,12 @@ export class FabricExecutionService {
         if (refs.has(ref)) continue;
         refs.add(ref);
         try { actions.push(await this.registry.describe(ref, context)); } catch { /* hidden or unavailable */ }
+      }
+      // Registered host definitions may resolve to Pi-owned MCP actions even
+      // when pi/extensions list no actions. Resolve them before the fallback
+      // so discovery never starts a redundant ambient MCP transport.
+      if (actions.length === 0 && this.registry.has("mcp")) {
+        actions.push(...await this.registry.list({ provider: "mcp", limit: 1_000 }, context));
       }
       const entries = api.nativeToolCatalog(actions.filter(action => effectiveFullCodeMode || !fullCodeProvider(action.provider)), definitions, nativeMcpIdentity);
       nativeCallRefs.clear();
@@ -795,6 +799,7 @@ export class FabricExecutionService {
       nativeToolsEnabled: !python,
       codemodeProfile,
       memoryLimitBytes: this.config.executor.memoryLimitBytes,
+      maxCpuSliceMs: this.config.executor.maxCpuSliceMs === 0 ? Infinity : this.config.executor.maxCpuSliceMs,
       maxLogChars: this.config.executor.maxOutputChars,
       ...(options.hardTimeoutMs === undefined ? { minimumTimeoutMsForHostCall } : {}),
       ...(options.hardTimeoutMs === undefined && humanWaitRefs.size > 0 ? { isHumanWaitHostCall } : {}),

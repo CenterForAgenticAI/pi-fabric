@@ -244,7 +244,7 @@ Trusted embedding code can opt into a closed-world provider authority:
 ```ts
 import piFabric, { FABRIC_MANAGED_HOST_VERSION } from "pi-fabric";
 
-if (FABRIC_MANAGED_HOST_VERSION !== 1) throw new Error("Unsupported managed host");
+if (FABRIC_MANAGED_HOST_VERSION !== 2) throw new Error("Unsupported managed host");
 await piFabric(pi, { managedHost: { providers: ["agents", "memory", "compact"] } });
 // Register all three host-owned implementations using the v1 registration event before activation.
 ```
@@ -257,8 +257,29 @@ idempotent; changing an implementation after activation requires a new host. Pro
 one host lifetime, and `close()` is awaited once after final publication withdrawal.
 
 Managed mode ignores ambient configuration and fixes execution to full-code TypeScript QuickJS.
+The v2 factory adds optional controls; `{ providers }` alone remains valid:
+
+```ts
+await piFabric(pi, { managedHost: {
+  providers: ["mcp"],
+  foreground: ["ask_user_questions", "ai_todo_write", "run_delegated_task"],
+  guidance: "Apply the host's workflow and receipt-reconciliation policy.",
+  skillReader: "mcp.files.read",
+  executor: { maxCpuSliceMs: 1000 },
+  compaction: "pi",
+} });
+```
+
+- `foreground` defaults to `[]`. Up to eight exact registered names can remain declared beside `fabric_exec`; Pi exposure, active-set and inherited allowlist checks still apply. Direct calls keep the same `tool_call` hooks and approval ref, prompt-cache fence and [placement reporting](#tool-placement-query). `model-only` tools do not gain a program-callable path.
+- Stable execution guidance names only the host-authorized provider namespaces and is emitted once through the execution-guidance slot. Tool and `code` descriptions stay short and refer to it. `guidance` appends trusted host instructions once to the system prompt; the existing execution guidance slot can still replace the default. Provider registration remains v1: its event and payload do not change.
+- `skillReader` names the host's dotted callable reader, for example `mcp.files.read`. Without it, Fabric omits its skill-loading instruction and delegated-skill hint. Managed hosts supply their own skill resources; Fabric does not contribute bundled coding workflows.
+- `executor.maxCpuSliceMs` defaults to `1000`, must be a positive safe integer, and limits uninterrupted guest CPU, not host-provider execution. Whole-program timeouts remain separate.
+- `compaction` is `"fabric"` by default, preserving existing behavior; `"pi"` leaves compaction to the embedding host and its saved formats.
+
+Options are copied when the host is created. Later mutation of the caller's arrays or executor object cannot widen the host policy. See the [migration and changelog](managed-host-migration.md).
+
 Native MCP, agent spawning, mesh, filesystem memory discovery, schema effects, speculative work,
-prewalk, repairs, entropy compilation, and model-visible component control are unavailable.
+prewalk, repairs, entropy compilation, Jev, and model-visible component control are unavailable.
 A supplied memory implementation remains discoverable without enabling native memory scanning.
 Every pinned component activation/reload uses the same host replacement; it cannot resurrect a
 native provider. Non-core providers omitted from the host list expose no actions. Pi core calls
