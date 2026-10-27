@@ -255,3 +255,67 @@ describe("ActorBindingStore read failures", () => {
     expect(written.bindings["actor:x"]).toMatchObject({ model: "provider/model-x" });
   });
 });
+
+describe("ActorBindingStore short-lock leaks (#323)", () => {
+  const age = (target: string, ms: number): void => {
+    const past = new Date(Date.now() - ms);
+    fs.utimesSync(target, past, past);
+  };
+
+  it("partial owner: keeps a fresh lock with an empty owner file until the stale window passes", async () => {
+    const { first } = setup();
+    const lockPath = `${first.filePath!}.lock`;
+    fs.mkdirSync(lockPath, { recursive: true });
+    fs.writeFileSync(path.join(lockPath, "owner"), "");
+    vi.useFakeTimers();
+    const result = expect(first.setModel("actor:a", "provider/model-a")).rejects.toThrow(
+      "Timed out waiting for the Fabric actor binding lock",
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    await result;
+    vi.useRealTimers();
+    expect(fs.existsSync(lockPath)).toBe(true);
+
+    age(lockPath, 60_000);
+    await first.setModel("actor:a", "provider/model-a");
+    expect(first.get("actor:a")?.model).toBe("provider/model-a");
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("partial owner: publishes the owner file atomically, never empty at the lock path", async () => {
+    const { first } = setup();
+    const ownerPath = path.join(`${first.filePath!}.lock`, "owner");
+    const writeFileSync = fs.writeFileSync;
+    const targets: string[] = [];
+    vi.spyOn(fs, "writeFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, data: unknown, options?: unknown) => {
+      targets.push(String(file));
+      if (String(file).startsWith(`${ownerPath}.`)) expect(fs.existsSync(ownerPath)).toBe(false);
+      return writeFileSync(file, data as string, options as fs.WriteFileOptions);
+    }) as typeof fs.writeFileSync);
+    await first.setModel("actor:a", "provider/model-a");
+    expect(targets).not.toContain(ownerPath);
+    expect(targets.some((target) => target.startsWith(`${ownerPath}.`))).toBe(true);
+  });
+
+  it("hold ceiling: reaps a live same-host owner's leaked lock and keeps a young one", async () => {
+    const leaked = setup().first;
+    const leakedPath = `${leaked.filePath!}.lock`;
+    fs.mkdirSync(leakedPath, { recursive: true });
+    fs.writeFileSync(path.join(leakedPath, "owner"), `leaked\n${process.pid}\n${Date.now() - 3_600_000}\n${encodeOwnerIdentityLine()}\n`);
+    await leaked.setModel("actor:a", "provider/model-a");
+    expect(fs.existsSync(leakedPath)).toBe(false);
+
+    const young = setup().first;
+    const youngPath = `${young.filePath!}.lock`;
+    const owner = `held\n${process.pid}\n${Date.now() - 5_000}\n${encodeOwnerIdentityLine()}\n`;
+    fs.mkdirSync(youngPath, { recursive: true });
+    fs.writeFileSync(path.join(youngPath, "owner"), owner);
+    vi.useFakeTimers();
+    const result = expect(young.setModel("actor:a", "provider/model-a")).rejects.toThrow(
+      "Timed out waiting for the Fabric actor binding lock",
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    await result;
+    expect(fs.readFileSync(path.join(youngPath, "owner"), "utf8")).toBe(owner);
+  });
+});

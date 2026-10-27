@@ -3,11 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   writeFileAtomic,
-  encodeOwnerIdentityLine,
-  lockOwnerLiveness,
-  lockOwnerProvablyDead,
-  reapLockByRenameClaim,
-  SHORT_LOCK_MAX_HOLD_MS,
+  formatShortLockOwner,
+  reapStaleShortLock,
+  releaseShortLock,
+  tryAcquireShortLock,
 } from "../core/atomic-write.js";
 import { readJsonlPage } from "../log-tail.js";
 import { captureStoragePut, captureStorageDelete, storageRevision } from "../verified/storage.js";
@@ -983,94 +982,32 @@ export class MeshStore {
     fs.mkdirSync(this.root, { recursive: true, mode: 0o700 });
     const deadline = Date.now() + this.#lockTimeoutMs;
     const token = randomUUID();
-    const ownerPath = path.join(this.#lockPath, "owner");
-    while (true) {
-      try {
-        fs.mkdirSync(this.#lockPath, { mode: 0o700 });
-        fs.writeFileSync(ownerPath, `${token}\n${process.pid}\n${Date.now()}\n${encodeOwnerIdentityLine()}\n`, {
-          encoding: "utf8",
-          mode: 0o600,
-        });
-        break;
-      } catch (error) {
-        if (errorCode(error) !== "EEXIST") throw error;
-        if (this.#clearStaleLock(ownerPath)) continue;
-        if (Date.now() >= deadline) throw new Error("Timed out waiting for the Fabric mesh lock");
-        await delay(10);
-      }
+    while (!tryAcquireShortLock(this.#lockPath, formatShortLockOwner(token))) {
+      if (this.#clearStaleLock()) continue;
+      if (Date.now() >= deadline) throw new Error("Timed out waiting for the Fabric mesh lock");
+      await delay(10);
     }
     try {
       return operation();
     } finally {
-      try {
-        const owner = fs.readFileSync(ownerPath, "utf8");
-        if (owner.startsWith(`${token}\n`)) {
-          fs.rmSync(this.#lockPath, { recursive: true, force: true });
-        }
-      } catch {
-        // Another process already recovered or removed this lock.
-      }
+      // Takes the lock back from a reaper's claim path too, so a reaper's
+      // rename-back cannot restore a released lock.
+      releaseShortLock(this.#lockPath, token);
     }
   }
 
   // Returns true when a stale lock was removed and acquisition should retry.
-  // A lock is stale when it outlived the stale window without a live owner:
-  // either the owner file names a dead process, or the owner file is missing
-  // or corrupt — the owner crashed between creating the lock directory and
-  // writing the owner file — and the untouched lock directory itself is
-  // stale. A younger lock is also removed when its owner is provably dead:
-  // same host, PID namespace and boot, and the pid is gone or reused. Removal
-  // re-reads the state it judged stale so a freshly rotated owner is never
-  // deleted mid-check, and an owner lock is removed through a rename claim so
-  // a lock a new owner took after that re-read survives.
-  #clearStaleLock(ownerPath: string): boolean {
-    let lockModifiedAt: number | undefined;
-    let owner: string | undefined;
-    try {
-      owner = fs.readFileSync(ownerPath, "utf8");
-    } catch {
-      try {
-        lockModifiedAt = fs.statSync(this.#lockPath).mtimeMs;
-      } catch {
-        return false;
-      }
-    }
-    if (owner !== undefined) {
-      const [, pidText, createdText, identityLine] = owner.trim().split("\n");
-      const createdAt = Number(createdText);
-      const fresh = Number.isFinite(createdAt) && Date.now() - createdAt <= this.#staleLockMs;
-      // A fresh lock is cleared only when its local owner is provably dead.
-      // Unknown (another PID namespace within the hold ceiling) is not death.
-      const dead = fresh
-        ? lockOwnerProvablyDead(Number(pidText), identityLine)
-        : lockOwnerLiveness(Number(pidText), createdAt, identityLine, {
-          legacyAlive: processAlive,
-          maxHoldMs: Math.max(SHORT_LOCK_MAX_HOLD_MS, this.#staleLockMs),
-        }) === "dead";
-      if (!dead) return false;
-      try {
-        if (fs.readFileSync(ownerPath, "utf8") !== owner) return false;
-        return reapLockByRenameClaim(this.#lockPath, (claimed) => {
-          try {
-            return fs.readFileSync(path.join(claimed, "owner"), "utf8") === owner;
-          } catch {
-            return false;
-          }
-        });
-      } catch {
-        return false;
-      }
-    }
-    if (lockModifiedAt === undefined || Date.now() - lockModifiedAt <= this.#staleLockMs) {
-      return false;
-    }
-    try {
-      if (fs.statSync(this.#lockPath).mtimeMs !== lockModifiedAt) return false;
-      fs.rmSync(this.#lockPath, { recursive: true, force: true });
-      return true;
-    } catch {
-      return false;
-    }
+  // A lock without a usable owner (missing, empty or partial owner file) is
+  // judged only by the lock directory's age: its owner may be mid-acquire.
+  // Otherwise a lock is removed when its owner is dead past the stale window,
+  // provably dead within it (same host, PID namespace and boot, and the pid is
+  // gone or reused), or older than the short-lock hold ceiling, which only a
+  // leaked lock reaches. Removal is a rename claim that re-verifies the owner.
+  #clearStaleLock(): boolean {
+    return reapStaleShortLock(this.#lockPath, {
+      staleMs: this.#staleLockMs,
+      legacyAlive: processAlive,
+    });
   }
 
   #readGeneration(): number {
