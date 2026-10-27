@@ -269,6 +269,41 @@ describe("temporal retention", () => {
     expect(fs.readFileSync(outside, "utf8")).toBe("keep");
   });
 
+  it("reclaims fabric_exec crash journals with their run, but keeps lookalikes, nested folders and links", () => {
+    const tempRoot = temporaryDirectory();
+    const runRoot = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "fabric-journal");
+    markRunRootActive(runRoot, 1);
+    // src/durable/agent.ts names each journal by the first 32 hex digits of a sha256.
+    const journalName = "0123456789abcdef0123456789abcdef.jsonl";
+    const run = (name: string, files: string[] = [journalName]) => {
+      const directory = path.join(runRoot, name);
+      writeStatus(directory, { status: "completed", finishedAt: DAY });
+      const journals = path.join(directory, "durable", "initial", "fabric-journal");
+      fs.mkdirSync(path.join(journals, "..", "store"), { recursive: true });
+      fs.writeFileSync(path.join(journals, "..", "lease.sqlite"), "");
+      fs.writeFileSync(path.join(journals, "..", "store", "main.jsonl"), "{}\n");
+      fs.mkdirSync(journals);
+      for (const file of files) fs.writeFileSync(path.join(journals, file), "{}\n");
+      return { directory, journals };
+    };
+    const plain = run("plain").directory;
+    const empty = run("empty", []).directory;
+    const lookalike = run("lookalike", ["0123456789abcdef.jsonl"]).directory;
+    const upper = run("upper", [journalName.toUpperCase().replace(".JSONL", ".jsonl")]).directory;
+    const nested = run("nested", []);
+    fs.mkdirSync(path.join(nested.journals, journalName));
+    const outside = path.join(temporaryDirectory(), "outside.jsonl");
+    fs.writeFileSync(outside, "keep");
+    const linked = run("linked", []);
+    fs.symlinkSync(outside, path.join(linked.journals, journalName));
+    markRunRootClosed(runRoot, DAY, true);
+
+    const result = sweepAt(tempRoot, 2 * DAY + 1);
+    expect(result.removedRuns.sort()).toEqual([empty, plain].sort());
+    for (const kept of [lookalike, upper, nested.directory, linked.directory]) expect(fs.existsSync(kept)).toBe(true);
+    expect(fs.readFileSync(outside, "utf8")).toBe("keep");
+  });
+
   const forkEntries = (): SessionEntry[] => [
     { type: "message", id: "u1", parentId: null, timestamp: "2026-01-01T00:00:00.000Z", message: { role: "user", content: "hello", timestamp: 1 } },
     { type: "message", id: "a1", parentId: "u1", timestamp: "2026-01-01T00:00:01.000Z", message: { role: "assistant", content: [{ type: "text", text: "hi" }], timestamp: 2 } },
