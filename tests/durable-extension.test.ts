@@ -48,13 +48,14 @@ describe("A2/A3: surface, options and defaults", () => {
     expect(renamed.tools?.map((tool) => tool.name)).toEqual(["run_code"]);
   });
 
-  it("declares pi-durable and chord 1.4.0 or later as optional peers, and publishes the entry", async () => {
+  it("declares pi-durable, pi-codemode and chord 1.4.0 or later as optional peers, and publishes the entry", async () => {
     const manifest = JSON.parse(await import("node:fs").then((fs) => fs.readFileSync("package.json", "utf8")));
-    for (const name of ["@earendil-works/pi-durable", "@earendil-works/chord"]) {
+    for (const name of ["@earendil-works/pi-durable", "@earendil-works/pi-codemode", "@earendil-works/chord"]) {
       expect(manifest.peerDependencies[name]).toBe(">=1.4.0");
       expect(manifest.peerDependenciesMeta[name]).toEqual({ optional: true });
     }
     expect(manifest.exports["./durable-extension"]).toEqual({ types: "./dist/durable-extension.d.ts", import: "./dist/durable-extension.js" });
+    expect(manifest.exports["./durable-extension/wasm"]).toEqual({ types: "./dist/durable-extension-wasm.d.ts", import: "./dist/durable-extension-wasm.js" });
   });
 
   it("passes the default and the overridden limits to the kernel", async () => {
@@ -121,6 +122,23 @@ describe("A2/A3: surface, options and defaults", () => {
     expect(run.isError).toBe(true);
     expect(run.text).toBe("fabric_exec failed with an internal error. The program may not have run.");
     expect(onError).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("quickJsWasmBytes (Worker recipe)", () => {
+  it("returns the installed QuickJS wasm, which runs programs when passed back as quickJsWasmModule", async () => {
+    const { quickJsWasmBytes } = await import("../src/durable-extension-wasm.js");
+    const bytes = await quickJsWasmBytes();
+    expect([...bytes.subarray(0, 4)]).toEqual([0x00, 0x61, 0x73, 0x6d]);
+    expect(WebAssembly.validate(bytes)).toBe(true);
+    // The helper restores the host's WebAssembly.instantiate.
+    expect(WebAssembly.instantiate.name).toBe("instantiate");
+    const precompiled = new WebAssembly.Module(bytes);
+    const onError = vi.fn();
+    const run = await runProgram("return { sum: 1 + 2, ok: typeof tools }", { fabric: { quickJsWasmModule: precompiled, onError } });
+    expect(onError).not.toHaveBeenCalled();
+    expect(run.isError).toBe(false);
+    expect(parsed(run.text)).toEqual({ sum: 3, ok: "object" });
   });
 });
 
@@ -262,10 +280,10 @@ describe("B6: the prompt section", () => {
   it("lists only the tools a program may call, as declarations", async () => {
     const run = await runProgram("return 1", { fabric: { tools: ["search_knowledge", "model_only"] } });
     const section = parsed<{ sections: { fabric: string } }[]>(run.prompt)[0]!.sections.fabric;
-    expect(section).toContain("### `search_knowledge`");
-    expect(section).toContain('declare const tools: { "search_knowledge": (args: { query?: string; [key: string]: unknown }) => Promise<string> };');
+    // pi-codemode's declarations: one `declare const tools` with a doc comment per tool.
+    expect(section).toContain("```ts\ndeclare const tools: {\n  /** Stub search_knowledge search tool */\n  search_knowledge(args: { query?: string; }): Promise<string>;\n};\n```");
     // Not granted, model-only, or fabric_exec itself: never listed.
-    for (const hidden of ["secret_admin", "model_only", "fail_tool", "### `fabric_exec`"]) expect(section).not.toContain(hidden);
+    for (const hidden of ["secret_admin", "model_only", "fail_tool", "fabric_exec("]) expect(section).not.toContain(hidden);
     expect(section).not.toContain("Some tools are not listed");
     expect(section).toContain("No Fabric providers are available.");
   });
@@ -274,17 +292,38 @@ describe("B6: the prompt section", () => {
     const many = Array.from({ length: 40 }, (_, index) => textTool(`bulk_${index}`, () => "x", { description: `Bulk tool ${index} ${"word ".repeat(40)}` }));
     const small = await runProgram("return 1", { tools: many, fabric: { sectionTokenBudget: 300 } });
     const section = parsed<{ sections: { fabric: string } }[]>(small.prompt)[0]!.sections.fabric;
-    const listed = section.match(/^### /gm) ?? [];
+    const listed = section.match(/^ {2}bulk_\d+\(args/gm) ?? [];
     expect(listed.length).toBeGreaterThan(0);
-    expect(listed.length).toBeLessThan(43);
+    expect(listed.length).toBeLessThan(40);
     const declarations = section.split("\n").filter((line) => !line.startsWith("Use ") && !line.startsWith("Tools ") && !line.startsWith("Some ") && !line.startsWith("No ") && !line.startsWith("<"));
     expect(declarations.join("\n").length).toBeLessThanOrEqual(300 * 4);
     expect(section).toContain("Some tools are not listed: find them with `searchTools(query)` and read one with `describeTool(name)`.");
     // Default budget (3 000 tokens) lists more of them, still within the budget.
     const byDefault = await runProgram("return 1", { tools: many });
     const full = parsed<{ sections: { fabric: string } }[]>(byDefault.prompt)[0]!.sections.fabric;
-    expect((full.match(/^### /gm) ?? []).length).toBeGreaterThan(listed.length);
+    expect((full.match(/^ {2}bulk_\d+\(args/gm) ?? []).length).toBeGreaterThan(listed.length);
     expect(full.length).toBeLessThan(3_000 * 4 + 600);
+  });
+
+  it("declares granted provider actions as a namespace and describes each provider once", async () => {
+    const run = await runProgram("return 1", { fabric: { tools: [], providers: { notes: { description: "Team notes", actions: { add: async () => 1, peek: { repeatable: true, run: async () => 2 } } } } } });
+    const section = parsed<{ sections: { fabric: string } }[]>(run.prompt)[0]!.sections.fabric;
+    expect(section).toContain("declare const notes: {\n  add(args: { [key: string]: unknown; }): Promise<unknown>;\n  peek(args: { [key: string]: unknown; }): Promise<unknown>;\n};");
+    expect(section).toContain("Granted providers: notes (Team notes).");
+    expect(section).not.toContain("declare const tools");
+  });
+
+  it("declares a tool whose name is not an identifier under pi-codemode's identifier, and calls it by either name", async () => {
+    const dashed = textTool("look-up", () => "dashed result", { description: "Dashed lookup" });
+    const run = await runProgram(`
+      return {
+        byIdentifier: await tools.look_up({}),
+        byName: await tools["look-up"]({}),
+        described: (await describeTool("look_up")).split("\\n")[0],
+      };`, { tools: [dashed], fabric: { tools: ["look-up"] } });
+    const section = parsed<{ sections: { fabric: string } }[]>(run.prompt)[0]!.sections.fabric;
+    expect(section).toContain("  look_up(args: { [key: string]: unknown; }): Promise<string>;");
+    expect(parsed(run.text)).toEqual({ byIdentifier: "dashed result", byName: "dashed result", described: "Dashed lookup" });
   });
 
   it("keeps deferred tools callable and searchable but out of the section, like pi-durable codemode", async () => {
@@ -301,7 +340,7 @@ describe("B6: the prompt section", () => {
     const value = parsed<{ called: string; found: string[]; described: string }>(run.text);
     expect(value.called).toBe("rare result");
     expect(value.found).toEqual(["rare_lookup"]);
-    expect(value.described).toContain('"rare_lookup": (args:');
+    expect(value.described).toBe("Rare lookup of archived incidents\n\n```ts\ndeclare const tools: { rare_lookup(args: { [key: string]: unknown; }): Promise<string>; };\n```");
   });
 });
 

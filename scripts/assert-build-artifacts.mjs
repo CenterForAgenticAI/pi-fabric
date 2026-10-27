@@ -25,6 +25,7 @@ const stable = [
   "worker.js",
   "durable/worker.js",
   "durable-extension.js",
+  "durable-extension-wasm.js",
   "residency/host.js",
   "compaction/hook.js",
   "core/action-registry.js",
@@ -209,7 +210,7 @@ for (const file of staticClosure([join(dist, "worker.js"), join(dist, "durable/w
 }
 // pi-fabric/durable-extension runs in hosts with no Pi and no Node (Cloudflare Workers): its whole
 // graph, dynamic imports included, may reach only these packages and never a node: built-in.
-const durableExtensionPackages = new Set(["typebox", "typescript", "@jitl/quickjs-singlefile-mjs-release-sync", "quickjs-emscripten-core"]);
+const durableExtensionPackages = new Set(["typebox", "typescript", "@jitl/quickjs-singlefile-mjs-release-sync", "quickjs-emscripten-core", "@earendil-works/pi-codemode/declarations"]);
 const anyImport = /(?:(?:import|export)\s+(?:[^"'()]*?\s+from\s+)?|import\s*\(\s*)["']([^"']+)["']/g;
 {
   const visited = new Set();

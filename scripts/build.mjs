@@ -22,6 +22,8 @@ const primaryEntryPoints = [
   "src/durable.ts",
   // fabric_exec as a pi-durable registry extension for hosts without Pi.
   "src/durable-extension.ts",
+  // Build-time helper for Worker hosts; not imported by the durable-extension entry.
+  "src/durable-extension-wasm.ts",
   "src/jev.ts",
   "src/assessment.ts",
   // Public `pi-fabric/scope`; also the extension's first-use scope parser.

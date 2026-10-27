@@ -27,7 +27,7 @@ import type {
 } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { callPreview, FabricDurableJournal, FabricDurableJournalRefusal, FABRIC_DURABLE_JOURNAL_FORMAT, maybeRanReport } from "./durable-journal.js";
-import { describeFabricActionDeclaration } from "./runtime/dynamic-guest-types.js";
+import { renderDeclarations, renderToolSignature, toCodemodeIdentifier, type RenderDeclarationsOptions } from "@earendil-works/pi-codemode/declarations";
 import type { FabricHostCall, FabricKernelRuntime, FabricSandboxOptions, FabricSandboxResult } from "./runtime/kernel.js";
 
 /** One granted action of a host provider. Arguments are the program's object, copied to plain JSON. */
@@ -200,18 +200,33 @@ const searchCatalog = (tools: readonly ToolRegistration[], query: string, limit:
 
 const schemaOf = (value: unknown): Record<string, unknown> => isObject(value) ? value : {};
 
-/** The TypeScript declaration of one tool as programs call it. */
-export const fabricToolDeclaration = (tool: Pick<ToolRegistration, "name" | "parameters" | "structuredOutputSchema">): string =>
-  describeFabricActionDeclaration(tool.name, schemaOf(tool.parameters), schemaOf(tool.structuredOutputSchema ?? TEXT_OUTPUT_SCHEMA));
+type DeclaredTool = NonNullable<RenderDeclarationsOptions["tools"]>[number];
+type DeclaredSchema = NonNullable<DeclaredTool["inputSchema"]>;
 
-const toolEntry = (tool: ToolRegistration): string =>
-  `### \`${tool.name}\`\n${tool.description.trim()}\n\`\`\`ts\ndeclare const tools: { ${fabricToolDeclaration(tool)} };\n\`\`\``;
+/** Declarations never run a tool; the renderer's type still asks for `execute`. */
+const notCalled = async (): Promise<never> => { throw new Error("declaration only"); };
 
-/** Cheapest declarations first, until the budget is spent; returns the entries shown and whether any were cut. */
-const selectEntries = (tools: readonly ToolRegistration[], budgetTokens: number) => {
+/** A tool as pi-codemode's declaration renderer takes it: schema-less output is text. */
+const declaredTool = (tool: ToolRegistration): DeclaredTool => ({
+  name: tool.name,
+  execute: notCalled,
+  description: tool.description,
+  inputSchema: schemaOf(tool.parameters) as DeclaredSchema,
+  outputSchema: schemaOf(tool.structuredOutputSchema ?? TEXT_OUTPUT_SCHEMA) as DeclaredSchema,
+});
+
+/** What describeTool() returns: the description and the tool's declaration, as the section renders it. */
+const describeToolText = (tool: ToolRegistration): string =>
+  `${tool.description.trim()}\n\n\`\`\`ts\ndeclare const tools: { ${renderToolSignature(declaredTool(tool))} };\n\`\`\``;
+
+/**
+ * pi-codemode's declarations for the tools that fit the budget, cheapest first, rendered in the conversation's order;
+ * says whether any tool was left out.
+ */
+const selectDeclarations = (tools: readonly ToolRegistration[], budgetTokens: number) => {
   const entries = tools.map((tool, index) => {
-    const text = toolEntry(tool);
-    return { index, text, cost: Math.ceil(text.length / CHARS_PER_TOKEN) };
+    const declared = declaredTool(tool);
+    return { index, declared, cost: Math.ceil(renderDeclarations({ tools: [declared] }).length / CHARS_PER_TOKEN) };
   });
   let remaining = budgetTokens;
   const shown = new Set<number>();
@@ -220,8 +235,16 @@ const selectEntries = (tools: readonly ToolRegistration[], budgetTokens: number)
     remaining -= entry.cost;
     shown.add(entry.index);
   }
-  return { shown: entries.filter((entry) => shown.has(entry.index)).map((entry) => entry.text), cut: shown.size < entries.length };
+  return { tools: entries.filter((entry) => shown.has(entry.index)).map((entry) => entry.declared), cut: shown.size < entries.length };
 };
+
+/** Each granted provider action as a member of a `declare const <provider>` namespace. */
+const providerDeclarations = (providers: ReadonlyMap<string, FabricDurableProvider>): DeclaredTool[] =>
+  [...providers].flatMap(([provider, granted]) => Object.keys(granted.actions).filter((action) => ACTION_NAME.test(action)).map((action) => ({
+    name: `${provider}.${action}`,
+    execute: notCalled,
+    inputSchema: { type: "object", additionalProperties: true } as DeclaredSchema,
+  })));
 
 interface CallRecord {
   readonly name: string;
@@ -292,7 +315,10 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
     let catalog: Promise<ToolRegistration[]> | undefined;
     const tools = () => catalog ??= api.agent(context).then((agent) => grantedTools(agent.callable));
     const granted = async (toolNameArg: unknown): Promise<ToolRegistration> => {
-      const tool = typeof toolNameArg === "string" ? (await tools()).find((item) => item.name === toolNameArg) : undefined;
+      // By name, or by the identifier the declarations show for a name that is not one.
+      const tool = typeof toolNameArg === "string"
+        ? (await tools()).find((item) => item.name === toolNameArg) ?? (await tools()).find((item) => toCodemodeIdentifier(item.name) === toolNameArg)
+        : undefined;
       if (tool === undefined) throw new FabricDurableRefusal(`Tool not granted by this host: ${String(toolNameArg)}`);
       return tool;
     };
@@ -325,7 +351,11 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
     const dispatch: FabricHostCall = async (ref, args, _signal, _humanWait, call) => {
       switch (ref) {
         case "fabric.$piAllTools":
-          return (await tools()).map((tool) => ({ name: tool.name, description: tool.description }));
+          // `jsName` is the identifier pi-codemode's declarations use for a name that is not one (`my-tool` -> `my_tool`).
+          return (await tools()).map((tool) => {
+            const jsName = toCodemodeIdentifier(tool.name);
+            return { name: tool.name, description: tool.description, ...(jsName === tool.name ? {} : { jsName }) };
+          });
         case "fabric.$piSearch": {
           if (typeof args.query !== "string") throw new FabricDurableRefusal("searchTools() expects a query string");
           const limit = args.limit ?? DEFAULT_SEARCH_LIMIT;
@@ -334,7 +364,7 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
         }
         case "fabric.$piDescribe": {
           const tool = await granted(args.name);
-          return `${tool.description}\n\n${fabricToolDeclaration(tool)}`;
+          return describeToolText(tool);
         }
         case "fabric.$nativeTool": {
           const tool = await granted(args.name);
@@ -477,15 +507,18 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
       const callable = grantedTools(input.agent.callable);
       // Deferred tools stay callable but unlisted, as pi-durable's codemode does.
       const listed = callable.filter((item) => item.deferred !== true);
-      const { shown, cut: budgetCut } = selectEntries(listed, sectionTokenBudget);
+      const { tools: shown, cut: budgetCut } = selectDeclarations(listed, sectionTokenBudget);
       const hidden = budgetCut || listed.length < callable.length;
       const granted = [...providers.keys()];
+      const declarations = renderDeclarations({ tools: shown, globals: providerDeclarations(providers) });
       return [
         `Use ${toolName} to batch several tool calls in one TypeScript program and return only the compact result.`,
         callable.length === 0 ? "Programs can call no tools here." : "Tools programs can call (`await tools.<name>(args)`):",
-        ...shown,
+        ...(declarations === "" ? [] : ["```ts", declarations, "```"]),
         ...(hidden ? ["Some tools are not listed: find them with `searchTools(query)` and read one with `describeTool(name)`."] : []),
-        granted.length ? `Granted providers: ${granted.join(", ")}.` : "No Fabric providers are available.",
+        granted.length
+          ? `Granted providers: ${granted.map((provider) => { const about = providers.get(provider)?.description?.trim(); return about ? `${provider} (${about})` : provider; }).join(", ")}.`
+          : "No Fabric providers are available.",
       ].join("\n");
     },
   };

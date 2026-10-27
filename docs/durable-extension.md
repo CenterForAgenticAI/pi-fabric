@@ -7,7 +7,7 @@ Use it when your host already owns the agent loop (its own registry, tools, tena
 
 ## Install
 
-It needs `@earendil-works/pi-durable` and `@earendil-works/chord` **1.4.0 or later** as peers.
+It needs `@earendil-works/pi-durable`, `@earendil-works/pi-codemode` and `@earendil-works/chord` **1.4.0 or later** as peers. pi-durable already depends on pi-codemode; the section uses its declaration renderer.
 
 ```ts
 import { createRegistry, defineExtension, Harness } from "@earendil-works/pi-durable";
@@ -65,7 +65,7 @@ The result is the program's return value, after its log lines. A failed program 
 
 ## Prompt section
 
-The `fabric` section lists the tools a program may call as TypeScript declarations, cheapest first, within `sectionTokenBudget`. Deferred tools (`deferred: true`) stay callable but are not listed, as in pi-durable's codemode. When a tool is left out for either reason, the section says so and points to `searchTools()`. It also names the granted providers.
+The `fabric` section declares the tools a program may call with pi-codemode's renderer (`renderDeclarations` from `@earendil-works/pi-codemode/declarations`), so a host that also runs codemode shows both in one format. Tools are chosen cheapest first within `sectionTokenBudget` and shown in the conversation's order. Each granted provider is declared as its own namespace (`declare const notes: { add(args): Promise<unknown> }`), and the providers line gives each provider's description once. A tool whose name is not an identifier is declared under codemode's identifier (`look-up` becomes `look_up`); a program can call it by either name, and `describeTool` accepts either. Deferred tools (`deferred: true`) stay callable but are not listed, as in pi-durable's codemode. When a tool is left out for either reason, the section says so and points to `searchTools()`.
 
 ## Security model
 
@@ -83,20 +83,38 @@ Read each rule as what a hostile program or a careless host must not be able to 
 
 ## Durability
 
-`fabric_exec` is replay-unsafe. pi-durable journals each nested call, but not the program between calls, so a program is never rerun after a restart:
+`fabric_exec` is declared `replay: "safe"`. Each run keeps a journal in a pi-durable task document: a header (journal format, engine, a digest of the program, its payloads and settings, a random seed, the start time) and every tool or provider result in the order the program received it. Each result is saved before the program sees it.
 
-- **Restart mid-program.** The call ends as `Tool fabric_exec was interrupted and may have partially run`. A nested call that finished keeps its result; one still running is aborted with reason `restart`. Nothing runs twice. The model sees the interruption as the call's error and the conversation continues.
+- **Restart mid-program.** pi-durable runs `fabric_exec` again with the same arguments. The program reruns from the top with the recorded seed and clock, so `Math.random()`, `Date` and timers give the same values. Recorded calls return their saved results without running again. A nested tool that was still running is reattached by its call number, so it finishes once.
+- **Effects.** A provider action counts as an effect unless it is granted with `repeatable: true`. An intent is saved before an effect runs. If a restart cuts off an effect, or a nested tool reports it was interrupted after it may have run, the program stops there and does not run it again. The model reads:
+
+  ```text
+  fabric_exec was interrupted during this call, which may have run:
+    notes.add({"text":"paid"})
+  2 earlier tool calls finished before the interruption and were replayed from the journal without running again.
+  The program stopped here and this call was not repeated. Check whether it took effect, or ask the user, before running it or the rest of the program again.
+  ```
+
+  A repeatable action that was cut off simply runs again.
+- **Refusals.** A resume is refused, and nothing runs, when the program, its payloads or its settings changed, when the engine changed (`FABRIC_DURABLE_ENGINE` names the journal format, this package's version and the QuickJS build, so any upgrade counts), when the journal is damaged, or when the rerun asks for a different call than the one recorded. The model gets `fabric_exec could not resume after an interruption: <reason>.`
 - **Cancel.** Cancelling the turn aborts the in-flight nested call and the program. No later call in the program runs.
 - **Fork and compaction.** A forked or compacted conversation still offers `fabric_exec` and its section, rendered for that conversation.
-
-If you need a program to survive a restart, write it as separate tool calls, or use pi-durable's `createCodemodeExtension`, which replays its scripts deterministically.
 
 ## Cloudflare Workers
 
 The entry's import graph holds no `node:` module and no Pi package (`bun run build` checks this). It runs in a Worker without `nodejs_compat`. A Worker cannot compile wasm from bytes at run time, so you must pass `quickJsWasmModule`:
 
-1. Extract the wasm bytes from `@jitl/quickjs-singlefile-mjs-release-sync`; the package inlines them as a string literal in its JavaScript.
-2. Ship them as a `CompiledWasm` module (`import quickjsWasm from "./quickjs.wasm"` with a wasm module rule in wrangler).
+1. In your build (Node or Bun), write the wasm to a file. `@jitl/quickjs-singlefile-mjs-release-sync` inlines it in JavaScript, so the package exports a helper that returns the installed bytes:
+
+   ```ts
+   import { writeFile } from "node:fs/promises";
+   import { quickJsWasmBytes } from "pi-fabric/durable-extension/wasm";
+
+   await writeFile("src/quickjs.wasm", await quickJsWasmBytes());
+   ```
+
+   Rerun it whenever you update pi-fabric, so the wasm matches the installed glue code.
+2. Ship the file as a `CompiledWasm` module (`import quickjsWasm from "./quickjs.wasm"` with a wasm module rule in wrangler). Do not import `pi-fabric/durable-extension/wasm` in the Worker itself.
 3. Pass it: `createFabricExtension({ quickJsWasmModule: quickjsWasm })`.
 4. Bundle with Node built-ins external. The kernel's lazy TypeScript transpile references them on paths a Worker never takes.
 

@@ -268,7 +268,7 @@ describe("D15: fork and compaction keep fabric_exec and its section", () => {
         expect(run.offered).toContain("fabric_exec");
         const section = run.sections.fabric ?? "";
         expect(section).toContain("Use fabric_exec to batch several tool calls");
-        expect(section).toContain("### `search_knowledge`");
+        expect(section).toContain("  search_knowledge(args: { query?: string; }): Promise<string>;");
         expect(run.isError).toBe(false);
         expect(run.text).toBe(`search_knowledge:${query}`);
       };
