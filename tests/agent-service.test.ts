@@ -394,6 +394,34 @@ describe("hosted Fabric agent service", () => {
     expect(instance.snapshot().records.map(({record}) => record.status)).toEqual(["completed", "completed"]);
   });
 
+  it("accepts every action the hosted provider advertises for each capability set", async () => {
+    const names = ["steer", "followUp", "compact", "resume", "topology"] as const;
+    const valid: Record<string, Record<string, unknown>> = {
+      run: {task: "t"}, spawn: {task: "t"}, wait: {id: "a"}, join: {id: "a"}, status: {id: "a"}, stop: {id: "a"}, list: {},
+      steer: {id: "a", message: "m"}, followUp: {id: "a", message: "m"}, compact: {id: "a"}, resume: {id: "a"},
+      sessions: {}, peers: {}, self: {}, members: {}, create: {name: "peer"}, remove: {id: "a"},
+    };
+    const methods: Record<string, string> = {join: "wait"};
+    for (let mask = 0; mask < 1 << names.length; mask++) {
+      const capabilities = Object.fromEntries(names.map((name, bit) => [name, Boolean(mask & (1 << bit))]));
+      const calls: string[] = [];
+      const fake = new Proxy({}, {get: (_target, method) => async () => {calls.push(String(method)); return {id: "a"};}}) as unknown as AgentService;
+      const provider = createAgentsProvider(createAgentServiceClient(createAgentServiceHandler(fake, "root"), capabilities));
+      const listed = (await provider.list({}, context)).map((descriptor) => descriptor.name);
+      expect(listed).toContain("run");
+      if (capabilities.followUp) expect(listed).toContain("followUp");
+      if (capabilities.topology) expect(listed).toEqual(expect.arrayContaining(["sessions", "peers", "self", "members", "create", "remove"]));
+      for (const action of listed) {
+        expect(valid[action], `test needs valid arguments for ${action}`).toBeDefined();
+        await expect(provider.invoke(action, structuredClone(valid[action]!), context), `${action} with ${JSON.stringify(capabilities)}`).resolves.toBeDefined();
+        expect(calls.at(-1)).toBe(methods[action] ?? action);
+      }
+      for (const action of Object.keys(valid).filter((name) => !listed.includes(name))) {
+        await expect(provider.invoke(action, structuredClone(valid[action]!), context)).rejects.toThrow(`Unsupported hosted agents action: ${action}`);
+      }
+    }
+  });
+
   it("follows up a running child and routes session/peer delivery through host topology", async () => {
     const host = hanging();
     const followUp = vi.fn(async () => {});
