@@ -985,6 +985,7 @@ export class QuickJsRuntime {
     const scheduleDeadline = (): void => {
       if (!rejectDeadline || closing || cancelled || timedOut) return;
       clearTimeout(timeout);
+      options.onDeadline?.(Number.isFinite(executionDeadlineAt) ? executionDeadlineAt : undefined);
       if (!Number.isFinite(executionDeadlineAt)) return;
       timeout = setTimeout(expireDeadline, Math.min(2_147_483_647, Math.max(0, executionDeadlineAt - Date.now())));
     };
@@ -1017,6 +1018,7 @@ export class QuickJsRuntime {
       suspend: () => {
         clearTimeout(timeout);
         executionDeadlineAt = Infinity;
+        options.onDeadline?.(undefined);
       },
       resume: (remainingMs) => {
         executionDeadlineAt = Date.now() + remainingMs;
