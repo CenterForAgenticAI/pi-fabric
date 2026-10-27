@@ -29,7 +29,8 @@ const Ledger = defineDoc<{
   config?: { model: JsonValue; thinking: AgentState["thinkingLevel"] };
   steering: JsonValue[]; followup: JsonValue[];
 }>({ kind: "fabric.agent.ledger", version: 1, scope: "conversation", history: "latest", fork: "initial",
-  initial: () => ({ runId: "", requests: {}, active: 0, steering: [], followup: [] }) });
+  initial: () => ({ runId: "", requests: {}, active: 0, steering: [], followup: [] }),
+  checkpointWhen: () => true });
 
 type RunInput = { request: string };
 type Checkpoint =
