@@ -1,4 +1,5 @@
 import { fabricToolLoadout } from "./core/tool-ownership.js";
+import { managedHostExecutionGuidance } from "./core/managed-host-guidance.js";
 import type { Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
@@ -146,6 +147,7 @@ export const createFabricExecTool = (
   toolDisplay?: FabricToolDisplayController,
   terminalTitle?: FabricTerminalTitle,
 ): ToolDefinition<any, any, any> => {
+  const managedHost = state.managedHostOptions;
   const python = toolKernel(state) === "python";
   const monty = python && state.config.executor.pythonRuntime === "monty";
   const repeatGuard = new FabricRepeatGuard(FABRIC_REPEAT_WARN, FABRIC_REPEAT_BLOCK);
@@ -165,14 +167,20 @@ export const createFabricExecTool = (
       );
     },
     label: "Fabric",
-    description: python
+    description: managedHost
+      ? `Execute type-checked TypeScript in the managed QuickJS runtime. ${managedHostExecutionGuidance(managedHost)}`
+      : python
       ? monty
         ? "Execute Python through Fabric's configured Monty sandbox. Monty runs a Python subset with VM resource limits, no native filesystem/network/environment access, and only host-mediated tools. Each invocation starts fresh. This is the exclusive model tool path in full code mode and Schema enforce mode."
         : "Execute Python through Fabric’s configured CPython kernel for Pi core tools, MCP, providers, discovery, and extensions. Each call uses a fresh process. Native execution is trusted code; Schema enforce requires OS isolation. This is the exclusive model tool path in full code mode and Schema enforce mode."
       : "Execute code through Fabric's TypeScript kernel: type-checked TypeScript by default, unmodified JavaScript with executor.codemodeProfile native. Both support nativeTools; native mode places Pi-compatible calls on tools and Fabric discovery on fabric.tools. Compose Pi core tools, MCP, Fabric providers, discovery, and extensions. QuickJS is isolated by default; the optional Node/Bun process is an unsafe trusted-code escape hatch. In full code mode, and always in Schema enforce mode, this is the exclusive model tool path.",
-    promptSnippet:
-      "Pi core tools, MCP, Fabric providers, discovery, and extensions",
-    promptGuidelines: [
+    promptSnippet: managedHost ? `Authorized host tools (${managedHost.providers.join(", ") || "none"}) and deterministic computation`
+      : "Pi core tools, MCP, Fabric providers, discovery, and extensions",
+    promptGuidelines: managedHost ? [
+      "Batch independent operations with bounded concurrency, keep dependent calls ordered, inspect results, and return compact evidence.",
+      managedHostExecutionGuidance(managedHost),
+      ...(managedHost.guidance ? [managedHost.guidance] : []),
+    ] : [
       python
         ? "Batch independent operations in one `fabric_exec` Python program with `asyncio.gather`; await dependent/conditional steps sequentially. Coalesce independent replacements into one `await pi.edit(path=..., edits=[...])`. Return only the compact final JSON-compatible value."
         : "Batch independent operations in one `fabric_exec` program (`Promise.all` for parallel, sequential `await` for ordered), not one call per tool; keep dependent/conditional steps sequential. Coalesce non-dependent replacements from one file snapshot into one `pi.edit({path, edits:[...]})`; use `all:true` only for intentional repeated exact anchors. Return only the compact final value; intermediate results stay in the sandbox.",
@@ -204,7 +212,9 @@ export const createFabricExecTool = (
     // back to Record<string, string> before Pi validates.
     parameters: Type.Object({
       code: Type.String({
-        description: python
+        description: managedHost
+          ? `TypeScript async function body. Top-level await and return are supported. Named payloads are available as π.key. ${managedHostExecutionGuidance(managedHost)}`
+          : python
           ? monty
             ? "Python async function body executed by Monty, a sandboxed Python subset (not CPython). Top-level await/return and asyncio.gather are supported. Use only Monty's supported syntax/modules; native imports, filesystem, network, and environment are unavailable. Host globals: tools, mcp, memory, state, schema, compact, cache, thinking, components, agents, mesh; full-code mode adds pi and extensions. Await dict/keyword calls; use native dict results r['output']. Payloads: π.key or payloads['key']. Return JSON-compatible data; each invocation starts fresh."
             : "Python async function body executed by CPython. Top-level await and return are supported; standard-library imports are available. Globals: tools, mcp, memory, state, schema, compact, cache, thinking, components, agents, mesh; full-code mode adds pi and extensions. Await host calls using a dict or keyword arguments. Results are native dicts/lists: r['output'], not r.output. Use asyncio.gather for concurrency. Named payloads are π.key or payloads['key']. Return a JSON-compatible value. Each call starts fresh."
