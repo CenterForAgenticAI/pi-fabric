@@ -204,9 +204,11 @@ export class DurableAgent extends Agent {
           await runtime.commit(async tx => {
             const ledger = await tx.doc(Ledger, runtime.conversationId);
             ledger.config = { model: wire(model), thinking };
-            // Executable functions are rebound from the public tool loadout on reopen.
-            // A hook-only anonymous implementation cannot be recovered safely.
-            if ((context.tools ?? []).some(tool => !this.state.tools.includes(tool))) throw new Error("Durable request tools must be registered in agent.state.tools");
+            // Tools run from the public loadout, rebound by name, so a loadout
+            // refresh that rebuilds same-name tool objects keeps the request valid.
+            // A hook-only tool whose name is not registered cannot be recovered.
+            const registered = new Set(this.state.tools.map(tool => tool.name));
+            if ((context.tools ?? []).some(tool => !registered.has(tool.name))) throw new Error("Durable request tools must be registered in agent.state.tools");
             ledger.context = { messages: context.messages.map(wire), tools: (context.tools ?? []).map(tool => tool.name) };
             return { status: "running", checkpoint: { phase: "model", messages: copy(messages), model: copy(model), thinking } };
           }, ctx);
