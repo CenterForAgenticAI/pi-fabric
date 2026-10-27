@@ -116,7 +116,7 @@ reads each file and decides:
   reopens its journal, so completed work is not repeated.
 - **Worker recorded a stop but is still running.** Fabric waits up to seven
   seconds for it to exit and then relaunches it. If it is still running, the run
-  settles `indeterminate` rather than putting two writers on one journal.
+  settles `indeterminate`, so two writers never share one journal.
 - **Recovery file does not match this host.** The launch must use this host's
   worker entry and the run's own working directory, and its `--id` must name
   the run. Its `--status-file`, `--lifecycle-file`, `--task-file` and
@@ -125,8 +125,8 @@ reads each file and decides:
   files, and files whose id does not name their run directory are ignored.
 - **Deadline passed, or liveness cannot be verified.** This covers a PID owned
   by another user and an unreadable command line. The run settles `failed` with
-  `outcome: "indeterminate"` and a reason, and `agents.wait` returns that
-  result instead of throwing.
+  `outcome: "indeterminate"` and a reason. `agents.wait` returns that result
+  and does not throw.
 
 The option is off by default; with it off, no file is written and behaviour is
 unchanged. A run launched while the option was on keeps its file, so turning

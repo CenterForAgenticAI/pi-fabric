@@ -345,7 +345,9 @@ describe("probeWorker", () => {
     expect(probeWorker(4242, id, { signal: () => "missing", commandLine: () => `--id ${id}` })).toBe("dead");
   });
   it("sees this process's own command line through the default probes", () => {
-    expect(probeWorker(process.pid, id)).toBe("dead");
+    // Windows has neither /proc nor ps, so the default command-line probe
+    // cannot read it and the probe refuses to guess.
+    expect(probeWorker(process.pid, id)).toBe(process.platform === "win32" ? "unknown" : "dead");
   });
 });
 
