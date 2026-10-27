@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentManager } from "../src/agents/manager.js";
+import { ProcessTransport } from "../src/agents/transports/process-transport.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 
 const managers: AgentManager[] = [];
@@ -78,5 +79,20 @@ describe("AgentManager lifecycle leaks", () => {
 
     expect(result.status).toBe("failed");
     expect(result.error).toContain("Agent monitor failed");
+  });
+
+  it("does not start a relaunched child when the lifecycle file cannot be reset", async () => {
+    const launch = vi.spyOn(ProcessTransport.prototype, "launch");
+    const manager = setup(tempRoot(), "tests/fixtures/fake-worker-transport-death.mjs");
+    const handle = await manager.spawn({ task: "Terminal boot death", extensions: false });
+    // A directory where lifecycle.jsonl belongs makes the relaunch's reset fail.
+    fs.mkdirSync(path.join(manager.runDirectory(handle.id)!, "lifecycle.jsonl", "blocker"), { recursive: true });
+
+    const result = await manager.wait(handle.id);
+
+    expect(result.status).toBe("failed");
+    // Only the first launch: the failed reset must not leave a second child
+    // running after the run settled.
+    expect(launch).toHaveBeenCalledTimes(1);
   });
 });
