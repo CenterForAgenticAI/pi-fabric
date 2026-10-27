@@ -254,6 +254,40 @@ describe("D14: cancelling the turn", () => {
       await host.close();
     }
   }, 30_000);
+
+  it("ends a program waiting on a timer, with no nested call in flight, as soon as the turn is cancelled", async () => {
+    const started = latch();
+    const signals: string[] = [];
+    const ready = textTool("ready", async () => { started.open(); return ok("ready"); });
+    const after = textTool("after_cancel", async () => { signals.push("after_cancel ran"); return ok("after"); });
+    const kernel = new QuickJsRuntime();
+    let running = 0;
+    const runtime: FabricKernelRuntime = {
+      execute: async (...args) => { running++; try { return await kernel.execute(...args); } finally { running--; } },
+    };
+    const host = await openHost({ tools: [ready, after], fabric: { runtime, timeoutMs: 60_000 } });
+    try {
+      const conversation = await host.conversation("t_alpha");
+      // Only the turn's abort signal can end this program early: no nested call is running when the cancel comes.
+      const turn = host.turn(conversation, "cancel me", `
+        await tools.ready({});
+        await new Promise((resolve) => setTimeout(resolve, 50_000));
+        await tools.after_cancel({});
+        return "finished";`);
+      await started.opened;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(running).toBe(1);
+      const cancelledAt = Date.now();
+      await conversation.abort(ctx);
+      const run = await turn;
+      expect(run.status).not.toBe("done");
+      await vi.waitFor(() => expect(running).toBe(0), { timeout: 5_000, interval: 20 });
+      expect(Date.now() - cancelledAt).toBeLessThan(5_000);
+      expect(signals).toEqual([]);
+    } finally {
+      await host.close();
+    }
+  }, 30_000);
 });
 
 describe("D15: fork and compaction keep fabric_exec and its section", () => {
