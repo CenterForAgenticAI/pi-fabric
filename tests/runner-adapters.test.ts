@@ -274,6 +274,34 @@ describe("hosted runners", () => {
     expect(fs.readFileSync(path.join(manager.runDirectory(result.id)!, "events.jsonl"), "utf8")).toContain("thinking");
   });
 
+  it("holds a hosted question past the question deadline and persists the hold for recovery", async () => {
+    const root = tempRoot();
+    const fake = fakeHosted("holder", {
+      capabilities: { questions: true },
+      onStart: (reporter) => {
+        void (async () => {
+          const answer = await reporter.question({ method: "input", title: "Which?" });
+          reporter.finish({ status: "completed", output: `answer=${"value" in answer ? answer.value : "none"}` });
+        })();
+      },
+    });
+    register(fake.adapter);
+    const questions: AgentChildQuestionRequest[] = [];
+    const manager = managerFor(root, { childQuestions: "route", childQuestionTimeoutMs: 1_000 }, {
+      onChildQuestion: async (request) => {
+        questions.push(request);
+        await new Promise((resolve) => setTimeout(resolve, 2_500));
+        return { value: "late" };
+      },
+    });
+    const handle = await manager.spawn({ task: "Hold", runner: "holder", holdQuestions: true });
+    const state = JSON.parse(fs.readFileSync(path.join(manager.runDirectory(handle.id)!, "hosted.json"), "utf8"));
+    expect(state.holdQuestions).toBe(true);
+    const result = await manager.wait(handle.id);
+    expect(result).toMatchObject({ status: "completed", text: "answer=late" });
+    expect(questions[0]).toMatchObject({ hold: true, question: { hold: true } });
+  }, 15_000);
+
   describe("structured output against the run's schema", () => {
     const schema = {
       type: "object",
