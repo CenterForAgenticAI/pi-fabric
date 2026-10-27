@@ -105,7 +105,9 @@ describe("short-lock rename-claim", () => {
     expect(owner(lock).startsWith("held\n")).toBe(true);
   });
 
-  it("publish: an acquire whose directory was replaced by another owner's renamed-back lock returns false", () => {
+  // Windows cannot rename a directory over an existing one (EPERM), so the
+  // rename-back this test stages cannot happen there.
+  it.skipIf(process.platform === "win32")("publish: an acquire whose directory was replaced by another owner's renamed-back lock returns false", () => {
     const lock = lockIn();
     // A's live lock sits at a reaper's claim; the reaper renames it back over
     // the empty directory the new acquirer just created.
