@@ -60,6 +60,11 @@ describe("published build artifact guards", () => {
       expect(manifest.resolutions?.[name]).toBeUndefined();
     }
   });
+  it.each(["index.d.ts", "extension-bootstrap.d.ts", "core/host-sdk-runtime.d.ts"])("rejects a private worker SDK leak in %s", (file) => {
+    const dir = fixture();
+    fs.appendFileSync(path.join(dir, "dist", file), '\nexport declare const leaked: import("pi-fabric-worker-sdk").ExtensionAPI;\n');
+    rejected(dir, `Host-facing declaration imports the private worker SDK: ${file}`);
+  });
   it("rejects a public export omitted from the compiled tree", () => {
     const dir = fixture();
     const file = path.join(dir, "package.json");

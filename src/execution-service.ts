@@ -1,4 +1,4 @@
-import { NativeCodemodeProvider } from "./native-codemode.js";
+import { NativeCodemodeProvider, validateScriptStore } from "./native-codemode.js";
 import { nativeMcpIdentity } from "./core/native-mcp-identity.js";
 import { nativeToolRef, nativeToolIdentifier } from "./core/native-tool-names.js";
 import type { Usage } from "@earendil-works/pi-ai";
@@ -72,6 +72,8 @@ import type {
   FabricSandboxTerminationReason,
 } from "./runtime/kernel.js";
 import type { TypeScriptKernelRuntime } from "./runtime/typescript-kernel.js";
+import type { FabricExecJournal, FabricJournalOffer } from "./runtime/exec-journal.js";
+import type { FabricJournalDelivery } from "./runtime/kernel.js";
 import {
   PROGRAM_CANCELLED_REASON,
   type ProviderParticipantRegistry,
@@ -229,7 +231,57 @@ interface DurableToolFence {
   toolCallId: string;
   accept(): Promise<void>;
   arm(): Promise<void>;
+  /** A crash journal for this call (QuickJS only); see runtime/exec-journal.ts. */
+  journal?: FabricJournalOffer;
 }
+// Choices for a resumed call that may have run (see runtime/exec-journal.ts).
+const REPEAT_CHOICE = "Run it again";
+const STOP_CHOICE = "Stop here";
+// An unanswered question stops the program, so a missing person never holds it forever.
+const REPEAT_QUESTION_TIMEOUT_MS = 300_000;
+
+const journalOffer = (fence: DurableToolFence | undefined): FabricJournalOffer | undefined => {
+  const offer = fence?.journal as Partial<FabricJournalOffer> | undefined;
+  return offer && typeof offer.path === "string" && typeof offer.accept === "function" &&
+    (offer.digest === undefined || typeof offer.digest === "string")
+    ? offer as FabricJournalOffer
+    : undefined;
+};
+// Bridge refs that only present progress. A served call runs them again for
+// their host-side effect, so phases, items, and spans stay consistent.
+// Actions that only stage work committed when the run ends. A crash discards
+// the staging, so a resume may repeat them.
+const stagedActionRefs: ReadonlySet<string> = new Set(["native.store", "agents.handoff"]);
+// Calls whose effect lives only in this process. A served call skips its
+// provider, so a resume runs these again from their recorded arguments.
+const processLocalRedoRefs: ReadonlySet<string> = new Set(["compact.request", "compact.cancel", "prewalk.plan"]);
+// Calls that write a session entry and set live state from it. A surviving
+// session restores both, so a resume redoes them only when the entry is gone.
+const sessionRedoRefs: ReadonlySet<string> = new Set(["compact.carry", "thinking.set", "thinking.reset"]);
+interface SessionMark { session: string; leaf: string | null }
+const sessionMark = (context: ExtensionContext): SessionMark | undefined => {
+  const manager = (context as Partial<ExtensionContext>).sessionManager;
+  try {
+    return manager ? { session: manager.getSessionId(), leaf: manager.getLeafId() } : undefined;
+  } catch {
+    return undefined;
+  }
+};
+// True when the session still holds the entries written up to the mark.
+const sessionHolds = (context: ExtensionContext, mark: unknown): boolean => {
+  const manager = (context as Partial<ExtensionContext>).sessionManager;
+  if (!manager || typeof mark !== "object" || mark === null) return false;
+  const { session, leaf } = mark as Partial<SessionMark>;
+  try {
+    return typeof leaf === "string" ? manager.getEntry(leaf) !== undefined : leaf === null && manager.getSessionId() === session;
+  } catch {
+    return false;
+  }
+};
+const presentationBridgeRefs: ReadonlySet<string> = new Set([
+  "fabric.$progress", "fabric.$configure", "fabric.$phase", "fabric.$item",
+  "fabric.$event", "fabric.$spanStart", "fabric.$spanEnd",
+]);
 const durableToolFence = (toolCallId: string): DurableToolFence | undefined => {
   const holder = globalThis as typeof globalThis & { [key: symbol]: { getStore?(): unknown } | undefined };
   const fence = holder[Symbol.for("pi-fabric.durable-tool-fence.v1")]?.getStore?.() as Partial<DurableToolFence> | undefined;
@@ -361,7 +413,9 @@ export class FabricExecutionService {
     const fence = offeredFence && (runtimeKind === "python:monty" || runtimeKind === "typescript:quickjs") ? offeredFence : undefined;
     let fenceArm: Promise<void> | undefined;
     // One durable mark per execution; a failed mark keeps failing every effect.
-    const armFence = (): Promise<void> => fenceArm ??= fence ? fence.arm() : Promise.resolve();
+    // A journaled run never arms: recovery resumes from its journal instead.
+    let journal: FabricExecJournal | undefined;
+    const armFence = (): Promise<void> => journal ? Promise.resolve() : fenceArm ??= fence ? fence.arm() : Promise.resolve();
     let runtime = this.#runtimeKind === runtimeKind ? this.#runtime : undefined;
     if (!runtime) {
       if (monty) {
@@ -493,6 +547,9 @@ export class FabricExecutionService {
     >();
     let agentCalls = 0;
     let handoffRequest: Record<string, unknown> | undefined;
+    let handoffSeq: number | undefined;
+    // Session position after each journaled call in sessionRedoRefs.
+    const sessionMarks = new Map<number, SessionMark>();
     const maxAgentCalls = Math.max(
       1,
       Math.min(
@@ -687,7 +744,7 @@ export class FabricExecutionService {
     const invokeAction = async (
       ref: string,
       args: Record<string, unknown>,
-      callContext: typeof baseContext & { signal: AbortSignal; nativeToolResult?: boolean },
+      callContext: typeof baseContext & { signal: AbortSignal; nativeToolResult?: boolean; journalSeq?: number },
       humanWait?: FabricHumanWait,
     ): Promise<unknown> => {
       const traceOperation = traceRecorder.issueCall(ref, args);
@@ -707,7 +764,7 @@ export class FabricExecutionService {
       }
       const participants = this.#participants;
       const separator = ref.indexOf(".");
-      return this.registry.invoke(ref, args, {
+      const value = await this.registry.invoke(ref, args, {
         ...callContext,
         // The registry resolves `provider.action` by this exact prefix, so the
         // view is bound to the provider that receives it.
@@ -723,6 +780,7 @@ export class FabricExecutionService {
                   );
                 }
                 handoffRequest = structuredClone(request);
+                handoffSeq = callContext.journalSeq;
                 return {
                   scheduled: true,
                   status: "deferred",
@@ -745,9 +803,13 @@ export class FabricExecutionService {
           if (action.ref === "schema.commit") {
             await approval.approve({ ...action, risk: "write" }, preparedArgs, approvalWait);
             await approval.approve({ ...action, risk: "execute" }, preparedArgs, approvalWait);
-            return;
+          } else {
+            await approval.approve(action, preparedArgs, approvalWait);
           }
-          await approval.approve(action, preparedArgs, approvalWait);
+          // Approved: the effect is next. A resume never repeats a call after this.
+          if (journal && callContext.journalSeq !== undefined && !fenceFreeAction(action) && !stagedActionRefs.has(action.ref)) {
+            journal.intent(callContext.journalSeq, action.ref);
+          }
         },
         audits,
         // Native images/state must stay intact; final output has its own bounds.
@@ -755,6 +817,11 @@ export class FabricExecutionService {
         traceOperation,
         observeInvocation,
       });
+      if (journal && callContext.journalSeq !== undefined && sessionRedoRefs.has(ref)) {
+        const mark = sessionMark(options.context);
+        if (mark) sessionMarks.set(callContext.journalSeq, mark);
+      }
+      return value;
     };
     const nativeTransaction = this.nativeCodemode.begin(options.parentToolCallId, options.context, !python && codemodeProfile === "native");
     const loadNativeCatalog = async (context: typeof baseContext) => {
@@ -762,11 +829,9 @@ export class FabricExecutionService {
       const definitions = ((options.context as Partial<import("@earendil-works/pi-coding-agent").ExtensionToolContext>).tools
         ?? this.capturedTools?.registeredTools().map(entry => entry.definition)
         ?? []) as import("@earendil-works/pi-coding-agent").ToolDefinition[];
-      // A native host already supplies its callable catalog. Do not initialize
-      // an independent MCP transport just to alias those registered tools.
-      // Only Pi-native providers contribute aliases. An unrelated provider's
-      // discovery failure or pending connection must not block every program.
-      const providers = definitions.length ? ["pi", "extensions"] : ["pi", "extensions", "mcp"];
+      // Prefer Pi-native aliases. Fall back to MCP only when no actions are
+      // available; an unrelated transport must not block a populated catalog.
+      const providers = ["pi", "extensions"];
       const actions = (await Promise.all(providers.filter(provider => this.registry.has(provider))
         .map(provider => this.registry.list({provider, limit: 1_000}, context)))).flat();
       const refs = new Set(actions.map(action => action.ref));
@@ -776,6 +841,12 @@ export class FabricExecutionService {
         if (refs.has(ref)) continue;
         refs.add(ref);
         try { actions.push(await this.registry.describe(ref, context)); } catch { /* hidden or unavailable */ }
+      }
+      // Registered host definitions may resolve to Pi-owned MCP actions even
+      // when pi/extensions list no actions. Resolve them before the fallback
+      // so discovery never starts a redundant ambient MCP transport.
+      if (actions.length === 0 && this.registry.has("mcp")) {
+        actions.push(...await this.registry.list({ provider: "mcp", limit: 1_000 }, context));
       }
       const entries = api.nativeToolCatalog(actions.filter(action => effectiveFullCodeMode || !fullCodeProvider(action.provider)), definitions, nativeMcpIdentity);
       nativeCallRefs.clear();
@@ -795,6 +866,7 @@ export class FabricExecutionService {
       nativeToolsEnabled: !python,
       codemodeProfile,
       memoryLimitBytes: this.config.executor.memoryLimitBytes,
+      maxCpuSliceMs: this.config.executor.maxCpuSliceMs === 0 ? Infinity : this.config.executor.maxCpuSliceMs,
       maxLogChars: this.config.executor.maxOutputChars,
       ...(options.hardTimeoutMs === undefined ? { minimumTimeoutMsForHostCall } : {}),
       ...(options.hardTimeoutMs === undefined && humanWaitRefs.size > 0 ? { isHumanWaitHostCall } : {}),
@@ -898,18 +970,89 @@ export class FabricExecutionService {
     });
     try {
       // Accept only after setup: from here every effect must cross the bridge.
-      if (fence) await fence.accept();
-      sandboxResult = await runtime.execute(
+      const offered = journalOffer(offeredFence);
+      // A resume skips accept: the worker refuses it there, so a Fabric that
+      // cannot read the journal never reruns a recorded call from the start.
+      if (fence && offered?.digest === undefined) await fence.accept();
+      const offer = fence && !python ? offered : undefined;
+      let refusal: string | undefined = offered?.digest !== undefined && !offer
+        ? "fabric_exec could not resume after an interruption: its runtime changed since the journal was recorded. Nothing was rerun."
+        : undefined;
+      if (offer) {
+        const journals = await import("./runtime/exec-journal.js");
+        const servedSignal = options.signal ?? new AbortController().signal;
+        // Run a recorded call's provider again. It was approved when it first
+        // ran; policy still applies, and nothing is journaled or audited.
+        const redo = (ref: string, args: Record<string, unknown>): Promise<unknown> => this.registry.invoke(ref, args, {
+          ...baseContext,
+          signal: servedSignal,
+          ...(this.authorizer ? { authorize: async (action: ResolvedFabricAction) => await this.authorizer!.authorize(action.ref, options.parentToolCallId) } : {}),
+          approve: async () => undefined,
+          audits: [],
+          maxResultChars: this.config.executor.maxNestedResultChars,
+        });
+        try {
+          journal = await journals.openFabricExecJournal(offer, {
+            code: options.code,
+            javascript: checked.javascript ?? null,
+            strings: options.strings ?? null,
+            tokenBudget: options.tokenBudget ?? null,
+            codemodeProfile,
+            fullCodeMode: effectiveFullCodeMode,
+            nativeStoreEnabled: sandboxBase.nativeStoreEnabled,
+            piToolCanonicalFields,
+          }, {
+            served: async (delivery: FabricJournalDelivery, args: Record<string, unknown>) => {
+              // Served calls skip their provider; restore only host-local state.
+              const target = delivery.target ?? delivery.ref;
+              const targetArgs = delivery.ref === "fabric.$call" && typeof args.args === "object" && args.args !== null
+                ? args.args as Record<string, unknown>
+                : args;
+              if (delivery.outcome.ok && (processLocalRedoRefs.has(target) || sessionRedoRefs.has(target))) {
+                if (sessionRedoRefs.has(target) && sessionHolds(options.context, delivery.local)) return;
+                // A plan goes only to an arm that owes one after the restart.
+                if (target === "prewalk.plan") {
+                  const status = await redo("prewalk.status", {}) as { planRequired?: unknown } | undefined;
+                  if (status?.planRequired !== true) return;
+                }
+                await redo(target, targetArgs);
+                return;
+              }
+              if (presentationBridgeRefs.has(delivery.ref)) {
+                await hostCall?.(delivery.ref, args, servedSignal).catch(() => undefined);
+              } else if (delivery.outcome.ok && target === "native.store") {
+                const transaction = this.nativeCodemode.transactions.get(options.parentToolCallId);
+                if (transaction) transaction.staged = validateScriptStore(targetArgs.values as Record<string, unknown>);
+              } else if (delivery.outcome.ok && target === "agents.handoff" && delivery.local !== undefined) {
+                handoffRequest = structuredClone(delivery.local as Record<string, unknown>);
+                handoffSeq = delivery.seq;
+              }
+            },
+            local: (seq: number) => seq === handoffSeq ? handoffRequest : sessionMarks.get(seq),
+          });
+        } catch (error) {
+          if (!(error instanceof journals.FabricJournalRefusal)) throw error;
+          refusal = error.message;
+        }
+      }
+      sandboxResult = refusal !== undefined ? {
+        value: undefined,
+        logs: [],
+        terminationReason: "runtime_error",
+        error: refusal,
+      } : await runtime.execute(
         code,
-        hostCall = async (ref, args, runtimeSignal, humanWait) => {
-          const callContext = { ...baseContext, signal: runtimeSignal };
+        hostCall = async (ref, args, runtimeSignal, humanWait, call) => {
+          const callContext = { ...baseContext, signal: runtimeSignal, ...(call ? { journalSeq: call.seq } : {}) };
           // Registry calls arm after resolution; every other bridge ref arms here
           // unless it only discovers or presents.
           if (
             fence && ref.startsWith("fabric.$") && ref !== "fabric.$nativeTool" && ref !== "fabric.$call" &&
             (!fenceFreeBridgeRefs.has(ref) || (ref === "fabric.$search" && args.searchMode === "semantic"))
           ) {
-            await armFence();
+            // These bridge refs never reach approve(), so they record intent here.
+            if (journal && call) journal.intent(call.seq, ref);
+            else await armFence();
           }
           switch (ref) {
             case "fabric.$nativeTool": {
@@ -1299,6 +1442,14 @@ export class FabricExecutionService {
           ...(checked.sourceMap ? { transpiledSourceMap: checked.sourceMap } : {}),
           ...(options.strings ? { strings: options.strings } : {}),
           ...(options.signal ? { signal: options.signal } : {}),
+          ...(journal ? { journal } : {}),
+          ...(journal?.resuming && options.context.hasUI ? {
+            confirmRepeat: {
+              ask: async (question: string, signal: AbortSignal) =>
+                await options.context.ui.select(question, [REPEAT_CHOICE, STOP_CHOICE], { signal, timeout: REPEAT_QUESTION_TIMEOUT_MS }) === REPEAT_CHOICE,
+              pausesDeadline: options.hardTimeoutMs === undefined,
+            },
+          } : {}),
         },
       );
       try {
@@ -1317,6 +1468,7 @@ export class FabricExecutionService {
       }
       throw error;
     } finally {
+      journal?.close();
       if (!nativeFinished) classifierUsages.push(...nativeTransaction.finish(false));
       this.#nestedRunners.delete(options.parentToolCallId);
       await this.registry.endInvocation(options.parentToolCallId);

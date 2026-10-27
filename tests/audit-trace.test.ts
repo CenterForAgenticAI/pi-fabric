@@ -582,7 +582,7 @@ return true;
       stage: "validate",
       // TypeBox messages describe only schema expectations and never echo
       // argument values, so they are safe to surface.
-      expectedError: "Call failed during validate: Invalid arguments for demo.echo: must be string",
+      expectedError: "Call failed during validate: Invalid arguments for demo.echo: /value: must be string",
     },
     {
       name: "provider invocation",

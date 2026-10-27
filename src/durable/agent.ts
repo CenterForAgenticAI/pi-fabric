@@ -1,4 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { unlink } from "node:fs/promises";
+import path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
@@ -42,7 +44,22 @@ type ToolCheckpoint = { phase: "execute" };
 // The Fabric extension can be another module instance in this process, so it
 // reads the fence through this global. It is inline so neither startup graph
 // gains a chunk shared with this worker module.
-type ToolFence = { toolCallId: string; accept(): Promise<void>; arm(): Promise<void> };
+type ToolFence = {
+  toolCallId: string; accept(): Promise<void>; arm(): Promise<void>;
+  journal?: { path: string; digest?: string; accept(digest: string): Promise<void> };
+};
+// Each resume replays the journal and runs live from where it stopped. A program
+// that keeps crashing its process before recording progress must not loop.
+const MAX_JOURNAL_RESUMES = 3;
+
+const fabricJournalPath = (directory: string, taskId: string, callId: string): string =>
+  path.join(directory, `${createHash("sha256").update(`${taskId}\0${callId}`).digest("hex").slice(0, 32)}.jsonl`);
+
+// A fabric_exec journal holds tool results. Delete it once the call's terminal
+// result is committed; a crash before this leaves it to the worker's sweep.
+async function removeFabricJournal(file: string): Promise<void> {
+  await unlink(file).catch(() => undefined);
+}
 const toolFences = (): AsyncLocalStorage<ToolFence | undefined> => {
   const holder = globalThis as typeof globalThis & { [key: symbol]: AsyncLocalStorage<ToolFence | undefined> | undefined };
   return holder[Symbol.for("pi-fabric.durable-tool-fence.v1")] ??= new AsyncLocalStorage();
@@ -51,7 +68,7 @@ type Listener = (event: AgentEvent, signal: AbortSignal) => void | Promise<void>
 
 /** A public-API Agent facade over restartable pi-durable tasks. */
 export class DurableAgent extends Agent {
-  private readonly durableOptions: AgentOptions & { models: Models; storage: Storage; runId: string };
+  private readonly durableOptions: AgentOptions & { models: Models; storage: Storage; runId: string; fabricJournalDirectory?: string };
   private readonly observers = new Set<Listener>();
   private readonly registry = createRegistry();
   private engine?: Harness;
@@ -86,7 +103,8 @@ export class DurableAgent extends Agent {
   private readonly toolTask;
   private readonly runTask;
 
-  constructor(options: AgentOptions & { models: Models; storage: Storage; runId: string }) {
+  /** `fabricJournalDirectory` lets an interrupted fabric_exec resume from a crash journal. */
+  constructor(options: AgentOptions & { models: Models; storage: Storage; runId: string; fabricJournalDirectory?: string }) {
     super(options);
     if (!options.runId) throw new Error("DurableAgent requires a non-empty runId");
     this.durableOptions = options;
@@ -114,8 +132,19 @@ export class DurableAgent extends Agent {
         // any effect, so an accepted, unarmed attempt changed nothing. Wrapper
         // layers drop tool replay metadata, so the fence is offered by name.
         const fabricExec = call.name === "fabric_exec";
+        const journalDirectory = fabricExec ? this.durableOptions.fabricJournalDirectory : undefined;
+        const journalPath = journalDirectory === undefined ? undefined : fabricJournalPath(journalDirectory, String(task.id), call.id);
+        // Header digest of the journal Fabric recorded for this call, if any.
+        const recorded = prior && journalPath ? await runtime.memo<string>("fabric.journal", ctx) : undefined;
         let execute = !prior || (task.input.replaySafe === true && tool?.replay === "safe");
-        if (!execute && fabricExec
+        if (!execute && recorded !== undefined) {
+          // Resume from the journal: recorded results are served, never rerun.
+          for (let attempt = 1; attempt <= MAX_JOURNAL_RESUMES && !execute; attempt++) {
+            if (await runtime.memo<boolean>(`fabric.resume.${attempt}`, ctx) === undefined) {
+              execute = await runtime.memo(`fabric.resume.${attempt}`, true, ctx);
+            }
+          }
+        } else if (!execute && fabricExec
           && await runtime.memo<boolean>("fabric.fence", ctx) === true
           && await runtime.memo<boolean>("fabric.armed", ctx) === undefined
           && await runtime.memo<boolean>("fabric.rerun", ctx) === undefined) {
@@ -124,8 +153,20 @@ export class DurableAgent extends Agent {
         }
         const fence: ToolFence | undefined = fabricExec ? {
           toolCallId: call.id,
-          accept: async () => { await runtime.memo("fabric.fence", true, ctx); },
+          accept: async () => {
+            // A journal-aware Fabric skips accept when it resumes. Any other caller
+            // would rerun recorded effects from the start.
+            if (recorded !== undefined) throw new Error("This Fabric version cannot resume an interrupted fabric_exec from its journal. Nothing was rerun.");
+            await runtime.memo("fabric.fence", true, ctx);
+          },
           arm: async () => { await runtime.memo("fabric.armed", true, ctx); },
+          ...(journalPath ? { journal: {
+            path: journalPath,
+            ...(recorded !== undefined ? { digest: recorded } : {}),
+            accept: async (digest: string) => {
+              if (await runtime.memo("fabric.journal", digest, ctx) !== digest) throw new Error("fabric_exec already recorded a different journal");
+            },
+          } } : {}),
         } : undefined;
         const outcome: { isError: boolean; result: AgentToolResult<any> } = !execute
           ? { isError: true, result: { content: [{ type: "text" as const, text: "Tool execution interrupted; unsafe effect was not replayed." }], details: { interrupted: true } } }
@@ -145,6 +186,8 @@ export class DurableAgent extends Agent {
           // Keep termination metadata in the child's durable outcome without changing the Pi message.
           return { status: "terminal", outcome: { status: "completed", result: copy({ ...result, terminate: "terminate" in outcome.result && outcome.result.terminate === true }) as ToolResultMessage } };
         }, ctx);
+        // The result is durable now, so the journal can never be read again.
+        if (journalPath) await removeFabricJournal(journalPath);
       } },
       abort: async (task, runtime, ctx) => {
         const { call } = task.input;
@@ -153,6 +196,8 @@ export class DurableAgent extends Agent {
           await this.event(tx, { type: "tool_execution_end", toolCallId: call.id, toolName: call.name, result, isError: true });
           return { status: "terminal", outcome: { status: "completed", result } };
         }, ctx);
+        const journalDirectory = call.name === "fabric_exec" ? this.durableOptions.fabricJournalDirectory : undefined;
+        if (journalDirectory !== undefined) await removeFabricJournal(fabricJournalPath(journalDirectory, String(task.id), call.id));
       },
     });
     this.runTask = this.scopedTask<RunInput, Checkpoint, null>({
