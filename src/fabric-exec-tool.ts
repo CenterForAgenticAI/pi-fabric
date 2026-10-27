@@ -1,5 +1,4 @@
 import { fabricToolLoadout } from "./core/tool-ownership.js";
-import { managedHostExecutionGuidance } from "./core/managed-host-guidance.js";
 import type { Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
@@ -168,7 +167,7 @@ export const createFabricExecTool = (
     },
     label: "Fabric",
     description: managedHost
-      ? `Execute type-checked TypeScript in the managed QuickJS runtime. ${managedHostExecutionGuidance(managedHost)}`
+      ? "Execute type-checked TypeScript in the managed QuickJS runtime. See the managed execution guidance for authorized tool contracts."
       : python
       ? monty
         ? "Execute Python through Fabric's configured Monty sandbox. Monty runs a Python subset with VM resource limits, no native filesystem/network/environment access, and only host-mediated tools. Each invocation starts fresh. This is the exclusive model tool path in full code mode and Schema enforce mode."
@@ -178,8 +177,6 @@ export const createFabricExecTool = (
       : "Pi core tools, MCP, Fabric providers, discovery, and extensions",
     promptGuidelines: managedHost ? [
       "Batch independent operations with bounded concurrency, keep dependent calls ordered, inspect results, and return compact evidence.",
-      managedHostExecutionGuidance(managedHost),
-      ...(managedHost.guidance ? [managedHost.guidance] : []),
     ] : [
       python
         ? "Batch independent operations in one `fabric_exec` Python program with `asyncio.gather`; await dependent/conditional steps sequentially. Coalesce independent replacements into one `await pi.edit(path=..., edits=[...])`. Return only the compact final JSON-compatible value."
@@ -213,7 +210,7 @@ export const createFabricExecTool = (
     parameters: Type.Object({
       code: Type.String({
         description: managedHost
-          ? `TypeScript async function body. Top-level await and return are supported. Named payloads are available as π.key. ${managedHostExecutionGuidance(managedHost)}`
+          ? "TypeScript async function body. Top-level await and return are supported. Named payloads are available as π.key. Follow the managed execution guidance for discovery and tool calls."
           : python
           ? monty
             ? "Python async function body executed by Monty, a sandboxed Python subset (not CPython). Top-level await/return and asyncio.gather are supported. Use only Monty's supported syntax/modules; native imports, filesystem, network, and environment are unavailable. Host globals: tools, mcp, memory, state, schema, compact, cache, thinking, components, agents, mesh; full-code mode adds pi and extensions. Await dict/keyword calls; use native dict results r['output']. Payloads: π.key or payloads['key']. Return JSON-compatible data; each invocation starts fresh."
