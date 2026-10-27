@@ -1251,10 +1251,22 @@ const main = async (): Promise<void> => {
         steerRemainder = Buffer.from(remainder);
       }
       let processedCommands = 0;
-      for (const raw of combined.subarray(0, newline + 1).toString("utf8").split("\n")) {
-        if (processedCommands >= MAX_STEER_COMMANDS_PER_POLL) break;
-        if (Buffer.byteLength(raw, "utf8") > MAX_STEER_LINE_BYTES) continue;
-        const line = raw.trim();
+      let lineStart = 0;
+      while (lineStart <= newline) {
+        if (processedCommands >= MAX_STEER_COMMANDS_PER_POLL) {
+          // Leave the unapplied lines for the next poll. `combined` holds
+          // contiguous file bytes ending at steerOffset, so rewinding by its
+          // unhandled tail makes the next poll start at the first line left.
+          steerOffset -= combined.length - lineStart;
+          steerRemainder = Buffer.alloc(0);
+          skippingOversizedSteerLine = false;
+          break;
+        }
+        const lineEnd = combined.indexOf(0x0a, lineStart);
+        const rawBytes = combined.subarray(lineStart, lineEnd);
+        lineStart = lineEnd + 1;
+        if (rawBytes.length > MAX_STEER_LINE_BYTES) continue;
+        const line = rawBytes.toString("utf8").trim();
         if (!line) continue;
         processedCommands += 1;
         let command: { type?: string; message?: string; mode?: string; instructions?: string; requestId?: string };
