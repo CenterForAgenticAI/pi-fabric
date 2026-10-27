@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import module from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseDurableWorkerOptions } from "./worker-options.js";
+import { explainMissingInstall } from "../worker/missing-install.js";
 
 try {
   // This process-only entry is never imported by extension registration.
@@ -30,7 +31,8 @@ try {
     // the SDK's require.resolve("typebox") file, and jiti matches aliases as path prefixes. An
     // extension's "typebox/type" therefore arrives here as "<typebox entry file>/type". Resolve
     // exactly that form as "typebox/<subpath>" through the same install's exports map; anything
-    // it does not export keeps its original resolution and error.
+    // it does not export keeps its original resolution and error. This depends on that alias shape:
+    // once the SDK resolves typebox subpaths itself, no specifier carries the prefix and this is inert.
     let typeboxEntry: string | null | undefined;
     const separators = (value: string) => process.platform === "win32" ? value.replaceAll("\\", "/") : value;
     const repairTypeboxAlias = (specifier: string): module.ResolveFnOutput | undefined => {
@@ -66,7 +68,8 @@ try {
     const { runDurableWorker } = await import("./worker-host.js");
     await runDurableWorker(options);
   }
-} catch (error) {
-  process.stderr.write(`Durable Pi worker failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+} catch (caught) {
+  const error = explainMissingInstall(caught, import.meta.url);
+  process.stderr.write(`Durable Pi worker failed: ${error instanceof Error ? (error === caught ? error.stack ?? error.message : error.message) : String(error)}\n`);
   process.exitCode = 1;
 }

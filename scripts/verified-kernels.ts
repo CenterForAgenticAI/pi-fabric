@@ -4,6 +4,8 @@
 // build never loads the prover.
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
+import { availableParallelism } from "node:os";
+import type { ProofTask, ProofResult } from "./verified-kernel-worker.js";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,8 +13,8 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const read = (path: string): string => readFileSync(resolve(root, path), "utf8");
 const hash = (text: string): string => createHash("sha256").update(text).digest("hex");
 const receipt = "src/verified/generated/manifest.json";
-const stems = ["policy", "compaction", "resources", "lifecycle", "storage", "provider", "authority"];
-const sources = ["proofs/index.ts", "proofs/kernel.ts", ...stems.map((stem) => `proofs/${stem}.ts`), "scripts/verified-kernels.ts"];
+const stems = ["policy", "compaction", "resources", "lifecycle", "storage", "provider", "authority", "grants", "speculation", "budget"];
+const sources = ["proofs/index.ts", "proofs/kernel.ts", ...stems.map((stem) => `proofs/${stem}.ts`), "scripts/verified-kernels.ts", "scripts/verified-kernel-pool.ts", "scripts/verified-kernel-worker.ts"];
 const artifacts = stems.flatMap((stem) => [`src/verified/generated/${stem}.js`, `src/verified/generated/${stem}.d.ts`]);
 const pinned = (): string => {
   const version = (JSON.parse(read("package.json")) as { devDependencies?: Record<string, string> }).devDependencies?.["gdp-wired"];
@@ -29,8 +31,11 @@ interface Manifest {
 }
 
 const mode = process.argv[2];
-if (process.argv.length !== 3 || !["--write", "--check", "--artifact"].includes(mode ?? "")) {
-  throw new Error("Usage: bun scripts/verified-kernels.ts --write|--check|--artifact");
+const explicitJobs = process.argv.length === 5 && process.argv[3] === "--jobs";
+const jobs = explicitJobs ? Number(process.argv[4]) : Math.min(4, availableParallelism());
+if ((process.argv.length !== 3 && !explicitJobs) || !["--write", "--check", "--artifact"].includes(mode ?? "") ||
+    (mode === "--artifact" && explicitJobs) || !Number.isSafeInteger(jobs) || jobs < 1 || jobs > 4) {
+  throw new Error("Usage: bun scripts/verified-kernels.ts --write|--check [--jobs 1..4] | --artifact");
 }
 
 if (mode === "--artifact") {
@@ -45,51 +50,61 @@ if (mode === "--artifact") {
 
 const installed = (JSON.parse(read("node_modules/gdp-wired/package.json")) as { version: string }).version;
 if (installed !== pinned()) throw new Error(`gdp-wired ${pinned()} is pinned, but ${installed} is installed`);
-const { crossCheckDecision } = await import("gdp-wired");
-const { compileJs } = await import("gdp-wired/machine");
 const { modules } = await import("../proofs/index.js");
-const { prove } = await import("../proofs/kernel.js");
+const { runWorkerTasks } = await import("./verified-kernel-pool.js");
+const started = performance.now();
+const plans = modules.map(module => ({ module, kernels: module.kernels() }));
+if (new Set(modules.map(module => module.stem)).size !== stems.length || modules.length !== stems.length) throw new Error("Kernel module registry differs from the artifact inventory");
+for (const { module, kernels } of plans) {
+  if (`proofs/${module.stem}.ts` !== module.source || !stems.includes(module.stem) || new Set(kernels.map(kernel => kernel.id)).size !== kernels.length) throw new Error(`Invalid kernel module ${module.stem}`);
+}
+const tasks: ProofTask[] = plans.flatMap(({ module, kernels }) => [
+  ...kernels.map(kernel => ({ kind: "kernel" as const, stem: module.stem, id: kernel.id })),
+  { kind: "mutations" as const, stem: module.stem },
+]);
+console.log(`Checking ${tasks.length - modules.length} kernels and ${modules.reduce((count, module) => count + module.bugs.length, 0)} broken variants with ${jobs} isolated workers`);
+const results = await runWorkerTasks<ProofTask, ProofResult>(tasks, {
+  worker: new URL("./verified-kernel-worker.ts", import.meta.url), jobs,
+  onResult(result, task) {
+    if (!result || result.kind !== task.kind || result.stem !== task.stem || !Array.isArray(result.failures)) throw new Error("Invalid proof worker result");
+    if (task.kind === "kernel") {
+      if (result.kind !== "kernel" || result.id !== task.id || typeof result.compiled !== "string") throw new Error("Missing compiled kernel result");
+      const kernel = plans.find(plan => plan.module.stem === task.stem)!.kernels.find(kernel => kernel.id === task.id)!;
+      const names = [...(kernel.laws ?? []), ...(kernel.stepLaws ?? [])].map(law => law.name).join("; ");
+      const expected = [
+        ...(kernel.rule && names ? [`${kernel.id}: ${names}`] : []),
+        ...(kernel.decisions ?? []).map(decision => `${kernel.id}: ${decision.name}`),
+      ];
+      if (JSON.stringify(result.claims) !== JSON.stringify(expected)) throw new Error(`Incomplete proof claims for ${task.stem}.${task.id}`);
+      console.log(`${result.failures.length ? "failed" : "proved"} ${task.stem}.${task.id} (${Math.round(result.seconds * 1000)} ms)`);
+    } else {
+      const count = plans.find(plan => plan.module.stem === task.stem)!.module.bugs.length;
+      if (result.kind !== "mutations" || (result.refused !== count && result.failures.length === 0)) throw new Error(`Incomplete mutation refusals for ${task.stem}`);
+      console.log(`refused ${result.refused} broken variants of ${task.stem}`);
+    }
+  },
+});
+const proved = new Map(results.filter((result): result is Extract<ProofResult, { kind: "kernel" }> => result.kind === "kernel").map(result => [`${result.stem}.${result.id}`, result]));
 
-const failures: string[] = [];
+const failures = results.flatMap(result => result.failures);
 const claims: Record<string, string[]> = {};
 const files = new Map<string, string>();
-for (const module of modules) {
-  if (`proofs/${module.stem}.ts` !== module.source || !stems.includes(module.stem)) throw new Error(`Unregistered kernel module ${module.stem}`);
-  const kernels = module.kernels();
-  claims[module.stem] = [];
-  for (const kernel of kernels) {
-    const started = Date.now();
-    for (const verdict of prove(kernel)) {
-      claims[module.stem]!.push(verdict.claim);
-      if (!(verdict.proven && verdict.checked)) failures.push(`${verdict.claim}: ${verdict.detail ?? "not checked by the kernel"}`);
-    }
-    // The builders are untrusted: replay every claim on concrete runs against the interpreter.
-    const rule = kernel.rule ?? kernel.fun?.rule;
-    if (rule) {
-      const replay = rule.crossCheck(kernel.laws ?? [], kernel.stepLaws ?? []);
-      if (replay.failure) failures.push(`${kernel.id}: builders disagree with the interpreter: ${replay.failure}`);
-    }
-    for (const decision of kernel.decisions ?? []) {
-      const replay = crossCheckDecision(decision);
-      if (replay.failure) failures.push(`${kernel.id}: ${decision.name}: builders disagree with the interpreter: ${replay.failure}`);
-    }
-    console.log(`proved ${module.stem}.${kernel.id} (${Date.now() - started} ms)`);
-  }
-  for (const bug of module.bugs) {
-    if (module.kernels(bug).flatMap(prove).every((verdict) => verdict.proven)) failures.push(`${module.stem}: broken variant "${bug}" was not refused`);
-  }
-  console.log(`refused ${module.bugs.length} broken variants of ${module.stem}`);
+for (const { module, kernels } of plans) {
+  claims[module.stem] = kernels.flatMap(kernel => proved.get(`${module.stem}.${kernel.id}`)!.claims);
 
   const header = `// Generated by scripts/verified-kernels.ts from ${module.source} with gdp-wired@${installed}. Do not edit.\n`;
-  // Every compiled machine opens with the same runtime helpers; emit them once per module.
-  let preamble: string | undefined;
+  // Each compiled machine opens with the runtime helpers it calls, one per line;
+  // emit each helper once per module.
+  const helpers = new Map<string, string>();
   const js = kernels.map((kernel) => {
-    const machine = (kernel.rule ?? kernel.fun?.rule)!.machine;
-    const lines = compileJs(machine).trimEnd().split("\n");
+    const lines = proved.get(`${module.stem}.${kernel.id}`)!.compiled.trimEnd().split("\n");
     const start = lines.findIndex((line) => line.startsWith("export function init("));
-    const helpers = lines.slice(1, start).join("\n");
-    if (start < 1 || (preamble !== undefined && preamble !== helpers)) throw new Error(`Unrecognized compiled machine layout in ${kernel.id}`);
-    preamble = helpers;
+    if (start < 1) throw new Error(`Unrecognized compiled machine layout in ${kernel.id}`);
+    for (const line of lines.slice(1, start)) {
+      const name = /^function (\$\w+)\(/.exec(line)?.[1];
+      if (name === undefined || (helpers.has(name) && helpers.get(name) !== line)) throw new Error(`Unrecognized compiled machine layout in ${kernel.id}`);
+      helpers.set(name, line);
+    }
     // `fork` copies a state for branching searches; Fabric never branches, so it is not shipped.
     const forkAt = lines.findIndex((line) => line.startsWith("export function fork("));
     if (forkAt < start || lines[forkAt + 2] !== "}") throw new Error(`Unrecognized compiled machine layout in ${kernel.id}`);
@@ -102,7 +117,7 @@ for (const module of modules) {
     "export interface Machine { init(params: object): MachineState; step(params: object, state: MachineState, input: object): MachineState }",
     ...kernels.map((kernel) => `export declare const ${kernel.id}: Machine;`),
   ].join("\n");
-  files.set(`src/verified/generated/${module.stem}.js`, `${header}${preamble}\n\n${js}`);
+  files.set(`src/verified/generated/${module.stem}.js`, `${header}${[...helpers.values()].join("\n")}\n\n${js}`);
   files.set(`src/verified/generated/${module.stem}.d.ts`, `${header}${dts}\n`);
 }
 if (failures.length) throw new Error(`Verified kernels failed:\n${failures.join("\n")}`);
@@ -123,3 +138,4 @@ if (mode === "--write") {
   if (drift.length) throw new Error(`Generated kernels differ from the proved sources: ${drift.join(", ")}. Run bun run proof:generate.`);
   console.log("Verified kernels reproduce byte for byte.");
 }
+console.log(`Proof verification completed in ${((performance.now() - started) / 1000).toFixed(2)}s (${jobs} workers)`);

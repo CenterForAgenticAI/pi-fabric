@@ -5,6 +5,7 @@ import { runAbortable, settleWithin } from "../async-settlement.js";
 import { piBashExitMetadata } from "../core/pi-bash-error.js";
 import { PI_ARGUMENT_NORMALIZATION_SOURCE } from "../core/pi-arguments.js";
 import { PI_CORE_TOOL_NAMES } from "../core/pi-tools.js";
+import { providerGlobalNames } from "../provider-globals.js";
 import { HumanWaitDeadlinePause } from "./deadline-pause.js";
 import { createGuestStackMap, remapGuestErrorText } from "./guest-stack-map.js";
 import { transpileFabricCodeWithSourceMap } from "./type-checker.js";
@@ -71,8 +72,8 @@ const quickJsModule = (): Promise<QuickJsModule> => {
   return quickJsModulePromise;
 };
 
-export const guestSetupSource = (fields?: Record<string, string[]>, nativeStoreEnabled = false, profile = "additive", nativeToolsEnabled = false): string =>
-  `const __piCanonicalFields = ${JSON.stringify(fields ?? {})}; const __nativeStoreEnabled = ${nativeStoreEnabled}; const __nativeProfile = ${profile === "native"}; const __nativeToolsEnabled = ${nativeToolsEnabled};\n${GUEST_SETUP}`;
+export const guestSetupSource = (fields?: Record<string, string[]>, nativeStoreEnabled = false, profile = "additive", nativeToolsEnabled = false, providerGlobals: readonly string[] = []): string =>
+  `const __piCanonicalFields = ${JSON.stringify(fields ?? {})}; const __nativeStoreEnabled = ${nativeStoreEnabled}; const __nativeProfile = ${profile === "native"}; const __nativeToolsEnabled = ${nativeToolsEnabled}; const __providerGlobals = ${JSON.stringify(providerGlobalNames(providerGlobals))};\n${GUEST_SETUP}`;
 
 import { NATIVE_CODEMODE_GUEST } from "./native-codemode-guest.js";
 
@@ -500,6 +501,7 @@ globalThis.agents = Object.freeze({
   main: () => __call("agents.main", {}),
   sessions: () => __call("agents.sessions", {}),
   peers: () => __call("agents.peers", {}),
+  definitions: () => __call("agents.definitions", {}),
   subscribe: (args) => __call("agents.subscribe", args),
   subscriptions: (args = {}) => __call("agents.subscriptions", args),
   unsubscribe: (args) => __call("agents.unsubscribe", args),
@@ -523,7 +525,7 @@ globalThis.agents = Object.freeze({
   setDeliveryPolicy: (args) => __call("agents.setDeliveryPolicy", args),
   clearMessages: (args) => __call("agents.clearMessages", args),
   setInstructions: (args) => __call("agents.setInstructions", args),
-  actors: () => __call("agents.actors", {}),
+  actors: (args = {}) => __call("agents.actors", args),
   messages: (args) => __call("agents.messages", args),
   remove: (args) => __call("agents.remove", args),
   // Keyword keys for the actor-template routes, spelled as the provider,
@@ -763,6 +765,29 @@ globalThis.setInterval = (callback, ms = 0) => {
 };
 globalThis.clearTimeout = (id) => { __timerCallbacks.delete(id); };
 globalThis.clearInterval = (id) => { __timerCallbacks.delete(id); };
+// Providers other extensions register, as globals named after them. The host
+// lists only names src/provider-globals.ts accepts; installing last, and only
+// where no global exists, keeps every Fabric and language global intact.
+// Each call is tools.call, so it takes the same host path, policy and limits.
+const __providerGlobal = (provider) => new Proxy(Object.create(null), {
+  get(_target, property) {
+    if (typeof property === "symbol" || property === "then" || property === "toJSON") return undefined;
+    const ref = provider + "." + property;
+    return (args = {}) => {
+      if (args === null || typeof args !== "object" || Array.isArray(args)) {
+        return Promise.reject(new TypeError(ref + " takes one argument object"));
+      }
+      return __call("fabric.$call", { ref, args });
+    };
+  },
+  set() { return false; },
+  defineProperty() { return false; },
+  deleteProperty() { return false; },
+});
+for (const __name of (typeof __providerGlobals === "undefined" ? [] : __providerGlobals)) {
+  if (typeof __name !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(__name) || __name in globalThis) continue;
+  globalThis[__name] = __providerGlobal(__name);
+}
 })();
 `;
 
@@ -1102,7 +1127,7 @@ export class QuickJsRuntime {
       tokenBudget.dispose();
 
       cpuDeadlineAt = Date.now() + (options.maxCpuSliceMs ?? Infinity);
-      const setupResult = context.evalCode(guestSetupSource(options.piToolCanonicalFields, options.nativeStoreEnabled, options.codemodeProfile, options.nativeToolsEnabled), "pi-fabric-setup.js");
+      const setupResult = context.evalCode(guestSetupSource(options.piToolCanonicalFields, options.nativeStoreEnabled, options.codemodeProfile, options.nativeToolsEnabled, options.providerGlobals), "pi-fabric-setup.js");
       if (setupResult.error) {
         const deadlineExceeded = interruptedByDeadline || interruptedByCpu || Date.now() > executionDeadlineAt;
         if (deadlineExceeded) timedOut = true;

@@ -25,6 +25,10 @@ import {
   CODE_PREVIEW_EDIT_LINES_ID,
   CODE_PREVIEW_ALL_LINES,
 } from "./settings-values.js";
+import {
+  SESSION_LABEL_HERDR_TARGETS,
+  sessionLabelSettings,
+} from "../topology/session-label-settings.js";
 
 export const buildCaptureSection = (
   { config, theme, options, apply, persist }: Pick<SettingsSectionContext<"keepVisibleCandidates">, "config" | "theme" | "options" | "apply" | "persist">,
@@ -84,6 +88,7 @@ export const buildCaptureSection = (
 export const buildUiSection = (
   { config, theme, persist }: Pick<SettingsSectionContext, "config" | "theme" | "persist">,
 ): SettingItem => {
+  const sessionLabel = sessionLabelSettings(config.ui.sessionLabel);
   return setting("ui", "UI", summaryFor("ui", config), {
     description: "Fabric activity widget and dashboard.",
     submenu: sectionSubmenu(
@@ -96,7 +101,7 @@ export const buildUiSection = (
           values: BOOLEANS,
         }),
         setting("ui.widget", "Widget", config.ui.widget, {
-          description: "When to show the activity widget above the editor.",
+          description: "When to show the activity widget below the editor.",
           values: WIDGET_MODES,
         }),
         setting("ui.toolDisplay", "Tool display", config.ui.toolDisplay, {
@@ -104,6 +109,21 @@ export const buildUiSection = (
             "Show full Fabric TypeScript or a compact intent-and-tools transcript; the tool-expand key (ctrl+o) expands a compact card to full.",
           values: TOOL_DISPLAY_MODES,
         }),
+        setting("ui.herdrStatus", "Herdr agent status", config.ui.herdrStatus ? "true" : "false", {
+          description:
+            "Inside Herdr, show running Fabric agents on this pane and mark it blocked while a child question waits.",
+          values: BOOLEANS,
+        }),
+        setting(
+          "ui.terminalTitle",
+          "Terminal title",
+          config.ui.terminalTitle ? "true" : "false",
+          {
+            description:
+              "Keep the latest fabric_exec display name as the terminal window title, including after a resume.",
+            values: BOOLEANS,
+          },
+        ),
         setting(
           "ui.showAgentToolPreview",
           "Agent tool preview",
@@ -129,6 +149,20 @@ export const buildUiSection = (
             ),
           },
         ),
+        setting(
+          "ui.sessionLabel.footer",
+          "Session label in footer",
+          sessionLabel.footer ? "true" : "false",
+          {
+            description: "Show this session's Fabric peer label, such as FAB-3, in the Pi footer.",
+            values: BOOLEANS,
+          },
+        ),
+        setting("ui.sessionLabel.herdr", "Session label in Herdr", sessionLabel.herdr, {
+          description:
+            "Put this session's Fabric peer label before the Herdr tab name, the pane name, both, or neither. Applies only when Pi runs inside Herdr.",
+          values: SESSION_LABEL_HERDR_TARGETS,
+        }),
         setting("ui.maxRows", "Max rows", String(config.ui.maxRows), {
           description: "Maximum rows rendered by the activity widget.",
           submenu: numericSubmenu(

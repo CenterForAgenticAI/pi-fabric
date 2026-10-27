@@ -79,6 +79,7 @@ import {
   type FabricModelCandidate,
 } from "../core/model-resolution.js";
 import { loadModelUsage } from "../core/model-usage.js";
+import { resolveAgentDir } from "../core/agent-dir.js";
 import { AGENTS_ACTION_DESCRIPTORS } from "./agents-actions.js";
 import { actionArgNormalizer } from "./arg-normalization.js";
 import { isFabricThinking } from "../thinking.js";
@@ -448,6 +449,40 @@ export class AgentsProvider implements FabricProvider {
     return `${resolved.provider}/${resolved.id}`;
   }
 
+  /** Roots for named agent files. Project files load only for a project the host trusts. */
+  #agentFileRoots(context: FabricInvocationContext) {
+    const trusted = context.extensionContext?.isProjectTrusted;
+    return {
+      agentDir: resolveAgentDir(),
+      projectRoot: this.manager.projectRoot,
+      projectTrusted: typeof trusted === "function" && trusted.call(context.extensionContext) === true,
+    };
+  }
+
+  /**
+   * Resolve args.agent into the request before anything else reads it, so model aliases,
+   * runner checks and the durable-spawn refusal all see the file's values. The loader is
+   * imported here, at first use; a call without agent never touches it.
+   */
+  async #applyAgentFile(
+    args: Record<string, unknown>,
+    context: FabricInvocationContext,
+    residency?: unknown,
+  ): Promise<Record<string, unknown>> {
+    if (args.agent === undefined) return args;
+    const { resolveAgentFile, applyAgentDefinition } = await import("../agents/agent-files.js");
+    const definition = resolveAgentFile(String(args.agent), this.#agentFileRoots(context));
+    if (residency === "durable" && definition.request.systemPrompt !== undefined && args.systemPrompt === undefined) {
+      throw new Error(
+        `Agent "${definition.name}" (${definition.path}) has instructions, which a durable agents.spawn does not accept. Spawn without residency: "durable" or remove the file body.`,
+      );
+    }
+    if (definition.warnings.length > 0) {
+      context.update(`Agent "${definition.name}" (${definition.path}): ${definition.warnings.join("; ")}`);
+    }
+    return applyAgentDefinition(args, definition);
+  }
+
   #resolvePiModelArgs(
     args: Record<string, unknown>,
     context: FabricInvocationContext,
@@ -605,10 +640,11 @@ export class AgentsProvider implements FabricProvider {
   ): Promise<unknown> {
     switch (actionName) {
       case "run": {
+        const runArgs = await this.#applyAgentFile(args, context);
         const handle = await this.manager.spawn(
           this.#applySeed(
-            args,
-            runRequest(this.#resolvePiModelArgs(args, context), context, this.manager, this.modelsConfig()),
+            runArgs,
+            runRequest(this.#resolvePiModelArgs(runArgs, context), context, this.manager, this.modelsConfig()),
             context,
           ),
           context.signal,
@@ -632,9 +668,10 @@ export class AgentsProvider implements FabricProvider {
       case "handoff":
         return this.handoff(args, context);
       case "spawn": {
+        const spawnArgs = await this.#applyAgentFile(args, context, args.residency);
         const request = this.#applySeed(
-          args,
-          runRequest(this.#resolvePiModelArgs(args, context), context, this.manager, this.modelsConfig()),
+          spawnArgs,
+          runRequest(this.#resolvePiModelArgs(spawnArgs, context), context, this.manager, this.modelsConfig()),
           context,
         );
         if (request.residency === "durable") this.#assertUnconfinedDurable();
@@ -684,7 +721,18 @@ export class AgentsProvider implements FabricProvider {
           context.update(`Waiting for durable agent ${status.name}`);
           return this.residency.waitAgent(id, context.signal);
         }
-        const status = this.manager.status(id);
+        let status: ReturnType<AgentManager["status"]>;
+        try {
+          status = this.manager.status(id);
+        } catch (error) {
+          // A durable run another root session of this project spawned.
+          if (!(error instanceof Error && /Unknown Fabric agent/.test(error.message))) throw error;
+          if (!this.residency?.hasProjectAgent(id)) throw error;
+          const durable = this.residency.statusAgent(id);
+          context.activity?.({ type: "entity", id, kind: "agent", name: durable.name });
+          context.update(`Waiting for durable agent ${durable.name}`);
+          return this.residency.waitProjectAgent(id, context.signal);
+        }
         context.activity?.({ type: "entity", id, kind: "agent", name: status.name });
         return waitWithProgress(
           this.manager,
@@ -715,6 +763,8 @@ export class AgentsProvider implements FabricProvider {
           if (terminalAgentStatuses.has(result.status)) this.residency.acknowledgeCompletion(id);
           return result;
         }
+        // Another root session's run: read it, but leave its completion receipt to that session.
+        if (this.residency?.hasProjectAgent(id)) return this.residency.statusAgent(id);
         const known = this.participants.get(id);
         if (known && !known.local) return known;
         try {
@@ -753,6 +803,10 @@ export class AgentsProvider implements FabricProvider {
           this.participants.list({ scope: "project", kinds: ["root"] });
       case "peers":
         return this.participants.peers();
+      case "definitions": {
+        const { listAgentFiles } = await import("../agents/agent-files.js");
+        return listAgentFiles(this.#agentFileRoots(context), (notice) => context.update(notice));
+      }
       case "subscribe": {
         const events = Array.isArray(args.events)
           ? args.events.filter(isFabricLifecycleEventType)
@@ -1175,7 +1229,14 @@ export class AgentsProvider implements FabricProvider {
             ...(before !== undefined ? { before } : {}),
           });
         }
-        return this.manager.readLog(id, { lines, ...(before !== undefined ? { before } : {}) });
+        try {
+          return this.manager.readLog(id, { lines, ...(before !== undefined ? { before } : {}) });
+        } catch (error) {
+          // A durable run another root session of this project spawned.
+          if (!(error instanceof Error && /Unknown Fabric agent/.test(error.message))) throw error;
+          if (!this.residency?.hasProjectAgent(id)) throw error;
+          return this.residency.readAgentLog(id, { lines, ...(before !== undefined ? { before } : {}) });
+        }
       }
       default:
         throw new Error(`Unknown agents action: ${actionName}`);

@@ -32,7 +32,7 @@ import {
   DEFAULT_FABRIC_CONFIG,
   effectiveToolCaptureConfig,
 } from "./config.js";
-import { registerCompactionHook } from "./compaction/hook.js";
+import type { CompactionHandlers } from "./compaction/hook.js";
 import { compactAtConfiguredThreshold, type AutoCompactionTrigger } from "./compaction/threshold.js";
 import type { CompactionOwnerObserver } from "./compaction/owner.js";
 import { unregisteredRunnerNotice } from "./agents/runner-notice.js";
@@ -50,14 +50,7 @@ import {
   expandSkillDirMarkersForRead,
   expandSkillDirMarkersInSkillBlock,
 } from "./core/skill-dir.js";
-import { coreOverridePromptGuidance } from "./core/core-override-guidance.js";
 import { PI_CORE_TOOL_NAMES, PI_CORE_TOOL_NAME_SET } from "./core/pi-tools.js";
-import {
-  fabricExecutionKernelGuidance,
-  defaultFabricExecutionGuidance,
-  fabricSchemaGuidance,
-  extensionToolRosterGuidance,
-} from "./core/system-guidance.js";
 import {
   FABRIC_EXECUTION_GUIDANCE_SLOT,
   resolveFabricModelGuidance,
@@ -75,7 +68,6 @@ import {
   FabricDirectToolApproval,
   mergeFabricApprovalUsage,
 } from "./core/direct-tool-approval.js";
-import { buildSkillReferenceGuidance } from "./core/skill-references.js";
 import { createFabricExecTool } from "./fabric-exec-tool.js";
 import { FabricState } from "./fabric-state.js";
 import { FABRIC_THINKING_BOUNDS_ENV } from "./thinking.js";
@@ -102,13 +94,14 @@ import { installFabricShellHangKeys } from "./ui/shell-hang-keys.js";
 import { FabricToolDisplayController } from "./ui/tool-display.js";
 import { configureHighlighting } from "./ui/highlight.js";
 import { registerHandoffCompletionRenderer } from "./ui/handoff-completion.js";
+import { FabricTerminalTitle, installTerminalTitle } from "./ui/terminal-title.js";
 import { formatFabricValue } from "./ui/structured.js";
 import { truncateMiddle } from "./util.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { captureLoadedFileIdentity } from "./build-identity.js";
 
-export const FABRIC_MANAGED_HOST_VERSION = 1;
+export const FABRIC_MANAGED_HOST_VERSION = 2;
 export type { FabricManagedHostOptions } from "./managed-host.js";
 import type { FabricManagedHostOptions } from "./managed-host.js";
 
@@ -351,15 +344,22 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
 
   pi.on("resources_discover", async (_event, context) => {
     if (!state.bootstrapped) await state.bootstrap(context);
-    return { skillPaths: fabricSkillPaths(FABRIC_SKILLS_DIR, state.config.executor.kernel) };
+    return { skillPaths: state.managedHostOptions ? [] : fabricSkillPaths(FABRIC_SKILLS_DIR, state.config.executor.kernel) };
   });
 
+  // The window title is the declared milestone, not nested call detail: it
+  // holds until the next declaration and is adopted again on resume.
+  const fabricTerminalTitle = new FabricTerminalTitle(pi, () => {
+    const ui = state.bootstrapped ? state.config.ui : DEFAULT_FABRIC_CONFIG.ui;
+    return ui.enabled && ui.terminalTitle;
+  });
   const fabricTool = createFabricExecTool(
     state,
     codePreviewSettings,
     pendingHandoffs,
     decorateShell,
     toolDisplay,
+    fabricTerminalTitle,
   );
   const refreshCodePreviewSettings = (): void => {
     Object.assign(codePreviewSettings, state.config.codePreview);
@@ -401,7 +401,14 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     toolCapture.setPolicy(capturePolicy());
     Object.assign(
       fabricTool,
-      createFabricExecTool(state, codePreviewSettings, pendingHandoffs, decorateShell, toolDisplay),
+      createFabricExecTool(
+        state,
+        codePreviewSettings,
+        pendingHandoffs,
+        decorateShell,
+        toolDisplay,
+        fabricTerminalTitle,
+      ),
     );
     pi.registerTool(fabricTool);
     toolOwnership.apply(
@@ -524,7 +531,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     if (!current()) return false;
     const entropy = await import("./entropy/index.js");
     if (!current()) return false;
-    const { comparableCompiledSurfaceScore, entropyRepairRows, formatEntropyCompileNotice,
+    const { entropyRepairRows,
       liveSurfaceSnapshot, loadCompiledSurfaceAsync, saveCompiledSurfaceAsync,
       updateObservationPoolAsync, sessionWindowEvidenceAsync } = entropy;
     let retry = false;
@@ -565,14 +572,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
         if (current()) {
           // Activate even when another process already persisted identical bytes.
           setActiveCompiledSurface(saved.file);
-          const previousScore = comparableCompiledSurfaceScore(loaded.file, saved.file.metricVersion);
-          if (previousScore !== undefined && outcome.report.score < previousScore && context.hasUI) {
-            context.ui.notify(formatEntropyCompileNotice({
-              beforeScore: previousScore,
-              afterScore: outcome.report.score,
-              normalizations: saved.file.normalizations?.length ?? 0,
-            }), "info");
-          }
+          // Background optimization stays silent; inspect it with /fabric entropy.
         }
       } catch (error) {
         if (!(error instanceof FileLockTimeoutError)) throw error;
@@ -737,6 +737,13 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
   });
 
   pi.on("agent_settled", async (event, context) => {
+    if (state.managedHostOptions) {
+      // Managed runtimes never construct native prewalk/compact controllers.
+      // The Pi-owned mode also leaves automatic compaction scheduling to the host.
+      if (state.config.compaction.engine === "fabric") await compactAtConfiguredThreshold(context, state.config);
+      if (state.initialized) await state.publishHostLifecycle("pi.agent_settled", event);
+      return;
+    }
     if (!state.initialized) {
       await compactAtConfiguredThreshold(context, state.config);
       return;
@@ -931,8 +938,10 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
 
   // Deterministic, LLM-free compaction is registered unconditionally and is
   // active by default. The documented "pi" escape hatch returns early so
-  // pi-core's own summarization proceeds normally.
-  registerCompactionHook(pi, {
+  // pi-core's own summarization proceeds normally. The compiler loads at the
+  // first compaction or tree summary Pi asks for, not while registering.
+  let compaction: Promise<CompactionHandlers> | undefined;
+  const compactionHandlers = (): Promise<CompactionHandlers> => compaction ??= import("./compaction/hook.js").then((module) => module.compactionHandlers({
     getEngine: () =>
       state.cwd
         ? state.config.compaction.engine
@@ -956,6 +965,14 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     onYield: () => {
       compactionYieldPending = true;
     },
+  }));
+  pi.on("session_before_compact", async (event, context) => {
+    if (state.managedHostOptions?.compaction === "pi") return;
+    return (await compactionHandlers()).beforeCompact(event, context);
+  });
+  pi.on("session_before_tree", async (event, context) => {
+    if (state.managedHostOptions?.compaction === "pi") return;
+    return (await compactionHandlers()).beforeTree(event, context);
   });
 
   // No extractive module import, branch read or model call until explicit opt-in
@@ -1043,25 +1060,39 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     const projected = extractiveHistory?.inject(context, messages) ?? messages;
     return projected !== messages || messages.length !== event.messages.length ? { messages: projected } : undefined;
   });
+  // Prompt guidance builders load at the first agent start, not while registering.
+  let promptGuidance: Promise<typeof import("./core/prompt-guidance.js")> | undefined;
   pi.on("before_agent_start", async (event, context) => {
     const config = state.bootstrapped ? state.config : DEFAULT_FABRIC_CONFIG;
     const fullCodeMode = config.fullCodeMode;
     const schemaMode = config.schema.mode;
     const effectiveFullCodeMode = fullCodeMode || schemaMode === "enforce";
     if (!pi.getActiveTools().includes("fabric_exec")) return;
+    const {
+      buildSkillReferenceGuidance,
+      coreOverridePromptGuidance,
+      defaultFabricExecutionGuidance,
+      extensionToolRosterGuidance,
+      fabricExecutionKernelGuidance,
+      managedHostExecutionGuidance,
+      managedHostKernelGuidance,
+      fabricSchemaGuidance,
+    } = await (promptGuidance ??= import("./core/prompt-guidance.js"));
     const skills = event.systemPromptOptions.skills ?? [];
     const captureSnapshot = state.bootstrapped ? capturePolicy() : undefined;
     // Pi omits its entire skill catalog when the active tool set lacks a tool
     // named read. Restore Pi's discovered catalog (already bound to one skill
     // tree); full code mode adapts its loader to Fabric's nested pi.read path.
-    const systemPrompt = restoreSkillsForFullCodePrompt(event.systemPrompt, skills, effectiveFullCodeMode);
+    const managedHost = state.managedHostOptions;
+    const skillReader = managedHost ? managedHost.skillReader ?? null : undefined;
+    const systemPrompt = restoreSkillsForFullCodePrompt(event.systemPrompt, skills, effectiveFullCodeMode, skillReader);
     // Pi expands the invoked skill into the user message, but wrappers may
     // delegate by name. Resolve only explicit invocation lines so full code
     // mode preserves Pi's progressive skill loading without exposing read.
     // Turn-derived: delivered via the message channel (below), never the
     // system prompt, so the cached system prefix stays byte-stable.
     const skillReferenceGuidance = effectiveFullCodeMode
-      ? buildSkillReferenceGuidance(event.messageType !== "custom" ? event.prompt : "", skills)
+      ? buildSkillReferenceGuidance(event.messageType !== "custom" ? event.prompt : "", skills, skillReader)
       : undefined;
     const currentModel = context.model
       ? `${context.model.provider}/${context.model.id}`
@@ -1071,27 +1102,33 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
       target: process.env.PI_FABRIC_PARENT_RUN ? "participant" : "main",
       defaults: [{
         slot: FABRIC_EXECUTION_GUIDANCE_SLOT,
-        content: defaultFabricExecutionGuidance(effectiveFullCodeMode, config.executor.kernel, config.executor.pythonRuntime, config.executor.codemodeProfile),
+        content: managedHost ? managedHostExecutionGuidance(managedHost) : defaultFabricExecutionGuidance(effectiveFullCodeMode, config.executor.kernel, config.executor.pythonRuntime, config.executor.codemodeProfile),
       }],
     });
-    const overrideGuidance = effectiveFullCodeMode
-      ? coreOverridePromptGuidance(capturedTools).trim()
+    // A child's prompt names only the tools its allowlist lets it call; the
+    // captured-tools provider refuses the rest as "not permitted by this
+    // child's tool allowlist".
+    const toolAllowlist = readChildToolAllowlist();
+    const overrideGuidance = effectiveFullCodeMode && !managedHost
+      ? coreOverridePromptGuidance(capturedTools, toolAllowlist).trim()
       : undefined;
-    const extensionRoster = effectiveFullCodeMode
+    const extensionRoster = effectiveFullCodeMode && !managedHost
       ? extensionToolRosterGuidance(capturedTools.list().filter(entry =>
-          !state.config.mcp.enabled || !isSelectedNativeMcpTool(entry.definition, state.config.mcp.nativeServers),
+          (toolAllowlist === undefined || toolAllowlist.has(entry.name)) &&
+          (!config.mcp.enabled || !isSelectedNativeMcpTool(entry.definition, config.mcp.nativeServers)),
         ), new Set(PI_CORE_TOOL_NAMES), config.executor.kernel === "typescript" && config.executor.codemodeProfile === "native")
       : undefined;
     // Only turn-stable sections go into the system prompt. Anything derived
     // from the current prompt (skill references) rides
     // the message channel so provider prefix caches never cold-prefill.
     const guidance = [
-      fabricExecutionKernelGuidance(effectiveFullCodeMode, config.executor.kernel, config.executor.pythonRuntime, config.executor.codemodeProfile),
+      managedHost ? managedHostKernelGuidance(managedHost) : fabricExecutionKernelGuidance(effectiveFullCodeMode, config.executor.kernel, config.executor.pythonRuntime, config.executor.codemodeProfile),
       resolvedGuidance.slotText,
       fabricSchemaGuidance(schemaMode),
       overrideGuidance,
       extensionRoster,
       resolvedGuidance.appendText,
+      managedHost?.guidance,
     ].filter((section): section is string => Boolean(section)).join("\n\n");
     // Turn-varying content (skill reference guidance) is delivered here as a
     // persistent message, not appended to the system prompt. Keeping the
@@ -1147,6 +1184,8 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     if (!state.initialized) return;
     state.dispatchHostEvent(eventName, event, context);
   });
+
+  installTerminalTitle(pi, fabricTerminalTitle);
 
   pi.on("session_shutdown", async (_event, context) => {
     entropyStopping = true;

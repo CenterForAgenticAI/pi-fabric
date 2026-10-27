@@ -130,6 +130,10 @@ export class FabricState {
     return this.#config;
   }
 
+  get managedHostOptions(): Readonly<FabricManagedHostOptions> | undefined {
+    return this.#managedHost?.options;
+  }
+
   get cwd(): string | undefined {
     return this.#cwd;
   }
@@ -142,6 +146,7 @@ export class FabricState {
       policy: config.foreground,
       mode: config.schema.mode === "enforce" ? "enforce" : config.fullCodeMode ? "full-code" : "orchestration",
       managedHost: this.#managedHost !== undefined,
+      managedForeground: this.#managedHost?.options.foreground,
       registered: this.pi.getAllTools(),
       active: new Set(active ?? this.pi.getActiveTools()),
       allowlist: readChildToolAllowlist(),
@@ -272,6 +277,8 @@ export class FabricState {
 
   mainAgentInfo(context?: ExtensionContext): FabricMainAgentInfo { return this.#required().mainAgentInfo(context); }
   peerInfos(): FabricPeerInfo[] { return this.#current()?.peerInfos() ?? []; }
+  sessionLabel(): string | undefined { return this.#current()?.sessionLabel(); }
+  sessionLabelPending(): boolean { return this.#current()?.sessionLabelPending() ?? false; }
   /** Managed hosts do not expose decisions, matching the `decisions.*` provider. */
   decisionStore(): DecisionStore | undefined {
     return this.#managedHost ? undefined : this.#current()?.decisionStore();
