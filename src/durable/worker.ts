@@ -31,7 +31,8 @@ try {
     // the SDK's require.resolve("typebox") file, and jiti matches aliases as path prefixes. An
     // extension's "typebox/type" therefore arrives here as "<typebox entry file>/type". Resolve
     // exactly that form as "typebox/<subpath>" through the same install's exports map; anything
-    // it does not export keeps its original resolution and error.
+    // it does not export keeps its original resolution and error. This depends on that alias shape:
+    // once the SDK resolves typebox subpaths itself, no specifier carries the prefix and this is inert.
     let typeboxEntry: string | null | undefined;
     const separators = (value: string) => process.platform === "win32" ? value.replaceAll("\\", "/") : value;
     const repairTypeboxAlias = (specifier: string): module.ResolveFnOutput | undefined => {
