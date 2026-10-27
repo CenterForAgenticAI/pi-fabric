@@ -379,9 +379,9 @@ const processStopped = (pid: number): boolean =>
 /**
  * Freeze the host (SIGSTOP) at a moment it holds no store lock, so the SIGKILL
  * that follows is a crash between store writes. A crash inside a store write
- * leaves that lock behind, and the next host's writes wait out its stale
- * window: a different failure, which branch fix/mesh-stale-lock-owner fixes and
- * tests. If a lock is held, let the host run on (SIGCONT) and try again.
+ * leaves that lock behind for up to STALE_LOCK_MS, and the next host's writes
+ * wait it out: a separate mesh-lock failure this test does not cover. If a lock
+ * is held, let the host run on (SIGCONT) and try again.
  */
 const freezeOutsideLocks = async (pid: number, meshRoot: string): Promise<void> => {
   const deadline = Date.now() + 30_000;
