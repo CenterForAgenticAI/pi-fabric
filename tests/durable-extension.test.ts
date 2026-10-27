@@ -48,6 +48,15 @@ describe("A2/A3: surface, options and defaults", () => {
     expect(renamed.tools?.map((tool) => tool.name)).toEqual(["run_code"]);
   });
 
+  it("declares pi-durable and chord 1.4.0 or later as optional peers, and publishes the entry", async () => {
+    const manifest = JSON.parse(await import("node:fs").then((fs) => fs.readFileSync("package.json", "utf8")));
+    for (const name of ["@earendil-works/pi-durable", "@earendil-works/chord"]) {
+      expect(manifest.peerDependencies[name]).toBe(">=1.4.0");
+      expect(manifest.peerDependenciesMeta[name]).toEqual({ optional: true });
+    }
+    expect(manifest.exports["./durable-extension"]).toEqual({ types: "./dist/durable-extension.d.ts", import: "./dist/durable-extension.js" });
+  });
+
   it("passes the default and the overridden limits to the kernel", async () => {
     const defaults = recordingRuntime();
     const { timeoutMs: _testTimeout, ...noLimits }: FabricExtensionOptions = { runtime: defaults.runtime, timeoutMs: 1 };
