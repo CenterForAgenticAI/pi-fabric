@@ -252,26 +252,44 @@ describe("durable native RPC worker", () => {
     // It avoids shell syntax that differs between POSIX shells and Windows.
     fs.mkdirSync(path.dirname(effect), { recursive: true });
     const hang = path.join(path.dirname(effect), "hang.mjs");
-    fs.writeFileSync(hang, `import fs from "node:fs";\nfs.appendFileSync(${JSON.stringify(effect)}, "effect\\n");\nsetInterval(() => {}, 1000);\n`);
-    const code = `await pi.bash({ cmd: ${JSON.stringify(`"${process.execPath}" "${hang}"`)}, timeout: 120 });\nreturn "program-done";`;
-    const first = await fabricWorker("fabric-uncertain", code);
+    const pidFile = path.join(path.dirname(effect), "hang.pid");
+    // The kill reaches the worker only, so the command it started outlives it. The script
+    // records its pid for the cleanup below, and ends by itself when the bash timeout would.
+    fs.writeFileSync(hang, `import fs from "node:fs";\nfs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\nfs.appendFileSync(${JSON.stringify(effect)}, "effect\\n");\nsetTimeout(() => {}, 120000);\n`);
+    const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const stopHang = async () => {
+      if (!fs.existsSync(pidFile)) return;
+      const pid = Number(fs.readFileSync(pidFile, "utf8"));
+      // pi.bash starts its shell in a new process group on POSIX. On Linux, end that whole group.
+      const stat = process.platform === "linux" ? fs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.split(" ") : undefined;
+      const group = stat ? Number(stat[2]) : 0;
+      if (group > 1 && group !== process.pid) { try { process.kill(-group, "SIGKILL"); } catch {} }
+      try { process.kill(pid, "SIGKILL"); } catch {}
+      await expect.poll(() => alive(pid), { timeout: 5000 }).toBe(false);
+    };
     try {
-      first.send({ type: "prompt", id: "uncertain", message: "fabric fixture" });
-      await expect.poll(() => fs.existsSync(effect), { timeout: 15000 }).toBe(true);
-    } finally { await first.stop(true); }
-    const resumed = await fabricWorker("fabric-uncertain", code);
-    try {
-      resumed.send({ type: "prompt", id: "uncertain", message: "fabric fixture" });
-      // The worker has an RPC UI, so it asks first. A dismissed question keeps the stop,
-      // as when a parent cancels a child's dialog.
-      const question = await resumed.wait(event => event.type === "extension_ui_request" && event.method === "select");
-      expect(question.title).toContain("Run it again?");
-      expect(question.options).toEqual(["Run it again", "Stop here"]);
-      resumed.send({ type: "extension_ui_response", id: question.id, cancelled: true });
-      await resumed.wait(event => event.type === "agent_settled");
-      expect(fs.readFileSync(effect, "utf8")).toBe("effect\n");
-      expect(answer(resumed.messages)).toContain("fabric_exec was interrupted during this call, which may have run:");
-      expect(answer(resumed.messages)).not.toContain("program-done");
-    } finally { await resumed.stop(); }
+      const code = `await pi.bash({ cmd: ${JSON.stringify(`"${process.execPath}" "${hang}"`)}, timeout: 120 });\nreturn "program-done";`;
+      const first = await fabricWorker("fabric-uncertain", code);
+      try {
+        first.send({ type: "prompt", id: "uncertain", message: "fabric fixture" });
+        await expect.poll(() => fs.existsSync(effect), { timeout: 15000 }).toBe(true);
+      } finally { await first.stop(true); }
+      // The SIGKILL ends the worker but not the command it was running.
+      expect(alive(Number(fs.readFileSync(pidFile, "utf8")))).toBe(true);
+      const resumed = await fabricWorker("fabric-uncertain", code);
+      try {
+        resumed.send({ type: "prompt", id: "uncertain", message: "fabric fixture" });
+        // The worker has an RPC UI, so it asks first. A dismissed question keeps the stop,
+        // as when a parent cancels a child's dialog.
+        const question = await resumed.wait(event => event.type === "extension_ui_request" && event.method === "select");
+        expect(question.title).toContain("Run it again?");
+        expect(question.options).toEqual(["Run it again", "Stop here"]);
+        resumed.send({ type: "extension_ui_response", id: question.id, cancelled: true });
+        await resumed.wait(event => event.type === "agent_settled");
+        expect(fs.readFileSync(effect, "utf8")).toBe("effect\n");
+        expect(answer(resumed.messages)).toContain("fabric_exec was interrupted during this call, which may have run:");
+        expect(answer(resumed.messages)).not.toContain("program-done");
+      } finally { await resumed.stop(); }
+    } finally { await stopHang(); }
   }, 60000);
 });
