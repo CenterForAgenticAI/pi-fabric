@@ -16,6 +16,9 @@ describe("child optional tool allowlist", () => {
       expect(readChildToolAllowlist(value)!.entries).toEqual([]);
     }
     expect(readChildToolAllowlist('["read", "fabric_exec"]')!.entries).toEqual(["read"]);
+    expect(readChildToolAllowlist('["read", "fabric_exec"]')!.fabricExec).toBe(true);
+    expect(readChildToolAllowlist('["read", "fabric_*"]')!.fabricExec).toBe(false);
+    expect(readChildToolAllowlist("not json")!.fabricExec).toBe(false);
   });
 
   it("matches * entries with the semantics of Pi's --tools (#277)", () => {
