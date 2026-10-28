@@ -42,6 +42,12 @@ const runProperties = {
     type: "string",
     description: "Veda persona name for this run, such as frontend, reviewer, worker, or a custom persona.",
   },
+  holdQuestions: {
+    type: "boolean",
+    const: true,
+    description:
+      "Hold this run's routed questions for a person. Each question becomes a root-held Fabric decision with a 30-day deadline (the longest allowed); only this run waits until it is answered (/fabric decisions, pi-fabric decisions answer, or decisions.answer from the main session). Needs agents.childQuestions \"route\" and a runner that declares questions; refused otherwise. The run's timeoutMs still applies.",
+  },
   thinking: {
     type: "string",
     enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
@@ -223,6 +229,13 @@ const idSchema = {
   additionalProperties: false,
 };
 
+const parkResultSchema = (requested: "sleep" | "wake") => ({
+  type: "object",
+  properties: { id: { type: "string" }, requested: { const: requested } },
+  required: ["id", "requested"],
+  additionalProperties: false,
+});
+
 const lifecycleEventSchema = {
   type: "string",
   enum: [...FABRIC_LIFECYCLE_EVENTS],
@@ -399,6 +412,21 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
     name: "stop",
     description: "Stop a local or remotely owned agent or actor that advertises the stop capability",
     inputSchema: idSchema,
+    risk: "agent",
+  },
+  {
+    name: "sleep",
+    description:
+      "Park an idle hosted run in this session. Only runners that declare the sleep capability accept it. The run stays running and status shows sleeping: true once the runner reports it.",
+    inputSchema: idSchema,
+    outputSchema: parkResultSchema("sleep"),
+    risk: "agent",
+  },
+  {
+    name: "wake",
+    description: "Resume a hosted run in this session that agents.sleep parked. Needs the runner's sleep capability.",
+    inputSchema: idSchema,
+    outputSchema: parkResultSchema("wake"),
     risk: "agent",
   },
   {

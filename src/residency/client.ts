@@ -382,11 +382,12 @@ export class ResidencyClient {
         const current = this.statusAgent(id);
         if (terminal(current.status) && "startedAt" in current) continue;
         // A new host re-attaches only hosted runs (AgentManager.recoverHostedRuns).
-        // Nothing settles any other run once its host is gone, so fail now.
+        // Nothing settles any other run once its host is gone, so settle it here
+        // as the host does for a hosted run it cannot re-attach, and fail now.
         if (!("hosted" in current && current.hosted)) {
-          throw new Error(
-            `Durable Fabric agent ${id} (runner ${current.runner}) cannot finish: its resident host ${this.hostId} stopped, and a new host re-attaches only hosted runs`,
-          );
+          const error = `Durable Fabric agent ${id} (runner ${current.runner}) cannot finish: its resident host ${this.hostId} stopped, and a new host re-attaches only hosted runs`;
+          this.#settleIndeterminate(id, error);
+          throw new Error(error);
         }
         if (hostStarts >= MAX_WAIT_HOST_STARTS) {
           throw new Error(
@@ -401,6 +402,22 @@ export class ResidencyClient {
       }
       await sleepUnlessAborted(STATUS_POLL_MS, signal).catch(() => undefined);
     }
+  }
+
+  /**
+   * Settle an unfinished run that nothing else will settle: failed, with
+   * outcome "indeterminate" because Fabric cannot confirm what the run did.
+   * A run without a run record, or one that settled meanwhile, is left alone.
+   */
+  #settleIndeterminate(id: string, error: string): void {
+    const metadata = this.#metadata(id);
+    if (!metadata) return;
+    const statusFile = path.join(metadata.runDirectory, "status.json");
+    const record = readJson<AgentRunRecord>(statusFile);
+    if (!record || record.id !== id || terminal(record.status)) return;
+    const now = Date.now();
+    const { currentTool: _tool, blockedOn: _blocked, sleeping: _sleeping, ...rest } = record;
+    atomicWrite(statusFile, { ...rest, status: "failed", error, outcome: "indeterminate", finishedAt: now, updatedAt: now });
   }
 
   /**

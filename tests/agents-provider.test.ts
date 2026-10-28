@@ -34,6 +34,7 @@ import { RESIDENT_HOST_FORMAT, residentRoot } from "../src/residency/protocol.js
 import { snapshotHandoffSession } from "../src/agents/handoff.js";
 import { AgentManager } from "../src/agents/manager.js";
 import type { AgentRunRecord } from "../src/agents/types.js";
+import { registerAgentRunner, type FabricHostedRunner, type FabricRunnerCapabilities } from "../src/runners.js";
 
 const roots: string[] = [];
 const actorManagers: ActorManager[] = [];
@@ -2736,6 +2737,81 @@ describe("AgentsProvider switchModel", () => {
     await expect(
       provider.invoke("switchModel", { model: "  " }, modelContext()),
     ).rejects.toThrow(/requires a model selector/);
+  });
+});
+
+describe("AgentsProvider sleep and wake", () => {
+  const NO_CAPABILITIES: FabricRunnerCapabilities = {
+    recursiveFabric: false, steer: false, followUp: false, persistentSessions: false, kernels: false,
+    handoff: false, modelDiscovery: false, imageInput: false, compaction: false, questions: false,
+    sleep: false, writePolicy: false,
+  };
+  const unregister: Array<() => void> = [];
+  afterEach(() => {
+    for (const dispose of unregister.splice(0)) dispose();
+  });
+
+  const hostedRunner = (id: string, sleep: boolean): { adapter: FabricHostedRunner; calls: string[] } => {
+    const calls: string[] = [];
+    const adapter: FabricHostedRunner = {
+      kind: "hosted",
+      id,
+      label: `Daemon ${id}`,
+      capabilities: { ...NO_CAPABILITIES, sleep },
+      prepare: (runContext) => ({ job: runContext.idempotencyKey }),
+      start: () => {},
+      attach: () => {},
+      liveness: () => "running",
+      stop: () => ({ confirmed: true }),
+      sleep: (locator) => { calls.push(`sleep:${(locator as { job: string }).job}`); },
+      wake: (locator) => { calls.push(`wake:${(locator as { job: string }).job}`); },
+    };
+    unregister.push(registerAgentRunner(adapter));
+    return { adapter, calls };
+  };
+
+  it("parks and resumes a hosted run through the adapter", async () => {
+    const { provider } = setup();
+    const { calls } = hostedRunner("napper", true);
+    const handle = await provider.invoke("spawn", { task: "Long task", runner: "napper" }, context) as { id: string };
+
+    await expect(provider.invoke("sleep", { id: handle.id }, context))
+      .resolves.toEqual({ id: handle.id, requested: "sleep" });
+    expect(calls).toEqual([`sleep:${handle.id}`]);
+    await expect(provider.invoke("wake", { id: handle.id }, context))
+      .resolves.toEqual({ id: handle.id, requested: "wake" });
+    expect(calls).toEqual([`sleep:${handle.id}`, `wake:${handle.id}`]);
+  });
+
+  it("refuses unknown runs and runners without the sleep capability", async () => {
+    const { provider } = setup();
+    const { calls } = hostedRunner("insomniac", false);
+    const handle = await provider.invoke("spawn", { task: "Long task", runner: "insomniac" }, context) as { id: string };
+
+    await expect(provider.invoke("sleep", { id: handle.id }, context)).rejects.toThrow(/does not support sleep/);
+    await expect(provider.invoke("wake", { id: handle.id }, context)).rejects.toThrow(/does not support sleep/);
+    expect(calls).toEqual([]);
+    await expect(provider.invoke("sleep", { id: "missing" }, context)).rejects.toThrow(/Unknown Fabric agent: missing/);
+    await expect(provider.invoke("wake", { id: "missing" }, context)).rejects.toThrow(/Unknown Fabric agent: missing/);
+  });
+
+  it("refuses a run whose runner is not hosted", async () => {
+    const { provider } = setup();
+    const handle = await provider.invoke("spawn", { task: "return a short result", runner: "pi", transport: "process" }, context) as { id: string };
+
+    await expect(provider.invoke("sleep", { id: handle.id }, context)).rejects.toThrow(/^The Pi runner does not support sleep$/);
+  });
+
+  it("declares both actions with an id-only input and the agent risk class", async () => {
+    const { provider } = setup();
+    for (const name of ["sleep", "wake"]) {
+      const descriptor = await provider.describe(name, context);
+      expect(descriptor).toMatchObject({
+        risk: "agent",
+        inputSchema: { type: "object", required: ["id"], additionalProperties: false },
+        outputSchema: { type: "object", required: ["id", "requested"] },
+      });
+    }
   });
 });
 

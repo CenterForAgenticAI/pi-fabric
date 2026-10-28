@@ -40,6 +40,56 @@ const theme = {
 
 describe("conversation through the real Pi TUI", () => {
   it.each([["main screen", TuiMainScreen], ["alternate screen", TuiAltScreen]] as const)(
+    "selects footer text and double/triple-clicks chat without touching Main (%s)", async (_name, Renderer) => {
+      initTheme("dark", false);
+      const terminal = new ProbeTerminal();
+      terminal.columns = 140;
+      const tui = new Renderer(terminal);
+      const main = new Text("PRIVATE MAIN RESPONSE");
+      tui.addChild(main);
+      const copy = vi.fn(async (_text: string) => {});
+      const target = { id: "child", name: "Child", kind: "agent" as const, status: "completed",
+        model: "openai/gpt-6.1-sol", thinking: "high", cwd: "/repo/child",
+        canSteer: false, canFollowUp: false, canStop: false };
+      const state = new FabricConversationState();
+      const view = new FabricConversationView(createInteractiveTuiReference(() => tui), theme, {
+        state, initialTargetId: "child", targets: () => [target],
+        transcript: () => nativeTranscript([assistantMessage("child response")]),
+        loadOlder: () => false, loadNewer: () => false, loadLatest: () => false,
+        copyToClipboard: copy, send: vi.fn(), stop: vi.fn(), close: vi.fn(),
+      });
+      tui.start();
+      const handle = tui.showOverlay(view, { width: "100%", maxHeight: "100%", anchor: "top-left", margin: 0 });
+      const pointer = (type: "press" | "release" | "drag", x: number, y: number) =>
+        terminal.input(`\x1b[<${type === "drag" ? 32 : 0};${x + 1};${y + 1}${type === "release" ? "m" : "M"}`);
+      try {
+        await vi.waitFor(() => expect(terminal.output).toContain("child response"));
+        const frame = view.render(terminal.columns).map(stripTerminalSequences);
+        const footerY = frame.findIndex(line => line.includes("(openai) gpt-6.1-sol"));
+        const footerX = frame[footerY]!.indexOf("(openai)");
+        pointer("press", footerX, footerY);
+        pointer("drag", footerX + 8, footerY);
+        pointer("release", footerX + 8, footerY);
+        await vi.waitFor(() => expect(copy).toHaveBeenCalledWith("(openai)"));
+        // A live footer update cannot change the pinned text being copied.
+        target.model = "another/model";
+        expect(view.render(terminal.columns).map(stripTerminalSequences)[footerY]).toContain("(openai)");
+        terminal.input("\x03");
+        await vi.waitFor(() => expect(copy).toHaveBeenCalledTimes(2));
+        terminal.input("\x1b");
+        const chatFrame = view.render(terminal.columns).map(stripTerminalSequences);
+        const chatY = chatFrame.findIndex(line => line.includes("child response"));
+        const chatX = chatFrame[chatY]!.indexOf("child response") + 1;
+        for (let i = 0; i < 2; i++) { pointer("press", chatX, chatY); pointer("release", chatX, chatY); }
+        await vi.waitFor(() => expect(copy).toHaveBeenCalledWith("child"));
+        pointer("press", chatX, chatY); pointer("release", chatX, chatY);
+        await vi.waitFor(() => expect(copy.mock.calls.some(([text]) => text.trim() === "child response")).toBe(true));
+        expect(copy.mock.calls.every(([text]) => !text.includes("PRIVATE MAIN"))).toBe(true);
+        expect(tui.children).toEqual([main]);
+      } finally { view.dispose(); handle.hide(); state.clear(); tui.stop(); }
+    },
+  );
+  it.each([["main screen", TuiMainScreen], ["alternate screen", TuiAltScreen]] as const)(
     "selects and copies child text and completes /copy without touching Main (%s)", async (_name, Renderer) => {
       initTheme("dark", false);
       const terminal = new ProbeTerminal();

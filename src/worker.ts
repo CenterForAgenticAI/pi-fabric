@@ -240,7 +240,7 @@ process.on("unhandledRejection", (error) => {
 const main = async (): Promise<void> => {
   assertWorkerRuntime();
   crossSpawn = (await import("cross-spawn")).default;
-  const [optionHelpers, loadedRunRecordHelpers, sessionExportHelpers, {parseStructuredValue, validateAgentResult}, { PiModelControl }, { PiEventProjection }, { PiRecoveryWatchdog }, { PiTaskPromptLifecycle, PI_TASK_PROMPT_ID }] = await Promise.all([
+  const [optionHelpers, loadedRunRecordHelpers, sessionExportHelpers, {parseStructuredValue, validateAgentResult}, { PiModelControl }, { PiEventProjection }, { PiRecoveryWatchdog, PiStallWatchdog }, { PiTaskPromptLifecycle, PI_TASK_PROMPT_ID }] = await Promise.all([
     loadWorkerOptions(),
     loadWorkerRunRecord(),
     loadWorkerSessionExport(),
@@ -478,17 +478,20 @@ const main = async (): Promise<void> => {
   const recordedResultId = `fabric-recorded-result:${options.id}`;
 
   const update = (): void => updateRunRecord(options.statusFile, record);
+  // Bounds a silent turn and a fabric_exec call that outlives its deadline.
+  const stallWatchdog = new PiStallWatchdog((error) => failStalledChild(error, "fabric_stall_error"));
   // agents.childQuestions "route": child dialogs wait for a parent ui_response.
   const questionRelay = options.childQuestionTimeoutMs !== undefined && isPi && options.steerFile
     ? new (await loadWorkerQuestions()).ChildQuestionRelay(options.childQuestionTimeoutMs, {
         emit: (question) => emitLifecycle("question", { ...question }),
         send: (frame) => child.stdin?.write(`${JSON.stringify(frame)}\n`),
-        blocked: (since) => {
+        blocked: (since, decisionId) => {
+          stallWatchdog.blocked(since !== undefined);
           if (since === undefined) delete record.blockedOn;
-          else record.blockedOn = { since };
+          else record.blockedOn = { since, ...(decisionId ? { decisionId } : {}) };
           update();
         },
-      })
+      }, Date.now, { hold: options.childQuestionHold === true })
     : undefined;
   let killTimer: NodeJS.Timeout | undefined;
   let closeTimer: NodeJS.Timeout | undefined;
@@ -497,6 +500,7 @@ const main = async (): Promise<void> => {
   const killChild = (): void => {
     taskPrompt.dispose();
     recoveryWatchdog.dispose();
+    stallWatchdog.dispose();
     if (closeTimer) clearTimeout(closeTimer);
     terminateChild(child, "SIGTERM");
     killTimer ??= setTimeout(() => terminateChild(child, "SIGKILL"), KILL_GRACE_MS);
@@ -516,6 +520,7 @@ const main = async (): Promise<void> => {
     child.stdin?.end();
     taskPrompt.dispose();
     recoveryWatchdog.clear();
+    stallWatchdog.dispose();
     if (closeTimer || killTimer) return;
     // RPC EOF requests disposal, but a stuck extension can prevent process exit.
     closeTimer = setTimeout(() => failStalledChild(
@@ -945,6 +950,7 @@ const main = async (): Promise<void> => {
       processClaudeEvent(event);
       return;
     }
+    if (isPi && !terminalStatus) stallWatchdog.observe(event);
     if (event.type === "response" && recordedResultPending && event.id === recordedResultId) {
       recordedResultPending = false;
       clearTimeout(recordedResultTimer);
@@ -1257,10 +1263,22 @@ const main = async (): Promise<void> => {
         steerRemainder = Buffer.from(remainder);
       }
       let processedCommands = 0;
-      for (const raw of combined.subarray(0, newline + 1).toString("utf8").split("\n")) {
-        if (processedCommands >= MAX_STEER_COMMANDS_PER_POLL) break;
-        if (Buffer.byteLength(raw, "utf8") > MAX_STEER_LINE_BYTES) continue;
-        const line = raw.trim();
+      let lineStart = 0;
+      while (lineStart <= newline) {
+        if (processedCommands >= MAX_STEER_COMMANDS_PER_POLL) {
+          // Leave the unapplied lines for the next poll. `combined` holds
+          // contiguous file bytes ending at steerOffset, so rewinding by its
+          // unhandled tail makes the next poll start at the first line left.
+          steerOffset -= combined.length - lineStart;
+          steerRemainder = Buffer.alloc(0);
+          skippingOversizedSteerLine = false;
+          break;
+        }
+        const lineEnd = combined.indexOf(0x0a, lineStart);
+        const rawBytes = combined.subarray(lineStart, lineEnd);
+        lineStart = lineEnd + 1;
+        if (rawBytes.length > MAX_STEER_LINE_BYTES) continue;
+        const line = rawBytes.toString("utf8").trim();
         if (!line) continue;
         processedCommands += 1;
         let command: { type?: string; message?: string; mode?: string; instructions?: string; requestId?: string };
@@ -1309,6 +1327,8 @@ const main = async (): Promise<void> => {
             compactControl.queue(command.instructions);
           } else if (command.type === "ui_response") {
             questionRelay?.respond(command);
+          } else if (command.type === "ui_decision") {
+            questionRelay?.decide(command);
           }
         } catch {
           /* stdin closed (settled/stopped child); a late steer is dropped */
@@ -1417,6 +1437,7 @@ const main = async (): Promise<void> => {
   if (claudeCloseTimer) clearTimeout(claudeCloseTimer);
   clearTimeout(timeout);
   recoveryWatchdog.dispose();
+  stallWatchdog.dispose();
   if (isPi && !modelControl.ready && !terminalStatus) {
     terminalStatus = "failed";
     terminalError = `Child Pi exited before requested model admission completed; task was not sent${stderr.trim() ? `: ${stderr.trim()}` : ""}`;

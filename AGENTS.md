@@ -136,15 +136,6 @@ This repo is bun-managed (`bun.lock`; scripts invoke `bun run` internally).
 Do not use pnpm/npm — pnpm's pre-run dependency check fails against the bun
 lockfile.
 
-## Bundled Pi packages
-
-`pi-coralbricks-provider` ships inside the tarball (`dependencies` plus
-`bundledDependencies`, exact version) and loads through its
-`./node_modules/pi-coralbricks-provider/index.ts` entry in `pi.extensions`. It is
-not part of Fabric's compiled startup graph; `assert:build-artifacts` checks the
-entry, the exact pin and that the package keeps Pi hosts as peers. To bump it,
-change the pin, run `bun install`, and check `tests/bundled-provider-package.test.ts`.
-
 ## Commits
 
 Use conventional commits (commitlint): `feat(scope): ...`, `fix(scope): ...`,

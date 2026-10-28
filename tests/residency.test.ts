@@ -1182,7 +1182,18 @@ describe("durable wait against a resident host that keeps dying", () => {
       await expect(client.waitAgent(id, AbortSignal.timeout(20_000)))
         .rejects.toThrow(`Durable Fabric agent ${id} (runner pi) cannot finish: its resident host ${client.hostId} stopped, and a new host re-attaches only hosted runs`);
       expect(fs.existsSync(path.join(state.config.residencyRoot, "launches.log"))).toBe(false);
-      expect(client.statusAgent(id).status).toBe("running");
+      // The wait settles the run, so status and list agree it is over.
+      const settled = client.statusAgent(id);
+      expect(settled).toMatchObject({
+        status: "failed",
+        outcome: "indeterminate",
+        error: `Durable Fabric agent ${id} (runner pi) cannot finish: its resident host ${client.hostId} stopped, and a new host re-attaches only hosted runs`,
+      });
+      expect(settled).toHaveProperty("finishedAt", expect.any(Number));
+      expect(client.listAgents().find((agent) => agent.id === id)?.status).toBe("failed");
+      // A later wait returns the settled record instead of failing again.
+      await expect(client.waitAgent(id, AbortSignal.timeout(20_000))).resolves.toMatchObject({ status: "failed", outcome: "indeterminate" });
+      expect(fs.existsSync(path.join(state.config.residencyRoot, "launches.log"))).toBe(false);
     } finally {
       await client.close();
       await state.participants.close();
