@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { promisify } from "node:util";
@@ -87,14 +88,14 @@ const killMidProgram = async (root: string, secondReplay: "safe" | "unsafe") => 
   const effects = path.join(root, "effects");
   const ready = path.join(root, "ready");
   const script = path.join(root, "child.ts");
-  const dependency = (name: string) => JSON.stringify(path.join(project, "node_modules", name));
+  const dependency = (name: string) => JSON.stringify(pathToFileURL(path.join(project, "node_modules", name)).href);
   fs.writeFileSync(script, `
 import fs from "node:fs";
 import { BACKGROUND_CONTEXT as ctx } from ${dependency("@earendil-works/chord/dist/context/index.js")};
 import { Type, createModels, fauxProvider, fauxAssistantMessage, fauxToolCall } from ${dependency("@earendil-works/pi-ai/dist/index.js")};
 import { createRegistry, defineExtension, defineTool, Harness } from ${dependency("@earendil-works/pi-durable/dist/index.js")};
 import { openNodeSqliteStorage } from ${dependency("@earendil-works/pi-durable/dist/storage/sqlite/node.js")};
-import { createFabricExtension } from ${JSON.stringify(path.join(project, "src/durable-extension.ts"))};
+import { createFabricExtension } from ${JSON.stringify(pathToFileURL(path.join(project, "src/durable-extension.ts")).href)};
 const models = createModels();
 const faux = fauxProvider({ provider: "test", models: [{ id: "scripted" }] });
 models.setProvider(faux.provider);
@@ -365,12 +366,12 @@ describe("Node and Bun", () => {
   const built = path.join(project, "dist/durable-extension.js");
   const script = (root: string) => {
     const file = path.join(root, "run.mjs");
-    const dependency = (name: string) => JSON.stringify(path.join(project, "node_modules", name));
+    const dependency = (name: string) => JSON.stringify(pathToFileURL(path.join(project, "node_modules", name)).href);
     fs.writeFileSync(file, `
 import { BACKGROUND_CONTEXT as ctx } from ${dependency("@earendil-works/chord/dist/context/index.js")};
 import { Type, createModels, fauxProvider, fauxAssistantMessage, fauxToolCall, fauxText } from ${dependency("@earendil-works/pi-ai/dist/index.js")};
 import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from ${dependency("@earendil-works/pi-durable/dist/index.js")};
-import { createFabricExtension } from ${JSON.stringify(built)};
+import { createFabricExtension } from ${JSON.stringify(pathToFileURL(built).href)};
 const models = createModels();
 const faux = fauxProvider({ provider: "test", models: [{ id: "scripted" }] });
 models.setProvider(faux.provider);

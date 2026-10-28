@@ -258,6 +258,14 @@ const describeCalls = (calls: readonly CallRecord[]): string => {
   return `Nested calls made before the error (they are not undone): ${listed.join(", ")}${more}.`;
 };
 
+/** Add execution cancellation without importing a host runtime or losing context values. */
+const withExecutionSignal = (context: Context, signal: AbortSignal): Context => ({
+  abortSignal: context.abortSignal === undefined ? signal : AbortSignal.any([context.abortSignal, signal]),
+  get telemetry() { return context.telemetry; },
+  value: (key) => context.value(key),
+  toString: () => context.toString(),
+});
+
 const cut = (text: string, max: number, what: string): string =>
   text.length <= max ? text : `${text.slice(0, max)}\n[${what} truncated: ${max} of ${text.length} characters shown]`;
 
@@ -334,13 +342,20 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
       if (action === undefined) throw new FabricDurableRefusal(`Fabric action not granted by this host: ${ref}`);
       return { ref, action, repeatable: typeof entry === "object" && entry.repeatable === true };
     };
-    const runAction = async (ref: unknown, args: unknown, seq: number | undefined): Promise<unknown> => {
+    const checkActive = (signal: AbortSignal): void => {
+      if (stopped()) throw new ProgramStop("fabric_exec stopped");
+      context.abortSignal?.throwIfAborted();
+      signal.throwIfAborted();
+    };
+    const runAction = async (ref: unknown, args: unknown, seq: number | undefined, signal: AbortSignal): Promise<unknown> => {
       const { ref: resolved, action, repeatable } = grantedAction(ref);
       const copied = copyArguments(args, resolved);
       // An effect is recorded before it runs, so a resume knows it may have run and does not repeat it.
       if (!repeatable && journal !== undefined && seq !== undefined) await journal.intent(seq, resolved);
+      // Persistence can outlive the execution deadline. Never start the effect after it settles.
+      checkActive(signal);
       try {
-        const value = await action(copied, { api, context });
+        const value = await action(copied, { api, context: withExecutionSignal(context, signal) });
         return value === undefined ? null : JSON.parse(JSON.stringify(value)) as unknown;
       } catch (error) {
         if (error instanceof FabricDurableRefusal) throw new FabricDurableRefusal(error.message);
@@ -348,7 +363,7 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
         throw new FabricDurableRefusal(`Fabric action ${resolved} failed`);
       }
     };
-    const dispatch: FabricHostCall = async (ref, args, _signal, _humanWait, call) => {
+    const dispatch: FabricHostCall = async (ref, args, signal, _humanWait, call) => {
       switch (ref) {
         case "fabric.$piAllTools":
           // `jsName` is the identifier pi-codemode's declarations use for a name that is not one (`my-tool` -> `my_tool`).
@@ -375,7 +390,8 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
           // running, and never starts a second one.
           let result: NestedToolExecutionResult;
           try {
-            result = await api.executeTool(tool.name, copied, context, call === undefined ? {} : { key: `f${call.seq}` });
+            checkActive(signal);
+            result = await api.executeTool(tool.name, copied, withExecutionSignal(context, signal), call === undefined ? {} : { key: `f${call.seq}` });
           } catch (error) {
             if (call !== undefined && error instanceof Error && /already made with another tool or other arguments/.test(error.message)) {
               stop(`fabric_exec could not resume after an interruption: the program did not repeat its recorded call ${call.seq + 1}. No call after the divergence ran.`);
@@ -394,7 +410,7 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
         case "fabric.$providers":
           return [...providers].map(([provider, entry]) => ({ name: provider, description: entry.description ?? "", actions: Object.keys(entry.actions) }));
         case "fabric.$call":
-          return runAction(args.ref, args.args, call?.seq);
+          return runAction(args.ref, args.args, call?.seq, signal);
         default:
           // pi.*, agents.*, memory.*, mcp.*, jev.*, mesh.*, native.*, models and every other fabric.$ ref.
           throw new FabricDurableRefusal(`Not available in this durable host: ${ref}`);
@@ -406,6 +422,7 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
       // Once the run is stopped, nothing more reaches the host, even if the program caught the stop.
       if (stopped()) throw new ProgramStop("fabric_exec stopped");
       try {
+        checkActive(rest[0]);
         return await dispatch(ref, args, ...rest);
       } catch (error) {
         if (error instanceof FabricDurableRefusal || error instanceof NestedToolError || error instanceof ProgramStop) throw error;
@@ -492,8 +509,15 @@ export function createFabricExtension(options: FabricExtensionOptions = {}): Ext
           ...(input.payloads === undefined ? {} : { strings: { ...input.payloads } }),
           signal,
         };
-        const result = await runtime.execute(input.code, hostCall(api, context, calls, journal, stop, () => stopReport !== undefined), sandbox);
-        return formatResult(result, calls, stopReport ?? journal.stopReport);
+        let settled = false;
+        try {
+          const result = await runtime.execute(input.code, hostCall(api, withExecutionSignal(context, signal), calls, journal, stop, () => settled || stopReport !== undefined), sandbox);
+          return formatResult(result, calls, stopReport ?? journal.stopReport);
+        } finally {
+          // Runtime overrides can retain a dispatcher or leave host calls pending too.
+          settled = true;
+          halt.abort(new Error("fabric_exec execution ended"));
+        }
       } catch (error) {
         report(error, { conversationId: api.conversationId, callId: api.callId });
         return internalError;
