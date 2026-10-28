@@ -89,7 +89,9 @@ export class MontyRuntime implements FabricKernelRuntime {
     const abort = (): void => stop("aborted");
     const scheduleDeadline = (): void => {
       if (timer) clearTimeout(timer);
-      if (stopped || !Number.isFinite(deadlineAt)) return;
+      if (stopped) return;
+      options.onDeadline?.(Number.isFinite(deadlineAt) ? deadlineAt : undefined);
+      if (!Number.isFinite(deadlineAt)) return;
       timer = setTimeout(() => {
         if (Date.now() < deadlineAt) scheduleDeadline();
         else stop("timed_out");
@@ -101,6 +103,7 @@ export class MontyRuntime implements FabricKernelRuntime {
       suspend: () => {
         if (timer) clearTimeout(timer);
         deadlineAt = Infinity;
+        options.onDeadline?.(undefined);
       },
       resume: (remainingMs) => {
         deadlineAt = Date.now() + remainingMs;

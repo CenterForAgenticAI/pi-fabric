@@ -158,6 +158,8 @@ interface FabricExecutionPartial {
   audits: FabricCallAudit[];
   phases: string[];
   progress?: string | undefined;
+  /** Running program deadline (epoch ms); absent while a human wait pauses it. */
+  deadlineAt?: number | undefined;
 }
 
 export type FabricHeadlessApproval = (
@@ -584,6 +586,7 @@ export class FabricExecutionService {
       );
     };
     let currentProgress: string | undefined;
+    let currentDeadlineAt: number | undefined;
     let emitPending = false;
     let emitTimer: NodeJS.Timeout | undefined;
     const emitNow = (): void => {
@@ -592,6 +595,7 @@ export class FabricExecutionService {
         audits: audits.slice(),
         phases: phases.slice(),
         progress: currentProgress,
+        ...(currentDeadlineAt !== undefined ? { deadlineAt: currentDeadlineAt } : {}),
       });
     };
     const flushEmit = (): void => {
@@ -1448,6 +1452,12 @@ export class FabricExecutionService {
               pausesDeadline: options.hardTimeoutMs === undefined,
             },
           } : {}),
+          // A parent worker enforces this deadline if the call outlives it.
+          onDeadline(deadlineAt) {
+            if (deadlineAt === currentDeadlineAt) return;
+            currentDeadlineAt = deadlineAt;
+            emit();
+          },
         },
       );
       try {

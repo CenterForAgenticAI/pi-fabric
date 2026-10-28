@@ -921,6 +921,7 @@ export const createFabricExecTool = (
               progress: snapshot.progress,
               audits: snapshot.audits,
               phases: snapshot.phases,
+              ...(snapshot.deadlineAt !== undefined ? { deadlineAt: snapshot.deadlineAt } : {}),
             },
           });
         },
