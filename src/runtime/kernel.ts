@@ -16,6 +16,75 @@ export interface FabricSandboxResult {
   error?: string;
 }
 
+/** A host-call result exactly as the guest received it. */
+export type FabricJournalOutcome =
+  | { ok: true; json?: string }
+  | {
+      ok: false;
+      message: string;
+      bashExit?: { exitCode: number; output: string };
+      fields?: Array<[string, number]>;
+    };
+
+/** One recorded result, served on resume in its recorded delivery order. */
+export interface FabricJournalDelivery {
+  seq: number;
+  /** Bridge ref the guest issued. */
+  ref: string;
+  /** Tool ref behind fabric.$call or fabric.$nativeTool. */
+  target?: string;
+  digest: string;
+  /** Logical time the guest saw when this result arrived. */
+  at: number;
+  outcome: FabricJournalOutcome;
+  /** Host-local state the execution service restores for a served call. */
+  local?: unknown;
+}
+
+/** Why a resume stops. `question`, when present, asks whether the one call
+ * that may have run should run again; only an explicit yes repeats it. */
+export interface FabricJournalStop {
+  report: string;
+  question?: string;
+}
+
+/**
+ * Records and replays one QuickJS execution (see exec-journal.ts). The runtime
+ * numbers host calls as the guest issues them, delivers results one at a time,
+ * and on resume serves recorded results before any call reaches the host.
+ */
+export interface FabricJournalDriver {
+  /** Guest prelude that pins the clock, Math.random, and the time zone. */
+  readonly shim: string;
+  readonly startedAt: number;
+  /** True when resuming: every call waits until the recorded results are served. */
+  readonly resuming: boolean;
+  readonly replay: readonly FabricJournalDelivery[];
+  digest(args: Record<string, unknown>): string;
+  /**
+   * Append a completion before the guest sees it; returns the guest's new
+   * clock. A driver that saves asynchronously returns a promise: the runtime
+   * delivers the result only after it resolves, delivers results in the order
+   * complete() was called, and stops the program when it rejects.
+   */
+  complete(
+    seq: number,
+    ref: string,
+    args: Record<string, unknown>,
+    value: unknown,
+    outcome: FabricJournalOutcome,
+  ): number | Promise<number>;
+  served(delivery: FabricJournalDelivery, args: Record<string, unknown>): void | Promise<void>;
+  /** After serving: a stop, or undefined to run the waiting calls live. */
+  frontier(
+    held: ReadonlyArray<{ seq: number; ref: string; args: Record<string, unknown> }>,
+  ): FabricJournalStop | undefined;
+  diverged(
+    expected: FabricJournalDelivery,
+    actual?: { ref: string; args: Record<string, unknown> },
+  ): string;
+}
+
 export interface FabricSandboxOptions {
   timeoutMs: number;
   nativeStoreEnabled?: boolean;
@@ -47,6 +116,15 @@ export interface FabricSandboxOptions {
   providerGlobals?: readonly string[];
   transpiledCode?: string;
   transpiledSourceMap?: string;
+  /** Durable crash journal; QuickJS only. Absent means unchanged behavior. */
+  journal?: FabricJournalDriver;
+  /** On resume, asks a person whether a call that may have run should run
+   * again. Only `true` repeats it; any other outcome keeps the stop. */
+  confirmRepeat?: {
+    ask(question: string, signal: AbortSignal): Promise<boolean>;
+    /** Pause the program deadline while asking. A hard deadline never pauses. */
+    pausesDeadline: boolean;
+  };
 }
 
 /** Runs a host-side wait for a person with the program deadline paused.
@@ -60,6 +138,8 @@ export type FabricHostCall = (
   /** Supplied by runtimes so the host can pause the deadline for a human
    * step inside an ordinary call, such as an approval prompt. */
   humanWait?: FabricHumanWait,
+  /** Present only for a journaled call; `seq` is its issue order. */
+  call?: { seq: number },
 ) => Promise<unknown>;
 
 export interface FabricKernelRuntime {
