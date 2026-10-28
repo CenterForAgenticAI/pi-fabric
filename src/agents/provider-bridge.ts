@@ -67,8 +67,8 @@ const isBundledPackageEntry = (entry: string): boolean =>
 
 /**
  * Fabric's own manifest entries: they never register chat providers. Entries
- * of bundled Pi packages (pi-coralbricks-provider) are not Fabric's own: they
- * stay probe candidates, so the bundled provider resolves without loading
+ * of bundled Pi packages are not Fabric's own: they stay probe candidates,
+ * so a bundled provider can resolve without loading
  * Fabric's main extension.
  */
 export function fabricExtensionEntries(moduleUrl = import.meta.url): string[] {

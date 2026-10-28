@@ -125,8 +125,7 @@
   },
   "pi": {
     "extensions": [
-      "./dist/extension-bootstrap.js",
-      "./node_modules/pi-coralbricks-provider/index.ts"
+      "./dist/extension-bootstrap.js"
     ],
     "skills": [],
     "image": "https://raw.githubusercontent.com/fabric-runtime/pi-fabric/main/media/banner.svg"
@@ -143,16 +142,12 @@
     "cross-spawn": "^7.0.6",
     "diff": "^9.0.0",
     "mcporter": "^0.12.3",
-    "pi-coralbricks-provider": "1.0.32",
     "pi-fabric-worker-sdk": "npm:@earendil-works/pi-coding-agent@1.3.0",
     "quickjs-emscripten-core": "^0.32.0",
     "shiki": "4.4.3",
     "typescript": "^6.0.3",
     "yaml": "^2.9.0"
   },
-  "bundledDependencies": [
-    "pi-coralbricks-provider"
-  ],
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
     "@earendil-works/pi-ai": "*",
