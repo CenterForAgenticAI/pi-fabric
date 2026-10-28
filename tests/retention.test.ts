@@ -546,6 +546,26 @@ describe("temporal retention", () => {
       expect(sweep().removedRuns.sort()).toEqual([plain, lone, both].sort());
     });
 
+    it("reclaims a run whose folder also holds a sidecar an extension keeps beside session.jsonl", () => {
+      const { run, sweep } = setup();
+      // billion-context-pi writes `<session file>.acp.json` next to every session it manages.
+      const sidecar = run("sidecar", { "session.jsonl": "{}\n", "session.jsonl.acp.json": "{}" });
+      const crashed = run("crashed", { "session.jsonl": "{}\n", "session.jsonl.acp.json": "{}" });
+      fs.linkSync(path.join(crashed, "durable-session", "session.jsonl"), path.join(crashed, "durable-session", `tmp-${UUID_A}.jsonl`));
+      const bare = run("bare", { "session.jsonl.": "{}" });
+      const nested = run("nested", { "session.jsonl": "{}\n" });
+      fs.mkdirSync(path.join(nested, "durable-session", "session.jsonl.acp.json"));
+      const outside = path.join(temporaryDirectory(), "outside.json");
+      fs.writeFileSync(outside, "outside bytes");
+      const linked = run("linked", { "session.jsonl": "{}\n" });
+      fs.linkSync(outside, path.join(linked, "durable-session", "session.jsonl.acp.json"));
+      const symlinked = run("symlinked", { "session.jsonl": "{}\n" });
+      fs.symlinkSync(outside, path.join(symlinked, "durable-session", "session.jsonl.acp.json"));
+      expect(sweep().removedRuns.sort()).toEqual([crashed, sidecar].sort());
+      for (const kept of [bare, nested, linked, symlinked]) expect(fs.existsSync(kept)).toBe(true);
+      expect(fs.readFileSync(outside, "utf8")).toBe("outside bytes");
+    });
+
     it.skipIf(process.platform === "win32")("reclaims a terminal run left with session.jsonl and tmp-<uuid>.jsonl as two names of one inode", () => {
       const { run, sweep } = setup();
       const crashed = run("crashed", { "session.jsonl": "{}\n" });
