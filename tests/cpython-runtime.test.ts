@@ -335,9 +335,10 @@ describe.skipIf(!hasPython)("CPythonRuntime", () => {
       vi.mocked(fsPromises.access).mockResolvedValue(undefined);
       const controller = new AbortController();
       const channel = new Duplex({ read() {}, write(_chunk, _encoding, callback) { callback(); } });
+      const filter = new PassThrough();
       const child = Object.assign(new EventEmitter(), {
         pid: undefined, stdout: new PassThrough(), stderr: new PassThrough(),
-        stdio: [null, null, null, channel], kill: vi.fn(),
+        stdio: [null, null, null, channel, filter], kill: vi.fn(),
       });
       vi.mocked(childProcess.spawn).mockImplementation(() => {
         setImmediate(() => {
@@ -352,6 +353,7 @@ describe.skipIf(!hasPython)("CPythonRuntime", () => {
       expect(result.terminationReason).toBe(ending === "abort" ? "aborted" : "runtime_error");
       expect(result.error).toBe(ending === "abort" ? "Execution cancelled" : "CPython IPC failed: read ECONNRESET");
       expect(result.error).not.toMatch(/sandbox|isolation/i);
+      expect(filter.writableEnded).toBe(process.platform === "linux");
       expect(channel.destroyed).toBe(true);
       expect(child.kill).toHaveBeenCalledWith("SIGKILL");
     },
