@@ -21,6 +21,7 @@ import { fabricExecTitleHintCached } from "./ui/fabric-title-hint.js";
 import type { FabricTerminalTitle } from "./ui/terminal-title.js";
 import { Type } from "typebox";
 import {
+  createFabricPartialExecutionDetails,
   createFabricPersistedExecutionDetails,
   readFabricExecutionRenderDetails,
 } from "./audit/details.js";
@@ -495,13 +496,13 @@ export const createFabricExecTool = (
 
       if (isPartial) {
         const progress = details.progress;
-        if (audits.length === 0) {
+        if (audits.length === 0 && !details.omittedCalls) {
           const label = compact ? "Running…" : progress ?? "Running Fabric program…";
           return trackRows(
             new Text(theme.fg("warning", `◆ ${safeTerminalText(label)}`), 0, 0),
           );
         }
-        if (audits.length === 1) {
+        if (audits.length === 1 && !details.omittedCalls) {
           const audit = audits[0]!;
           const glyph =
             audit.success === undefined
@@ -577,6 +578,7 @@ export const createFabricExecTool = (
               progress,
               expanded,
               preview,
+              omittedCalls: details.omittedCalls,
               core: corePreviewContext,
               showAgentToolPreview,
               spinner,
@@ -891,13 +893,11 @@ export const createFabricExecTool = (
             }
           : {}),
         onPartial(snapshot) {
-          onUpdate?.({
-            content: [{ type: "text", text: snapshot.progress ?? "" }],
-            details: {
-              progress: snapshot.progress,
-              audits: snapshot.audits,
-              phases: snapshot.phases,
-            },
+          if (!onUpdate) return;
+          const details = createFabricPartialExecutionDetails(snapshot);
+          onUpdate({
+            content: [{ type: "text", text: details.progress ?? "" }],
+            details,
           });
         },
       });
