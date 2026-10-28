@@ -5,7 +5,7 @@ import { Type } from "@earendil-works/pi-ai";
 export default async function (pi: ExtensionAPI) {
   // Pi's jiti maps the package root to its compat facade; resolve this test-only
   // native subpath explicitly rather than extending that root alias.
-  const { fauxProvider, fauxAssistantMessage, fauxToolCall } = await import(process.env.DURABLE_TEST_FAUX_MODULE!) as typeof import("@earendil-works/pi-ai/providers/faux");
+  const { fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import(process.env.DURABLE_TEST_FAUX_MODULE!) as typeof import("@earendil-works/pi-ai/providers/faux");
   const faux = fauxProvider({ provider: "durable-offline", models: [{ id: "test", reasoning: true, input: ["text", "image"] }], tokensPerSecond: 100000 });
   pi.registerProvider({ ...faux.provider, auth: { apiKey: { name: "Offline", resolve: async () => ({ auth: { apiKey: "offline" } }) } } });
   faux.setResponses(Array.from({ length: 30 }, () => context => {
@@ -16,6 +16,8 @@ export default async function (pi: ExtensionAPI) {
     if (text === "write fixture") return fauxAssistantMessage([fauxToolCall("write", { path: process.env.DURABLE_TEST_FILE!, content: "overwritten" })]);
     if (text === "fabric fixture") return fauxAssistantMessage([fauxToolCall("fabric_exec", { code: process.env.DURABLE_TEST_FABRIC_CODE! })]);
     if (text === "hold effect") return fauxAssistantMessage([fauxToolCall("hold_effect", {})]);
+    // A preamble, then a tool that ends the run, like a compaction tool.
+    if (text === "terminate fixture") return fauxAssistantMessage([fauxText("Compacting first."), fauxToolCall("terminate_probe", {})], { stopReason: "toolUse" });
     if (text === "fetch fixture") return fauxAssistantMessage([fauxToolCall("fetch_probe", {})]);
     return fauxAssistantMessage(JSON.stringify({ reply: text, images: typeof last?.content === "string" ? 0 : last?.content.filter(part => part.type === "image").length ?? 0 }));
   }));
@@ -24,6 +26,11 @@ export default async function (pi: ExtensionAPI) {
       const urls = JSON.parse(process.env.DURABLE_TEST_FETCH_URLS!) as string[];
       const bodies = await Promise.all(urls.map(async url => (await fetch(url, { signal: AbortSignal.timeout(5000) })).text()));
       return { content: [{ type: "text", text: bodies.join(",") }], details: {} };
+    },
+  });
+  pi.registerTool({ name: "terminate_probe", label: "Terminate probe", description: "Offline tool that ends the run", parameters: Type.Object({}),
+    async execute() {
+      return { content: [{ type: "text", text: "compacted" }], details: {}, terminate: true };
     },
   });
   // An input hook that consumes the task, like a quota or account gate.
