@@ -222,6 +222,13 @@ const idSchema = {
   additionalProperties: false,
 };
 
+const parkResultSchema = (requested: "sleep" | "wake") => ({
+  type: "object",
+  properties: { id: { type: "string" }, requested: { const: requested } },
+  required: ["id", "requested"],
+  additionalProperties: false,
+});
+
 const lifecycleEventSchema = {
   type: "string",
   enum: [...FABRIC_LIFECYCLE_EVENTS],
@@ -398,6 +405,21 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
     name: "stop",
     description: "Stop a local or remotely owned agent or actor that advertises the stop capability",
     inputSchema: idSchema,
+    risk: "agent",
+  },
+  {
+    name: "sleep",
+    description:
+      "Park an idle hosted run in this session. Only runners that declare the sleep capability accept it. The run stays running and status shows sleeping: true once the runner reports it.",
+    inputSchema: idSchema,
+    outputSchema: parkResultSchema("sleep"),
+    risk: "agent",
+  },
+  {
+    name: "wake",
+    description: "Resume a hosted run in this session that agents.sleep parked. Needs the runner's sleep capability.",
+    inputSchema: idSchema,
+    outputSchema: parkResultSchema("wake"),
     risk: "agent",
   },
   {

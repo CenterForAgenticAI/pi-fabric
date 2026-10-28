@@ -532,6 +532,8 @@ globalThis.agents = Object.freeze({
   models: (args = {}) => __call("agents.models", args),
   stop: (args) => __call("agents.stop", args),
   cleanup: (args) => __call("agents.cleanup", args),
+  sleep: (args) => __call("agents.sleep", args),
+  wake: (args) => __call("agents.wake", args),
   create: __createActor,
   ask: (args) => __call("agents.ask", args),
   tell: (args) => __call("agents.tell", args),

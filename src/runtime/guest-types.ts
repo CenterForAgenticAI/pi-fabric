@@ -800,6 +800,10 @@ interface FabricAgentsApi {
   models(args?: { runner?: FabricAgentRunner; refresh?: boolean }): Promise<FabricModelInfo[]>;
   stop(args: FabricAgentTargetArgs): Promise<FabricAgentResult | FabricActorInfo | FabricRemoteControlResult>;
   cleanup(args: FabricAgentTargetArgs & { deleteBranch?: boolean; delete_branch?: boolean }): Promise<{ cleaned: boolean }>;
+  /** Park an idle hosted run of this session; the runner must declare the sleep capability. */
+  sleep(args: { id: string }): Promise<{ id: string; requested: "sleep" }>;
+  /** Resume a hosted run that agents.sleep parked. */
+  wake(args: { id: string }): Promise<{ id: string; requested: "wake" }>;
   create(args: FabricActorRequest): Promise<FabricActorInfo>;
   setModel(args: { id: string; model?: string; scope?: FabricActorBindingScope }): Promise<FabricActorInfo>;
   switchModel(args: FabricModelSwitchRequest): Promise<FabricModelSwitchResult>;
