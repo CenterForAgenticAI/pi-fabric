@@ -23,6 +23,10 @@ const primaryEntryPoints = [
   // Public `pi-fabric/durable-host`: embeds a durable AgentSession in a host process.
   // Imports the Pi SDK by name (the host's peer); never reachable from the extension entry.
   "src/durable-host.ts",
+  // fabric_exec as a pi-durable registry extension for hosts without Pi.
+  "src/durable-extension.ts",
+  // Build-time helper for Worker hosts; not imported by the durable-extension entry.
+  "src/durable-extension-wasm.ts",
   "src/jev.ts",
   "src/assessment.ts",
   // Public `pi-fabric/scope`; also the extension's first-use scope parser.
@@ -66,6 +70,7 @@ const lazyEntryPoints = [
   "src/cli/decisions.ts",
   "src/thinking-control.ts",
   "src/compaction/owner.ts",
+  "src/compaction/claim-events.ts",
   "src/compaction/orphan-repair.ts",
   // /fabric subcommands; the command registers without them.
   "src/commands/fabric-handler.ts",
@@ -108,6 +113,7 @@ const lazyEntryPoints = [
   "src/runtime/cpython-runtime.ts",
   "src/runtime/monty-runtime.ts",
   "src/runtime/quickjs-runtime.ts",
+  "src/runtime/exec-journal.ts",
   "src/runtime/type-checker.ts",
   "src/speculation/scanner.ts",
   "src/speculation/python-scanner.ts",

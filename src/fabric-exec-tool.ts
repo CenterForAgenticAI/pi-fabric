@@ -921,6 +921,7 @@ export const createFabricExecTool = (
               progress: snapshot.progress,
               audits: snapshot.audits,
               phases: snapshot.phases,
+              ...(snapshot.deadlineAt !== undefined ? { deadlineAt: snapshot.deadlineAt } : {}),
             },
           });
         },
@@ -1052,9 +1053,13 @@ export const createFabricExecTool = (
         // request follows naturally. Terminating here would strand the
         // continuation — no queued turn remains to carry it.
         const inPlaceContinuation = pendingHandoff?.kind === "prewalk-in-place";
+        // A successful nested request ends the turn only after the whole program succeeds.
+        const nestedTerminate = result.success &&
+          result.audits.some((audit) => audit.terminate === true && audit.success === true);
         const terminate =
           !inPlaceContinuation &&
           (pendingHandoff !== undefined ||
+            nestedTerminate ||
             (result.success &&
               typeof result.value === "object" &&
               result.value !== null &&

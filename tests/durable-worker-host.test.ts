@@ -1,14 +1,19 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { build } from "esbuild";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { durableExtensionLoadError } from "../src/durable/extension-load-error.js";
 import { parseDurableWorkerOptions } from "../src/durable/worker-options.js";
 import { createDurableSessionFile } from "../src/durable/worker-role-seed.js";
+import { sweepFabricJournals } from "../src/durable/worker-host.js";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-durable-host-"));
+// Extensions outside `root` cannot reach the checkout's node_modules through an ancestor.
+const outside = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-durable-outside-"));
 const extension = path.resolve("tests/fixtures/durable-pi-extension.ts");
 let entry: string;
 beforeAll(async () => {
@@ -17,7 +22,7 @@ beforeAll(async () => {
   entry = path.join(root, "build", "worker.js");
   await build({ entryPoints: ["src/durable/worker.ts"], outdir: path.dirname(entry), bundle: true, packages: "external", platform: "node", format: "esm", splitting: true, target: "node24", logLevel: "silent" });
 }, 30000);
-afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+afterAll(() => { for (const directory of [root, outside]) fs.rmSync(directory, { recursive: true, force: true }); });
 
 async function worker(name: string, extra: string[] = [], environment: NodeJS.ProcessEnv = {}, discover = false, session = true, sessionFile?: string) {
   const cwd = path.join(root, name); fs.mkdirSync(cwd, { recursive: true });
@@ -63,20 +68,37 @@ async function worker(name: string, extra: string[] = [], environment: NodeJS.Pr
   return { child, messages, send, wait, stop, cwd, fixture, effect };
 }
 
-// Load the built Fabric extension next to the fixture, with a program that holds
-// on a gate file until the test opens it.
+// Load the built Fabric extension next to the fixture, with a program that polls
+// a gate file until the test opens it. A resume serves the recorded polls from the
+// journal, then polls live.
 const fabricWorker = (name: string, code: string) => {
   const agentDir = path.join(root, name, "agent"); fs.mkdirSync(agentDir, { recursive: true });
   fs.writeFileSync(path.join(agentDir, "fabric.json"), JSON.stringify({ fullCodeMode: true, mesh: { enabled: false }, mcp: { enabled: false } }));
   const inherited = Object.fromEntries(["PI_FABRIC_DEPTH", "PI_FABRIC_BUDGET", "PI_FABRIC_BUDGET_FILE", "PI_FABRIC_BUDGET_ID", "PI_FABRIC_WRITE_POLICY", "PI_FABRIC_TOOL_ALLOWLIST", "PI_FABRIC_SCOPE", "PI_FABRIC_LINEAGE", "PI_FABRIC_PARENT_RUN", "PI_FABRIC_ACTOR_ID"].map(key => [key, undefined]));
   return worker(name, ["-e", path.resolve("dist/index.js")], { ...inherited, PI_OFFLINE: "1", DURABLE_TEST_FABRIC_CODE: code });
 };
-const holdOnGate = (gate: string) => `const gate = await pi.read({ path: ${JSON.stringify(gate)} });\nif (gate.includes("hold")) { await tools.progress({ message: "holding" }); await new Promise(resolve => setTimeout(resolve, 60000)); }\nreturn gate.includes("open") ? "gate-open" : "gate-closed";`;
+const holdOnGate = (gate: string) => `let gate = await pi.read({ path: ${JSON.stringify(gate)} });\nif (gate.includes("hold")) await tools.progress({ message: "holding" });\nwhile (gate.includes("hold")) { await new Promise(resolve => setTimeout(resolve, 50)); gate = await pi.read({ path: ${JSON.stringify(gate)} }); }\nreturn gate.includes("open") ? "gate-open" : "gate-closed";`;
 
 const answer = (messages: any[]) => messages.filter(event => event.type === "message_end" && event.message?.role === "assistant")
   .flatMap(event => event.message.content).filter(part => part.type === "text").map(part => part.text).join("\n");
 
 describe("durable native RPC worker", () => {
+  it("deletes fabric_exec journals a day after their last write and leaves everything else", async () => {
+    const directory = path.join(root, "journal-sweep"); fs.mkdirSync(directory, { recursive: true });
+    const stale = path.join(directory, `${"a".repeat(32)}.jsonl`);
+    const fresh = path.join(directory, `${"b".repeat(32)}.jsonl`);
+    const other = path.join(directory, "notes.jsonl");
+    for (const file of [stale, fresh, other]) fs.writeFileSync(file, "x\n");
+    const now = Date.now();
+    const old = new Date(now - 25 * 60 * 60 * 1000);
+    fs.utimesSync(stale, old, old); fs.utimesSync(other, old, old);
+    await sweepFabricJournals(directory, now);
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(fresh)).toBe(true);
+    expect(fs.existsSync(other)).toBe(true);
+    await expect(sweepFabricJournals(path.join(root, "journal-missing"), now)).resolves.toBeUndefined();
+  });
+
   it("parses the internal protocol, appends both prompts, and rejects unknown or missing options", () => {
     const args = ["--durable-directory", "state", "--durable-run-id", "run", "--append-system-prompt", "instructions", "--append-system-prompt", "schema", "--tools", "read,bash"];
     expect(parseDurableWorkerOptions(args).appendSystemPrompt).toBe("instructions\n\nschema");
@@ -85,6 +107,15 @@ describe("durable native RPC worker", () => {
     expect(() => parseDurableWorkerOptions([...args, "--unsafe"])).toThrow("Unsupported");
     expect(() => parseDurableWorkerOptions([...args, "--model"])).toThrow("Missing");
     expect(() => parseDurableWorkerOptions([...args, "--no-tools"])).toThrow("mutually exclusive");
+  });
+
+  it("names the typebox alias cause and workaround only for alias-rewritten typebox paths", () => {
+    const aliased = [{ path: "/x/ext.ts", error: "Failed to load extension: Cannot find module '/app/node_modules/typebox/build/index.mjs/does-not-exist'\nRequire stack:\n- /x/ext.ts" }];
+    const aliasMessage = durableExtensionLoadError(aliased).message;
+    expect(aliasMessage.startsWith(`Durable worker extension loading failed: ${JSON.stringify(aliased)}`)).toBe(true);
+    expect(aliasMessage).toMatch(/typebox[\s\S]*"typebox" root[\s\S]*runner "pi"/);
+    const missing = [{ path: "/x/ext.ts", error: "Failed to load extension: Cannot find module 'left-pad'\nRequire stack:\n- /x/ext.ts" }];
+    expect(durableExtensionLoadError(missing).message).toBe(`Durable worker extension loading failed: ${JSON.stringify(missing)}`);
   });
 
   it("runs real SDK tools, exports history, and reopens completed work without repeating it", async () => {
@@ -240,7 +271,45 @@ describe("durable native RPC worker", () => {
       await expect.poll(counts, { timeout: 5000 }).toEqual(["0", restored]);
     } finally { await resumed.stop(); }
   }, 40000);
-  it("reruns an interrupted read-only fabric_exec once after confirmed process death", async () => {
+  // The pinned SDK's jiti aliases "typebox" (and "@sinclair/typebox") to one file and treats an
+  // alias as a path prefix, so "typebox/type" reaches resolution as "<entry>/type".
+  // Keep the extension outside `root` so only the SDK's alias, not an ancestor node_modules, can resolve typebox.
+  const typeboxProbe = (name: string, source: (marker: string) => string) => {
+    const directory = path.join(outside, name); fs.mkdirSync(directory, { recursive: true });
+    const marker = path.join(directory, "typebox-loaded.json");
+    const file = path.join(directory, "typebox-probe.ts");
+    fs.writeFileSync(file, source(marker));
+    expect(() => createRequire(file).resolve("typebox")).toThrow();
+    return { file, marker };
+  };
+
+  it("loads extensions that import exported typebox subpaths through the SDK alias", async () => {
+    const probe = typeboxProbe("typebox-subpath", marker => `import fs from "node:fs";
+import { Object as TObject, String as TString } from "typebox/type";
+import { Number as SNumber } from "@sinclair/typebox/type";
+export default function () {
+  fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify(TObject({ name: TString(), size: SNumber() })));
+}
+`);
+    const host = await worker("typebox-subpath", ["--no-tools", "-e", probe.file]);
+    try {
+      expect(JSON.parse(fs.readFileSync(probe.marker, "utf8"))).toMatchObject({
+        type: "object", properties: { name: { type: "string" }, size: { type: "number" } },
+      });
+    } finally { await host.stop(); }
+  }, 30000);
+
+  it("keeps unexported typebox subpaths fatal and names the cause and workaround", async () => {
+    const probe = typeboxProbe("typebox-unexported", marker => `import fs from "node:fs";
+import * as missing from "typebox/does-not-exist";
+export default function () { fs.writeFileSync(${JSON.stringify(marker)}, String(Object.keys(missing).length)); }
+`);
+    await expect(worker("typebox-unexported", ["--no-tools", "-e", probe.file])).rejects.toThrow(
+      /Durable worker extension loading failed[\s\S]*index\.mjs\/does-not-exist[\s\S]*"typebox" root[\s\S]*runner "pi"/,
+    );
+    expect(fs.existsSync(probe.marker)).toBe(false);
+  }, 30000);
+  it("resumes an interrupted read-only fabric_exec after confirmed process death", async () => {
     const gate = path.join(root, "fabric-read", "gate.txt");
     const first = await fabricWorker("fabric-read", holdOnGate(gate));
     try {
@@ -259,7 +328,7 @@ describe("durable native RPC worker", () => {
     } finally { await resumed.stop(); }
   }, 60000);
 
-  it("does not rerun an interrupted fabric_exec that reached an effect", async () => {
+  it("resumes an interrupted fabric_exec from its journal without repeating a finished effect", async () => {
     const gate = path.join(root, "fabric-effect", "gate.txt");
     const effect = path.join(root, "fabric-effect", "effect.txt");
     const code = `await pi.write({ path: ${JSON.stringify(effect)}, content: "effect\\n" });\n${holdOnGate(gate)}`;
@@ -275,8 +344,55 @@ describe("durable native RPC worker", () => {
       resumed.send({ type: "prompt", id: "effect", message: "fabric fixture" });
       await resumed.wait(event => event.type === "agent_settled");
       expect(fs.readFileSync(effect, "utf8")).toBe("effect\n");
-      expect(answer(resumed.messages)).not.toContain("gate-open");
-      expect(answer(resumed.messages)).toMatch(/interrupted/i);
+      expect(answer(resumed.messages)).toContain("gate-open");
+      expect(answer(resumed.messages)).not.toMatch(/interrupted/i);
     } finally { await resumed.stop(); }
+  }, 60000);
+
+  it("stops at an effect the crash interrupted and never repeats it", async () => {
+    const effect = path.join(root, "fabric-uncertain", "effect.txt");
+    // A Node script records its effect, then hangs until the kill lands mid-call.
+    // It avoids shell syntax that differs between POSIX shells and Windows.
+    fs.mkdirSync(path.dirname(effect), { recursive: true });
+    const hang = path.join(path.dirname(effect), "hang.mjs");
+    const pidFile = path.join(path.dirname(effect), "hang.pid");
+    // The kill reaches the worker only, so the command it started outlives it. The script
+    // records its pid for the cleanup below, and ends by itself when the bash timeout would.
+    fs.writeFileSync(hang, `import fs from "node:fs";\nfs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\nfs.appendFileSync(${JSON.stringify(effect)}, "effect\\n");\nsetTimeout(() => {}, 120000);\n`);
+    const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const stopHang = async () => {
+      if (!fs.existsSync(pidFile)) return;
+      const pid = Number(fs.readFileSync(pidFile, "utf8"));
+      // pi.bash starts its shell in a new process group on POSIX. On Linux, end that whole group.
+      const stat = process.platform === "linux" ? fs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.split(" ") : undefined;
+      const group = stat ? Number(stat[2]) : 0;
+      if (group > 1 && group !== process.pid) { try { process.kill(-group, "SIGKILL"); } catch {} }
+      try { process.kill(pid, "SIGKILL"); } catch {}
+      await expect.poll(() => alive(pid), { timeout: 5000 }).toBe(false);
+    };
+    try {
+      const code = `await pi.bash({ cmd: ${JSON.stringify(`"${process.execPath}" "${hang}"`)}, timeout: 120 });\nreturn "program-done";`;
+      const first = await fabricWorker("fabric-uncertain", code);
+      try {
+        first.send({ type: "prompt", id: "uncertain", message: "fabric fixture" });
+        await expect.poll(() => fs.existsSync(effect), { timeout: 15000 }).toBe(true);
+      } finally { await first.stop(true); }
+      // The SIGKILL ends the worker but not the command it was running.
+      expect(alive(Number(fs.readFileSync(pidFile, "utf8")))).toBe(true);
+      const resumed = await fabricWorker("fabric-uncertain", code);
+      try {
+        resumed.send({ type: "prompt", id: "uncertain", message: "fabric fixture" });
+        // The worker has an RPC UI, so it asks first. A dismissed question keeps the stop,
+        // as when a parent cancels a child's dialog.
+        const question = await resumed.wait(event => event.type === "extension_ui_request" && event.method === "select");
+        expect(question.title).toContain("Run it again?");
+        expect(question.options).toEqual(["Run it again", "Stop here"]);
+        resumed.send({ type: "extension_ui_response", id: question.id, cancelled: true });
+        await resumed.wait(event => event.type === "agent_settled");
+        expect(fs.readFileSync(effect, "utf8")).toBe("effect\n");
+        expect(answer(resumed.messages)).toContain("fabric_exec was interrupted during this call, which may have run:");
+        expect(answer(resumed.messages)).not.toContain("program-done");
+      } finally { await resumed.stop(); }
+    } finally { await stopHang(); }
   }, 60000);
 });

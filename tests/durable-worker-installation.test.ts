@@ -28,6 +28,11 @@ afterEach(async () => {
 
 // A Pi-managed installation has production dependencies, but no physical host
 // peers. Do not symlink the checkout's node_modules or leave fixtures inside it.
+// Host peers only: pi-durable and chord are optional peers for pi-fabric/durable-extension hosts and also
+// dependencies the bundled durable runner resolves from the package itself.
+const hostPeers = (manifest: { dependencies: Record<string, string>; peerDependencies: Record<string, string> }) =>
+  Object.keys(manifest.peerDependencies).filter((name) => !Object.hasOwn(manifest.dependencies, name));
+
 function installation() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-durable-install-"));
   roots.push(root);
@@ -40,7 +45,7 @@ function installation() {
     fs.symlinkSync(fs.realpathSync(path.join("node_modules", name)), target, process.platform === "win32" ? "junction" : "dir");
   }
   const require = createRequire(path.join(root, "package.json"));
-  for (const name of Object.keys(manifest.peerDependencies)) {
+  for (const name of hostPeers(manifest)) {
     expect(fs.existsSync(path.join(root, "node_modules", name))).toBe(false);
     expect(() => require.resolve(name)).toThrow();
   }
@@ -107,7 +112,7 @@ describe("installed durable worker without host peers", () => {
   it("ignores conflicting ambient Pi peers instead of mixing SDK instances", async () => {
     const { root, manager } = installation();
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8"));
-    for (const name of Object.keys(manifest.peerDependencies)) {
+    for (const name of hostPeers(manifest)) {
       const directory = path.join(root, "node_modules", name);
       fs.mkdirSync(directory, { recursive: true });
       fs.writeFileSync(path.join(directory, "package.json"), JSON.stringify({

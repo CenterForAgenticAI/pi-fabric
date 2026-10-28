@@ -662,6 +662,79 @@ describe("temporal retention", () => {
     });
   });
 
+  // What a durable worker run leaves behind, as found under dead owners: the durable store, the
+  // fabric_exec crash journal beside it, an exported session with a sidecar another extension wrote.
+  const deadDurableRun = (runRoot: string, name: string): string => {
+    const run = path.join(runRoot, name);
+    writeStatus(run, { status: "completed", finishedAt: 1 });
+    fs.writeFileSync(path.join(run, "task.txt"), "task");
+    const key = path.join(run, "durable", "initial");
+    fs.mkdirSync(path.join(key, "store"), { recursive: true });
+    fs.mkdirSync(path.join(key, "fabric-journal"));
+    fs.writeFileSync(path.join(key, "lease.sqlite"), "");
+    fs.writeFileSync(path.join(key, "store", "main.jsonl"), "{}\n");
+    fs.writeFileSync(path.join(key, "fabric-journal", `${"a".repeat(32)}.jsonl`), "{}\n");
+    fs.mkdirSync(path.join(run, "durable-session"));
+    fs.writeFileSync(path.join(run, "durable-session", "session.jsonl"), "{}\n");
+    fs.writeFileSync(path.join(run, "durable-session", "session.jsonl.acp.json"), "{}");
+    return run;
+  };
+  const deadOwner = (runRoot: string): void => {
+    fs.mkdirSync(runRoot, { recursive: true });
+    fs.writeFileSync(path.join(runRoot, ".fabric-owner.json"), JSON.stringify({ pid: 2_147_483_647, startedAt: 1, heartbeatAt: 1 }));
+  };
+
+  it("removes a dead owner's root once the orphan grace passes, whatever files its runs wrote", () => {
+    const tempRoot = temporaryDirectory();
+    const runRoot = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "durable-leftovers");
+    deadOwner(runRoot);
+    const run = deadDurableRun(runRoot, "run");
+    fs.writeFileSync(path.join(run, "written-by-something-else.bin"), "x");
+    writeStatus(path.join(run, "nested", "child"), { status: "failed", finishedAt: 1 });
+    fs.writeFileSync(path.join(run, "nested", "child", "notes.txt"), "x");
+    expect(sweepAt(tempRoot, 2).removedRoots).toEqual([]);
+    expect(sweepAt(tempRoot, 6 * HOUR + 1).removedRoots).toEqual([]);
+    expect(sweepAt(tempRoot, 6 * HOUR + 2).removedRoots).toEqual([runRoot]);
+    expect(fs.existsSync(runRoot)).toBe(false);
+  });
+
+  it("still keeps a dead owner's root with a live child, a hosted locator, an unfinished run, or unknown root entries", () => {
+    const tempRoot = temporaryDirectory();
+    const live = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "live-child");
+    deadOwner(live);
+    deadDurableRun(live, "done");
+    writeStatus(path.join(live, "child"), { status: "running", transport: "process", sessionId: String(process.pid) });
+    const hosted = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "hosted");
+    deadOwner(hosted);
+    fs.writeFileSync(path.join(deadDurableRun(hosted, "run"), "hosted.json"), '{"job":"remote"}');
+    const hostedTemp = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "hosted-temp");
+    deadOwner(hostedTemp);
+    fs.writeFileSync(path.join(deadDurableRun(hostedTemp, "run"), "hosted.json.4242.123e4567-e89b-42d3-a456-426614174000.tmp"), "{");
+    const unfinished = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "unfinished");
+    deadOwner(unfinished);
+    writeStatus(path.join(unfinished, "tmux"), { status: "running", transport: "tmux", sessionId: "fabric-1" });
+    fs.writeFileSync(path.join(unfinished, "tmux", "task.txt"), "task");
+    const rootFile = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "root-file");
+    deadOwner(rootFile);
+    deadDurableRun(rootFile, "run");
+    fs.writeFileSync(path.join(rootFile, "mine"), "not a run");
+    const linked = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "linked-run");
+    deadOwner(linked);
+    fs.symlinkSync(deadDurableRun(temporaryDirectory(), "elsewhere"), path.join(linked, "run"), "junction");
+    sweepAt(tempRoot, 2);
+    expect(sweepAt(tempRoot, 100 * DAY).removedRoots).toEqual([]);
+    for (const kept of [live, hosted, hostedTemp, unfinished, rootFile, linked]) expect(fs.existsSync(kept)).toBe(true);
+  });
+
+  it("keeps a live owner's root holding the same files, however old", () => {
+    const tempRoot = temporaryDirectory();
+    const runRoot = path.join(tempRoot, FABRIC_RUN_ROOT_PREFIX + "live-owner");
+    markRunRootActive(runRoot, 1);
+    deadDurableRun(runRoot, "run");
+    expect(sweepTempRunRoots({ tempRoot, orphanedTempRunRetentionMs: 6 * HOUR, oneShotRunRetentionMs: DAY }).removedRoots).toEqual([]);
+    expect(fs.existsSync(runRoot)).toBe(true);
+  });
+
   it("expires actor archives after seven days while preserving the latest run", () => {
     const root = temporaryDirectory();
     const runsDirectory = path.join(root, "runs");
