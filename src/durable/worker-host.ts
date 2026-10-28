@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { lstat, readdir, unlink } from "node:fs/promises";
 import path from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
@@ -9,9 +10,31 @@ import {
   type CreateAgentSessionRuntimeFactory, type LoadExtensionsResult,
   type ProjectTrustContext, type ProjectTrustHandler,
 } from "@earendil-works/pi-coding-agent";
+import { durableExtensionLoadError } from "./extension-load-error.js";
 import { createDurableAgentSession } from "./session.js";
 import { openDurableWorkerStorage } from "./storage.js";
 import type { DurableWorkerOptions } from "./worker-options.js";
+
+// A fabric_exec crash journal holds tool results, so it is deleted a day after
+// its last write. A call still waiting after that cannot resume and fails closed.
+const FABRIC_JOURNAL_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/** Delete fabric_exec journals older than the retention window. Exported for tests. */
+export async function sweepFabricJournals(directory: string, now = Date.now()): Promise<void> {
+  let names: string[];
+  try {
+    names = await readdir(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const name of names) {
+    if (!/^[0-9a-f]{32}\.jsonl$/.test(name)) continue;
+    const file = path.join(directory, name);
+    const info = await lstat(file).catch(() => undefined);
+    if (info?.isFile() && now - info.mtimeMs > FABRIC_JOURNAL_RETENTION_MS) await unlink(file).catch(() => undefined);
+  }
+}
 
 /** Match native headless trust: only global/explicit extensions can decide trust. */
 export async function resolveDurableProjectTrust(options: {
@@ -113,7 +136,7 @@ export async function createDurableWorkerRuntime(options: DurableWorkerOptions):
       },
     });
     const extensionErrors = services.resourceLoader.getExtensions().errors;
-    if (extensionErrors.length) throw new Error(`Durable worker extension loading failed: ${JSON.stringify(extensionErrors)}`);
+    if (extensionErrors.length) throw durableExtensionLoadError(extensionErrors);
     for (const diagnostic of services.diagnostics) {
       process.stderr.write(`${diagnostic.type}: ${diagnostic.message}\n`);
     }
@@ -133,7 +156,11 @@ export async function createDurableWorkerRuntime(options: DurableWorkerOptions):
     first = false;
     const lease = await openDurableWorkerStorage(path.join(options.directory, key));
     try {
+      // Beside store/, which must hold only pi-durable's own files.
+      const fabricJournalDirectory = path.join(options.directory, key, "fabric-journal");
+      await sweepFabricJournals(fabricJournalDirectory);
       const host = await createDurableAgentSession({
+        fabricJournalDirectory,
         ...services, sessionManager: target.sessionManager,
         ...(target.sessionStartEvent ? { sessionStartEvent: target.sessionStartEvent } : {}),
         storage: lease.storage, runId: `${options.runId}:${key}`,

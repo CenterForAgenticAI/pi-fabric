@@ -138,7 +138,9 @@ export class NodeProcessRuntime {
       };
       const scheduleDeadline = (): void => {
         clearTimeout(deadline);
-        if (settled || finishing || !Number.isFinite(deadlineAt)) return;
+        if (settled || finishing) return;
+        options.onDeadline?.(Number.isFinite(deadlineAt) ? deadlineAt : undefined);
+        if (!Number.isFinite(deadlineAt)) return;
         deadline = setTimeout(() => {
           const error = `Execution timed out after ${effectiveTimeoutMs}ms`;
           finish({ value: undefined, logs: [], terminationReason: "timed_out", error });
@@ -164,6 +166,7 @@ export class NodeProcessRuntime {
         suspend: () => {
           clearTimeout(deadline);
           deadlineAt = Infinity;
+          options.onDeadline?.(undefined);
         },
         resume: (remainingMs) => {
           deadlineAt = Date.now() + remainingMs;
