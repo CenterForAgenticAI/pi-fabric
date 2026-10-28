@@ -250,6 +250,9 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
   asks?: Set<Promise<AgentChildQuestionResponse>>;
   latestRecord?: AgentRunRecord;
   latestUiRecord?: AgentRunRecord;
+  /** A locally owned terminal result whose disk replacement failed. Keep it
+   *  independently of the prunable UI cache until this run handle is evicted. */
+  unpersistedResult?: AgentRunResult;
   background: boolean;
   completionNotified?: boolean;
   lastLivenessCheckAt: number;
@@ -1540,7 +1543,7 @@ export class AgentManager {
       this.#onResultConsumed?.(id);
       return result;
     }
-    const record = readRecord(managed.statusFile) ?? managed.latestRecord;
+    const record = this.#readManagedRecord(managed);
     if (!record || !terminalStatuses.has(record.status)) {
       throw new Error(`Agent ${id} settled without a result`);
     }
@@ -1585,7 +1588,7 @@ export class AgentManager {
     managed.background = true;
     // A fast worker may settle before agents.spawn returns and detaches it.
     if (managed.settled) {
-      const record = readRecord(managed.statusFile) ?? managed.latestRecord;
+      const record = this.#readManagedRecord(managed);
       if (record && terminalStatuses.has(record.status)) {
         this.#notifyBackgroundComplete(managed, this.#withTransportMetadata(record, managed) as AgentRunResult);
       }
@@ -1616,11 +1619,20 @@ export class AgentManager {
     }
   }
 
-  status(id: string): AgentRunRecord | AgentHandleInfo {
-    const managed = this.#requireRun(id);
-    const record = managed.settled
+  #readManagedRecord(managed: ManagedAgent): AgentRunRecord | undefined {
+    // A failed local commit must not make a settled run appear running again.
+    // Hosted runs keep their adapter/disk authority, including durable recovery.
+    if (managed.settled && !managed.hosted && managed.unpersistedResult) {
+      return managed.unpersistedResult;
+    }
+    return managed.settled
       ? readRecord(managed.statusFile) ?? managed.latestRecord
       : managed.latestRecord ?? readRecord(managed.statusFile);
+  }
+
+  status(id: string): AgentRunRecord | AgentHandleInfo {
+    const managed = this.#requireRun(id);
+    const record = this.#readManagedRecord(managed);
     if (!record) return this.#handleInfo(managed, "running");
     managed.latestRecord = record;
     if (!managed.latestUiRecord) {
@@ -1663,7 +1675,7 @@ export class AgentManager {
       .map((managed) => {
         let record = managed.latestUiRecord;
         if (!record) {
-          const latest = managed.latestRecord ?? readRecord(managed.statusFile);
+          const latest = managed.latestRecord ?? this.#readManagedRecord(managed);
           if (!latest) return this.#handleInfo(managed, "running");
           managed.latestRecord = latest;
           record = compactUiRecord(latest);
@@ -1921,7 +1933,7 @@ export class AgentManager {
     }
     const expired = [...this.#runs.values()].filter((managed) => {
       if (!managed.settled || managed.actorId) return false;
-      const record = readRecord(managed.statusFile) ?? managed.latestRecord;
+      const record = this.#readManagedRecord(managed);
       const finishedAt = record?.finishedAt ?? record?.updatedAt;
       return typeof finishedAt === "number" && now - finishedAt >= this.#retention.oneShotRunMs;
     });
@@ -2147,7 +2159,9 @@ export class AgentManager {
       try {
         writeRecord(managed.statusFile, failed);
       } catch {
-        // The settled result below still reaches every waiter.
+        // The first waiter and later readers must see the same local result,
+        // even if a readable but stale running record remains on disk.
+        if (!managed.hosted) managed.unpersistedResult = failed;
       }
       this.#settle(managed, failed);
     }

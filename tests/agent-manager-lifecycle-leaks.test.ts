@@ -9,14 +9,18 @@ import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 const managers: AgentManager[] = [];
 const roots: string[] = [];
 
-const setup = (runRoot: string, workerPath = "tests/fixtures/fake-worker.mjs") => {
+const setup = (
+  runRoot: string,
+  workerPath = "tests/fixtures/fake-worker.mjs",
+  timeoutMs = DEFAULT_FABRIC_CONFIG.agents.timeoutMs,
+) => {
   vi.stubEnv("PI_FABRIC_DEPTH", "0");
   for (const key of ["PI_FABRIC_RUN_ROOT", "PI_FABRIC_BUDGET", "PI_FABRIC_BUDGET_FILE", "PI_FABRIC_BUDGET_ID"]) {
     vi.stubEnv(key, undefined);
   }
   const manager = new AgentManager(
     process.cwd(),
-    { ...DEFAULT_FABRIC_CONFIG.agents, budgetUsd: 0, maxConcurrent: 1, transport: "process", sessionExport: false },
+    { ...DEFAULT_FABRIC_CONFIG.agents, budgetUsd: 0, maxConcurrent: 1, transport: "process", sessionExport: false, timeoutMs },
     { workerPath: path.resolve(workerPath), runRoot },
   );
   managers.push(manager);
@@ -79,6 +83,41 @@ describe("AgentManager lifecycle leaks", () => {
 
     expect(result.status).toBe("failed");
     expect(result.error).toContain("Agent monitor failed");
+  });
+
+  it.each(["pi", "pi-durable"] as const)("keeps %s terminal reads consistent when status replacement fails with ENOSPC", async (runner) => {
+    const manager = setup(tempRoot(), "tests/fixtures/fake-worker.mjs", 1_000);
+    const handle = await manager.spawn({ task: "HANG", runner, extensions: false });
+    const statusFile = path.join(manager.runDirectory(handle.id)!, "status.json");
+    await vi.waitFor(() => {
+      expect(JSON.parse(fs.readFileSync(statusFile, "utf8")).status).toBe("running");
+    });
+    const running = fs.readFileSync(statusFile, "utf8");
+    const renameSync = fs.renameSync;
+    let failedReplacements = 0;
+    vi.spyOn(fs, "renameSync").mockImplementation((source, target) => {
+      if (target === statusFile) {
+        failedReplacements++;
+        throw Object.assign(new Error("ENOSPC while replacing status.json"), { code: "ENOSPC" });
+      }
+      return renameSync(source, target);
+    });
+
+    // Start observing before the timeout: both the timeout write and the
+    // monitor's fallback write fail, leaving a readable running file behind.
+    const result = await manager.wait(handle.id);
+    expect(result).toMatchObject({
+      id: handle.id,
+      status: "failed",
+      error: "Agent monitor failed: ENOSPC while replacing status.json",
+    });
+    expect(failedReplacements).toBe(2);
+    expect(fs.readFileSync(statusFile, "utf8")).toBe(running);
+    expect(manager.status(handle.id)).toMatchObject(result);
+    await expect(manager.wait(handle.id)).resolves.toMatchObject(result);
+    expect(manager.list()).toEqual([expect.objectContaining(result)]);
+    expect(manager.listForUi()).toEqual([expect.objectContaining(result)]);
+    await expect(manager.wait(handle.id)).resolves.toMatchObject(result);
   });
 
   it("does not start a relaunched child when the lifecycle file cannot be reset", async () => {
