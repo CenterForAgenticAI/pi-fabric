@@ -945,12 +945,6 @@ export class AgentManager {
     const id = randomUUID().replaceAll("-", "");
     const name = runName(request);
     const runDirectory = path.join(this.#runRoot, id);
-    fs.mkdirSync(runDirectory, { recursive: true });
-    if (this.#managedTempRoot && !this.#retentionTimer) {
-      this.#retentionTimer = setInterval(() => this.#scheduleRetentionSweep(), RETENTION_SWEEP_INTERVAL_MS);
-      this.#retentionTimer.unref();
-      this.#scheduleRetentionSweep();
-    }
     const taskFile = path.join(runDirectory, "task.txt");
     const statusFile = path.join(runDirectory, "status.json");
     const lifecycleFile = path.join(runDirectory, "lifecycle.jsonl");
@@ -960,18 +954,31 @@ export class AgentManager {
     const imagesFile = request.images && request.images.length > 0
       ? path.join(runDirectory, "images.json")
       : undefined;
-    fs.writeFileSync(taskFile, request.task, { encoding: "utf8", mode: 0o600 });
-    if (imagesFile) {
-      fs.writeFileSync(imagesFile, JSON.stringify(request.images), {
-        encoding: "utf8",
-        mode: 0o600,
-      });
+    try {
+      fs.mkdirSync(runDirectory, { recursive: true });
+      fs.writeFileSync(taskFile, request.task, { encoding: "utf8", mode: 0o600 });
+      if (imagesFile) {
+        fs.writeFileSync(imagesFile, JSON.stringify(request.images), {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+      }
+      if (schemaFile) {
+        fs.writeFileSync(schemaFile, JSON.stringify(request.schema, null, 2), {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+      }
+    } catch (error) {
+      // No child exists yet: give the admitted slot back so later agents
+      // are not held at maxConcurrent by a run that never started.
+      release();
+      throw error;
     }
-    if (schemaFile) {
-      fs.writeFileSync(schemaFile, JSON.stringify(request.schema, null, 2), {
-        encoding: "utf8",
-        mode: 0o600,
-      });
+    if (this.#managedTempRoot && !this.#retentionTimer) {
+      this.#retentionTimer = setInterval(() => this.#scheduleRetentionSweep(), RETENTION_SWEEP_INTERVAL_MS);
+      this.#retentionTimer.unref();
+      this.#scheduleRetentionSweep();
     }
 
     let agentCwd = selectedCwd;
@@ -2077,8 +2084,13 @@ export class AgentManager {
       // the previous attempt published (token usage above all) before discarding
       // the journal it landed in.
       this.#drainLifecycle(managed);
-      fs.rmSync(managed.statusFile, { force: true });
       if (managed.settled || this.#closing || managed.stopRequested) return false;
+      fs.rmSync(managed.statusFile, { force: true });
+      // Reset the journal before the new child exists: a failure here must not
+      // leave a relaunched child running behind a run that settles failed.
+      managed.lifecycleOffset = 0;
+      managed.lifecycleRemainder = Buffer.alloc(0);
+      fs.rmSync(managed.lifecycleFile, { force: true });
       managed.transport = await this.#launchTransport(managed.adapter, managed.launch);
       this.#unregisteredTransports.delete(managed.transport);
       if (managed.settled || this.#closing || managed.stopRequested) {
@@ -2091,9 +2103,6 @@ export class AgentManager {
       delete managed.latestRecord;
       delete managed.latestUiRecord;
       managed.lastLivenessCheckAt = 0;
-      managed.lifecycleOffset = 0;
-      managed.lifecycleRemainder = Buffer.alloc(0);
-      fs.rmSync(managed.lifecycleFile, { force: true });
       if (resume) {
         this.#emitLifecycle(managed, "run.resumed", Date.now(), {
           data: {
@@ -2123,7 +2132,28 @@ export class AgentManager {
     }
   }
 
+  /**
+   * Monitors start detached, so a throw here would leave the run unsettled and
+   * every wait() pending forever. Settle such a run as failed instead.
+   */
   async #monitor(managed: ManagedAgent, timeoutMs: number): Promise<void> {
+    try {
+      await this.#watch(managed, timeoutMs);
+    } catch (error) {
+      if (managed.settled) return;
+      const message = error instanceof Error ? error.message : String(error);
+      const failed = failedRecord(managed, "failed", `Agent monitor failed: ${message}`);
+      await managed.transport.stop().catch(() => undefined);
+      try {
+        writeRecord(managed.statusFile, failed);
+      } catch {
+        // The settled result below still reaches every waiter.
+      }
+      this.#settle(managed, failed);
+    }
+  }
+
+  async #watch(managed: ManagedAgent, timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs + TRANSPORT_EXIT_GRACE_MS;
     let firstObservedDeadAt: number | undefined;
     while (!managed.settled) {
@@ -2264,7 +2294,12 @@ export class AgentManager {
     // Images are transport inputs, not retained run artifacts. Startup retries
     // have finished by settlement, so remove the owner-only handoff file for
     // every terminal outcome even when retainRuns keeps the rest of the run.
-    fs.rmSync(path.join(managed.runDirectory, "images.json"), { force: true });
+    try {
+      fs.rmSync(path.join(managed.runDirectory, "images.json"), { force: true });
+    } catch {
+      // beginAgentSettlement already marked the run settled: a throw here
+      // would leave every wait() pending forever.
+    }
     this.#emitLifecycle(managed, `run.${result.status}`, result.finishedAt ?? Date.now(), {
       status: result.status,
     });
