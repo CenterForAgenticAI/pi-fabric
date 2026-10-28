@@ -581,7 +581,7 @@ const lineage = await agents.list({ scope: "lineage" });
 return { self: await agents.self(), lineage };
 ```
 
-Child dialogs (`select`, `confirm`, `input`, `editor`) are cancelled by default. With `agents.childQuestions: "route"` they reach the parent's UI, or a root-held [durable decision](decisions.md#routed-child-questions) when the parent is headless or the run is durable; the run record shows `blockedOn`, with the decision's `decisionId`, while one waits.
+Child dialogs (`select`, `confirm`, `input`, `editor`) are cancelled by default. With `agents.childQuestions: "route"` they reach the parent's UI, or a root-held [durable decision](decisions.md#routed-child-questions) when the parent is headless or the run is durable; the run record shows `blockedOn`, with the decision's `decisionId`, while one waits. A run spawned with `holdQuestions: true` raises each question as a root-held decision with a 30-day deadline instead, even when the parent has a UI; see [Holding a question for a person](decisions.md#holding-a-question-for-a-person).
 
 Routing also gives a Pi child with extensions the tools in `agents.childQuestionTools` (default `["ask"]`), so the caller does not have to name them in `tools`. A child's system prompt lists only the extension tools its `tools` allowlist permits.
 
