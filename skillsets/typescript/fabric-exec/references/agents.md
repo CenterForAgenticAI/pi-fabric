@@ -57,6 +57,8 @@ const handle = await agents.spawn({ task: "Map the persistence layer.", transpor
 return await agents.wait({ id: handle.id });
 ```
 
+For a long workflow (many agents or beads) whose result you do not need before continuing, call `fabric_exec` with `background: true`: the call returns a task ID, the program keeps running, and its result arrives as a background task event. The user can then steer you while it runs. Do not start the same program again while it runs.
+
 Detached `agents.spawn()` runs notify Main on terminal completion when `agents.notifyOnComplete` is enabled (the default). Unread results are batched after the current tool turn, or wake idle Main once; concise UI notices appear immediately. `agents.wait()`/`join()` and terminal `agents.status()` acknowledge the result and retract pending notifications, even if completion preceded the wait. Running status and UI/list polling do not acknowledge it. Return the relevant outcome from your program so Main sees results you consumed. Use `wait` when the program needs a result; do not poll status in a loop. Durable spawns preserve unread deliveries and acknowledgment across reconnects. Escape/error parks results until new input. Use lifecycle subscriptions for explicit event-routing policies, not to duplicate automatic completion delivery.
 
 ## Participant lifecycle subscriptions
