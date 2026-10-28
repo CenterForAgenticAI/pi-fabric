@@ -138,6 +138,16 @@ const compactResultHeader = (
 const countLabel = (count: number, singular: string): string =>
   `${count} ${count === 1 ? singular : `${singular}s`}`;
 
+/** A detached program's result arrives as a background event, not a tool result. */
+const FABRIC_DETACHED_OUTPUT_CHARS = 6_000;
+
+const fabricDetachedText = (taskId: string, elapsedMs: number, requested: boolean): string =>
+  `[fabric_exec ${requested ? "started in the background" : `moved to the background by the user after ${Math.max(1, Math.round(elapsedMs / 1_000))}s`} as task ${taskId}. ` +
+  "It keeps running with its tools, child agents, and approvals; its result arrives automatically as a background task event when it finishes. " +
+  "Continue independent work, or end this turn if you need the result. Do not start the same program again. " +
+  "The user can now steer you while it runs. Inspect with tools.call({ref:'tasks.get',args:{id}}); stop with tasks.stop. " +
+  "Its child agents stay steerable with agents.steer.]";
+
 export const createFabricExecTool = (
   state: FabricState,
   codePreviewSettings: CodePreviewSettings,
@@ -245,6 +255,9 @@ export const createFabricExecTool = (
             "Optional whole-program deadline in ms for this invocation; raises (never lowers) the configured executor.timeoutMs, capped by executor.maxTimeoutMs",
         }),
       ),
+      background: Type.Optional(Type.Boolean({
+        description: "Run the program as a background task and return at once; its result arrives as a background task event. Use for long workflows (many agents) whose result you do not need before continuing.",
+      })),
       timeout_ms: Type.Optional(Type.Integer({ minimum: 1, description: "Hard whole-script deadline in milliseconds; cannot be extended or paused, capped by executor.maxTimeoutMs." })),
       maxOutputTokens: Type.Optional(Type.Integer({ minimum: 1, description: "Per-call output token budget (estimated at four characters per token), capped by executor.maxOutputChars." })),
       max_output_tokens: Type.Optional(Type.Integer({ minimum: 1, description: "Alias of maxOutputTokens." })),
@@ -872,10 +885,18 @@ export const createFabricExecTool = (
       // The declared milestone is the window title, and it holds until the next
       // declared one: nested call detail never flickers in the tab.
       terminalTitle?.show(context, runDisplay?.name);
-      const result = await state.execution.execute({
+      const program = state.programTasks?.begin({
+        code,
+        ...(runDisplay?.name ? { description: runDisplay.name } : {}),
+        cwd: context.cwd,
+        ...(signal ? { parentSignal: signal } : {}),
+        jobs: () => state.shellJobs,
+      });
+      if (params.background === true) program?.detach();
+      const execution = state.execution.execute({
         code,
         ...(strings ? { strings } : {}),
-        signal,
+        signal: program?.signal ?? signal,
         parentToolCallId: toolCallId,
         context,
         ...(tokenBudget !== undefined ? { tokenBudget } : {}),
@@ -891,6 +912,9 @@ export const createFabricExecTool = (
             }
           : {}),
         onPartial(snapshot) {
+          program?.progress(snapshot.progress);
+          // A detached program no longer owns its tool card.
+          if (program?.job) return;
           onUpdate?.({
             content: [{ type: "text", text: snapshot.progress ?? "" }],
             details: {
@@ -902,187 +926,221 @@ export const createFabricExecTool = (
         },
       });
 
-      const selectedResultFormat =
-        params.resultFormat ?? state.config.executor.resultFormat;
-      const boundarySessionId = context.sessionManager.getSessionId();
-      const pendingHandoff = await state.claimHandoff(
-        result,
-        boundarySessionId,
-        selectedResultFormat,
-        toolCallId,
-      );
-      if (pendingHandoff) {
-        pendingHandoffs.set(toolCallId, pendingHandoff);
-        context.ui.setStatus(
-          "fabric-prewalk",
-          `waiting for fabric_exec boundary → ${String(pendingHandoff.args.model ?? "executor")}`,
+      const finishExecution = async (
+        result: Awaited<typeof execution>,
+        detached: boolean,
+      ) => {
+        const selectedResultFormat =
+          params.resultFormat ?? state.config.executor.resultFormat;
+        const boundarySessionId = context.sessionManager.getSessionId();
+        // A detached program finishes after its boundary turn: it cannot hand off.
+        const pendingHandoff = detached ? undefined : await state.claimHandoff(
+          result,
+          boundarySessionId,
+          selectedResultFormat,
+          toolCallId,
         );
-        // The nudge budget is spent and the arm still has no plan: the handoff
-        // proceeds rather than stalling the session, and that is worth saying.
-        if (pendingHandoff.readiness?.kind === "unplanned") {
-          context.ui.notify(
-            `Prewalk: handing off without a recorded plan after ${pendingHandoff.readiness.prompts} reminders.`,
-            "warning",
+        if (pendingHandoff) {
+          pendingHandoffs.set(toolCallId, pendingHandoff);
+          context.ui.setStatus(
+            "fabric-prewalk",
+            `waiting for fabric_exec boundary → ${String(pendingHandoff.args.model ?? "executor")}`,
+          );
+          // The nudge budget is spent and the arm still has no plan: the handoff
+          // proceeds rather than stalling the session, and that is worth saying.
+          if (pendingHandoff.readiness?.kind === "unplanned") {
+            context.ui.notify(
+              `Prewalk: handing off without a recorded plan after ${pendingHandoff.readiness.prompts} reminders.`,
+              "warning",
+            );
+          }
+        } else if (!detached && state.prewalk.planRequired(boundarySessionId)) {
+          // This boundary was withheld because the plan is still owed. Reflect the
+          // planning phase instead of leaving the footer reading "armed".
+          const prewalkStatus = state.prewalk.status();
+          context.ui.setStatus(
+            "fabric-prewalk",
+            prewalkStatus.state === "armed" ? `plan awaited → ${prewalkStatus.model}` : undefined,
           );
         }
-      } else if (state.prewalk.planRequired(boundarySessionId)) {
-        // This boundary was withheld because the plan is still owed. Reflect the
-        // planning phase instead of leaving the footer reading "armed".
-        const prewalkStatus = state.prewalk.status();
-        context.ui.setStatus(
-          "fabric-prewalk",
-          prewalkStatus.state === "armed" ? `plan awaited → ${prewalkStatus.model}` : undefined,
+        const fullFormattedValue = formatFabricValue(result.value, selectedResultFormat);
+        const failureProgress = formatFailureProgress(result.trace);
+        const fullSections = [...result.logs];
+        if (fullFormattedValue.text) fullSections.push(fullFormattedValue.text);
+        if (result.error) fullSections.push(`Runtime error: ${result.error}`);
+        if (failureProgress) fullSections.push(failureProgress);
+        if (repeat.warn) fullSections.push(fabricRepeatWarnText(repeat.count, FABRIC_REPEAT_BLOCK));
+        const fullRawOutput = fullSections.join("\n\n");
+        const outputBudget = modelOutputBudget(
+          Math.min(
+            state.config.executor.maxOutputChars,
+            (params.maxOutputTokens ?? params.max_output_tokens ?? Infinity) * 4,
+            detached ? FABRIC_DETACHED_OUTPUT_CHARS : Infinity,
+          ),
+          result.success,
         );
-      }
-      const fullFormattedValue = formatFabricValue(result.value, selectedResultFormat);
-      const failureProgress = formatFailureProgress(result.trace);
-      const fullSections = [...result.logs];
-      if (fullFormattedValue.text) fullSections.push(fullFormattedValue.text);
-      if (result.error) fullSections.push(`Runtime error: ${result.error}`);
-      if (failureProgress) fullSections.push(failureProgress);
-      if (repeat.warn) fullSections.push(fabricRepeatWarnText(repeat.count, FABRIC_REPEAT_BLOCK));
-      const fullRawOutput = fullSections.join("\n\n");
-      const outputBudget = modelOutputBudget(
-        Math.min(state.config.executor.maxOutputChars, (params.maxOutputTokens ?? params.max_output_tokens ?? Infinity) * 4),
-        result.success,
-      );
-      const outputWillTruncate = fullRawOutput.length > outputBudget;
-      const formattedValue = outputWillTruncate
-        ? formatFabricValue(
-            result.value,
-            selectedResultFormat,
-            outputBudget,
-          )
-        : fullFormattedValue;
-      const sections = [...result.logs];
-      const logPrefix = result.logs.join("\n\n");
-      if (formattedValue.text) sections.push(formattedValue.text);
-      if (result.error) sections.push(`Runtime error: ${result.error}`);
-      if (failureProgress) sections.push(failureProgress);
-      if (repeat.warn) sections.push(fabricRepeatWarnText(repeat.count, FABRIC_REPEAT_BLOCK));
-      const rawOutput = sections.join("\n\n");
-      const outputFormat =
-        formattedValue.language &&
-        formattedValue.text &&
-        (result.logs.length === 0 || !outputWillTruncate)
-          ? formattedValue.language
-          : undefined;
-      const outputFormatStartLine = result.logs.length > 0
-        ? countNewlines(logPrefix) + 2
-        : 0;
-      // Evaluated lazily at each return so the main path persists audits after
-      // their in-memory image payloads are stripped below.
-      const persistedRenderDetails = () =>
-        createFabricPersistedExecutionDetails({
-          ...result,
-          ...(outputFormat ? { outputFormat, outputFormatStartLine } : {}),
-          ...(outputFormat
-            ? {
-                outputFormatLines:
-                  formattedValue.highlightedLineCount
-                  ?? countNewlines(formattedValue.text) + 1,
-              }
-            : {}),
-        });
+        const outputWillTruncate = fullRawOutput.length > outputBudget;
+        const formattedValue = outputWillTruncate
+          ? formatFabricValue(
+              result.value,
+              selectedResultFormat,
+              outputBudget,
+            )
+          : fullFormattedValue;
+        const sections = [...result.logs];
+        const logPrefix = result.logs.join("\n\n");
+        if (formattedValue.text) sections.push(formattedValue.text);
+        if (result.error) sections.push(`Runtime error: ${result.error}`);
+        if (failureProgress) sections.push(failureProgress);
+        if (repeat.warn) sections.push(fabricRepeatWarnText(repeat.count, FABRIC_REPEAT_BLOCK));
+        const rawOutput = sections.join("\n\n");
+        const outputFormat =
+          formattedValue.language &&
+          formattedValue.text &&
+          (result.logs.length === 0 || !outputWillTruncate)
+            ? formattedValue.language
+            : undefined;
+        const outputFormatStartLine = result.logs.length > 0
+          ? countNewlines(logPrefix) + 2
+          : 0;
+        // Evaluated lazily at each return so the main path persists audits after
+        // their in-memory image payloads are stripped below.
+        const persistedRenderDetails = () =>
+          createFabricPersistedExecutionDetails({
+            ...result,
+            ...(outputFormat ? { outputFormat, outputFormatStartLine } : {}),
+            ...(outputFormat
+              ? {
+                  outputFormatLines:
+                    formattedValue.highlightedLineCount
+                    ?? countNewlines(formattedValue.text) + 1,
+                }
+              : {}),
+          });
 
-      if (result.typeErrors) {
-        const text = result.typeErrors
-          .map((error) =>
-            error.line > 0
-              ? `Line ${error.line}:${error.column} — ${error.message}`
-              : error.message,
-          )
-          .join("\n");
-        // Guidance parses the guest declarations; load it only on a type error.
-        const { typeErrorRecoveryHint } = await import("./type-error-guidance.js");
-        const recoveryHint = typeErrorRecoveryHint(code, result.typeErrors);
-        const bounded = await boundModelOutput(
-          `Type errors; code was not executed:\n${text}${
-            recoveryHint ? `\n\n${recoveryHint}` : ""
-          }`,
+        if (result.typeErrors) {
+          const text = result.typeErrors
+            .map((error) =>
+              error.line > 0
+                ? `Line ${error.line}:${error.column} — ${error.message}`
+                : error.message,
+            )
+            .join("\n");
+          // Guidance parses the guest declarations; load it only on a type error.
+          const { typeErrorRecoveryHint } = await import("./type-error-guidance.js");
+          const recoveryHint = typeErrorRecoveryHint(code, result.typeErrors);
+          const bounded = await boundModelOutput(
+            `Type errors; code was not executed:\n${text}${
+              recoveryHint ? `\n\n${recoveryHint}` : ""
+            }`,
+            outputBudget,
+          );
+          return {
+            content: [{ type: "text" as const, text: bounded.text }],
+            details: persistedRenderDetails(),
+            isError: true,
+          };
+        }
+
+        const output = (await boundModelOutput(
+          rawOutput || "(no output)",
           outputBudget,
-        );
+          fullRawOutput || "(no output)",
+        )).text;
+        // In-place prewalk continuation arrives as an in-band context message on
+        // this boundary turn, so the loop must keep running: the executor's first
+        // request follows naturally. Terminating here would strand the
+        // continuation — no queued turn remains to carry it.
+        const inPlaceContinuation = pendingHandoff?.kind === "prewalk-in-place";
+        const terminate =
+          !inPlaceContinuation &&
+          (pendingHandoff !== undefined ||
+            (result.success &&
+              typeof result.value === "object" &&
+              result.value !== null &&
+              "terminate" in result.value &&
+              result.value.terminate === true));
+        // A nested `pi.read` of an image returns image content blocks that
+        // normalizeResult stripped (the sandbox holds text only). The provider
+        // handed them out-of-band to each call audit; re-attach them here so
+        // pi core's ToolExecutionComponent renders a kitty image preview — the
+        // same path a native `read` takes — for single-call AND multitool
+        // reads. pi-vision-handoff keeps the image in the nested tool_result
+        // (its `context` hook swaps image→description on the LLM-bound
+        // fabric_exec clone), so every read audit carries its image here.
+        const mediaBlocks: FabricMediaBlock[] = [];
+        // Images the guest returned directly, hoisted out of the text channels by
+        // the media sanitizer; their descriptors remain in the text.
+        for (const block of result.media ?? []) mediaBlocks.push(block);
+        for (const audit of result.audits) {
+          if (audit.media) mediaBlocks.push(...audit.media);
+        }
+        const singleAudit = result.audits.length === 1 ? result.audits[0] : undefined;
+        // The read tool's own text note (e.g. "Read image file [image/png]"),
+        // captured after the handoff stripped pi's non-vision note. Used as
+        // the single-call body + content text so the preview shows the kitty
+        // image + the clean note (like pi core) instead of the handoff's
+        // verbose description. Multitool renders each read's note as its own
+        // call body, so the joined program return suffices as the content text
+        // there.
+        const mediaNote = singleAudit?.mediaNote;
+        // The base64 payload now lives in the result content; discard the
+        // duplicate in-memory audit copies before returning.
+        for (const audit of result.audits) {
+          delete audit.media;
+          delete audit.mediaNote;
+        }
+        const content: Array<{ type: "text"; text: string } | FabricMediaBlock> = [];
+        if (mediaBlocks.length > 0) {
+          // Mirror a native `read`: keep the image block(s) for pi core's kitty
+          // render alongside the short note. The handoff's `context` hook
+          // swaps each image for its description on the LLM-bound clone, so the
+          // text-only model still receives the description while the terminal
+          // shows the kitty image.
+          const textOutput =
+            singleAudit && mediaNote
+              ? mediaNote
+              : (output === "(no output)" ? "" : output);
+          if (textOutput) content.push({ type: "text", text: textOutput });
+          for (const block of mediaBlocks) content.push(block);
+          if (singleAudit && mediaNote) {
+            singleAudit.result = mediaNote;
+          }
+        } else {
+          content.push({ type: "text", text: output });
+        }
         return {
-          content: [{ type: "text", text: bounded.text }],
+          content,
           details: persistedRenderDetails(),
-          isError: true,
+          ...(result.usage ? { usage: result.usage } : {}),
+          ...(terminate ? { terminate: true } : {}),
+          ...(result.success ? {} : { isError: true }),
+        };
+      };
+
+      const raced = program
+        ? await program.race(execution)
+        : { detached: false as const, value: await execution };
+      if (raced.detached) {
+        void execution.then(
+          async (result) => {
+            const finished = await finishExecution(result, true);
+            const text = finished.content
+              .map((part) => (part.type === "text" ? part.text : "[image omitted]"))
+              .join("\n");
+            await program!.complete(text, !finished.isError);
+          },
+          (error: unknown) => program!.complete(
+            `Runtime error: ${error instanceof Error ? error.message : String(error)}`,
+            false,
+          ),
+        ).catch(() => undefined);
+        return {
+          content: [{ type: "text", text: fabricDetachedText(raced.job.id, raced.elapsedMs, params.background === true) }],
+          details: undefined,
         };
       }
-
-      const output = (await boundModelOutput(
-        rawOutput || "(no output)",
-        outputBudget,
-        fullRawOutput || "(no output)",
-      )).text;
-      // In-place prewalk continuation arrives as an in-band context message on
-      // this boundary turn, so the loop must keep running: the executor's first
-      // request follows naturally. Terminating here would strand the
-      // continuation — no queued turn remains to carry it.
-      const inPlaceContinuation = pendingHandoff?.kind === "prewalk-in-place";
-      const terminate =
-        !inPlaceContinuation &&
-        (pendingHandoff !== undefined ||
-          (result.success &&
-            typeof result.value === "object" &&
-            result.value !== null &&
-            "terminate" in result.value &&
-            result.value.terminate === true));
-      // A nested `pi.read` of an image returns image content blocks that
-      // normalizeResult stripped (the sandbox holds text only). The provider
-      // handed them out-of-band to each call audit; re-attach them here so
-      // pi core's ToolExecutionComponent renders a kitty image preview — the
-      // same path a native `read` takes — for single-call AND multitool
-      // reads. pi-vision-handoff keeps the image in the nested tool_result
-      // (its `context` hook swaps image→description on the LLM-bound
-      // fabric_exec clone), so every read audit carries its image here.
-      const mediaBlocks: FabricMediaBlock[] = [];
-      // Images the guest returned directly, hoisted out of the text channels by
-      // the media sanitizer; their descriptors remain in the text.
-      for (const block of result.media ?? []) mediaBlocks.push(block);
-      for (const audit of result.audits) {
-        if (audit.media) mediaBlocks.push(...audit.media);
-      }
-      const singleAudit = result.audits.length === 1 ? result.audits[0] : undefined;
-      // The read tool's own text note (e.g. "Read image file [image/png]"),
-      // captured after the handoff stripped pi's non-vision note. Used as
-      // the single-call body + content text so the preview shows the kitty
-      // image + the clean note (like pi core) instead of the handoff's
-      // verbose description. Multitool renders each read's note as its own
-      // call body, so the joined program return suffices as the content text
-      // there.
-      const mediaNote = singleAudit?.mediaNote;
-      // The base64 payload now lives in the result content; discard the
-      // duplicate in-memory audit copies before returning.
-      for (const audit of result.audits) {
-        delete audit.media;
-        delete audit.mediaNote;
-      }
-      const content: Array<{ type: "text"; text: string } | FabricMediaBlock> = [];
-      if (mediaBlocks.length > 0) {
-        // Mirror a native `read`: keep the image block(s) for pi core's kitty
-        // render alongside the short note. The handoff's `context` hook
-        // swaps each image for its description on the LLM-bound clone, so the
-        // text-only model still receives the description while the terminal
-        // shows the kitty image.
-        const textOutput =
-          singleAudit && mediaNote
-            ? mediaNote
-            : (output === "(no output)" ? "" : output);
-        if (textOutput) content.push({ type: "text", text: textOutput });
-        for (const block of mediaBlocks) content.push(block);
-        if (singleAudit && mediaNote) {
-          singleAudit.result = mediaNote;
-        }
-      } else {
-        content.push({ type: "text", text: output });
-      }
-      return {
-        content,
-        details: persistedRenderDetails(),
-        ...(result.usage ? { usage: result.usage } : {}),
-        ...(terminate ? { terminate: true } : {}),
-        ...(result.success ? {} : { isError: true }),
-      };
+      return finishExecution(raced.value, false);
     },
   }),
   {
