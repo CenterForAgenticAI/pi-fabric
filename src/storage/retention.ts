@@ -131,6 +131,8 @@ const onlyOwnedFiles = (directory: string, allowed: (name: string) => boolean): 
   fs.readdirSync(directory).every((name) => allowed(name) && ownedStat(path.join(directory, name))?.isFile() === true);
 const DURABLE_SESSION_FILE = "session.jsonl";
 const DURABLE_SESSION_TEMP = /^tmp-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.jsonl$/;
+/** A file an extension keeps beside the session file, such as billion-context-pi's `session.jsonl.acp.json`. */
+const DURABLE_SESSION_SIDECAR = /^session\.jsonl\.[A-Za-z0-9][A-Za-z0-9._-]*$/;
 /**
  * A pi-durable worker's private session folder (src/durable/worker-role-seed.ts):
  * only `session.jsonl` and the `tmp-<uuid v4>.jsonl` names the worker writes,
@@ -138,11 +140,17 @@ const DURABLE_SESSION_TEMP = /^tmp-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0
  * as the crash leftover between the worker's link and unlink: the folder holds
  * exactly `session.jsonl` and one temp name sharing device and inode. A link that
  * leaves the folder, an unknown name, a symlink or another owner keeps the run.
+ * A `session.jsonl.<suffix>` sidecar is accepted only as an owned regular file with one name.
  */
 const safeDurableSessionFolder = (directory: string): boolean => {
   const uid = process.getuid?.();
   const stats = new Map<string, fs.Stats>();
   for (const name of fs.readdirSync(directory)) {
+    if (DURABLE_SESSION_SIDECAR.test(name)) {
+      const sidecar = fs.lstatSync(path.join(directory, name));
+      if (!sidecar.isFile() || (uid !== undefined && sidecar.uid !== uid) || sidecar.nlink !== 1) return false;
+      continue;
+    }
     if (name !== DURABLE_SESSION_FILE && !DURABLE_SESSION_TEMP.test(name)) return false;
     const stat = fs.lstatSync(path.join(directory, name));
     if (!stat.isFile() || (uid !== undefined && stat.uid !== uid) || stat.nlink > 2) return false;
