@@ -269,6 +269,36 @@ The host remains responsible for OS isolation, resource loading, broker authoriz
 cancellation, and for exposing only trusted extension code. This option does not sandbox arbitrary
 host-side extensions. In particular, do not auto-load plugins from the agent's computer snapshot.
 
+## Host policy
+
+An extension that embeds Fabric for a restricted agent, such as a worker runner, can narrow that Fabric instance with `FABRIC_HOST_POLICY_EVENT` (`pi-fabric:host-policy:v1`). Unlike `managedHost`, it works for a Fabric that Pi's resource loader loaded, because no factory call is needed. Send it from the host's extension factory, before the instance runs anything. Fabric replies before `emit` returns:
+
+```ts
+import { FABRIC_HOST_POLICY_EVENT, type FabricHostPolicyReplyV1 } from "pi-fabric";
+
+let reply: FabricHostPolicyReplyV1 | undefined;
+pi.events.emit(FABRIC_HOST_POLICY_EVENT, {
+  policy: { owner: "my-host", reason: "read-only worker", deniedTools: ["write", "edit"], allowedRefs: ["agents.status"] },
+  reply: (value: FabricHostPolicyReplyV1) => { reply = value; },
+});
+if (!reply?.accepted) {
+  // Fabric is absent, too old, already sealed, or refused the policy: do not expose fabric_exec.
+}
+```
+
+An accepted reply is `{ version: 1, accepted: true, digest, enforced }`. `enforced` lists every policy field this build enforces. `digest` is a SHA-256 over the accepted policy. A refusal is `{ version: 1, accepted: false, reason }`. Fabric refuses a policy that is malformed, names a field it does not enforce, follows an earlier accepted policy, or arrives after the instance ran a program or a provider call. A request without a `reply` function gets no answer.
+
+The policy is sealed on the first program or provider call. It cannot be replaced, widened or added to after that, so no call admitted before the policy can run under it. It lasts as long as the extension instance: a new session on the same instance keeps it, and `/reload` creates a new instance that starts without one.
+
+Fabric decides from the `provider.action` ref as the program wrote it, before any provider code runs, including `describe`, `list` and `prepareArguments`. When Fabric repairs a misspelled name, such as `pi.Write` or `pi.save` for `pi.write`, it calls the provider's `describe` and `list` to find the canonical action, then decides again on that action before `prepareArguments` or the provider runs. A repaired name never reaches an action the policy refuses:
+
+- `deniedTools` refuses those names through `pi.*` and `extensions.*`. Each entry is a tool name of letters, digits, `_` and `-`. Other `pi.*` and `extensions.*` calls replay Pi `tool_call` hooks, so the host's own guards see them. While a policy is active, a non-read `pi.*` tool fails closed when no hook runner exists.
+- `deniedProviders` refuses whole providers. Each entry must be a valid provider name: lowercase letters, digits, `_` and `-`, starting with a letter. A policy with an entry that breaks either rule, such as `"MCP"` or `"mcp "`, is refused whole.
+- Every other action is refused unless it matches a host `allowedRefs` entry or is one of Fabric's fixed built-in read-only actions. An entry is an exact ref, or a prefix ending in `.*`, such as `mcp.docs.*`. The fixed set is `cache.status`, `compact.pressure`, `compact.status`, `components.describe`, `components.graph`, `components.list`, `components.status`, `memory.expand`, `memory.recall`, `memory.sessions`, `programs.get`, `programs.list`, `schema.status`, `state.get`, `state.history` and `thinking.status`. Third parties cannot register those provider names. Fabric never uses a provider's own `risk` label to allow an action.
+- Native executors (CPython, `node-process`, `bun-process`) are refused, because they run outside every tool hook.
+
+Refused actions and providers are left out of listings, search, catalogs and program type declarations.
+
 ## Principal and scope
 
 A host can attach a principal and resource grants to a Fabric session. Fabric propagates them and narrows them for children. Providers and adapters enforce them. A program can never set or widen a principal.

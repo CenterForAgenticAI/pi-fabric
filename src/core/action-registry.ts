@@ -72,6 +72,7 @@ import type {
   FabricSpeculationRuntime,
 } from "../speculation/types.js";
 import type { FabricNestedToolResultProxy } from "./tool-result-proxy.js";
+import type { FabricHostPolicy } from "./host-policy.js";
 import {
   FabricProviderBindings,
   type FabricProviderBinding,
@@ -323,6 +324,7 @@ export class ActionRegistry {
   readonly #activeEffects = new Map<string, { ref: string; effect: FabricActionEffect }>();
   readonly #unavailable = new Map<string, string>();
   #unavailableResolver: ((name: string) => string | undefined) | undefined;
+  #hostPolicy: FabricHostPolicy | undefined;
   #speculation: FabricSpeculationRuntime | undefined;
   #speculationEligibility: ((action: ResolvedFabricAction) => boolean) | undefined;
 
@@ -392,6 +394,45 @@ export class ActionRegistry {
     this.#unavailableResolver = resolve;
   }
 
+  /** Host restrictions checked before any provider prepares or runs an action. */
+  setHostPolicy(policy: FabricHostPolicy | undefined): void {
+    this.#hostPolicy = policy;
+  }
+
+  get hostPolicy(): FabricHostPolicy | undefined {
+    return this.#hostPolicy;
+  }
+
+  #policyProviders(providers: FabricProvider[]): FabricProvider[] {
+    const policy = this.#hostPolicy;
+    return policy?.active ? providers.filter((provider) => !policy.providerHidden(provider.name)) : providers;
+  }
+
+  #policyRefs(refs: string[]): string[] {
+    const policy = this.#hostPolicy;
+    if (!policy?.active) return refs;
+    return refs.filter((ref) => {
+      const separator = ref.indexOf(".");
+      return !policy.refDenial(ref.slice(0, separator), ref.slice(separator + 1));
+    });
+  }
+
+  #policyActions<T extends { provider: string; name: string }>(actions: T[]): T[] {
+    const policy = this.#hostPolicy;
+    return policy?.active ? actions.filter((action) => !policy.refDenial(action.provider, action.name)) : actions;
+  }
+
+  /**
+   * Decide again on the action that resolution produced. Name repair can turn
+   * a ref the policy allowed as written (pi.Write, pi.save) into a denied
+   * canonical action, so every caller checks the resolved name before it
+   * prepares arguments or runs the provider.
+   */
+  #assertResolvedAllowed(action: { provider: string; name: string }): void {
+    const denial = this.#hostPolicy?.refDenial(action.provider, action.name);
+    if (denial) throw new FabricResolutionError(denial);
+  }
+
   markUnavailable(name: string, reason: string): void {
     if (!providerNamePattern.test(name)) {
       throw new Error(`Invalid Fabric provider name: ${name}`);
@@ -419,7 +460,7 @@ export class ActionRegistry {
     if (context) this.#scopeContext(context);
     return context?.capabilityView
       ? [...new Set(this.#viewAuthority(context.capabilityView).bindings().map(value => this.#providerBindings.binding(value.providerBindingId)?.provider).filter((provider): provider is FabricProvider => Boolean(provider)))]
-      : this.#providerBindings.providers();
+      : this.#policyProviders(this.#providerBindings.providers());
   }
 
   providers(context?: FabricInvocationContext): Array<{ name: string; description: string }> {
@@ -509,7 +550,9 @@ export class ActionRegistry {
     const mcp = this.#providerBindings.current("mcp")?.provider as
       | (FabricProvider & { sliceDescriptors?: () => FabricActionDescriptor[] })
       | undefined;
-    const mcpDescriptors = mcp?.sliceDescriptors?.();
+    const mcpDescriptors = this.#hostPolicy?.active
+      ? mcp?.sliceDescriptors?.().filter((descriptor) => !this.#hostPolicy!.refDenial("mcp", descriptor.name))
+      : mcp?.sliceDescriptors?.();
     if (mcpDescriptors && mcpDescriptors.length > 0) {
       const byServer = new Map<string, Map<string, FabricNamedActionTypeSource>>();
       for (const descriptor of mcpDescriptors) {
@@ -545,7 +588,7 @@ export class ActionRegistry {
     const extensions = this.#providerBindings.current("extensions")?.provider;
     if (extensions) {
       try {
-        const descriptors = await extensions.list({}, context);
+        const descriptors = this.#policyActions((await extensions.list({}, context)).map((descriptor) => ({ ...descriptor, provider: "extensions" })));
         if (descriptors.length > 0) {
           sources.extensionTools = descriptors.map((descriptor) => ({
             name: descriptor.name,
@@ -592,6 +635,7 @@ export class ActionRegistry {
         provider: name,
         actions: descriptors.flatMap((descriptor) => {
           if (!isPlainRecord(descriptor) || quarantined.has(`${name}.${String(descriptor.name)}`)) return [];
+          if (this.#hostPolicy?.active && this.#hostPolicy.refDenial(name, String(descriptor.name))) return [];
           // Teaching: the type gate checks against the compiled schema,
           // the same shape invoke validates against.
           return actionTypeSource(
@@ -623,7 +667,7 @@ export class ActionRegistry {
   ): Promise<{ actions: ResolvedFabricAction[]; total: number; truncated: boolean }> {
     context = this.#scopeContext(context);
     if (context.capabilityView) {
-      const refs = this.#viewAuthority(context.capabilityView).bindings().map(binding => binding.ref)
+      const refs = this.#policyRefs(this.#viewAuthority(context.capabilityView).bindings().map(binding => binding.ref))
         .filter((ref) => !request.provider || ref.startsWith(`${request.provider}.`))
         .filter((ref) => request.declared || !activeQuarantinedRefNames().has(ref))
         .sort();
@@ -637,9 +681,9 @@ export class ActionRegistry {
       const page = filtered.slice(0, fabricActionListLimit(request.limit));
       return { actions: page, total: filtered.length, truncated: filtered.length > page.length };
     }
-    const providers = request.provider
+    const providers = this.#policyProviders(request.provider
       ? [this.#requireProvider(request.provider)]
-      : this.#providerBindings.providers();
+      : this.#providerBindings.providers());
     const lists = await Promise.all(
       providers.map(async (provider) => {
         const descriptors = await runAbortable(context.signal, () => this.#providerBindings.trackProvider(provider, () => provider.list(request, context)));
@@ -665,7 +709,7 @@ export class ActionRegistry {
           });
       }),
     );
-    const all = lists.flat();
+    const all = this.#policyActions(lists.flat());
     const page = all.slice(0, fabricActionListLimit(request.limit));
     return { actions: page, total: all.length, truncated: all.length > page.length };
   }
@@ -698,6 +742,7 @@ export class ActionRegistry {
         : this.#providerBindings.providers())
       .filter((provider) => !options.provider || provider.name === options.provider)
       .filter((provider) => options.includeProvider?.(provider.name) ?? true)
+      .filter((provider) => !this.#hostPolicy?.active || !this.#hostPolicy.providerHidden(provider.name))
       .sort((left, right) => left.name.localeCompare(right.name));
     const lists = await Promise.all(
       providers.map(async (provider) => ({
@@ -711,7 +756,7 @@ export class ActionRegistry {
               )
               .map((descriptor) => resolveDescriptor(provider, descriptor)),
       })),
-    );
+    ).then((entries) => entries.map(({ provider, actions }) => ({ provider, actions: this.#policyActions(actions) })));
     const allActions = lists.flatMap(({ actions }) => actions)
       .sort((left, right) => left.ref.localeCompare(right.ref));
     const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 1_000), 1_000));
@@ -808,6 +853,7 @@ export class ActionRegistry {
         throw new FabricResolutionError(formatUnknownActionMessage(ref, resolved.suggestions));
       }
       const action = resolved.action;
+      this.#assertResolvedAllowed(action);
       if (expectedDescriptorHash && actionDescriptorHash(action) !== expectedDescriptorHash) {
         throw new FabricResolutionError(`Fabric capability descriptor changed: ${ref}`);
       }
@@ -815,7 +861,7 @@ export class ActionRegistry {
     }
     if (context.capabilityView) {
       const pinned = await Promise.all(
-        this.#viewAuthority(context.capabilityView).bindings().map(binding => binding.ref).map((candidate) =>
+        this.#policyRefs(this.#viewAuthority(context.capabilityView).bindings().map(binding => binding.ref)).map((candidate) =>
           this.describe(candidate, context),
         ),
       );
@@ -833,7 +879,7 @@ export class ActionRegistry {
     // provider for a unique action-name match.
     const matches: ResolvedFabricAction[] = [];
     const declaredNames: string[] = [];
-    for (const provider of this.#providerBindings.providers()) {
+    for (const provider of this.#policyProviders(this.#providerBindings.providers())) {
       let descriptors: FabricActionDescriptor[];
       try {
         descriptors = await runAbortable(context.signal, () => this.#providerBindings.trackProvider(provider, () => provider.list({}, context)));
@@ -845,6 +891,7 @@ export class ActionRegistry {
         if (descriptor.name === ref) matches.push(resolveDescriptor(provider, descriptor));
       }
     }
+    matches.splice(0, matches.length, ...this.#policyActions(matches));
     if (matches.length === 1) return matches[0]!;
     if (matches.length > 1) {
       throw new Error(
@@ -882,6 +929,7 @@ export class ActionRegistry {
         throw new FabricResolutionError(formatUnknownActionMessage(ref, resolved.suggestions));
       }
       const action = resolved.action;
+      this.#assertResolvedAllowed(action);
       const providerActionName = resolved.repairedFrom === undefined ? actionName : action.name;
       const authority = { ref: action.ref, descriptor: actionDescriptorHash(action) };
       if (expectedDescriptorHash && actionDescriptorHash(action) !== expectedDescriptorHash) {
@@ -968,6 +1016,7 @@ export class ActionRegistry {
         throw new FabricResolutionError(formatUnknownActionMessage(ref, resolved.suggestions));
       }
       const action = resolved.action;
+      this.#assertResolvedAllowed(action);
       const providerActionName = resolved.repairedFrom === undefined ? actionName : action.name;
       const authority = { ref: action.ref, descriptor: actionDescriptorHash(action) };
       if (expectedDescriptorHash && actionDescriptorHash(action) !== expectedDescriptorHash) {
@@ -1307,6 +1356,7 @@ export class ActionRegistry {
         this.#providerBindings.trackProvider(provider, () => provider.describe(actionName, context)));
       if (!descriptor) return undefined;
       const action = resolveDescriptor(provider, descriptor);
+      if (this.#hostPolicy?.refDenial(action.provider, action.name)) return undefined;
       if (expectedDescriptorHash && actionDescriptorHash(action) !== expectedDescriptorHash) {
         return undefined;
       }
@@ -1592,6 +1642,12 @@ export class ActionRegistry {
       throw new Error(`Fabric action references must use provider.action: ${ref}`);
     }
     const providerName = ref.slice(0, separator);
+    // The sealed host policy decides from the ref as written, before any
+    // provider code (describe, list or prepareArguments) runs for a refused
+    // action. Callers decide again on the resolved name with
+    // #assertResolvedAllowed, because resolution can repair the name.
+    const hostDenial = this.#hostPolicy?.refDenial(providerName, ref.slice(separator + 1));
+    if (hostDenial) throw new FabricResolutionError(hostDenial);
     const pinned = view ? this.#viewAuthority(view).resolve(ref) : undefined;
     if (view && !pinned) {
       throw new FabricResolutionError(`Fabric capability is outside the committed view: ${ref}`);

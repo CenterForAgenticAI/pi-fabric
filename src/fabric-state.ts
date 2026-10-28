@@ -55,6 +55,7 @@ import type { ActiveCompactionOwner } from "./compaction/claim.js";
 
 import { FabricManagedHost, type FabricManagedHostOptions } from "./managed-host.js";
 import { FabricProgramTasks } from "./core/program-tasks.js";
+import type { FabricHostPolicy } from "./core/host-policy.js";
 
 export interface FabricStateOptions {
   managedHost?: FabricManagedHostOptions;
@@ -63,6 +64,7 @@ export interface FabricStateOptions {
   entryIdentity?: FabricLoadedFileIdentity;
   /** The extension holding the compaction owner claim; compact.* routes there. */
   compactionOwner?: () => ActiveCompactionOwner | undefined;
+  hostPolicy?: FabricHostPolicy;
 }
 
 type ActivationHook = (context: ExtensionContext) => void | Promise<void>;
@@ -572,6 +574,7 @@ export class FabricState {
         ...(this.#entryIdentity ? { entryIdentity: this.#entryIdentity } : {}),
         foregroundTools: () => this.foregroundTools().tools,
         compactionOwner: this.#options.compactionOwner,
+        ...(this.#options.hostPolicy ? { hostPolicy: this.#options.hostPolicy } : {}),
       },
     );
   }

@@ -451,6 +451,104 @@ export interface FabricCompactionOwnerWithdrawV1 {
 export type FabricCompactionOwnerMessageV1 =
   | FabricCompactionOwnerClaimV1
   | FabricCompactionOwnerWithdrawV1;
+export const FABRIC_HOST_POLICY_EVENT = "pi-fabric:host-policy:v1";
+export const MAX_FABRIC_HOST_POLICY_NAMES = 256;
+
+/** Every policy field this build enforces. A request naming any other field is refused. */
+export const FABRIC_HOST_POLICY_FIELDS = ["owner", "reason", "deniedTools", "deniedProviders", "allowedRefs"] as const;
+export type FabricHostPolicyField = (typeof FABRIC_HOST_POLICY_FIELDS)[number];
+
+/**
+ * The one restriction an embedding host (for example a delegate worker runner)
+ * places on this Fabric instance. The host sends it before the instance runs
+ * anything; Fabric seals it on the first program or provider call, so it
+ * cannot be replaced, widened or added to afterwards.
+ *
+ * - `deniedTools`: Pi core and captured extension tool names refused through
+ *   `pi.*` and `extensions.*`.
+ * - `deniedProviders`: Fabric providers refused entirely.
+ * - `allowedRefs`: exact `provider.action` refs, or `provider.*`, that the
+ *   host allows outside `pi.*` and `extensions.*`. Those providers do not
+ *   replay Pi `tool_call` hooks. Without an entry, only Fabric's fixed set of
+ *   built-in read-only actions is allowed; a provider's own `risk` label never
+ *   grants anything.
+ *
+ * Any policy also refuses native executors, which bypass tool hooks.
+ */
+export interface FabricHostPolicyV1 {
+  owner: string;
+  reason: string;
+  deniedTools?: string[];
+  deniedProviders?: string[];
+  allowedRefs?: string[];
+}
+
+/** `accepted: true` means the policy is in force and will be sealed unchanged. */
+export type FabricHostPolicyReplyV1 =
+  | { version: 1; accepted: true; digest: string; enforced: FabricHostPolicyField[] }
+  | { version: 1; accepted: false; reason: string };
+
+/** Host-local synchronous request; Fabric replies before `emit` returns. */
+export interface FabricHostPolicyRequestV1 {
+  policy: FabricHostPolicyV1;
+  reply: (reply: FabricHostPolicyReplyV1) => void;
+}
+
+const HOST_POLICY_FIELD_SET: ReadonlySet<string> = new Set(FABRIC_HOST_POLICY_FIELDS);
+const HOST_POLICY_REF = /^[a-z][a-z0-9_-]*\.(?:\*|[^\s*]+(?:\.\*)?)$/;
+// Same rule as the registry's provider names, so an entry that can never name
+// a provider ("MCP", "mcp ") is refused instead of acknowledged and ignored.
+const HOST_POLICY_PROVIDER = /^[a-z][a-z0-9_-]*$/;
+// Tool names as model APIs accept them: letters, digits, `_` and `-`.
+const HOST_POLICY_TOOL = /^[A-Za-z0-9_-]+$/;
+
+const boundedNames = (value: unknown, pattern?: RegExp): value is string[] =>
+  Array.isArray(value) &&
+  value.length <= MAX_FABRIC_HOST_POLICY_NAMES &&
+  value.every((name) => typeof name === "string" && name.length > 0 && name.length <= 256 && (!pattern || pattern.test(name)));
+
+const boundedLabel = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0 && value.length <= 1_024;
+
+/**
+ * Copies named fields only. A request without a reply function is ignored.
+ * A malformed policy, or one with a field this build does not enforce, is
+ * refused whole with a reason and never partially applied.
+ */
+export const readFabricHostPolicyRequestV1 = (
+  value: unknown,
+):
+  | { ok: true; request: FabricHostPolicyRequestV1 }
+  | { ok: false; reason: string; reply: FabricHostPolicyRequestV1["reply"] }
+  | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.reply !== "function") return undefined;
+  const reply = record.reply as FabricHostPolicyRequestV1["reply"];
+  const refuse = (reason: string) => ({ ok: false as const, reason, reply });
+  const raw = record.policy;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return refuse("policy must be an object");
+  const policy = raw as Record<string, unknown>;
+  const unknown = Object.keys(policy).filter((key) => !HOST_POLICY_FIELD_SET.has(key));
+  if (unknown.length > 0) return refuse(`unsupported policy fields: ${unknown.slice(0, 8).join(", ")}`);
+  if (!boundedLabel(policy.owner) || !boundedLabel(policy.reason)) return refuse("owner and reason must be non-empty strings of at most 1024 characters");
+  if (policy.deniedTools !== undefined && !boundedNames(policy.deniedTools, HOST_POLICY_TOOL)) return refuse("deniedTools must be a list of tool names (letters, digits, _ and -)");
+  if (policy.deniedProviders !== undefined && !boundedNames(policy.deniedProviders, HOST_POLICY_PROVIDER)) return refuse("deniedProviders must be a list of provider names (lowercase letters, digits, _ and -, starting with a letter)");
+  if (policy.allowedRefs !== undefined && !boundedNames(policy.allowedRefs, HOST_POLICY_REF)) return refuse("allowedRefs must be a list of provider.action or provider.* refs");
+  return {
+    ok: true,
+    request: {
+      policy: {
+        owner: policy.owner,
+        reason: policy.reason,
+        ...(policy.deniedTools ? { deniedTools: [...policy.deniedTools] } : {}),
+        ...(policy.deniedProviders ? { deniedProviders: [...policy.deniedProviders] } : {}),
+        ...(policy.allowedRefs ? { allowedRefs: [...policy.allowedRefs] } : {}),
+      },
+      reply,
+    },
+  };
+};
 
 export const FABRIC_COMPONENT_REGISTER_EVENT = "pi-fabric:component:register:v1";
 export const FABRIC_COMPONENT_DISCOVER_EVENT = "pi-fabric:component:discover:v1";

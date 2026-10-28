@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { FabricHostPolicy } from "./core/host-policy.js";
 import { resolveAgentDir } from "./core/agent-dir.js";
 import { loadHostSdk } from "./core/host-sdk.js";
 import { requestChildTraceContext } from "./agents/trace-context-request.js";
@@ -220,6 +221,8 @@ export interface FabricRuntimeStateOptions {
   foregroundTools?: () => readonly string[];
   /** The extension holding the compaction owner claim; compact.* routes there. */
   compactionOwner?: (() => ActiveCompactionOwner | undefined) | undefined;
+  /** Restrictions the embedding host applied through FABRIC_HOST_POLICY_EVENT. */
+  hostPolicy?: FabricHostPolicy;
 }
 
 export class FabricRuntimeState {
@@ -284,6 +287,7 @@ export class FabricRuntimeState {
   readonly #managedHost: FabricManagedHost | undefined;
   readonly #entryIdentity: FabricLoadedFileIdentity | undefined;
   readonly #foregroundTools: (() => readonly string[]) | undefined;
+  readonly #hostPolicy: FabricHostPolicy | undefined;
   #widgetDismissedAt = 0;
   #suppressResidentGuidanceSync = false;
 
@@ -303,6 +307,7 @@ export class FabricRuntimeState {
     this.#entryIdentity = options.entryIdentity;
     this.#foregroundTools = options.foregroundTools;
     this.#compactionOwner = options.compactionOwner;
+    this.#hostPolicy = options.hostPolicy;
   }
 
   get initialized(): boolean {
@@ -563,6 +568,7 @@ export class FabricRuntimeState {
     this.#registry = new ActionRegistry(
       new FabricToolResultProxy(() => this.capturedTools.runner),
     );
+    this.#registry.setHostPolicy(this.#hostPolicy);
     this.#configureSpeculation();
     this.#unsubscribeCapturedCatalog?.();
     this.#unsubscribeCapturedCatalog = this.capturedTools.subscribe(() => {
