@@ -488,6 +488,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
       enabled: () => state.initialized,
       ownsInput: () => fabricUi.ownsInput,
       jobs: () => state.shellJobs,
+      programs: () => state.programTasks,
     });
   };
 
