@@ -54,7 +54,7 @@ describe("published build artifact guards", () => {
     for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
       expect(manifest.dependencies[name]).toBeUndefined();
       expect(manifest.peerDependencies[name]).toBe("*");
-      expect(manifest.devDependencies[name]).toBe(name === "typebox" ? "1.3.27" : "1.3.0");
+      expect(manifest.devDependencies[name]).toBe(name === "typebox" ? "1.3.27" : "1.4.0");
       expect(manifest.overrides?.[name]).toBeUndefined();
       expect(manifest.resolutions?.[name]).toBeUndefined();
     }
@@ -113,7 +113,7 @@ describe("published build artifact guards", () => {
     const dir = bundledFixture();
     const file = path.join(dir, "node_modules/fixture-provider/package.json");
     const bundled = JSON.parse(fs.readFileSync(file, "utf8"));
-    bundled.dependencies = { "@earendil-works/pi-ai": "1.3.0" };
+    bundled.dependencies = { "@earendil-works/pi-ai": "1.4.0" };
     fs.writeFileSync(file, JSON.stringify(bundled));
     rejected(dir, "must declare host package @earendil-works/pi-ai as a peer");
   });
