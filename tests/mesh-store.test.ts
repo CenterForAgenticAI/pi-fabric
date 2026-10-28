@@ -146,6 +146,23 @@ describe("MeshStore", () => {
     ]);
   });
 
+  it("clones only the bounded, sorted result while isolating returned values", async () => {
+    const store = createStore();
+    for (const key of ["shared/z", "shared/a", "other/c"]) {
+      await store.put({ key, value: { nested: { count: 1 } }, identity });
+    }
+    const stringify = vi.spyOn(JSON, "stringify");
+    const result = store.list("shared/", 1);
+    const copiedKeys = stringify.mock.calls.map(([value]) => value?.key);
+    stringify.mockRestore();
+
+    expect(result.map((entry) => entry.key)).toEqual(["shared/a"]);
+    expect(copiedKeys).toEqual(["shared/a"]);
+    (result[0]!.value as { nested: { count: number } }).nested.count = 99;
+    expect(store.get("shared/a")?.value).toEqual({ nested: { count: 1 } });
+    expect(store.listAll("shared/").map((entry) => entry.key)).toEqual(["shared/a", "shared/z"]);
+  });
+
   it("supports compare-and-swap shared state", async () => {
     const store = createStore();
     const created = await store.put({
