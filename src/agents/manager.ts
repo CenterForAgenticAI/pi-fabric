@@ -2489,7 +2489,9 @@ export class AgentManager {
         if (this.#inheritedToolAllowlist === undefined || this.#inheritedToolAllowlist.has(tool)) tools.push(tool);
       }
     }
+    // A parent launched without fabric_exec never hands it to a child.
     if (
+      (this.#inheritedToolAllowlist === undefined || this.#inheritedToolAllowlist.fabricExec) &&
       runner.capabilities.recursiveFabric &&
       (request.recursive || ((this.#fullCodeMode || requiresFabricKernel) && extensions))
     ) {

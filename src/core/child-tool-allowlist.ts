@@ -1,6 +1,8 @@
 /** Inherited optional-tool authority: exact tool names and `*` patterns. */
 export interface ChildToolAllowlist {
   readonly entries: readonly string[];
+  /** The parent itself was launched with fabric_exec, named exactly. */
+  readonly fabricExec: boolean;
   has(name: string): boolean;
 }
 
@@ -11,11 +13,12 @@ export interface ChildToolAllowlist {
 const toolPattern = (pattern: string): RegExp =>
   new RegExp(`^${pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`, "s");
 
-const allowlist = (entries: readonly string[]): ChildToolAllowlist => {
+const allowlist = (entries: readonly string[], fabricExec = false): ChildToolAllowlist => {
   const names = new Set(entries.filter((entry) => !entry.includes("*")));
   const patterns = entries.filter((entry) => entry.includes("*")).map(toolPattern);
   return {
     entries,
+    fabricExec,
     // fabric_exec is never inherited, whatever pattern would cover it.
     has: (name) => name !== "fabric_exec" && (names.has(name) || patterns.some((pattern) => pattern.test(name))),
   };
@@ -27,7 +30,7 @@ export function readChildToolAllowlist(raw = process.env.PI_FABRIC_TOOL_ALLOWLIS
   try {
     const names: unknown = JSON.parse(raw);
     if (Array.isArray(names) && names.every((name) => typeof name === "string")) {
-      return allowlist(names.filter((name) => name !== "fabric_exec"));
+      return allowlist(names.filter((name) => name !== "fabric_exec"), names.includes("fabric_exec"));
     }
   } catch {
     // Malformed inherited authority must fail closed, never widen the surface.
