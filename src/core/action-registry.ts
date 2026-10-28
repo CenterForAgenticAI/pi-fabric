@@ -406,8 +406,20 @@ export class ActionRegistry {
   }
 
   #policyProviders(providers: FabricProvider[]): FabricProvider[] {
-    const policy = this.#hostPolicy;
-    return policy?.active ? providers.filter((provider) => !policy.providerHidden(provider.name)) : providers;
+    return providers.filter((provider) => !this.#hostPolicy?.previewProviderHidden(provider.name));
+  }
+
+  #listProvider(
+    provider: FabricProvider,
+    request: FabricProviderListRequest,
+    context: FabricInvocationContext,
+  ): Promise<FabricActionDescriptor[]> {
+    return runAbortable(context.signal, () => {
+      // Seal at actual admission, even without an active policy. Pure provider
+      // previews and unused type globals must not seal an otherwise idle host.
+      if (this.#hostPolicy?.providerHidden(provider.name)) return [];
+      return this.#providerBindings.trackProvider(provider, () => provider.list(request, context));
+    });
   }
 
   #policyRefs(refs: string[]): string[] {
@@ -553,7 +565,7 @@ export class ActionRegistry {
       | (FabricProvider & { sliceDescriptors?: () => FabricActionDescriptor[] })
       | undefined;
     const mcpDescriptors = this.#hostPolicy?.active
-      ? mcp?.sliceDescriptors?.().filter((descriptor) => !this.#hostPolicy!.refDenial("mcp", descriptor.name))
+      ? mcp?.sliceDescriptors?.().filter((descriptor) => !this.#hostPolicy!.previewDenial("mcp", descriptor.name))
       : mcp?.sliceDescriptors?.();
     if (mcpDescriptors && mcpDescriptors.length > 0) {
       const byServer = new Map<string, Map<string, FabricNamedActionTypeSource>>();
@@ -590,7 +602,7 @@ export class ActionRegistry {
     const extensions = this.#providerBindings.current("extensions")?.provider;
     if (extensions) {
       try {
-        const descriptors = this.#policyActions((await extensions.list({}, context)).map((descriptor) => ({ ...descriptor, provider: "extensions" })));
+        const descriptors = this.#policyActions((await this.#listProvider(extensions, {}, context)).map((descriptor) => ({ ...descriptor, provider: "extensions" })));
         if (descriptors.length > 0) {
           sources.extensionTools = descriptors.map((descriptor) => ({
             name: descriptor.name,
@@ -624,7 +636,7 @@ export class ActionRegistry {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const descriptors = await Promise.race([
-        runAbortable(context.signal, () => this.#providerBindings.trackProvider(provider, () => provider.list({}, context))),
+        this.#listProvider(provider, {}, context),
         new Promise<undefined>((resolve) => {
           const handle = setTimeout(() => resolve(undefined), PROVIDER_TYPE_SOURCE_TIMEOUT_MS);
           (handle as { unref?: () => void }).unref?.();
@@ -690,7 +702,7 @@ export class ActionRegistry {
       : this.#providerBindings.providers());
     const lists = await Promise.all(
       providers.map(async (provider) => {
-        const descriptors = await runAbortable(context.signal, () => this.#providerBindings.trackProvider(provider, () => provider.list(request, context)));
+        const descriptors = await this.#listProvider(provider, request, context);
         return descriptors
           .filter(
             (descriptor) =>
@@ -746,14 +758,14 @@ export class ActionRegistry {
         : this.#providerBindings.providers())
       .filter((provider) => !options.provider || provider.name === options.provider)
       .filter((provider) => options.includeProvider?.(provider.name) ?? true)
-      .filter((provider) => !this.#hostPolicy?.active || !this.#hostPolicy.providerHidden(provider.name))
+      .filter((provider) => !this.#hostPolicy?.previewProviderHidden(provider.name))
       .sort((left, right) => left.name.localeCompare(right.name));
     const lists = await Promise.all(
       providers.map(async (provider) => ({
         provider,
         actions: context.capabilityView
           ? await this.list({ provider: provider.name, limit: 1_000 }, context)
-          : (await runAbortable(context.signal, () => this.#providerBindings.trackProvider(provider, () => provider.list({}, context))))
+          : (await this.#listProvider(provider, {}, context))
               .filter(
                 (descriptor) =>
                   !activeQuarantinedRefNames().has(`${provider.name}.${descriptor.name}`),
@@ -886,7 +898,7 @@ export class ActionRegistry {
     for (const provider of this.#policyProviders(this.#providerBindings.providers())) {
       let descriptors: FabricActionDescriptor[];
       try {
-        descriptors = await runAbortable(context.signal, () => this.#providerBindings.trackProvider(provider, () => provider.list({}, context)));
+        descriptors = await this.#listProvider(provider, {}, context);
       } catch {
         continue;
       }
@@ -1565,7 +1577,7 @@ export class ActionRegistry {
     context: FabricInvocationContext,
   ): Promise<string[]> {
     try {
-      const descriptors = await runAbortable(context.signal, () => this.#providerBindings.trackProvider(provider, () => provider.list({}, context)));
+      const descriptors = await this.#listProvider(provider, {}, context);
       return descriptors.map((descriptor) => descriptor.name);
     } catch {
       return [];

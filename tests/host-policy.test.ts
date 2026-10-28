@@ -360,6 +360,86 @@ describe("registry enforcement", () => {
     await registry.close(new Set(["pi"]));
   });
 
+  it.each([
+    ["list", (registry: ActionRegistry) => registry.list({}, context), "demo"],
+    ["catalog", (registry: ActionRegistry) => registry.catalog(context), "demo"],
+    ["search", (registry: ActionRegistry) => registry.search("echo", context), "demo"],
+    ["bare describe", (registry: ActionRegistry) => registry.describe("echo", context), "demo"],
+    ["provider types", (registry: ActionRegistry) => registry.guestTypeSources(context, { code: "return demo.echo({});" }), "demo"],
+    ["extension types", (registry: ActionRegistry) => registry.guestTypeSources(context), "extensions"],
+  ] as const)("seals before %s enters a provider even without an active policy", async (_label, discover, name) => {
+    const registry = new ActionRegistry();
+    const policy = new FabricHostPolicy();
+    registry.setHostPolicy(policy);
+    let markStarted!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let sealedAtEntry: boolean | undefined;
+    registry.register(provider(name, { echo: "read" }, newTrace(), {
+      async list() {
+        sealedAtEntry = policy.sealed;
+        markStarted();
+        await gate;
+        return [{ name: "echo", description: "echo", inputSchema: { type: "object" }, risk: "read" }];
+      },
+    }));
+    const pending = discover(registry);
+    try {
+      await started;
+      expect(sealedAtEntry).toBe(true);
+      expect(policy.apply({ ...workerPolicy, deniedProviders: [name] })).toMatchObject({
+        accepted: false, reason: expect.stringContaining("sealed"),
+      });
+    } finally {
+      release();
+      await pending;
+      await registry.close(new Set([name]));
+    }
+    expect(policy.active).toBe(false);
+  });
+
+  it("does not seal pure provider previews or unused provider type declarations", async () => {
+    const registry = new ActionRegistry();
+    const policy = new FabricHostPolicy();
+    registry.setHostPolicy(policy);
+    const trace = newTrace();
+    registry.register(provider("demo", { echo: "read" }, trace));
+    expect(registry.providers().map((entry) => entry.name)).toEqual(["demo"]);
+    expect(registry.providerGlobals()).toEqual(["demo"]);
+    await registry.guestTypeSources(context, { code: "return 1;" });
+    expect(trace.described).toEqual([]);
+    expect(policy.sealed).toBe(false);
+    accepted(policy.apply({ ...workerPolicy, allowedRefs: ["demo.echo"] }));
+    expect(registry.providers().map((entry) => entry.name)).toEqual(["demo"]);
+    expect(registry.providerGlobals()).toEqual(["demo"]);
+    expect(policy.sealed).toBe(false);
+    await registry.close(new Set(["demo"]));
+  });
+
+  it("does not seal a cache-only MCP schema preview", async () => {
+    const registry = new ActionRegistry();
+    const policy = new FabricHostPolicy();
+    accepted(policy.apply({ ...workerPolicy, allowedRefs: ["mcp.server.echo"] }));
+    registry.setHostPolicy(policy);
+    const trace = newTrace();
+    const cached = {
+      ...provider("mcp", { "server.echo": "read" }, trace),
+      sliceDescriptors: () => [{
+        name: "server.echo", namespace: "server", description: "echo",
+        inputSchema: { type: "object" }, risk: "read" as const,
+      }],
+    };
+    registry.register(cached);
+    const sources = await registry.guestTypeSources(context, { code: "return 1;" });
+    expect(sources.mcpServers).toEqual([{
+      server: "server", tools: [{ name: "echo", inputSchema: { type: "object" } }],
+    }]);
+    expect(trace.described).toEqual([]);
+    expect(policy.sealed).toBe(false);
+    await registry.close(new Set(["mcp"]));
+  });
+
   it("has no in-flight window: a policy arriving after the first call is refused", async () => {
     // The old design applied a policy at any time. A write already waiting in
     // prepareArguments then ran after a read-only policy was acknowledged.

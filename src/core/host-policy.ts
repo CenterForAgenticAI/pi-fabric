@@ -104,6 +104,11 @@ export class FabricHostPolicy {
   /** True when the policy refuses every action of a provider, so Fabric never lists it. Seals. */
   providerHidden(provider: string): boolean {
     this.#sealed = true;
+    return this.previewProviderHidden(provider);
+  }
+
+  /** Provider visibility without admitting work or sealing the policy. */
+  previewProviderHidden(provider: string): boolean {
     const policy = this.#policy;
     if (!policy) return false;
     if (policy.deniedProviders?.includes(provider)) return true;
