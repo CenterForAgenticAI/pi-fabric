@@ -562,7 +562,7 @@ Authentication uses `/login jev`/`TYPESAFE_API_KEY` on the TypeSafe route, the e
 
 Fabric clears inactive run artifacts by age. It never truncates active JSONL files. The defaults are:
 
-- `retention.orphanedTempRunMs`: reclaim a managed temporary run root six hours after a sweep **first notices** its owner is dead, provided its contents and descendant liveness can be verified. Live owners/descendants are preserved. Closed, shutdown-confirmed incomplete runs use the same grace from close.
+- `retention.orphanedTempRunMs`: reclaim a managed temporary run root six hours after a sweep **first notices** its owner is dead, provided its contents and descendant liveness can be verified. Past that grace, any owned regular file or directory a run left counts as verified; links, hard-linked files, hosted-run locators, unfinished runs and unknown root entries still keep the root. Live owners/descendants are preserved. Closed, shutdown-confirmed incomplete runs use the same grace from close.
 - `retention.oneShotRunMs`: retain terminal one-shot agent run artifacts for 24 hours. An explicit `agents.cleanup()` may remove them sooner. Graceful shutdown with `agents.retainRuns: true` marks managed roots closed; empty roots are removed immediately. `retainRuns: false` requests deletion after child transports stop, including for managed temporary roots. Inherited nested roots belong to the enclosing agent run: a child manager stops its session children but leaves their terminal status and transcripts for that run's cleanup/retention or the root-session shutdown.
 - `retention.actorRunArchiveMs`: retain terminal actor run archives for seven days. Fabric always preserves the latest run for each actor.
 
