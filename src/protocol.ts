@@ -1130,6 +1130,10 @@ export interface FabricInvocationContext {
   // Ephemeral renderer-only metadata. It is exposed to live Fabric previews but
   // never projected into the durable execution trace.
   attachPreview?(preview: unknown): void;
+  // Host-supplied inside fabric_exec. A provider calls this when a successful
+  // nested tool result sets Pi's `terminate: true`; the outer fabric_exec
+  // result then carries `terminate: true` once the program succeeds.
+  requestTerminate?(): void;
   capabilityView?: FabricCommittedCapabilityView;
   /** Frozen host-issued scope; set by the registry only, absent when unscoped. */
   scope?: Readonly<FabricScope>;
