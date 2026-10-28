@@ -702,7 +702,13 @@ export class ActionRegistry {
       : this.#providerBindings.providers());
     const lists = await Promise.all(
       providers.map(async (provider) => {
-        const descriptors = await this.#listProvider(provider, request, context);
+        // Provider enumeration is exhaustive; only the registry applies the
+        // presentation limit, after visibility filtering and total counting.
+        const enumeration: FabricProviderListRequest = {
+          ...(request.namespace === undefined ? {} : { namespace: request.namespace }),
+          ...(request.query === undefined ? {} : { query: request.query }),
+        };
+        const descriptors = await this.#listProvider(provider, enumeration, context);
         return descriptors
           .filter(
             (descriptor) =>

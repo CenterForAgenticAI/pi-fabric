@@ -967,6 +967,7 @@ export interface FabricCapabilityCatalog {
 export interface FabricProviderListRequest {
   namespace?: string;
   query?: string;
+  /** Optional presentation cap. Omitted means enumerate all matching descriptors. */
   limit?: number;
 }
 
