@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readChildToolAllowlist } from "../core/child-tool-allowlist.js";
+import { assertExactModelRequest, type FabricModelMatch } from "../core/model-resolution.js";
 import { writeJsonAtomic } from "../core/atomic-write.js";
 import {
   DEFAULT_FABRIC_CONFIG,
@@ -44,6 +45,7 @@ import {
   readHostedRunState,
   type HostedRunHooks,
 } from "./hosted-run.js";
+import { isModelPinFailure } from "./model-pin.js";
 import { resolvePiBinary } from "./pi-binary.js";
 import {
   inheritedSessionPinsFromEnv,
@@ -228,6 +230,8 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
   // timed_out verdict if the run deadline lands mid-retry.
   lastRetriedTransportFailure?: AgentRunResult;
   model?: string;
+  /** Kept so a startup retry or resume re-prepares the model with the mode it was launched under. */
+  modelMatch?: FabricModelMatch;
   /** holdQuestions: routed questions without their own deadline are held for a person. */
   holdQuestions?: true;
   thinking?: AgentRunRequest["thinking"];
@@ -546,7 +550,7 @@ export class AgentManager {
     | ((request: AgentChildQuestionRequest) => Promise<AgentChildQuestionResponse>)
     | undefined;
   readonly #preparePiModel:
-    | ((model: string | undefined) => Promise<string | void>)
+    | ((model: string | undefined, options?: { modelMatch?: FabricModelMatch }) => Promise<string | void>)
     | undefined;
   readonly #resolveHandoffCompactionBudget:
     | ((model: string | undefined, cwd: string) => Promise<FabricCompactionBudget>)
@@ -607,7 +611,7 @@ export class AgentManager {
       onLifecycle?: (event: FabricLifecyclePublishRequest) => void;
       /** agents.childQuestions "route": answer a child dialog via parent UI or a decision. */
       onChildQuestion?: (request: AgentChildQuestionRequest) => Promise<AgentChildQuestionResponse>;
-      preparePiModel?: (model: string | undefined) => Promise<string | void>;
+      preparePiModel?: (model: string | undefined, options?: { modelMatch?: FabricModelMatch }) => Promise<string | void>;
       resolveHandoffCompactionBudget?: (model: string | undefined, cwd: string) => Promise<FabricCompactionBudget>;
       resolveParticipantGuidance?: AgentParticipantGuidanceResolver;
       resolveInheritedSessionPins?: () => InheritedSessionPin[] | undefined;
@@ -687,12 +691,14 @@ export class AgentManager {
     }
   }
 
-  async #prepareModel(model: string | undefined): Promise<string | undefined> {
+  async #prepareModel(model: string | undefined, modelMatch?: FabricModelMatch): Promise<string | undefined> {
     if (!this.#preparePiModel) return model;
-    const key = model?.trim() || "<session-default>";
+    // Exact and default resolution of one selector can differ, so they never share an in-flight preparation.
+    const key = `${modelMatch ?? ""}|${model?.trim() || "<session-default>"}`;
     const existing = this.#piModelPreparations.get(key);
     if (existing) return existing;
-    const preparation = this.#preparePiModel(model).then((prepared) => {
+    // Without a mode the callback sees exactly the one argument it always has.
+    const preparation = (modelMatch ? this.#preparePiModel(model, { modelMatch }) : this.#preparePiModel(model)).then((prepared) => {
       if (typeof prepared !== "string") return model;
       return prepared.trim() || model;
     });
@@ -830,6 +836,7 @@ export class AgentManager {
       throw new Error(`Invalid Fabric agent residency: ${String(request.residency)}`);
     }
     const runner = request.runner ?? this.config.runner;
+    assertExactModelRequest({ modelMatch: request.modelMatch, runner, model: request.model });
     const runnerAdapter = requireAgentRunner(runner);
     const capabilities = runnerAdapter.capabilities;
     const hostedAdapter = runnerAdapter.kind === "hosted" ? runnerAdapter : undefined;
@@ -938,7 +945,7 @@ export class AgentManager {
     const admissionSignal = signal ? AbortSignal.any([signal, this.#closeAbort.signal]) : this.#closeAbort.signal;
     const release = await this.#semaphore.acquire("native", admissionSignal);
     try {
-      if (runner === "pi" || runner === "pi-durable") model = await this.#prepareModel(model);
+      if (runner === "pi" || runner === "pi-durable") model = await this.#prepareModel(model, request.modelMatch);
       if (this.#closing) throw new Error("Fabric agent manager is closing");
       this.#semaphore.admit(this.#currentDepth + 1);
     } catch (error) {
@@ -1158,7 +1165,9 @@ export class AgentManager {
         "--persist-session",
         String(request.persistSession === true),
         "--model-admission",
-        this.config.modelAdmission ?? "strict",
+        // An exact request is always strict: permissive admission accepts another model.
+        request.modelMatch === "exact" ? "strict" : this.config.modelAdmission ?? "strict",
+        ...(request.modelMatch === "exact" ? ["--model-match", "exact"] : []),
         ...(sessionFile ? ["--session-file", sessionFile] : []),
         ...(sessionExportFile ? ["--session-export-file", sessionExportFile] : []),
         ...(inheritedSessionPins && inheritedSessionPins.length > 0
@@ -1264,6 +1273,7 @@ export class AgentManager {
         abortSignal: signal,
         abortHandler: undefined,
         ...(model ? { model } : {}),
+        ...(request.modelMatch ? { modelMatch: request.modelMatch } : {}),
         ...(request.holdQuestions === true ? { holdQuestions: true as const } : {}),
         ...(thinking ? { thinking } : {}),
         ...(clampedFrom ? { requestedThinking: clampedFrom } : {}),
@@ -1972,6 +1982,10 @@ export class AgentManager {
   ): Promise<boolean> {
     if (
       managed.hosted ||
+      // Decided first, from the exit status and the fixed prefix: no text
+      // classifier below may see a pin error, because a model id can spell
+      // "missing credentials".
+      (managed.modelMatch === "exact" && isModelPinFailure(record)) ||
       // A custom worker that already made progress is never re-run blind.
       (!BUILT_IN_RUNNER_IDS.has(managed.runner) && this.#observedWork(managed)) ||
       managed.startupAttempts >= AGENT_STARTUP_MAX_ATTEMPTS ||
@@ -2019,6 +2033,7 @@ export class AgentManager {
       // Fabric never re-prompts a hosted run, and only its own worker
       // understands the continuation task and --carry-over prefix.
       managed.hosted ||
+      (managed.modelMatch === "exact" && isModelPinFailure(record)) ||
       !BUILT_IN_RUNNER_IDS.has(managed.runner) ||
       managed.settled ||
       this.#closing ||
@@ -2059,7 +2074,7 @@ export class AgentManager {
   ): Promise<boolean> {
     try {
       if (managed.runner === "pi" || managed.runner === "pi-durable") {
-        const model = await this.#prepareModel(managed.model);
+        const model = await this.#prepareModel(managed.model, managed.modelMatch);
         const modelIndex = managed.launch.workerArguments.indexOf("--model");
         if (model) {
           if (modelIndex >= 0) managed.launch.workerArguments[modelIndex + 1] = model;

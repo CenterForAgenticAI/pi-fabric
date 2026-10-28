@@ -832,6 +832,50 @@ describe.skipIf(!hasResidentHost || process.platform === "win32")("durable parti
     await state.participants.close();
   });
 
+  it("keeps modelMatch exact at the resident host, where an alias named like the model would win", { timeout: 45_000 }, async () => {
+    const state = await rootHarness("resident-exact-model");
+    state.config.piModels = {
+      available: [
+        { provider: "provider", id: "visible", name: "Visible" },
+        { provider: "deepseek", id: "deepseek-chat", name: "DeepSeek Chat" },
+      ],
+      aliases: { "provider/visible": { targets: ["deepseek/deepseek-chat"] } },
+      defaultModel: "provider/visible",
+    };
+    const client = new ResidencyClient({
+      config: state.config,
+      mesh: state.mesh,
+      participants: state.participants,
+      mainAgent: state.mainAgent,
+      hostPath,
+    });
+    try {
+      // Control: the alias redirects a default request at the host.
+      const aliased = await client.spawnAgent({
+        task: "Aliased durable agent", transport: "process", residency: "durable", model: "provider/visible",
+      });
+      await expect(client.waitAgent(aliased.id)).resolves.toMatchObject({ model: "deepseek/deepseek-chat" });
+
+      const exact = await client.spawnAgent({
+        task: "Exact durable agent", transport: "process", residency: "durable",
+        model: "provider/visible", modelMatch: "exact",
+      });
+      await expect(client.waitAgent(exact.id)).resolves.toMatchObject({ model: "provider/visible" });
+
+      await expect(client.spawnAgent({
+        task: "Unlisted", transport: "process", residency: "durable",
+        model: "provider/vizible", modelMatch: "exact",
+      })).rejects.toThrow(/not available to this Pi session/);
+
+      await client.cleanupAgent(aliased.id);
+      await client.cleanupAgent(exact.id);
+    } finally {
+      await client.close();
+      await state.participants.close();
+      await stopResident(state.config);
+    }
+  });
+
   it("launches durable agents with the forwarded scope and records it", { timeout: 45_000 }, async () => {
     const state = await rootHarness("resident-scope");
     const client = new ResidencyClient({
