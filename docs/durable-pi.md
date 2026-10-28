@@ -45,22 +45,72 @@ Reopening the same run uses its initial run ID for idempotent submission and
 resumes checkpoints. Completed work is not repeated. An interrupted unsafe tool
 fails closed, including writes and shell commands.
 
-In the durable worker, an interrupted `fabric_exec` call reruns once if its
-program made no effect. The leaf adapter below does not do this. The worker
-offers the call a fence. Fabric accepts it only when every effect must cross the
-host bridge, which holds for the QuickJS and Monty runtimes but not for CPython
-or the Node and Bun processes. Before the first effect, Fabric arms the fence
-and the worker commits that mark. An effect is any call outside the read-only
-set: the tier that speculation may run early (`pi.read`, `pi.grep`,
-`pi.find`, `pi.ls`, and status and lookup actions such as `memory.recall` and
-`programs.get`), the native store load, discovery, and progress reporting. A
-read approval that would prompt or call the auto classifier also arms, and so
-does semantic search. On recovery, an accepted fence that was never armed reruns
-the program from the start. An armed fence, an unaccepted one, or a second crash
-fails closed as before. A rerun can read different file contents than the first
-attempt did. It also emits its progress and `workflow.item` transitions again,
-with the same `invocationId` and item IDs, so a listener that acts on them
-should deduplicate.
+In the durable worker, an interrupted `fabric_exec` call can continue after a
+crash. The leaf adapter below does not do this. The worker offers the call a
+fence. Fabric accepts it only when every effect must cross the host bridge,
+which holds for the QuickJS and Monty runtimes but not for CPython or the Node
+and Bun processes. An effect is any call outside the read-only set: the tier
+that speculation may run early (`pi.read`, `pi.grep`, `pi.find`, `pi.ls`, and
+status and lookup actions such as `memory.recall` and `programs.get`), the
+native store load, discovery, and progress reporting. A read approval that
+would prompt or call the auto classifier is an effect, and so is semantic
+search.
+
+A QuickJS program writes a crash journal. Each tool result is recorded before
+the program sees it, and results reach the program one at a time. Before an
+effect runs, Fabric records an intent and syncs it to disk. On recovery the same
+program runs again with the same clock and random seed. Recorded results are
+served from the journal, so no provider, approval, or prompt runs again. Calls
+after the last recorded result then run live.
+
+A few served calls changed state that lived only in the worker process, so
+Fabric redoes them from their recorded arguments, once each and in their
+recorded order, before the program sees their result. `compact.request` and
+`compact.cancel` are always redone. `prewalk.plan` is redone when the
+restarted session's prewalk arm owes a plan, and skipped otherwise.
+`compact.carry`, `thinking.set`, and `thinking.reset` are redone only when
+the session entry they wrote did not survive, as in a worker without a session
+file, so a surviving session never gets a second entry. A redo runs the
+provider again under the current policy, without asking for approval again. If
+a redo fails, the program stops, reports that call and its error, and runs
+nothing after it. State, mesh, saved programs, and cache releases are already on
+disk or safe to skip and are not redone. Schema hypotheses and certificates are
+stored in the mesh and bound to the tool call, so a resumed `schema.commit`
+still checks the recorded certificate: it is refused once the certificate has
+expired or the workspace or state changed since verification. If a call has an intent but no
+result, it may have taken effect. Fabric asks whether to run that call again
+as a `select` dialog, and pauses the program deadline while it waits (a
+`timeout_ms` hard deadline keeps running). Only "Run it again" repeats the
+call. "Stop here", a dismissed question, a question left unanswered for 5
+minutes, or more than one such call stops the program, which reports the call.
+The dialog goes to the worker's RPC client. A parent agent cancels it by
+default, so the program stops. With `agents.childQuestions: "route"`, a parent
+session asks its person or raises a root-held decision. Fabric also
+refuses to resume, and runs nothing, when the program or its settings changed, the runtime or a pinned engine version
+changed, the program stops repeating its recorded calls, the journal is missing
+or damaged, or a recorded result named work such as a child agent or background
+task that does not survive a restart. A call resumes at most three times.
+
+The journal holds the program's identity digest, its random seed and start
+time, and for every host call its reference, an argument digest, and the full
+result or error the program received. Each line carries a checksum and a hash
+of the line before it, so a lost, reordered, or foreign line refuses the
+resume. Lines lost from the very end cannot be detected this way; Fabric relies
+on `fdatasync` to keep a synced intent. Tool output can include secrets, so the
+journal is private to its owner (mode `0600`). The worker deletes it as soon as
+the call's final result is committed to the durable store, whether the call
+succeeded, failed, was stopped as interrupted, or was aborted. It is never
+deleted before that commit. If the worker crashes between the commit and the
+delete, a sweep at worker start deletes any journal a day after its last write.
+
+Monty programs keep the earlier fence. Before the first effect, Fabric arms the
+fence and the worker commits that mark. On recovery, an accepted fence that was
+never armed reruns the program from the start. An armed fence, an unaccepted
+one, or a second crash fails closed as before. A rerun can read different file
+contents than the first attempt did. It also emits its progress and
+`workflow.item` transitions again, with the same `invocationId` and item IDs,
+so a listener that acts on them should deduplicate. A journal resume does the
+same for the progress calls it serves.
 
 A worker's store lives in its run directory under `durable/`. Recovery never
 replays streaming updates, so each provider delta and tool progress update commits
@@ -84,7 +134,8 @@ Worker retries retain the original prompt identity, so a completed journal can
 restore its answer even if the parent died before saving completion. Automatic
 reattachment after the owning Fabric/resident process restarts currently covers
 hosted adapters, not this built-in worker; `agents.wait` on such a run fails at
-once when its resident host is gone. Recovery of completed conversations
+once when its resident host is gone and settles the run failed with outcome
+`indeterminate`. Recovery of completed conversations
 with additional steering/follow-up user messages also remains incomplete: strict
 transcript correlation fails closed to avoid attributing a stale answer.
 Control acknowledgements do not provide an end-to-end exactly-once delivery
@@ -101,8 +152,8 @@ the separate ID explicitly.
 Exports include `PiDurableRunner`, `PiDurableRunnerOptions`,
 `PiDurableStorageOptions`, `PiDurableStorageLease`, `PiDurableLocator`, and
 `PiDurableMessageOptions`. Import/construction stays lazy and does not register a
-runner. First use checks pinned `@earendil-works/pi-durable@1.3.0` and
-`@earendil-works/chord@1.3.0`. Credentials remain in Models/environment, never in
+runner. First use checks pinned `@earendil-works/pi-durable@1.4.0` and
+`@earendil-works/chord@1.4.0`. Credentials remain in Models/environment, never in
 a locator.
 
 ### Leaf host setup

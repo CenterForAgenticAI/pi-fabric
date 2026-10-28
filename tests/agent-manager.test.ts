@@ -1688,6 +1688,51 @@ describe("AgentManager steering", () => {
     }
   });
 
+  it("forwards every steer command when one poll reads more than the per-poll limit", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-steer-"));
+    roots.push(root);
+    fs.chmodSync(fakePiSteer, 0o755);
+    const received = path.join(root, "received.jsonl");
+    process.env.FAKE_PI_STEER_LOG = received;
+    const readSteers = (): string[] =>
+      fs.existsSync(received)
+        ? fs
+            .readFileSync(received, "utf8")
+            .split("\n")
+            .filter((line) => line.trim())
+            .map((line) => JSON.parse(line) as Record<string, unknown>)
+            .filter((entry) => entry.type === "steer")
+            .map((entry) => String(entry.message))
+        : [];
+    try {
+      const manager = new AgentManager(process.cwd(), { ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi" }, {
+        workerPath: path.resolve("src/worker.ts"),
+        piBinary: fakePiSteer,
+        runRoot: root,
+        fullCodeMode: false,
+      });
+      managers.push(manager);
+      const handle = await manager.spawn({ task: "STEER_ME", transport: "process" });
+      await waitFor(
+        () => fs.existsSync(received) && fs.readFileSync(received, "utf8").includes('"type":"prompt"'),
+        10_000,
+      );
+      // 300 small commands fit in one 256 KiB read but exceed the 256-command
+      // per-poll bound, so the worker must carry the rest to a later poll.
+      const expected = Array.from({ length: 300 }, (_, index) => `step-${index}`);
+      const steerFile = path.join(manager.runDirectory(handle.id)!, "steer.jsonl");
+      fs.appendFileSync(
+        steerFile,
+        expected.map((message) => JSON.stringify({ type: "steer", message }) + "\n").join(""),
+      );
+      await waitFor(() => readSteers().length >= expected.length, 5_000).catch(() => undefined);
+      expect(readSteers()).toEqual(expected);
+      await manager.stop(handle.id);
+    } finally {
+      delete process.env.FAKE_PI_STEER_LOG;
+    }
+  }, 20_000);
+
   it("forwards a follow_up and a queue mode to the child pi over RPC", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-steer-"));
     roots.push(root);
