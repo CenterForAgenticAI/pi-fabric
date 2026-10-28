@@ -73,7 +73,11 @@ export function conversationFooter(target: FabricConversationTarget | undefined,
   // Cumulative run tokens are not current context occupancy. Do not invent a percentage.
   groups.push(target.contextWindow ? `?/${formatTokens(target.contextWindow)} ctx` : "ctx ?");
   const stats = [groups.join(" · ")];
-  const model = safeText(target.model ?? `${target.runner ?? ""} model unavailable`).trim();
+  const modelKey = safeText(target.model ?? `${target.runner ?? ""} model unavailable`).trim();
+  const separatorIndex = modelKey.indexOf("/");
+  const model = separatorIndex > 0 && separatorIndex < modelKey.length - 1
+    ? `(${modelKey.slice(0, separatorIndex)}) ${modelKey.slice(separatorIndex + 1)}`
+    : modelKey;
   const thinking = target.thinking ? ` • ${safeText(target.thinking === "off" ? "thinking off" : target.thinking)}` : "";
   const left = truncateToWidth(stats.join(" "), width, "…");
   const right = truncateToWidth(`${model}${thinking}`, Math.max(0, width - visibleWidth(left) - 2), "");

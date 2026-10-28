@@ -178,8 +178,26 @@ const safeDurableTree = (directory: string): boolean => fs.readdirSync(directory
     return DURABLE_LEASE_FILES.has(name) && ownedStat(file)?.isFile() === true;
   });
 });
-/** Unknown transports/contents and live descendants veto removal, even under a dead host. */
-const safeRunTree = (root: string, childrenStopped: boolean, owner?: RunRootOwner, depth = 0): boolean => {
+/**
+ * Owned regular files and directories only: no links, no hard-linked files, no hosted-run locator.
+ * Removing such a tree deletes nothing outside it.
+ */
+const ownedTree = (directory: string, depth: number): boolean => {
+  if (depth > 32) return false;
+  return fs.readdirSync(directory).every((name) => {
+    const stat = ownedStat(path.join(directory, name));
+    if (!stat || name.startsWith("hosted.json")) return false;
+    return stat.isFile() || (stat.isDirectory() && ownedTree(path.join(directory, name), depth + 1));
+  });
+};
+/**
+ * Unknown transports and live descendants veto removal, even under a dead host.
+ * `anyContents` is for a root whose owner is dead and past its orphan grace: nothing will
+ * read the run's files again, so files Fabric does not know (written by the durable worker,
+ * its session, or another extension) no longer veto, provided they are owned and unlinked.
+ * The run record, live children and hosted-run locators still decide.
+ */
+const safeRunTree = (root: string, childrenStopped: boolean, owner?: RunRootOwner, depth = 0, anyContents = false): boolean => {
   if (depth > 32 || !ownedStat(root)?.isDirectory()) return false;
   const record = readJson<RunRecordSummary>(path.join(root, "status.json"));
   const pid = record?.transport === "process" && typeof record.sessionId === "string" && /^\d+$/.test(record.sessionId)
@@ -196,6 +214,10 @@ const safeRunTree = (root: string, childrenStopped: boolean, owner?: RunRootOwne
       const stat = ownedStat(file);
       if (!stat) return false;
       if (stat.isFile() && (runFiles.has(name) || name === OVERSIZED_EVENT_FILE || STATUS_TEMP_FILE.test(name))) continue;
+      if (anyContents && name !== "nested" && !name.startsWith("hosted.json")) {
+        if (stat.isFile() || (stat.isDirectory() && ownedTree(file, depth + 1))) continue;
+        return false;
+      }
       // hosted.json and its temp files are deliberately not accepted: no record proves the remote work stopped,
       // so a run holding a hosted-run locator is always kept.
       if (stat.isDirectory() && name === "fork-session") {
@@ -218,7 +240,7 @@ const safeRunTree = (root: string, childrenStopped: boolean, owner?: RunRootOwne
         continue;
       }
       if (stat.isDirectory() && name === "nested") {
-        for (const child of fs.readdirSync(file)) if (!safeRunTree(path.join(file, child), false, owner, depth + 1)) return false;
+        for (const child of fs.readdirSync(file)) if (!safeRunTree(path.join(file, child), false, owner, depth + 1, anyContents)) return false;
         continue;
       }
       return false;
@@ -226,8 +248,8 @@ const safeRunTree = (root: string, childrenStopped: boolean, owner?: RunRootOwne
     return true;
   } catch { return false; }
 };
-const safeRootContents = (root: string, childrenStopped: boolean, owner?: RunRootOwner): boolean => {
-  try { return fs.readdirSync(root).every((name) => name === RUN_ROOT_OWNER_FILE || safeRunTree(path.join(root, name), childrenStopped, owner)); }
+const safeRootContents = (root: string, childrenStopped: boolean, owner?: RunRootOwner, anyContents = false): boolean => {
+  try { return fs.readdirSync(root).every((name) => name === RUN_ROOT_OWNER_FILE || safeRunTree(path.join(root, name), childrenStopped, owner, 0, anyContents)); }
   catch { return false; }
 };
 export const canRemoveManagedRunRoot = (root: string): boolean => {
@@ -288,7 +310,7 @@ export const sweepTempRunRoots = (options: {
       try { writeOwner(root, { ...owner, orphanedAt: now }); } catch {}
       continue;
     }
-    if (now - owner.orphanedAt < options.orphanedTempRunRetentionMs || !safeRootContents(root, false, owner)) continue;
+    if (now - owner.orphanedAt < options.orphanedTempRunRetentionMs || !safeRootContents(root, false, owner, true)) continue;
     try { fs.rmSync(root, { recursive: true, force: true }); result.removedRoots.push(root); } catch {}
   }
   return result;

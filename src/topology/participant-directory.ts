@@ -423,16 +423,33 @@ export class ParticipantDirectory implements FabricParticipantSource {
 
   get(id: string, now = Date.now()): FabricParticipantInfo | undefined {
     const target = id === "main" ? this.options.rootId : id;
+    if (this.options.enabled) {
+      const participant = this.#participant(target);
+      if (participant) {
+        const entry = this.mesh.get(keyFor(HOST_PREFIX, participant.ownerHostId));
+        const owner = entry && hostFromEntry(entry);
+        if (owner && liveOwner(participant, new Map([[owner.id, owner]]), now)) {
+          return { ...participant, local: participant.ownerHostId === this.options.hostId, stale: false };
+        }
+      }
+    }
+    // Preserve local-only behavior and legacy fallback when no live canonical
+    // record exists. Normal polling needs only the participant and its owner.
     return this.list({ scope: "project" }, now).find((participant) => participant.id === target);
+  }
+
+  #participant(id: string): FabricParticipantRecord | undefined {
+    const entry = this.mesh.get(keyFor(PARTICIPANT_PREFIX, id));
+    const participant = entry && participantFromEntry(entry);
+    // Unpaired UTF-16 surrogates share their UTF-8 bytes with U+FFFD. A
+    // matching storage key alone does not establish exact string identity.
+    return participant?.id === id ? participant : undefined;
   }
 
   self(now = Date.now()): FabricParticipantInfo {
     const existing =
       this.#localRecords.get(this.options.identity.id) ??
-      this.mesh
-        .listAll(PARTICIPANT_PREFIX)
-        .map(participantFromEntry)
-        .find((participant) => participant?.id === this.options.identity.id);
+      this.#participant(this.options.identity.id);
     if (existing) {
       return {
         ...existing,

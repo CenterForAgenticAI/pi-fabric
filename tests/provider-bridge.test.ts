@@ -216,53 +216,23 @@ describe("extension provider bridge", () => {
 });
 
 const repo = path.resolve(import.meta.dirname, "..");
-const BUNDLED_ENTRY = path.join(repo, "node_modules", "pi-coralbricks-provider", "index.ts");
 
-describe("resolveExtensionProviders with the bundled provider", () => {
-  const tempDir = (prefix: string): string => {
-    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
-    roots.push(dir);
-    return dir;
-  };
-  afterEach(() => vi.unstubAllGlobals());
-
-  async function setup(packageEntry: unknown) {
-    const agentDir = tempDir("fabric-bridge-agent-");
-    const cwd = tempDir("fabric-bridge-cwd-");
-    fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ packages: [packageEntry] }));
+describe("resolveExtensionProviders without bundled providers", () => {
+  it("fails closed for Coral Bricks when only Fabric is installed", async () => {
+    const { cwd, agentDir } = fixture({ extensions: [], settings: { packages: [repo] } });
     vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
-    vi.stubEnv("CORALBRICKS_API_KEY", "");
-    vi.stubGlobal("fetch", async () => { throw new Error("the bridge must stay offline"); });
-    const sdk = await import("@earendil-works/pi-coding-agent");
-    const probed: string[] = [];
-    const recording = {
-      ...sdk,
-      DefaultResourceLoader: class extends sdk.DefaultResourceLoader {
-        constructor(options: ConstructorParameters<typeof sdk.DefaultResourceLoader>[0]) {
-          probed.push(...(options.additionalExtensionPaths ?? []));
-          super(options);
-        }
-      },
-    } as typeof sdk;
-    return { agentDir, cwd, sdk: recording, probed };
-  }
-
-  it("registers coralbricks for an extensions: false child from Fabric's bundled copy only", async () => {
-    const { agentDir, cwd, sdk, probed } = await setup(repo);
-    const found = await resolveExtensionProviders({ model: "coralbricks/deepseek-v4.1-flash-fast", cwd, agentDir }, sdk);
-    expect(found?.configs).toEqual([]);
-    expect(found?.natives.map(({ provider }) => provider.id)).toEqual(["coralbricks"]);
-    expect(fs.realpathSync(found!.natives[0]!.extensionPath)).toBe(fs.realpathSync(BUNDLED_ENTRY));
-    expect(found!.natives[0]!.provider.getModels().map((model) => model.id)).toEqual(
-      expect.arrayContaining(["glm-5.3-fast", "deepseek-v4.1-flash-fast"]),
-    );
-    // Fabric's main extension never loads in the bridge.
-    expect(probed.map((entry) => fs.realpathSync(entry))).toEqual([fs.realpathSync(BUNDLED_ENTRY)]);
+    await expect(resolveExtensionProviders({ model: "coralbricks/glm-5.3-fast", cwd, agentDir }))
+      .rejects.toThrow(/needs provider "coralbricks"[\s\S]*extensions: true/);
   }, 30_000);
 
-  it("fails closed when the user filters the bundled provider out", async () => {
-    const { agentDir, cwd, sdk } = await setup({ source: repo, extensions: ["!node_modules/pi-coralbricks-provider/**"] });
-    await expect(resolveExtensionProviders({ model: "coralbricks/glm-5.3-fast", cwd, agentDir }, sdk))
-      .rejects.toThrow(/needs provider "coralbricks"[\s\S]*extensions: true/);
+  it("still resolves a separately installed Coral Bricks provider extension", async () => {
+    const { cwd, agentDir, loads } = fixture({
+      extensions: [{ dir: "pi-coralbricks-provider", provider: "coralbricks" }],
+      settings: { packages: [repo] },
+    });
+    vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+    const found = await resolveExtensionProviders({ model: "coralbricks/m1", cwd, agentDir });
+    expect(found?.configs.map(({ name }) => name)).toEqual(["coralbricks"]);
+    expect(loads("pi-coralbricks-provider")).toEqual(["loaded"]);
   }, 30_000);
 });

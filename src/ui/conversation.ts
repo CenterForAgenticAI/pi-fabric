@@ -285,6 +285,11 @@ export class FabricConversationView implements Component, Focusable {
   private readonly textSelection = new ConversationTextSelection();
   private selectionWidth = 0;
   private selectionWasFollowing = false;
+  private selectionLatestRow = 0;
+  private lastLatestRow = 0;
+  private selectionRegion: "body" | "footer" = "body";
+  private lastFooter: readonly string[] = [];
+  private lastSelectionPress: { target: string; region: "body" | "footer"; row: number; col: number; at: number; count: number } | undefined;
   private bodyTop = 0;
   private bodyHeight = 0;
   private copyVersion = 0;
@@ -515,19 +520,34 @@ export class FabricConversationView implements Component, Focusable {
     if (!this.currentId) return { handled: true };
     const entry = this.state.view(this.currentId);
     const inBody = event.y >= this.bodyTop && event.y < this.bodyTop + this.bodyHeight;
-    const row = entry.scroll + Math.max(0, Math.min(this.bodyHeight - 1, event.y - this.bodyTop));
-    if (event.type === "press" && event.button === "left" && inBody) {
+    const footerTop = this.editorTop + this.editorHeight;
+    const inFooter = event.y >= footerTop && event.y < footerTop + this.lastFooter.length;
+    const region = this.textSelection.dragging ? this.selectionRegion : inFooter ? "footer" : "body";
+    const row = region === "footer"
+      ? Math.max(0, Math.min(this.lastFooter.length - 1, event.y - footerTop))
+      : entry.scroll + Math.max(0, Math.min(this.bodyHeight - 1, event.y - this.bodyTop));
+    if (event.type === "press" && event.button === "left" && (inBody || inFooter)) {
+      this.selectionRegion = region;
       this.selectionWasFollowing = entry.following;
-      entry.following = false;
-      this.textSelection.start(this.lastBody, row, event.x);
+      this.selectionLatestRow = this.lastLatestRow;
+      if (region === "body") entry.following = false;
+      const previous = this.lastSelectionPress;
+      const now = Date.now();
+      const count = previous?.target === this.currentId && previous.region === region && previous.row === row &&
+        Math.abs(previous.col - event.x) <= 1 && now - previous.at < 500 ? previous.count % 3 + 1 : 1;
+      this.lastSelectionPress = { target: this.currentId, region, row, col: event.x, at: now, count };
+      this.textSelection.start(region === "footer" ? this.lastFooter : this.lastBody, row, event.x, count);
       this.tui.requestRender();
       return { handled: true, capture: true };
     }
     if (this.textSelection.dragging && (event.type === "drag" || event.type === "release")) {
-      if (event.type === "drag") this.textSelection.move(row, event.x);
+      if (event.type === "drag") {
+        this.lastSelectionPress = undefined;
+        this.textSelection.move(row, event.x);
+      }
       else {
         this.textSelection.finish(row, event.x);
-        if (!this.textSelection.active && this.selectionWasFollowing) entry.following = true;
+        if (this.selectionRegion === "body" && !this.textSelection.active && this.selectionWasFollowing) entry.following = true;
         if (this.textSelection.active && (this.options.appearance?.copyOnSelect ?? true)) this.copySelection();
       }
       this.tui.requestRender();
@@ -557,7 +577,7 @@ export class FabricConversationView implements Component, Focusable {
     this.observe();
     const contentWidth = this.scrollbar.contentWidth(width);
     const liveTranscriptLines = this.transcriptLines(contentWidth);
-    const transcriptLines = this.textSelection.source ?? liveTranscriptLines;
+    const transcriptLines = (this.selectionRegion === "body" ? this.textSelection.source : undefined) ?? liveTranscriptLines;
     let queueLines = queue?.render(width) ?? [];
     // Native components own their interior padding. Giving them the full width
     // keeps user backgrounds and editor rules flush with both terminal edges.
@@ -573,7 +593,12 @@ export class FabricConversationView implements Component, Focusable {
       editorLines = editorLines.slice(start, start + editorBudget);
     }
     let remaining = rows - editorLines.length;
-    const footer = conversationFooter(target, this.theme, width).slice(0, Math.max(0, remaining - 1));
+    const liveFooter = conversationFooter(target, this.theme, width).slice(0, Math.max(0, remaining - 1));
+    this.lastFooter = this.selectionRegion === "footer" && this.textSelection.source
+      ? this.textSelection.source.slice(0, liveFooter.length) : liveFooter;
+    const footer = this.selectionRegion === "footer" && this.textSelection.active
+      ? this.lastFooter.map((line, row) => this.textSelection.highlight(line, row, this.theme))
+      : this.lastFooter;
     remaining -= footer.length;
     // The list keeps at least three transcript rows above the editor.
     const list = (this.list?.render(width) ?? []).slice(0, Math.max(0, remaining - 3));
@@ -601,7 +626,7 @@ export class FabricConversationView implements Component, Focusable {
     const scroll = this.currentId ? this.state.view(this.currentId).scroll : 0;
     this.bodyHeight = Math.max(0, Math.min(remaining, this.lastBody.length - scroll));
     let imageRows = window?.imageRows;
-    if (this.textSelection.active) {
+    if (this.selectionRegion === "body" && this.textSelection.active) {
       for (let row = 0; row < this.bodyHeight; row++) {
         if (!imageRows?.has(row)) body[row] = this.textSelection.highlight(body[row]!, scroll + row, this.theme);
       }
@@ -609,7 +634,10 @@ export class FabricConversationView implements Component, Focusable {
     // A short transcript sits on the editor, as Pi's own does: blank rows go
     // above it. While the jump-to-latest label shows, its row stays below.
     const following = this.currentId ? this.state.view(this.currentId).following : true;
-    const latestRow = !following || !!this.observedTranscript?.hasNewer ? 1 : 0;
+    // A selection must not introduce a jump-to-latest row under the pointer.
+    const latestRow = this.selectionRegion === "body" && this.textSelection.source
+      ? this.selectionLatestRow : !following || !!this.observedTranscript?.hasNewer ? 1 : 0;
+    this.lastLatestRow = latestRow;
     const pad = Math.max(0, remaining - body.length - latestRow);
     if (pad > 0) {
       body = [...Array.from({ length: pad }, () => ""), ...body];
@@ -622,7 +650,7 @@ export class FabricConversationView implements Component, Focusable {
       this.scrollbar.sync(width, head.length, remaining, this.lastBodyLength, scroll, entry?.following ?? true,
         () => { if (!this.disposed) this.tui.requestRender(); });
       this.scrollbar.paint(body, imageRows);
-      this.latest.paint(body, width, head.length, !imageRows?.has(body.length - 1) && !!entry && (!entry.following || !!this.observedTranscript?.hasNewer),
+      this.latest.paint(body, width, head.length, !imageRows?.has(body.length - 1) && !!entry && latestRow > 0,
         this.scrollbar.visible, this.theme);
     } else this.scrollbar.reset();
     return [...head, ...body.slice(0, remaining), ...queueLines, ...editorLines, ...footer, ...list]
