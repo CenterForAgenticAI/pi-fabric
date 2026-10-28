@@ -225,9 +225,9 @@ return { clock: [t0, d0, Date.now(), new Date().getTime(), String(Date())], zone
       answer.resolve();
       const again = await pending;
       vi.useRealTimers();
-      // A hard deadline that expires mid-question cancels it, and the stop stands.
-      expect(again.terminationReason, again.error).toBe(pausesDeadline ? "completed" : "runtime_error");
-      if (!pausesDeadline) expect(again.error).toContain("This call was not repeated.");
+      // A hard deadline cancels the question without waiting for its answer.
+      expect(again.terminationReason, again.error).toBe(pausesDeadline ? "completed" : "timed_out");
+      if (!pausesDeadline) expect(again.error).toContain("timed out");
       expect(live).toEqual(pausesDeadline ? ['demo.write:{"n":2}'] : []);
     }
   });
@@ -288,6 +288,30 @@ return { clock: [t0, d0, Date.now(), new Date().getTime(), String(Date())], zone
     await expect(resume(file, first.digest, twoCalls("demo.read"), neverCalled)).rejects.toThrow(
       "fabric_exec could not resume after an interruption: its journal is damaged. Nothing was rerun.",
     );
+  });
+
+  it("appends after a torn-tail repair without overwriting the surviving journal", async () => {
+    const file = journalFile();
+    const controller = new AbortController();
+    const code = twoCalls("demo.read");
+    const first = await record(file, code, crashingHost(2, controller, false), controller.signal);
+    expect(first.result.terminationReason).toBe("aborted");
+    const intact = fs.readFileSync(file);
+    fs.appendFileSync(file, '0badc0de {"c":1');
+
+    const live: string[] = [];
+    const again = await resume(file, first.digest, code, async (_ref, args) => {
+      live.push(target(args));
+      return 20;
+    });
+    expect(again.terminationReason, again.error).toBe("completed");
+    expect(again.value).toEqual([10, 20]);
+    expect(live).toEqual(['demo.read:{"n":2}']);
+    const repaired = fs.readFileSync(file);
+    expect(repaired.subarray(0, intact.length).equals(intact)).toBe(true);
+    expect(repaired.length).toBeGreaterThan(intact.length);
+    // A second resume validates the new completion's position and hash chain.
+    expect((await resume(file, first.digest, code, neverCalled)).value).toEqual([10, 20]);
   });
 
   it("refuses a journal whose lines were lost, reordered, or spliced in from another journal", async () => {
@@ -361,6 +385,64 @@ return { clock: [t0, d0, Date.now(), new Date().getTime(), String(Date())], zone
   });
 });
 
+describe("fabric_exec journal restoration cancellation", () => {
+  it.each([
+    ["deadline", "resolves"], ["deadline", "rejects"],
+    ["cancellation", "resolves"], ["cancellation", "rejects"],
+  ] as const)("settles on %s while served is latched and ignores a restore that later %s", async (stop, late) => {
+    const file = journalFile();
+    const code = twoCalls("demo.read");
+    const first = await record(file, code, () => async (_ref, args) => (args.args as { n: number }).n);
+    const entered = latch();
+    const release = latch();
+    const restored = latch();
+    const controller = new AbortController();
+    const served: number[] = [];
+    let restoreSignal: AbortSignal | undefined;
+    const journal = await openFabricExecJournal({ path: file, digest: first.digest, accept: async () => {} }, identity, {
+      local: () => undefined,
+      served: async (delivery, _args, signal) => {
+        served.push(delivery.seq);
+        restoreSignal = signal;
+        entered.resolve();
+        // Deliberately ignore cancellation until after execute has disposed its
+        // context. Neither this completion nor rejection may restart replay.
+        await release.promise;
+        restored.resolve();
+        if (late === "rejects") throw new Error("late restore failure");
+      },
+    });
+    const host = vi.fn(neverCalled);
+    const run = new QuickJsRuntime().execute(code, host, {
+      ...options, timeoutMs: stop === "deadline" ? 100 : 5_000, signal: controller.signal, journal,
+    });
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([entered.promise, run.then((result) => {
+        throw new Error(`Execution settled before restoration entered: ${result.error ?? result.terminationReason}`);
+      })]);
+      if (stop === "cancellation") controller.abort();
+      const result = await Promise.race([
+        run,
+        new Promise<undefined>((resolve) => { watchdog = setTimeout(() => resolve(undefined), 1_000); }),
+      ]);
+      expect(result, "execute must settle before the restoration latch is released").toBeDefined();
+      expect(result?.terminationReason).toBe(stop === "deadline" ? "timed_out" : "aborted");
+      expect(restoreSignal?.aborted).toBe(true);
+      release.resolve();
+      await restored.promise;
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(served).toEqual([0]);
+      expect(host).not.toHaveBeenCalled();
+    } finally {
+      if (watchdog) clearTimeout(watchdog);
+      release.resolve();
+      await run;
+      journal.close();
+    }
+  });
+});
+
 // A driver that saves asynchronously, as one backed by a database would. It
 // wraps the file journal so the recorded run can be resumed from disk.
 function asyncDriver(journal: FabricExecJournal, save: (seq: number) => Promise<void>): FabricJournalDriver {
@@ -374,7 +456,7 @@ function asyncDriver(journal: FabricExecJournal, save: (seq: number) => Promise<
       await save(seq);
       return journal.complete(seq, ref, args, value, outcome);
     },
-    served: (delivery, args) => journal.served(delivery, args),
+    served: (delivery, args, signal) => journal.served(delivery, args, signal),
     frontier: (held) => journal.frontier(held),
     diverged: (expected, actual) => journal.diverged(expected, actual),
   };

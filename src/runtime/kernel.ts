@@ -74,7 +74,8 @@ export interface FabricJournalDriver {
     value: unknown,
     outcome: FabricJournalOutcome,
   ): number | Promise<number>;
-  served(delivery: FabricJournalDelivery, args: Record<string, unknown>): void | Promise<void>;
+  /** Restore host-local state; stop work when the execution signal aborts. */
+  served(delivery: FabricJournalDelivery, args: Record<string, unknown>, signal: AbortSignal): void | Promise<void>;
   /** After serving: a stop, or undefined to run the waiting calls live. */
   frontier(
     held: ReadonlyArray<{ seq: number; ref: string; args: Record<string, unknown> }>,

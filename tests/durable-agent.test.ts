@@ -340,7 +340,7 @@ describe("DurableAgent", () => {
     const { seen, results } = await interruptFabricExec(async fence => { await fence!.accept(); await fence!.journal!.accept(digest); }, 1, true);
     expect(seen).toHaveLength(2);
     const [first, second] = seen;
-    expect(first!.journal).toMatchObject({ path: expect.stringMatching(/fabric-journal\/[0-9a-f]{32}\.jsonl$/) });
+    expect(first!.journal).toMatchObject({ path: expect.stringMatching(/fabric-journal[/\\][0-9a-f]{32}\.jsonl$/) });
     expect(first!.journal!.digest).toBeUndefined();
     expect(second!.journal).toMatchObject({ path: first!.journal!.path, digest });
     // A Fabric that cannot resume from a journal must not rerun the program from the start.

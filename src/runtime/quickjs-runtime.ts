@@ -1257,7 +1257,7 @@ export class QuickJsRuntime {
         }
         held.delete(delivery.seq);
         try {
-          await driver.served(delivery, call.args);
+          await runAbortable(hostAbortController.signal, () => driver.served(delivery, call.args, hostAbortController.signal));
         } catch (error) {
           // A failed restore stops the run like a divergence: nothing after it runs.
           return error instanceof Error ? error.message : String(error);
@@ -1268,6 +1268,7 @@ export class QuickJsRuntime {
         deliverOutcome(call.promise, delivery.outcome);
         pumpJobs();
       }
+      if (cancelled || timedOut || closing) return undefined;
       const waiting = [...held.entries()].sort(([left], [right]) => left - right);
       const stop = driver.frontier(waiting.map(([seq, call]) => ({ seq, ref: call.ref, args: call.args })));
       if (stop !== undefined) {
@@ -1275,6 +1276,7 @@ export class QuickJsRuntime {
         if (stop.question === undefined || !(await confirmRepeat(stop.question))) return stop.report;
         if (cancelled || timedOut || closing) return undefined;
       }
+      if (cancelled || timedOut || closing) return undefined;
       replaying = false;
       held.clear();
       for (const [seq, call] of waiting) {
@@ -1440,15 +1442,20 @@ export class QuickJsRuntime {
       void deadline.catch(() => undefined);
       pendingResolution = context.resolvePromise(activePromiseHandle);
       pumpJobs();
-      if (journal?.resuming) {
-        const report = await replayJournal(journal);
-        if (report !== undefined) {
-          stopReport = report;
-          abortHostCalls(report);
-          rejectExecutionGate(report);
+      // Restoration is execution too: a stalled hook must not hold the caller
+      // past cancellation/deadline, nor touch QuickJS after its context closes.
+      const execution = (async () => {
+        if (journal?.resuming) {
+          const report = await replayJournal(journal);
+          if (report !== undefined && !cancelled && !timedOut && !closing) {
+            stopReport = report;
+            abortHostCalls(report);
+            rejectExecutionGate(report);
+          }
         }
-      }
-      const resolution = await Promise.race([pendingResolution, deadline, cancellation]);
+        return pendingResolution;
+      })();
+      const resolution = await Promise.race([execution, deadline, cancellation]);
       pendingResolution = undefined;
       activePromiseHandle.dispose();
       activePromiseHandle = undefined;

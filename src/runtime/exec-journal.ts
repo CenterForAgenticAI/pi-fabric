@@ -64,7 +64,7 @@ export interface FabricJournalOffer {
 /** Host-local state the execution service keeps in step with the journal. */
 export interface FabricJournalHooks {
   /** Restore host-local state for a call served from the journal. */
-  served(delivery: FabricJournalDelivery, args: Record<string, unknown>): void | Promise<void>;
+  served(delivery: FabricJournalDelivery, args: Record<string, unknown>, signal: AbortSignal): void | Promise<void>;
   /** Host-local data stored with a completion, such as a deferred handoff. */
   local(seq: number): unknown;
 }
@@ -288,9 +288,9 @@ export class FabricExecJournal implements FabricJournalDriver {
   }
 
   /** Restore host-local state for a served call; a failure stops the resume. */
-  async served(delivery: FabricJournalDelivery, args: Record<string, unknown>): Promise<void> {
+  async served(delivery: FabricJournalDelivery, args: Record<string, unknown>, signal: AbortSignal): Promise<void> {
     try {
-      await this.#hooks.served(delivery, args);
+      await this.#hooks.served(delivery, args, signal);
     } catch (error) {
       throw refusalAfter(delivery, error);
     }
@@ -432,7 +432,20 @@ function resumeJournal(file: string, expected: string, identity: string, hooks: 
         throw refusal(`its ${completion.t ?? completion.ref} call returned process-local work that did not survive the restart`);
       }
     }
-    if (size < fstatSync(fd).size) ftruncateSync(fd, size);
+    if (size < fstatSync(fd).size) {
+      // Windows append handles lack FILE_WRITE_DATA, which ftruncate needs.
+      // Keep fd in append mode for later records, but repair through a separate
+      // writable handle to the same file (never truncate a replacement path).
+      const repairFd = openSync(file, constants.O_WRONLY | constants.O_NOFOLLOW);
+      try {
+        const original = fstatSync(fd);
+        const repair = fstatSync(repairFd);
+        if (original.dev !== repair.dev || original.ino !== repair.ino) throw refusal("its journal was replaced during recovery");
+        ftruncateSync(repairFd, size);
+      } finally {
+        closeSync(repairFd);
+      }
+    }
     return new FabricExecJournal(fd, header as unknown as JournalHeader, true, completions, intents, hooks, previous);
   } catch (error) {
     closeSync(fd);

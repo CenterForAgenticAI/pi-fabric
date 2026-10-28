@@ -985,10 +985,9 @@ export class FabricExecutionService {
         : undefined;
       if (offer) {
         const journals = await import("./runtime/exec-journal.js");
-        const servedSignal = options.signal ?? new AbortController().signal;
         // Run a recorded call's provider again. It was approved when it first
         // ran; policy still applies, and nothing is journaled or audited.
-        const redo = (ref: string, args: Record<string, unknown>): Promise<unknown> => this.registry.invoke(ref, args, {
+        const redo = (ref: string, args: Record<string, unknown>, servedSignal: AbortSignal): Promise<unknown> => this.registry.invoke(ref, args, {
           ...baseContext,
           signal: servedSignal,
           ...(this.authorizer ? { authorize: async (action: ResolvedFabricAction) => await this.authorizer!.authorize(action.ref, options.parentToolCallId) } : {}),
@@ -1007,7 +1006,7 @@ export class FabricExecutionService {
             nativeStoreEnabled: sandboxBase.nativeStoreEnabled,
             piToolCanonicalFields,
           }, {
-            served: async (delivery: FabricJournalDelivery, args: Record<string, unknown>) => {
+            served: async (delivery: FabricJournalDelivery, args: Record<string, unknown>, servedSignal: AbortSignal) => {
               // Served calls skip their provider; restore only host-local state.
               const target = delivery.target ?? delivery.ref;
               const targetArgs = delivery.ref === "fabric.$call" && typeof args.args === "object" && args.args !== null
@@ -1017,10 +1016,10 @@ export class FabricExecutionService {
                 if (sessionRedoRefs.has(target) && sessionHolds(options.context, delivery.local)) return;
                 // A plan goes only to an arm that owes one after the restart.
                 if (target === "prewalk.plan") {
-                  const status = await redo("prewalk.status", {}) as { planRequired?: unknown } | undefined;
+                  const status = await redo("prewalk.status", {}, servedSignal) as { planRequired?: unknown } | undefined;
                   if (status?.planRequired !== true) return;
                 }
-                await redo(target, targetArgs);
+                await redo(target, targetArgs, servedSignal);
                 return;
               }
               if (presentationBridgeRefs.has(delivery.ref)) {

@@ -11,7 +11,7 @@ import { CompactController, type CompactPendingIntent, type CompactRequestIntent
 import { FabricExecutionService } from "../src/execution-service.js";
 import { MeshStore } from "../src/mesh/store.js";
 import { PrewalkController } from "../src/prewalk/controller.js";
-import type { FabricProvider } from "../src/protocol.js";
+import type { FabricInvocationContext, FabricProvider } from "../src/protocol.js";
 import { CompactProvider } from "../src/providers/compact-provider.js";
 import { PrewalkProvider } from "../src/providers/prewalk-provider.js";
 import { SchemaProvider } from "../src/providers/schema-provider.js";
@@ -107,6 +107,67 @@ describe("durable fabric_exec resume redoes host-local effects", () => {
     expect(await resumed.run(code, resume)).toMatchObject({ success: true, value: "done" });
     expect(resumed.compact.events).toEqual(["request:first", "cancel", "request:second"]);
     expect(resumed.compact.status().pending).toMatchObject({ reason: "second", instructions: "keep the plan" });
+  });
+
+  it.each(["deadline", "cancellation"] as const)("aborts an asynchronous provider restore on %s before later effects", async (stop) => {
+    const cwd = tempDir("fabric-redo-abort-");
+    const code = 'await compact.request({ reason: "restore" }); await compact.cancel(); return "done";';
+    const first = worker(cwd, SessionManager.inMemory(cwd));
+    const { result, resume } = await record(first.run, code);
+    expect(result).toMatchObject({ success: true });
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let finished!: () => void;
+    const restored = new Promise<void>((resolve) => { finished = resolve; });
+    let restoreSignal: AbortSignal | undefined;
+    const compact = new RecordingCompact();
+    class LatchedCompactProvider extends CompactProvider {
+      override async invoke(name: string, args: Record<string, unknown>, context: FabricInvocationContext): Promise<unknown> {
+        if (name === "request") {
+          restoreSignal = context.signal;
+          enter();
+          await held;
+          finished();
+          if (context.signal?.aborted) return undefined;
+        }
+        return super.invoke(name, args, context);
+      }
+    }
+    const registry = new ActionRegistry(); registries.push(registry);
+    registry.register(new LatchedCompactProvider(compact));
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.executor.timeoutMs = stop === "deadline" ? 100 : 5_000;
+    const service = new FabricExecutionService(registry, config);
+    const controller = new AbortController();
+    const context = { cwd, hasUI: false, sessionManager: SessionManager.inMemory(cwd) } as unknown as ExtensionContext;
+    const run = fences.run({ toolCallId: "call", accept: async () => {}, arm: async () => {}, journal: resume }, () => service.execute({
+      code, signal: controller.signal, parentToolCallId: "call", context, onPartial() {},
+    }));
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([entered, run.then((result) => {
+        throw new Error(`Execution settled before provider restoration entered: ${result.error ?? result.success}`);
+      })]);
+      if (stop === "cancellation") controller.abort();
+      const again = await Promise.race([
+        run,
+        new Promise<undefined>((resolve) => { watchdog = setTimeout(() => resolve(undefined), 1_000); }),
+      ]);
+      expect(again, "the service must return while the provider is still latched").toBeDefined();
+      expect(again).toMatchObject({ success: false });
+      expect(again?.error).toContain(stop === "deadline" ? "timed out" : "cancelled");
+      expect(restoreSignal?.aborted).toBe(true);
+      release();
+      await restored;
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(compact.events).toEqual([]);
+    } finally {
+      if (watchdog) clearTimeout(watchdog);
+      release();
+      await run;
+    }
   });
 
   it("redoes a recorded prewalk plan for an arm that owes one, and skips it when none does", async () => {
