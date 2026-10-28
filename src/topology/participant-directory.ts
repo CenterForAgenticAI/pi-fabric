@@ -440,7 +440,10 @@ export class ParticipantDirectory implements FabricParticipantSource {
 
   #participant(id: string): FabricParticipantRecord | undefined {
     const entry = this.mesh.get(keyFor(PARTICIPANT_PREFIX, id));
-    return entry && participantFromEntry(entry);
+    const participant = entry && participantFromEntry(entry);
+    // Unpaired UTF-16 surrogates share their UTF-8 bytes with U+FFFD. A
+    // matching storage key alone does not establish exact string identity.
+    return participant?.id === id ? participant : undefined;
   }
 
   self(now = Date.now()): FabricParticipantInfo {

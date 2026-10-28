@@ -455,6 +455,28 @@ describe("ParticipantDirectory", () => {
     expect(directory.get("agent:direct")).toBeUndefined();
   });
 
+  it("does not alias distinct participant IDs with the same UTF-8 hash", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-topology-"));
+    roots.push(root);
+    const identity: MeshIdentity = {
+      id: "session:utf8", name: "main", kind: "main", sessionId: "utf8",
+    };
+    const meshRoot = path.join(root, "mesh");
+    const storedId = "agent:\ufffd", requestedId = "agent:\ud800";
+    const directory = createDirectory(meshRoot, identity, identity.id, () => [
+      rootRecord(identity.id, identity.id, "utf8"),
+      agentRecord(storedId, identity.id, identity.id, identity.id),
+    ]);
+    await directory.start();
+    expect(directory.get(storedId)?.id).toBe(storedId);
+    expect(directory.get(requestedId)).toBeUndefined();
+
+    const alias = createDirectory(meshRoot, {
+      id: requestedId, name: "alias", kind: "agent", sessionId: "alias",
+    }, identity.id, () => []);
+    expect(alias.self().id).toBe(requestedId);
+  });
+
   it("keeps the same topology API in local-only mode", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-topology-"));
     roots.push(root);
