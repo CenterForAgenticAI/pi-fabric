@@ -66,6 +66,7 @@ interface FabricAgentRequest {
   model?: string;
   /** Pi only. "exact": model must be a visible provider/id; no alias, closest-match or fuzzy step and no alias thinking level; refused before launch otherwise. */
   modelMatch?: "exact";
+  holdQuestions?: true;
   persona?: string;
   thinking?: FabricThinking;
   /** Child thinking bounds; must lie inside this session's bounds. Levels outside are clamped. */
@@ -802,6 +803,10 @@ interface FabricAgentsApi {
   models(args?: { runner?: FabricAgentRunner; refresh?: boolean; model?: string }): Promise<FabricModelInfo[]>;
   stop(args: FabricAgentTargetArgs): Promise<FabricAgentResult | FabricActorInfo | FabricRemoteControlResult>;
   cleanup(args: FabricAgentTargetArgs & { deleteBranch?: boolean; delete_branch?: boolean }): Promise<{ cleaned: boolean }>;
+  /** Park an idle hosted run of this session; the runner must declare the sleep capability. */
+  sleep(args: { id: string }): Promise<{ id: string; requested: "sleep" }>;
+  /** Resume a hosted run that agents.sleep parked. */
+  wake(args: { id: string }): Promise<{ id: string; requested: "wake" }>;
   create(args: FabricActorRequest): Promise<FabricActorInfo>;
   setModel(args: { id: string; model?: string; scope?: FabricActorBindingScope }): Promise<FabricActorInfo>;
   switchModel(args: FabricModelSwitchRequest): Promise<FabricModelSwitchResult>;
@@ -1297,10 +1302,17 @@ interface FabricCompactPendingIntent {
   reason?: string;
   instructions?: string;
   preserve?: string[];
+  /** Queued after the compaction commits as a labelled Fabric message. */
+  seed?: string;
   requestedBy: string;
   requestedAt: number;
 }
 type FabricCompactionOwner = "fabric" | "pi" | "external" | "none";
+/** The extension holding the compaction owner claim; compact.* routes to it. */
+interface FabricCompactionClaimRef {
+  name: string;
+  version: string;
+}
 interface FabricCompactLastCommit {
   at: number;
   requestedBy: string;
@@ -1309,6 +1321,7 @@ interface FabricCompactLastCommit {
   tokensBefore?: number;
   estimatedTokensAfter?: number;
   error?: string;
+  seeded?: true;
 }
 type FabricComponentState = "waiting" | "loading" | "active" | "unloading" | "failed" | "quarantined" | "disposed";
 interface FabricComponentEffectInfo {
@@ -1499,15 +1512,25 @@ interface FabricCompactApi {
     instructions?: string;
     preserve?: string[];
     requestedBy?: string;
+    /** Queued after the compaction commits as a labelled Fabric message that starts a turn; a prompt submitted during the compaction runs first. */
+    seed?: string;
     instruction?: string;
     requested_by?: string;
-  }): Promise<{ requested: true; intent: FabricCompactPendingIntent }>;
+  }): Promise<{
+    requested: true;
+    intent: FabricCompactPendingIntent;
+    /** Present under a compaction owner claim: the request went to this owner. */
+    claim?: FabricCompactionClaimRef;
+    result?: unknown;
+  }>;
   status(): Promise<{
     pending?: FabricCompactPendingIntent;
     last?: FabricCompactLastCommit;
     lastAuto?: { at: number; trigger: "headroom" | "tokens" | "ratio"; committed: boolean };
     owner: FabricCompactionOwner;
     outputReserveTokens: number;
+    claim?: FabricCompactionClaimRef & { branchSummary: boolean; actions: string[] };
+    ownerStatus?: unknown;
   }>;
   /** Read-only context pressure; never compacts. */
   pressure(): Promise<{
@@ -1520,10 +1543,20 @@ interface FabricCompactApi {
     thresholdFraction?: number;
     thresholdTokens?: number;
     owner: FabricCompactionOwner;
+    claim?: FabricCompactionClaimRef;
+    /** The claimed owner's own stage and thresholds. */
+    ownerPressure?: { stage: string; thresholds?: Record<string, number> };
   }>;
-  /** Persistent carry-forward focus rendered in every Fabric summary until cleared; no args reads. */
-  carry(args?: { items?: string[]; add?: string[]; remove?: string[]; clear?: boolean }): Promise<{ items: string[] }>;
-  cancel(): Promise<{ cancelled: true }>;
+  /** Persistent carry-forward focus rendered in every Fabric summary until cleared; no args reads. Under a claim the owner keeps it. */
+  carry(args?: { items?: string[]; add?: string[]; remove?: string[]; clear?: boolean }): Promise<{ items: string[]; claim?: FabricCompactionClaimRef }>;
+  /** Under a claim, says which was cancelled: Fabric's own pending request, the owner's, or both. */
+  cancel(): Promise<{
+    cancelled: true;
+    claim?: FabricCompactionClaimRef;
+    fabricIntentCleared?: boolean;
+    ownerCancelled?: boolean;
+    result?: unknown;
+  }>;
 }
 
 interface FabricPrewalkFileIdentityStatus {

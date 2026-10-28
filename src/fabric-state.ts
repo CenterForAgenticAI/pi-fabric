@@ -51,15 +51,20 @@ import type { FabricRuntimeState } from "./fabric-runtime-state.js";
 import type { DecisionStore } from "./decisions/store.js";
 import type { FabricRuntimePaths } from "./runtime-paths.js";
 import type { FabricLoadedFileIdentity } from "./build-identity.js";
+import type { ActiveCompactionOwner } from "./compaction/claim.js";
 
 import { FabricManagedHost, type FabricManagedHostOptions } from "./managed-host.js";
 import { FabricProgramTasks } from "./core/program-tasks.js";
+import type { FabricHostPolicy } from "./core/host-policy.js";
 
 export interface FabricStateOptions {
   managedHost?: FabricManagedHostOptions;
   paths?: FabricRuntimePaths;
   runtimeLoader?: () => Promise<typeof import("./fabric-runtime-state.js")>;
   entryIdentity?: FabricLoadedFileIdentity;
+  /** The extension holding the compaction owner claim; compact.* routes there. */
+  compactionOwner?: () => ActiveCompactionOwner | undefined;
+  hostPolicy?: FabricHostPolicy;
 }
 
 type ActivationHook = (context: ExtensionContext) => void | Promise<void>;
@@ -568,6 +573,8 @@ export class FabricState {
         ...(this.#options.paths ? { paths: this.#options.paths } : {}),
         ...(this.#entryIdentity ? { entryIdentity: this.#entryIdentity } : {}),
         foregroundTools: () => this.foregroundTools().tools,
+        compactionOwner: this.#options.compactionOwner,
+        ...(this.#options.hostPolicy ? { hostPolicy: this.#options.hostPolicy } : {}),
       },
     );
   }

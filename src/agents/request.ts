@@ -69,6 +69,10 @@ export const normalizeAgentRunRequest = (
         ? { model: inheritedModel }
         : {}),
     ...(args.modelMatch === "exact" ? { modelMatch: "exact" as const } : {}),
+    // Shape is checked fail-closed by the manager; only a literal true holds.
+    ...(args.holdQuestions !== undefined && args.holdQuestions !== false
+      ? { holdQuestions: args.holdQuestions as true }
+      : {}),
     ...(typeof args.persona === "string" && args.persona.trim()
       ? { persona: args.persona.trim() }
       : {}),

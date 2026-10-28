@@ -56,7 +56,8 @@ export function agentServiceDescriptors(capabilities: AgentServiceCapabilities =
   return descriptors;
 }
 
-const descriptors = agentServiceDescriptors({steer: true, compact: true, resume: true});
+// The shared checker knows every action; each provider still lists and admits only its client's capabilities.
+const descriptors = agentServiceDescriptors({steer: true, followUp: true, compact: true, resume: true, topology: true});
 const normalize = actionArgNormalizer(() => descriptors);
 export function agentServiceArgs(action: AgentServiceAction, input: Record<string, unknown>): Record<string, unknown> {
   const descriptor = descriptors.find((entry) => entry.name === action);

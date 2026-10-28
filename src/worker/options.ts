@@ -119,6 +119,10 @@ export const parseWorkerOptions = (
   if (childQuestionTimeoutMs !== undefined && !(Number.isInteger(childQuestionTimeoutMs) && childQuestionTimeoutMs >= 1_000)) {
     throw new Error("Invalid worker child-questions timeout");
   }
+  const childQuestionHold = optional(args, "child-questions-hold");
+  if (childQuestionHold !== undefined && (childQuestionHold !== "1" || childQuestionTimeoutMs === undefined)) {
+    throw new Error("Invalid worker child-questions-hold");
+  }
   const branch = optional(args, "branch");
   const worktree = optional(args, "worktree");
   const writePolicy = optional(args, "write-policy");
@@ -232,6 +236,7 @@ export const parseWorkerOptions = (
     ...(runRoot ? { runRoot } : {}),
     ...(steerFile ? { steerFile } : {}),
     ...(childQuestionTimeoutMs !== undefined ? { childQuestionTimeoutMs } : {}),
+    ...(childQuestionHold ? { childQuestionHold: true as const } : {}),
     ...(branch ? { branch } : {}),
     ...(worktree ? { worktree } : {}),
     ...(writePolicy ? { writePolicy } : {}),

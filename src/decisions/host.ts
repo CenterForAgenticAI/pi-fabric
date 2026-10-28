@@ -3,6 +3,7 @@ import type { AgentChildQuestionRequest, AgentChildQuestionResponse } from "../a
 import type { ResolvedFabricAction } from "../core/action-registry.js";
 import {
   MAX_DECISION_BODY_CHARS,
+  MAX_DECISION_DEADLINE_MS,
   MAX_DECISION_OPTIONS,
   MAX_DECISION_TITLE_CHARS,
   type DecisionRaiseInput,
@@ -102,8 +103,10 @@ const askViaUi = async (
   label: string,
   question: ChildQuestion,
   signal: AbortSignal,
+  hold = false,
 ): Promise<AgentChildQuestionResponse> => {
-  const dialog = { signal, timeout: question.timeout };
+  // A held question has no deadline: the dialog waits until answered or the run settles.
+  const dialog = hold ? { signal } : { signal, timeout: question.timeout };
   if (question.method === "select") {
     const value = await ui.select(label, question.options!, dialog);
     return value !== undefined && question.options!.includes(value) ? { value } : CANCELLED;
@@ -119,7 +122,7 @@ const askViaUi = async (
   let timer: NodeJS.Timeout | undefined;
   let onAbort: (() => void) | undefined;
   const stop = new Promise<undefined>((resolve) => {
-    timer = setTimeout(() => resolve(undefined), question.timeout);
+    if (!hold) timer = setTimeout(() => resolve(undefined), question.timeout);
     onAbort = () => resolve(undefined);
     signal.addEventListener("abort", onAbort, { once: true });
   });
@@ -148,18 +151,52 @@ const responseFromDecision = (
 };
 
 /**
+ * Cancel the routed child questions that an earlier process with this store's
+ * identity raised and left open: a resident host that died while a durable run
+ * waited. The wait and the reporter that would deliver an answer died with that
+ * process, so the decision could only mislead; the runner asks again through
+ * the current host. Call it before this process routes any question. Records
+ * `via: "restart"`.
+ */
+export const cancelOrphanedChildQuestions = async (store: DecisionStore): Promise<string[]> => {
+  const cancelled: string[] = [];
+  for (const record of await store.listOwnOpen()) {
+    if (record.kind !== "question" || record.holder !== "root" || !record.raisedBy.runId) continue;
+    try {
+      await store.cancel(record.id, { answeredBy: store.identity.id, via: "restart" });
+      cancelled.push(record.id);
+    } catch {
+      // Answered, expired, or cancelled meanwhile: nothing is left to release.
+    }
+  }
+  return cancelled;
+};
+
+/**
  * Answer one routed child dialog: through the parent's interactive UI when it
  * has one, otherwise through a root-held decision. Missing UI and store, a
- * malformed request, or any failure cancels the child's dialog.
+ * malformed request, or any failure cancels the child's dialog. A host with no
+ * UI at all (the resident host) omits `context` and only ever raises a decision.
+ *
+ * A held request (`request.hold`, set by the manager for a holdQuestions run)
+ * always becomes a root-held decision with the store's longest deadline
+ * (MAX_DECISION_DEADLINE_MS, 30 days), even with a UI, so a
+ * blocking dialog never stalls the session: the UI is only told the decision is
+ * waiting. It stays open until answered, until the run settles, or until the
+ * deadline passes and the child's question is cancelled. Without a
+ * decision store it falls back to the UI dialog, with no timeout.
  */
 export const routeChildQuestion = async (
   request: AgentChildQuestionRequest,
-  deps: { context: Pick<ExtensionContext, "hasUI" | "ui">; store?: DecisionStore },
+  deps: { context?: Pick<ExtensionContext, "hasUI" | "ui">; store?: DecisionStore },
 ): Promise<AgentChildQuestionResponse> => {
   const question = parseChildQuestion(request.question);
   if (!question || request.signal.aborted) return CANCELLED;
   const label = `${request.name}: ${question.title || "question"}`;
-  if (deps.context.hasUI) return askViaUi(deps.context.ui, label, question, request.signal);
+  const hold = request.hold === true;
+  if (deps.context?.hasUI && (!hold || !deps.store)) {
+    return askViaUi(deps.context.ui, label, question, request.signal, hold);
+  }
   if (!deps.store) return CANCELLED;
   const input: DecisionRaiseInput = {
     kind: "question",
@@ -175,15 +212,27 @@ export const routeChildQuestion = async (
         }
       : { input: question.method === "input" ? "text" : question.method }),
     holder: "root",
-    timeoutMs: Math.max(1_000, question.timeout),
+    // A held decision gets the longest deadline the store allows, not none: if the
+    // session that raised it dies without shutdown, nothing else cancels it.
+    timeoutMs: hold ? MAX_DECISION_DEADLINE_MS : Math.max(1_000, question.timeout),
     onExpire: "cancel",
   };
+  const onRaised = hold && deps.context?.hasUI
+    ? (id: string): void => {
+        request.onDecision(id);
+        try {
+          deps.context!.ui.notify(`${label}: decision ${id} is held for you (up to 30 days); answer it with /fabric decisions`, "info");
+        } catch {
+          // A notice is best-effort; the decision is already durable.
+        }
+      }
+    : request.onDecision;
   const decision = await raiseAndWait(
     deps.store,
     input,
     { participantId: request.actorId ?? request.runId, runId: request.runId },
     request.signal,
-    request.onDecision,
+    onRaised,
   );
   return responseFromDecision(question, decision);
 };

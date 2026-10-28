@@ -24,6 +24,8 @@ const stable = [
   "core/provider-operations.js",
   "worker.js",
   "durable/worker.js",
+  "durable-extension.js",
+  "durable-extension-wasm.js",
   "residency/host.js",
   "compaction/hook.js",
   "core/action-registry.js",
@@ -70,6 +72,7 @@ const lazy = [
   "runtime/cpython-runtime.js",
   "runtime/monty-runtime.js",
   "runtime/quickjs-runtime.js",
+  "runtime/exec-journal.js",
   "runtime/type-checker.js",
   "speculation/scanner.js",
   "speculation/python-scanner.js",
@@ -203,6 +206,26 @@ for (const file of staticClosure([join(dist, "worker.js"), join(dist, "durable/w
   for (const match of readFileSync(file, "utf8").matchAll(staticImport)) {
     if (!match[1].startsWith(".") && !match[1].startsWith("node:")) {
       throw new Error(`Worker bootstrap imports an external package: ${match[1]}`);
+    }
+  }
+}
+// pi-fabric/durable-extension runs in hosts with no Pi and no Node (Cloudflare Workers): its whole
+// graph, dynamic imports included, may reach only these packages and never a node: built-in.
+const durableExtensionPackages = new Set(["typebox", "typescript", "@jitl/quickjs-singlefile-mjs-release-sync", "quickjs-emscripten-core", "@earendil-works/pi-codemode/declarations"]);
+const anyImport = /(?:(?:import|export)\s+(?:[^"'()]*?\s+from\s+)?|import\s*\(\s*)["']([^"']+)["']/g;
+{
+  const visited = new Set();
+  const stack = [join(dist, "durable-extension.js")];
+  while (stack.length > 0) {
+    const file = stack.pop();
+    if (!file || visited.has(file)) continue;
+    visited.add(file);
+    for (const match of readFileSync(file, "utf8").matchAll(anyImport)) {
+      const specifier = match[1];
+      if (specifier.startsWith(".")) stack.push(resolve(dirname(file), specifier));
+      else if (!durableExtensionPackages.has(specifier)) {
+        throw new Error(`durable-extension graph imports ${specifier} (from ${file.slice(dist.length + 1)}); allowed: ${[...durableExtensionPackages].join(", ")}`);
+      }
     }
   }
 }

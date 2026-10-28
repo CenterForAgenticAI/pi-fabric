@@ -232,6 +232,8 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
   model?: string;
   /** Kept so a startup retry or resume re-prepares the model with the mode it was launched under. */
   modelMatch?: FabricModelMatch;
+  /** holdQuestions: routed questions without their own deadline are held for a person. */
+  holdQuestions?: true;
   thinking?: AgentRunRequest["thinking"];
   requestedThinking?: AgentRunRequest["thinking"];
   actorId?: string;
@@ -244,13 +246,17 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
   worktreeResult?: AgentWorktreeResult;
   nestedSnapshot?: AgentRunRecord[];
   nestedSnapshotAt?: number;
-  /** Routed child dialogs in flight; aborted at settlement. */
+  /** Routed child dialogs in flight; aborted at settlement and when a durable hosted run is detached. */
   questions?: AbortController;
-  questionDecisionId?: string;
-  /** Titles of the routed child questions now waiting on the user, oldest first. */
-  questionTitles?: string[];
+  /** Open routed dialogs, oldest first: each title, and the decision behind it once raised. */
+  openQuestions?: Array<{ title: string; decisionId?: string }>;
+  /** Routed dialogs not yet answered; close awaits a detached run's cancellations. */
+  asks?: Set<Promise<AgentChildQuestionResponse>>;
   latestRecord?: AgentRunRecord;
   latestUiRecord?: AgentRunRecord;
+  /** A locally owned terminal result whose disk replacement failed. Keep it
+   *  independently of the prunable UI cache until this run handle is evicted. */
+  unpersistedResult?: AgentRunResult;
   background: boolean;
   completionNotified?: boolean;
   lastLivenessCheckAt: number;
@@ -894,6 +900,12 @@ export class AgentManager {
       throw new Error("worktreeSetup must be a shell command of at most 8192 characters");
     }
     // Fail closed before admission or budget side effects.
+    if (request.holdQuestions !== undefined) {
+      if (request.holdQuestions !== true) throw new Error("holdQuestions must be true when given");
+      if (this.config.childQuestions !== "route" || !capabilities.questions) {
+        throw new Error('holdQuestions requires agents.childQuestions "route" and a runner that declares questions');
+      }
+    }
     const scope = launchScope(request.scope, request.inheritedScope);
     checkedTraceContext(request);
     const thinkingBounds = this.childThinkingBounds(request.thinkingBounds);
@@ -943,12 +955,6 @@ export class AgentManager {
     const id = randomUUID().replaceAll("-", "");
     const name = runName(request);
     const runDirectory = path.join(this.#runRoot, id);
-    fs.mkdirSync(runDirectory, { recursive: true });
-    if (this.#managedTempRoot && !this.#retentionTimer) {
-      this.#retentionTimer = setInterval(() => this.#scheduleRetentionSweep(), RETENTION_SWEEP_INTERVAL_MS);
-      this.#retentionTimer.unref();
-      this.#scheduleRetentionSweep();
-    }
     const taskFile = path.join(runDirectory, "task.txt");
     const statusFile = path.join(runDirectory, "status.json");
     const lifecycleFile = path.join(runDirectory, "lifecycle.jsonl");
@@ -958,18 +964,31 @@ export class AgentManager {
     const imagesFile = request.images && request.images.length > 0
       ? path.join(runDirectory, "images.json")
       : undefined;
-    fs.writeFileSync(taskFile, request.task, { encoding: "utf8", mode: 0o600 });
-    if (imagesFile) {
-      fs.writeFileSync(imagesFile, JSON.stringify(request.images), {
-        encoding: "utf8",
-        mode: 0o600,
-      });
+    try {
+      fs.mkdirSync(runDirectory, { recursive: true });
+      fs.writeFileSync(taskFile, request.task, { encoding: "utf8", mode: 0o600 });
+      if (imagesFile) {
+        fs.writeFileSync(imagesFile, JSON.stringify(request.images), {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+      }
+      if (schemaFile) {
+        fs.writeFileSync(schemaFile, JSON.stringify(request.schema, null, 2), {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+      }
+    } catch (error) {
+      // No child exists yet: give the admitted slot back so later agents
+      // are not held at maxConcurrent by a run that never started.
+      release();
+      throw error;
     }
-    if (schemaFile) {
-      fs.writeFileSync(schemaFile, JSON.stringify(request.schema, null, 2), {
-        encoding: "utf8",
-        mode: 0o600,
-      });
+    if (this.#managedTempRoot && !this.#retentionTimer) {
+      this.#retentionTimer = setInterval(() => this.#scheduleRetentionSweep(), RETENTION_SWEEP_INTERVAL_MS);
+      this.#retentionTimer.unref();
+      this.#scheduleRetentionSweep();
     }
 
     let agentCwd = selectedCwd;
@@ -1177,7 +1196,11 @@ export class AgentManager {
         "--steer-file",
         steerFile,
         ...(this.config.childQuestions === "route" && capabilities.questions
-          ? ["--child-questions", String(this.config.childQuestionTimeoutMs ?? DEFAULT_CHILD_QUESTION_TIMEOUT_MS)]
+          ? [
+              "--child-questions",
+              String(this.config.childQuestionTimeoutMs ?? DEFAULT_CHILD_QUESTION_TIMEOUT_MS),
+              ...(request.holdQuestions === true ? ["--child-questions-hold", "1"] : []),
+            ]
           : []),
         ...(schemaFile ? ["--schema-file", schemaFile] : []),
         ...(branch ? ["--branch", branch] : []),
@@ -1251,6 +1274,7 @@ export class AgentManager {
         abortHandler: undefined,
         ...(model ? { model } : {}),
         ...(request.modelMatch ? { modelMatch: request.modelMatch } : {}),
+        ...(request.holdQuestions === true ? { holdQuestions: true as const } : {}),
         ...(thinking ? { thinking } : {}),
         ...(clampedFrom ? { requestedThinking: clampedFrom } : {}),
         ...(request.actorId ? { actorId: request.actorId } : {}),
@@ -1335,7 +1359,7 @@ export class AgentManager {
       { ...context, idempotencyKey: context.id },
       { ...launch.files, stateFile: path.join(context.runDirectory, HOSTED_STATE_FILE) },
       record,
-      this.#hostedHooks(() => managed),
+      this.#hostedHooks(() => managed, launch.request.holdQuestions === true),
     );
     if (launch.signal?.aborted || this.#closing) {
       hosted.abandon("Agent launch aborted before the hosted run was submitted");
@@ -1352,14 +1376,15 @@ export class AgentManager {
     return this.#handleInfo(managed, "running");
   }
 
-  #hostedHooks(managed: () => ManagedAgent | undefined): HostedRunHooks {
+  #hostedHooks(managed: () => ManagedAgent | undefined, holdQuestions = false): HostedRunHooks {
     return {
       questionTimeoutMs: this.config.childQuestionTimeoutMs ?? DEFAULT_CHILD_QUESTION_TIMEOUT_MS,
+      ...(holdQuestions ? { holdQuestions: true } : {}),
       ...(this.config.childQuestions === "route" && this.#onChildQuestion
         ? {
-            ask: (question: Record<string, unknown>) => {
+            ask: (question: Record<string, unknown>, onDecision: (decisionId: string) => void) => {
               const run = managed();
-              return run ? this.#askParent(run, question) : Promise.resolve({ cancelled: true as const });
+              return run ? this.#askParent(run, question, onDecision) : Promise.resolve({ cancelled: true as const });
             },
           }
         : {}),
@@ -1406,6 +1431,7 @@ export class AgentManager {
       ...(options.requestedThinking ? { requestedThinking: options.requestedThinking } : {}),
       ...(record.branch ? { branch: record.branch } : {}),
       ...(record.worktree ? { worktree: record.worktree } : {}),
+      ...(hosted.hooks.holdQuestions ? { holdQuestions: true as const } : {}),
       settled: false,
       background: recovered,
       lastLivenessCheckAt: 0,
@@ -1488,7 +1514,7 @@ export class AgentManager {
           stateFile: path.join(runDirectory, HOSTED_STATE_FILE),
         },
         record,
-        this.#hostedHooks(() => managed),
+        this.#hostedHooks(() => managed, state.holdQuestions === true),
       );
       managed = this.#adoptHosted(hosted, { release: () => {}, recovered: true });
       await hosted.attach();
@@ -1527,7 +1553,7 @@ export class AgentManager {
       this.#onResultConsumed?.(id);
       return result;
     }
-    const record = readRecord(managed.statusFile) ?? managed.latestRecord;
+    const record = this.#readManagedRecord(managed);
     if (!record || !terminalStatuses.has(record.status)) {
       throw new Error(`Agent ${id} settled without a result`);
     }
@@ -1572,7 +1598,7 @@ export class AgentManager {
     managed.background = true;
     // A fast worker may settle before agents.spawn returns and detaches it.
     if (managed.settled) {
-      const record = readRecord(managed.statusFile) ?? managed.latestRecord;
+      const record = this.#readManagedRecord(managed);
       if (record && terminalStatuses.has(record.status)) {
         this.#notifyBackgroundComplete(managed, this.#withTransportMetadata(record, managed) as AgentRunResult);
       }
@@ -1603,11 +1629,20 @@ export class AgentManager {
     }
   }
 
-  status(id: string): AgentRunRecord | AgentHandleInfo {
-    const managed = this.#requireRun(id);
-    const record = managed.settled
+  #readManagedRecord(managed: ManagedAgent): AgentRunRecord | undefined {
+    // A failed local commit must not make a settled run appear running again.
+    // Hosted runs keep their adapter/disk authority, including durable recovery.
+    if (managed.settled && !managed.hosted && managed.unpersistedResult) {
+      return managed.unpersistedResult;
+    }
+    return managed.settled
       ? readRecord(managed.statusFile) ?? managed.latestRecord
       : managed.latestRecord ?? readRecord(managed.statusFile);
+  }
+
+  status(id: string): AgentRunRecord | AgentHandleInfo {
+    const managed = this.#requireRun(id);
+    const record = this.#readManagedRecord(managed);
     if (!record) return this.#handleInfo(managed, "running");
     managed.latestRecord = record;
     if (!managed.latestUiRecord) {
@@ -1630,7 +1665,7 @@ export class AgentManager {
       .map((managed) => ({
         id: managed.id,
         name: managed.actorName ?? managed.name,
-        ...(managed.questionTitles?.length ? { question: managed.questionTitles.at(-1)! } : {}),
+        ...(managed.openQuestions?.length ? { question: managed.openQuestions.at(-1)!.title } : {}),
       }));
   }
 
@@ -1650,7 +1685,7 @@ export class AgentManager {
       .map((managed) => {
         let record = managed.latestUiRecord;
         if (!record) {
-          const latest = managed.latestRecord ?? readRecord(managed.statusFile);
+          const latest = managed.latestRecord ?? this.#readManagedRecord(managed);
           if (!latest) return this.#handleInfo(managed, "running");
           managed.latestRecord = latest;
           record = compactUiRecord(latest);
@@ -1840,7 +1875,14 @@ export class AgentManager {
     const detached = [...this.#runs.values()].filter(
       (managed) => !managed.settled && managed.hosted && managed.residency === "durable",
     );
-    for (const managed of detached) managed.hosted!.detach();
+    // Its routed questions lose their reporter with this host: cancel their
+    // decisions now (the detached run never sees the cancellation as an answer),
+    // and the runner asks again through the next host.
+    for (const managed of detached) {
+      managed.hosted!.detach();
+      managed.questions?.abort(new Error("Fabric resident host detached the run"));
+    }
+    await Promise.allSettled(detached.flatMap((managed) => [...(managed.asks ?? [])]));
     const running = [...this.#runs.values()].filter((managed) => !managed.settled && !detached.includes(managed));
     for (const managed of running) managed.hosted?.markShutdown();
     await Promise.allSettled(running.map((managed) => this.stop(managed.id)));
@@ -1901,7 +1943,7 @@ export class AgentManager {
     }
     const expired = [...this.#runs.values()].filter((managed) => {
       if (!managed.settled || managed.actorId) return false;
-      const record = readRecord(managed.statusFile) ?? managed.latestRecord;
+      const record = this.#readManagedRecord(managed);
       const finishedAt = record?.finishedAt ?? record?.updatedAt;
       return typeof finishedAt === "number" && now - finishedAt >= this.#retention.oneShotRunMs;
     });
@@ -2069,8 +2111,13 @@ export class AgentManager {
       // the previous attempt published (token usage above all) before discarding
       // the journal it landed in.
       this.#drainLifecycle(managed);
-      fs.rmSync(managed.statusFile, { force: true });
       if (managed.settled || this.#closing || managed.stopRequested) return false;
+      fs.rmSync(managed.statusFile, { force: true });
+      // Reset the journal before the new child exists: a failure here must not
+      // leave a relaunched child running behind a run that settles failed.
+      managed.lifecycleOffset = 0;
+      managed.lifecycleRemainder = Buffer.alloc(0);
+      fs.rmSync(managed.lifecycleFile, { force: true });
       managed.transport = await this.#launchTransport(managed.adapter, managed.launch);
       this.#unregisteredTransports.delete(managed.transport);
       if (managed.settled || this.#closing || managed.stopRequested) {
@@ -2083,9 +2130,6 @@ export class AgentManager {
       delete managed.latestRecord;
       delete managed.latestUiRecord;
       managed.lastLivenessCheckAt = 0;
-      managed.lifecycleOffset = 0;
-      managed.lifecycleRemainder = Buffer.alloc(0);
-      fs.rmSync(managed.lifecycleFile, { force: true });
       if (resume) {
         this.#emitLifecycle(managed, "run.resumed", Date.now(), {
           data: {
@@ -2115,7 +2159,30 @@ export class AgentManager {
     }
   }
 
+  /**
+   * Monitors start detached, so a throw here would leave the run unsettled and
+   * every wait() pending forever. Settle such a run as failed instead.
+   */
   async #monitor(managed: ManagedAgent, timeoutMs: number): Promise<void> {
+    try {
+      await this.#watch(managed, timeoutMs);
+    } catch (error) {
+      if (managed.settled) return;
+      const message = error instanceof Error ? error.message : String(error);
+      const failed = failedRecord(managed, "failed", `Agent monitor failed: ${message}`);
+      await managed.transport.stop().catch(() => undefined);
+      try {
+        writeRecord(managed.statusFile, failed);
+      } catch {
+        // The first waiter and later readers must see the same local result,
+        // even if a readable but stale running record remains on disk.
+        if (!managed.hosted) managed.unpersistedResult = failed;
+      }
+      this.#settle(managed, failed);
+    }
+  }
+
+  async #watch(managed: ManagedAgent, timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs + TRANSPORT_EXIT_GRACE_MS;
     let firstObservedDeadAt: number | undefined;
     while (!managed.settled) {
@@ -2256,7 +2323,12 @@ export class AgentManager {
     // Images are transport inputs, not retained run artifacts. Startup retries
     // have finished by settlement, so remove the owner-only handoff file for
     // every terminal outcome even when retainRuns keeps the rest of the run.
-    fs.rmSync(path.join(managed.runDirectory, "images.json"), { force: true });
+    try {
+      fs.rmSync(path.join(managed.runDirectory, "images.json"), { force: true });
+    } catch {
+      // beginAgentSettlement already marked the run settled: a throw here
+      // would leave every wait() pending forever.
+    }
     this.#emitLifecycle(managed, `run.${result.status}`, result.finishedAt ?? Date.now(), {
       status: result.status,
     });
@@ -2352,52 +2424,68 @@ export class AgentManager {
   #routeChildQuestion(managed: ManagedAgent, data: unknown): void {
     if (typeof data !== "object" || data === null || typeof (data as { requestId?: unknown }).requestId !== "string") return;
     const question = data as Record<string, unknown>;
-    const respond = (response: AgentChildQuestionResponse): void => {
+    const requestId = question.requestId as string;
+    const steer = (command: Record<string, unknown>): void => {
       try {
         fs.appendFileSync(
           path.join(managed.runDirectory, "steer.jsonl"),
-          `${JSON.stringify({ type: "ui_response", requestId: question.requestId, ...response, id: randomUUID(), ts: Date.now() })}\n`,
+          `${JSON.stringify({ ...command, id: randomUUID(), ts: Date.now() })}\n`,
           { encoding: "utf8", mode: 0o600 },
         );
       } catch {
         // The worker's own deadline cancels the dialog if this write is lost.
       }
     };
+    const respond = (response: AgentChildQuestionResponse): void =>
+      steer({ type: "ui_response", requestId, ...response });
     if (!managed.runnerAdapter.capabilities.questions) {
       respond({ cancelled: true });
       return;
     }
-    void this.#askParent(managed, question).then((response) => {
+    // The worker records the decision in the run's status file, where a session
+    // reading a durable run finds it.
+    void this.#askParent(managed, question, (decisionId) => {
+      if (!managed.settled) steer({ type: "ui_decision", requestId, decisionId });
+    }).then((response) => {
       if (!managed.settled) respond(response);
     });
   }
 
   /** One routed dialog for a worker or hosted run; any failure cancels it. */
-  #askParent(managed: ManagedAgent, question: Record<string, unknown>): Promise<AgentChildQuestionResponse> {
+  #askParent(
+    managed: ManagedAgent,
+    question: Record<string, unknown>,
+    onDecision?: (decisionId: string) => void,
+  ): Promise<AgentChildQuestionResponse> {
     if (!this.#onChildQuestion || managed.settled) return Promise.resolve({ cancelled: true });
     managed.questions ??= new AbortController();
     const title =
       typeof question.title === "string" && question.title.trim() ? question.title.trim() : "question";
     // A run can have several questions open; each answer removes only its own.
-    (managed.questionTitles ??= []).push(title);
+    const open: { title: string; decisionId?: string } = { title };
+    (managed.openQuestions ??= []).push(open);
     this.#invalidateUiList();
-    return this.#onChildQuestion({
+    const asked = this.#onChildQuestion({
       runId: managed.id,
       name: managed.actorName ?? managed.name,
       ...(managed.actorId ? { actorId: managed.actorId } : {}),
+      // Both sides must agree: the run asked to hold, and this question carries no deadline of its own.
+      ...(managed.holdQuestions && question.hold === true ? { hold: true as const } : {}),
       question,
       signal: managed.questions.signal,
       onDecision: (decisionId) => {
-        managed.questionDecisionId = decisionId;
+        open.decisionId = decisionId;
+        onDecision?.(decisionId);
         this.#invalidateUiList();
       },
     }).catch((): AgentChildQuestionResponse => ({ cancelled: true })).then((response) => {
-      delete managed.questionDecisionId;
-      const waiting = managed.questionTitles?.lastIndexOf(title) ?? -1;
-      if (waiting >= 0) managed.questionTitles!.splice(waiting, 1);
+      managed.openQuestions!.splice(managed.openQuestions!.indexOf(open), 1);
+      managed.asks?.delete(asked);
       this.#invalidateUiList();
       return response;
     });
+    (managed.asks ??= new Set()).add(asked);
+    return asked;
   }
 
   #appendAttributedBudgetLedger(
@@ -2642,6 +2730,8 @@ export class AgentManager {
     const { logFile: _logFile, nestedAgents: _nestedAgents, ...safeRecord } = record;
     const model = record.model ?? managed.model;
     const thinking = record.thinking ?? managed.thinking;
+    // The oldest open question's decision; the status file can lag a worker's poll.
+    const blockingDecision = managed.openQuestions?.find((open) => open.decisionId)?.decisionId;
     return {
       ...safeRecord,
       cwd: managed.cwd,
@@ -2669,8 +2759,8 @@ export class AgentManager {
       ...(managed.branch ? { branch: managed.branch } : {}),
       ...(managed.worktree ? { worktree: managed.worktree } : {}),
       ...(managed.worktreeResult ? { worktreeResult: managed.worktreeResult } : {}),
-      ...(record.blockedOn && managed.questionDecisionId
-        ? { blockedOn: { ...record.blockedOn, decisionId: managed.questionDecisionId } }
+      ...(record.blockedOn && blockingDecision
+        ? { blockedOn: { ...record.blockedOn, decisionId: blockingDecision } }
         : {}),
     };
   }
