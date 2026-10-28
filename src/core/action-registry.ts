@@ -666,6 +666,7 @@ export class ActionRegistry {
   async listDetailed(
     request: FabricProviderListRequest & { provider?: string; declared?: boolean },
     context: FabricInvocationContext,
+    include: (action: ResolvedFabricAction) => boolean = () => true,
   ): Promise<{ actions: ResolvedFabricAction[]; total: number; truncated: boolean }> {
     context = this.#scopeContext(context);
     if (context.capabilityView) {
@@ -679,7 +680,8 @@ export class ActionRegistry {
         .filter((action) => !request.namespace || action.namespace === request.namespace)
         .filter((action) =>
           !query || `${action.ref} ${action.description}`.toLowerCase().includes(query),
-        );
+        )
+        .filter(include);
       const page = filtered.slice(0, fabricActionListLimit(request.limit));
       return { actions: page, total: filtered.length, truncated: filtered.length > page.length };
     }
@@ -711,7 +713,7 @@ export class ActionRegistry {
           });
       }),
     );
-    const all = this.#policyActions(lists.flat());
+    const all = this.#policyActions(lists.flat()).filter(include);
     const page = all.slice(0, fabricActionListLimit(request.limit));
     return { actions: page, total: all.length, truncated: all.length > page.length };
   }
