@@ -24,6 +24,37 @@ branch navigation discards delivery from old-frontier jobs. Session shutdown/rel
 closes the inbox before aborting jobs, so cleanup cannot start a new turn.
 Print-mode processes do not stay alive indefinitely just to receive late events.
 
+## Background programs
+
+A whole `fabric_exec` program can leave its tool call the same way. Pi delivers
+a steering message to Main only after the current tool calls finish, so while a
+long workflow runs inside one `fabric_exec`, a message typed to Main waits for
+every agent in it. Moving the program to the background ends that tool call and
+Main takes the steer on its next request.
+
+- **Ctrl+B twice** within one second, from an empty editor, while a
+  `fabric_exec` runs. A nested shell that is still waiting is spilled first, as
+  before; press the chord again to move the program. With text in the editor,
+  Ctrl+B stays cursor-left.
+- **`background: true`** on the `fabric_exec` call starts the program as a task
+  and returns at once. The model uses it for long workflows whose result it
+  does not need before continuing.
+
+The tool call returns the task ID. The program keeps running with its own
+cancellation signal: Esc and later turns no longer stop it, and `tasks.stop`,
+the task detail's `x`, or session shutdown do (stopping also stops the child
+agents it owns). Its child agents stay steerable through `agents.steer`,
+`/fabric chat`, or the agent list. Progress lines and the final result go to
+the task's bounded log; the result reaches the owning agent as a background
+task event, bounded to about 6,000 characters, with the same batching, wakeup,
+and suspension rules as shell tasks. The live-task reminder lists running
+programs. A background program never claims a Prewalk handoff, and the shell
+timing bridge below does not report programs.
+
+Main and a background program can edit the same files at the same time. Detach
+only work whose files Main will not touch, or tell Main what it should leave
+alone.
+
 ## Extension timing bridge
 
 Fabric emits `pi-fabric:shell:timing:v1` on the owning session's `pi.events` bus.
