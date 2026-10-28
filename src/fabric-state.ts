@@ -53,6 +53,7 @@ import type { FabricRuntimePaths } from "./runtime-paths.js";
 import type { FabricLoadedFileIdentity } from "./build-identity.js";
 
 import { FabricManagedHost, type FabricManagedHostOptions } from "./managed-host.js";
+import { FabricProgramTasks } from "./core/program-tasks.js";
 
 export interface FabricStateOptions {
   managedHost?: FabricManagedHostOptions;
@@ -86,6 +87,8 @@ export class FabricState {
   readonly prewalk = new PrewalkController();
   readonly prewalkDrift = new PrewalkDriftTracker();
   readonly sessionApprovals = new FabricSessionApprovals();
+  /** Foreground `fabric_exec` programs the Ctrl+B chord can move to the background. */
+  readonly programTasks = new FabricProgramTasks();
   // agent_end must revert an override even before activation; the controller
   // itself loads only when an override can exist.
   readonly thinking: FabricThinkingHost;
