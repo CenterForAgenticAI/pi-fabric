@@ -23,8 +23,8 @@ const truncation = (reason: string): string =>
 const truncatedUnknown = (reason: string): string => `unknown ${truncation(reason)}`;
 
 const MAX_DEPTH = 6;
-const MAX_UNION_MEMBERS = 12;
-const MAX_SCHEMA_SOURCE_CHARS = 4_096;
+// Each attempt is bounded independently of source JSON size.
+const MAX_RENDER_NODES = 4_096;
 const MAX_MEMBER_TYPE_CHARS = 2_500;
 const MAX_SECTION_CHARS = 60_000;
 const MAX_MCP_SERVERS = 64;
@@ -43,130 +43,143 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const propertyKey = (name: string): string =>
   IDENTIFIER.test(name) ? name : JSON.stringify(name);
 
-const literalType = (value: unknown): string => {
+const SIZE_LIMIT = Symbol("preview size limit");
+interface RenderState {
+  nodes: number;
+  descriptionLimit: number;
+  descriptionsLost: boolean;
+  cutLists: boolean;
+  depthLimit: number;
+}
+
+const fit = (text: string, budget: number): string => {
+  if (text.length > budget) throw SIZE_LIMIT;
+  return text;
+};
+
+const literalType = (value: unknown, budget: number): string => {
+  // Check before serializing: an enormous string must not allocate another copy.
+  if (typeof value === "string") {
+    if (value.length > budget) throw SIZE_LIMIT;
+    return fit(JSON.stringify(value), budget);
+  }
   if (value === null) return "null";
-  if (typeof value === "string") return JSON.stringify(value);
-  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
-  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return String(value);
   return "unknown";
 };
 
-const unionType = (parts: string[]): string => {
-  const unique = [...new Set(parts)];
-  if (unique.length === 0) return "unknown";
-  return unique.length === 1 ? unique[0]! : unique.join(" | ");
+const propertyComment = (schema: unknown, state: RenderState): string => {
+  if (!isRecord(schema) || typeof schema.description !== "string" || !schema.description) return "";
+  const description = schema.description;
+  if (description.length > state.descriptionLimit) state.descriptionsLost = true;
+  if (!state.descriptionLimit) return "";
+  // Never let provider text close a comment or introduce a line separator.
+  const text = description.slice(0, state.descriptionLimit)
+    .replace(/\*\//g, "* /").replace(/[\r\n\u2028\u2029]/g, " ");
+  return `/** ${text}${description.length > state.descriptionLimit ? "…" : ""} */ `;
 };
 
-const typeList = (value: unknown): string[] => {
-  if (typeof value === "string") return [value];
-  if (Array.isArray(value)) {
-    return value.filter((entry): entry is string => typeof entry === "string");
-  }
-  return [];
-};
+const schemaType = (schema: unknown, depth: number, budget: number, state: RenderState): string => {
+  if (--state.nodes < 0) throw SIZE_LIMIT;
+  if (depth > state.depthLimit) return fit(truncatedUnknown("depth limit"), budget);
+  if (schema === false) return fit("never", budget);
+  if (!isRecord(schema)) return fit("unknown", budget);
+  if ("const" in schema) return literalType(schema.const, budget);
 
-const objectType = (schema: Record<string, unknown>, depth: number): string => {
-  const properties = isRecord(schema.properties) ? schema.properties : {};
-  const required = new Set(
-    Array.isArray(schema.required)
-      ? schema.required.filter((entry): entry is string => typeof entry === "string")
-      : [],
-  );
-  const members: string[] = [];
-  for (const key of Object.keys(properties).sort()) {
-    members.push(
-      `${propertyKey(key)}${required.has(key) ? "" : "?"}: ${schemaType(properties[key], depth + 1)}`,
-    );
-  }
-  const additional = schema.additionalProperties;
-  if (additional !== false) {
-    members.push(
-      isRecord(additional)
-        ? `[key: string]: ${schemaType(additional, depth + 1)}`
-        : "[key: string]: unknown",
-    );
-  }
-  return `{ ${members.join("; ")} }`;
-};
-
-const schemaType = (schema: unknown, depth: number): string => {
-  if (depth > MAX_DEPTH) return truncatedUnknown("depth limit");
-  if (schema === true || schema === undefined) return "unknown";
-  if (schema === false) return "never";
-  if (!isRecord(schema)) return "unknown";
-  if ("const" in schema) return literalType(schema.const);
-  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
-    const parts = schema.enum.slice(0, MAX_UNION_MEMBERS).map(literalType);
-    if (schema.enum.length > MAX_UNION_MEMBERS) {
-      parts.push(truncatedUnknown(`${schema.enum.length - MAX_UNION_MEMBERS} enum values omitted`));
-    }
-    return unionType(parts);
-  }
-  const alternates = Array.isArray(schema.anyOf)
-    ? schema.anyOf
-    : Array.isArray(schema.oneOf)
-      ? schema.oneOf
-      : undefined;
-  if (alternates) {
-    if (alternates.length === 0) return "unknown";
-    const parts = alternates.slice(0, MAX_UNION_MEMBERS).map((entry) => schemaType(entry, depth + 1));
-    if (alternates.length > MAX_UNION_MEMBERS) {
-      const keyword = Array.isArray(schema.anyOf) ? "anyOf" : "oneOf";
-      parts.push(truncatedUnknown(`${alternates.length - MAX_UNION_MEMBERS} ${keyword} alternatives omitted`));
-    }
-    return unionType(parts);
-  }
-  if (Array.isArray(schema.allOf) && schema.allOf.length > 0) {
-    const parts = schema.allOf
-      .slice(0, MAX_UNION_MEMBERS)
-      .map((entry) => {
-        const rendered = schemaType(entry, depth + 1);
-        return rendered.includes(" | ") ? `(${rendered})` : rendered;
-      });
-    if (schema.allOf.length > MAX_UNION_MEMBERS) {
-      parts.push(truncatedUnknown(`${schema.allOf.length - MAX_UNION_MEMBERS} allOf members omitted`));
-    }
-    return parts.join(" & ");
-  }
-  const types = typeList(schema.type);
-  if (types.length > 1) {
-    return unionType(types.map((type) => schemaType({ ...schema, type }, depth + 1)));
-  }
-  const type = types[0];
-  if (type === "object" || (!type && isRecord(schema.properties))) {
-    return objectType(schema, depth);
-  }
-  if (type === "string") return "string";
-  if (type === "number" || type === "integer") return "number";
-  if (type === "boolean") return "boolean";
-  if (type === "null") return "null";
-  if (type === "array") {
-    const items = schema.items;
-    if (Array.isArray(items)) {
-      const parts = items.slice(0, MAX_UNION_MEMBERS).map((entry) => schemaType(entry, depth + 1));
-      if (items.length > MAX_UNION_MEMBERS) {
-        parts.push(`...unknown[] ${truncation(`${items.length - MAX_UNION_MEMBERS} tuple items omitted`)}`);
+  const list = (entries: unknown[], kind: string, separator: string, tuple = false, literals = false, types = false): string => {
+    const parts: string[] = [];
+    let used = tuple ? 2 : 0;
+    for (let i = 0; i < entries.length; i++) {
+      const marker = tuple
+        ? `...unknown[] ${truncation(`${entries.length - i} ${kind} omitted`)}`
+        : truncatedUnknown(`${entries.length - i} ${kind} omitted`);
+      // Reserve room for a marker only in the degradation pass. Short complete
+      // lists are first tried without this reservation, regardless of count.
+      const reserve = state.cutLists ? marker.length + separator.length : 0;
+      try {
+        const room = budget - used - (parts.length ? separator.length : 0) - reserve;
+        let part = literals ? literalType(entries[i], room) : schemaType(types ? { type: entries[i] } : entries[i], depth + 1, room, state);
+        if (separator === " & " && part.includes(" | ")) part = `(${part})`;
+        fit(part, room);
+        parts.push(part);
+        used += part.length + (parts.length > 1 ? separator.length : 0);
+      } catch (error) {
+        if (error !== SIZE_LIMIT || !state.cutLists) throw error;
+        parts.push(marker);
+        return fit(`${tuple ? "[" : ""}${parts.join(separator)}${tuple ? "]" : ""}`, budget);
       }
-      return `[${parts.join(", ")}]`;
     }
-    return isRecord(items) || items === true
-      ? `Array<${schemaType(items, depth + 1)}>`
-      : "unknown[]";
+    return fit(`${tuple ? "[" : ""}${parts.join(separator) || (tuple ? "" : "unknown")}${tuple ? "]" : ""}`, budget);
+  };
+
+  if (Array.isArray(schema.enum) && schema.enum.length) return list(schema.enum, "enum values", " | ", false, true);
+  if (Array.isArray(schema.anyOf)) return list(schema.anyOf, "anyOf alternatives", " | ");
+  if (Array.isArray(schema.oneOf)) return list(schema.oneOf, "oneOf alternatives", " | ");
+  if (Array.isArray(schema.allOf) && schema.allOf.length) return list(schema.allOf, "allOf members", " & ");
+  if (Array.isArray(schema.type)) {
+    // Do not spread or filter an arbitrarily large schema/type array.
+    return list(schema.type, "type alternatives", " | ", false, false, true);
   }
-  return "unknown";
+  const type = schema.type;
+  if (type === "object" || (!type && isRecord(schema.properties))) {
+    const properties = isRecord(schema.properties) ? schema.properties : {};
+    const required = new Set<string>();
+    if (Array.isArray(schema.required)) {
+      if (schema.required.length > MAX_RENDER_NODES) throw SIZE_LIMIT;
+      for (const entry of schema.required) if (typeof entry === "string") required.add(entry);
+    }
+    const keys: string[] = [];
+    for (const key in properties) {
+      if (!Object.prototype.hasOwnProperty.call(properties, key)) continue;
+      if (keys.length >= MAX_RENDER_NODES || key.length > budget) throw SIZE_LIMIT;
+      keys.push(key);
+    }
+    keys.sort();
+    const members: string[] = [];
+    let used = 4;
+    for (const key of keys) {
+      const prefix = `${propertyComment(properties[key], state)}${propertyKey(key)}${required.has(key) ? "" : "?"}: `;
+      const part = prefix + schemaType(properties[key], depth + 1, budget - used - prefix.length, state);
+      members.push(part);
+      used += part.length + 2;
+      if (used > budget) throw SIZE_LIMIT;
+    }
+    if (schema.additionalProperties !== false) {
+      const prefix = "[key: string]: ";
+      members.push(prefix + schemaType(schema.additionalProperties, depth + 1, budget - used - prefix.length, state));
+    }
+    return fit(`{ ${members.join("; ")} }`, budget);
+  }
+  if (type === "string" || type === "boolean" || type === "null") return fit(type, budget);
+  if (type === "number" || type === "integer") return fit("number", budget);
+  if (type === "array") {
+    if (Array.isArray(schema.items)) return list(schema.items, "tuple items", ", ", true);
+    return fit(`Array<${schemaType(schema.items, depth + 1, budget - 7, state)}>`, budget);
+  }
+  return fit("unknown", budget);
 };
 
-// Bound both guest declarations and standalone describeTool previews. Never
-// slice generated TypeScript: that can leave an invalid type or hide properties.
+// Budget the rendered type, not the source JSON. Retry without touching raw
+// schemas: shorten comments, drop them, cut lists by size, then collapse depth.
 const boundedSchemaType = (schema: unknown): string => {
-  const json = JSON.stringify(schema);
-  if (json && json.length > MAX_SCHEMA_SOURCE_CHARS) {
-    return truncatedUnknown("schema source size limit (properties/members may be omitted)");
+  const descriptionMarker = truncation("descriptions shortened or omitted");
+  const attempts = [
+    { descriptionLimit: MAX_MEMBER_TYPE_CHARS, cutLists: false, depthLimit: MAX_DEPTH },
+    { descriptionLimit: 160, cutLists: false, depthLimit: MAX_DEPTH },
+    { descriptionLimit: 0, cutLists: false, depthLimit: MAX_DEPTH },
+    ...Array.from({ length: MAX_DEPTH + 1 }, (_, i) => ({ descriptionLimit: 0, cutLists: true, depthLimit: MAX_DEPTH - i })),
+  ];
+  for (const attempt of attempts) {
+    const state: RenderState = { ...attempt, nodes: MAX_RENDER_NODES, descriptionsLost: false };
+    try {
+      const rendered = schemaType(schema, 0, MAX_MEMBER_TYPE_CHARS, state);
+      return fit(state.descriptionsLost ? `${rendered} ${descriptionMarker}` : rendered, MAX_MEMBER_TYPE_CHARS);
+    } catch (error) {
+      if (error !== SIZE_LIMIT) throw error;
+    }
   }
-  const rendered = schemaType(schema, 0);
-  return rendered.length > MAX_MEMBER_TYPE_CHARS
-    ? truncatedUnknown("type size limit (properties/members may be omitted)")
-    : rendered;
+  return truncatedUnknown("type size limit (properties/members may be omitted)");
 };
 
 interface FabricRenderBudget {
@@ -189,15 +202,7 @@ const renderMember = (
   source: FabricNamedActionTypeSource,
   resultType: string,
 ): string => {
-  const loose = `${propertyKey(name)}(args?: Record<string, unknown>): ${resultType};`;
-  const schemaJson = JSON.stringify(source.inputSchema);
-  if (!schemaJson || schemaJson.length > MAX_SCHEMA_SOURCE_CHARS) {
-    return `${truncation("schema source size limit (properties/members may be omitted)")} ${loose}`;
-  }
-  const rendered = schemaType(source.inputSchema, 0);
-  if (rendered.length > MAX_MEMBER_TYPE_CHARS) {
-    return `${truncation("type size limit (properties/members may be omitted)")} ${loose}`;
-  }
+  const rendered = boundedSchemaType(source.inputSchema);
   return `${propertyKey(name)}(args${hasRequiredArgs(source) ? "" : "?"}: ${rendered}): ${resultType};`;
 };
 

@@ -31,6 +31,8 @@ Request fields include task, agent, name, runner, kernel, transport, model, mode
 - Children may read `PI_FABRIC_LINEAGE` (also `(await agents.self())["lineage"]`), `PI_FABRIC_WRITE_POLICY`, `PI_FABRIC_SCOPE`, `PI_FABRIC_THINKING_BOUNDS`, `PI_FABRIC_DEPTH`, and `PI_FABRIC_AGENT_NAME`; other `PI_FABRIC_*` variables are internal.
 - `schema` requests validated structured output. `thinking` is configured/clamped reasoning effort; with `thinking.bounds` configured a clamped run reports `requestedThinking`. `thinkingBounds={"min": ..., "max": ...}` narrows the child's bounds and must lie inside the caller's bounds.
 
+For a long workflow (many agents or beads) whose result you do not need before continuing, call `fabric_exec` with `background: true`: the call returns a task ID, the program keeps running, and its result arrives as a background task event. The user can then steer you while it runs. Do not start the same program again while it runs.
+
 `agents.spawn` returns a handle; `wait`, `status`, `stop`, and `cleanup` take its id. Unread detached results are batched after the current tool turn, or wake idle Main once; concise UI notices appear immediately. `wait`/`join` and terminal `status` acknowledge results and retract pending notifications, even after completion. Running status and UI/list polling do not acknowledge them. Return the relevant outcome to Main from your program; prefer `wait` over status polling. Escape/error parks results until new input. `residency="durable"` is a spawn-only opt-in to outlive Main, requiring trusted mesh and no Schema enforce; unread deliveries and acknowledgments survive reconnects.
 
 ```python
