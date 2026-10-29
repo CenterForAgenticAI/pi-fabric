@@ -74,9 +74,11 @@ import {
 import {
   FUZZY_RESOLUTION_MARKERS,
   aliasThinking,
-  resolveAvailablePiModel,
+  assertExactModelRequest,
+  resolvePiModelSelector,
   resolveFabricModel,
   type FabricModelCandidate,
+  type FabricModelMatch,
 } from "../core/model-resolution.js";
 import { loadModelUsage } from "../core/model-usage.js";
 import { resolveAgentDir } from "../core/agent-dir.js";
@@ -465,6 +467,7 @@ export class AgentsProvider implements FabricProvider {
   #resolvePiModel(
     model: string,
     context: FabricInvocationContext,
+    modelMatch?: FabricModelMatch,
   ): string {
     let available: FabricModelCandidate[] = [];
     try {
@@ -476,11 +479,11 @@ export class AgentsProvider implements FabricProvider {
     } catch {
       // The authoritative visible set is empty when registry discovery fails.
     }
-    const resolved = resolveAvailablePiModel(model, {
+    const resolved = resolvePiModelSelector(model, {
       aliases: this.modelsConfig().aliases,
       available,
       lastUsed: loadModelUsage(),
-    });
+    }, modelMatch);
     return `${resolved.provider}/${resolved.id}`;
   }
 
@@ -524,8 +527,14 @@ export class AgentsProvider implements FabricProvider {
     runnerOverride?: FabricAgentRunner,
   ): Record<string, unknown> {
     const runner = runnerOverride ?? checkedRunner(args.runner, this.manager.config.runner);
+    // Exact matching is checked before the non-Pi early return so it can never be skipped silently.
+    assertExactModelRequest({ modelMatch: args.modelMatch, runner, model: args.model });
     if (runner !== "pi" && runner !== "pi-durable") return args;
     const model = typeof args.model === "string" ? args.model.trim() : "";
+    if (args.modelMatch === "exact") {
+      // No alias, closest or fuzzy step, and no alias thinking level.
+      return { ...args, model: this.#resolvePiModel(model, context, "exact") };
+    }
     if (!model) return args;
     const thinking = isFabricThinking(args.thinking)
       ? args.thinking

@@ -66,7 +66,27 @@ Use `agents.models({ runner: "pi" })` and copy the returned `key` verbatim, or u
 
 To check one known key without reading the whole list, pass it as `model`: `agents.models({ runner: "pi", model: "provider/id" })` returns only the entries whose `key` equals that string exactly and case-sensitively, so a missing model gives `[]`. This lookup does not resolve aliases or near matches, and it filters the Claude, Veda, and registered-runner lists the same way.
 
-`provider/model` selectors prefer an exact visible match. A near-miss ID resolves to the closest available model on the **same provider**, using Fabric's existing similarity ranking; ties prefer recent usage, then canonical key order. For example, `openai-codex/gpt-6-sol` resolves to `openai-codex/gpt-5.6-sol` when that is the closest visible model. The returned handle's `model` and the worker's `requestedModel` contain the canonical selection. Unknown providers and names without sufficient resemblance still fail before launch. Model IDs containing `/` stay provider-scoped. Configured aliases keep their ordered, exact-target fallback chains.
+`provider/model` selectors prefer an exact visible match. A near-miss ID resolves to the closest available model on the **same provider**, using Fabric's existing similarity ranking; ties prefer recent usage, then canonical key order. For example, `openai-codex/gpt-6-sol` resolves to `openai-codex/gpt-5.6-sol` when that is the closest visible model. The returned handle's `model` and the worker's `requestedModel` contain the canonical selection. Unknown providers and names without sufficient resemblance still fail before launch. Model IDs containing `/` stay provider-scoped. Configured aliases keep their ordered, exact-target fallback chains. To turn the alias and near-miss steps off, see [exact model match](#exact-model-match).
+
+### Exact model match
+
+Set `modelMatch: "exact"` on `agents.run` or `agents.spawn` when a program must run one named model or none. `model` is then required and must be a `provider/id` that `agents.models({ runner: "pi" })` lists. Fabric skips the `models.aliases` step (an alias named like the model is ignored), the closest-match step, and the fuzzy step, and it applies no alias `thinking` level. Matching ignores case, as it does for other exact lookups, and the handle reports the registry's own spelling. When two registry entries differ only by case, the identical spelling wins, and Fabric authenticates that same entry. Without `modelMatch`, resolution is unchanged.
+
+Fabric refuses these requests before any child starts:
+
+- `model` is missing or not in `provider/id` form: `modelMatch "exact" requires model in provider/id form, as listed by agents.models({ runner: "pi" }).`
+- The model is not in the visible registry: the usual `Model "<selector>" is not available to this Pi session.` error, which names `agents.models({ runner: "pi" })`.
+- The runner is not `pi` or `pi-durable`: `modelMatch "exact" is supported only by the pi and pi-durable runners.` Claude, Veda, and registered runners forward `model` to a backend that can apply its own aliases, so Fabric cannot promise that model and refuses the request.
+- The value is not `"exact"`: the input schema rejects it, and a direct request fails with `Invalid Fabric agent modelMatch`.
+
+The mode holds on every launch path, including a retry or resume of the same run and `residency: "durable"`, where the resident host resolves the model again with the same mode. It is not accepted by `agents.handoff`, `agents.create`, actor activations, or the hosted `AgentService`; their schemas reject it.
+
+What `modelMatch: "exact"` promises:
+
+1. **Fabric picks the listed `provider/id` and nothing else.** There is no alias, closest-match or fuzzy step, and no `thinking` level comes from an alias. A model that `agents.models({ runner: "pi" })` does not list is refused before any child starts.
+2. **Admission is strict.** An exact request always uses strict model admission, whatever `agents.modelAdmission` says. This covers the first launch, a startup retry, a resume, and the resident host. Permissive admission accepts a child that reports a different model after selection, and an exact run never does.
+
+Strict admission acts on what the child reports. It fails the run when the child reports another model after selection or a reply names another model, so a request that an extension in the child sends on another model can go out before the run fails.
 
 For independent launches, await `Promise.allSettled` and inspect every result. An uncaught `Promise.all` rejection ends the Fabric program and can abort sibling calls still in flight; it does not prove every requested model was unavailable. Already completed calls are not rolled back, so retain successful handles and retry only failed launches.
 
@@ -147,7 +167,7 @@ Startup waits for a correlated RPC readiness response. Startup, model admission,
 
 Selectors with no available match, rejected/malformed RPC responses, or a remaining model mismatch fail the run without sending its task. A startup or admission stall exhausts the overall deadline with `timed_out`, also without sending the task. Queued controls wait for admission too. After parent-side selector resolution, the worker must use that canonical model: it does not substitute an MRU model or fall back during admission. Standalone `AgentManager` callers can also supply a unique exact bare model ID; ambiguous IDs must be provider-qualified.
 
-`requestedModel` preserves launch intent in run records; `model` follows verified child state and actual assistant attribution. The manager and participant UI preserve that observed value; the launch label cannot overwrite it. If assistant attribution drifts after admission, Fabric terminates the child and reports both requested and observed models in the failure. This verifies Pi's local provider/model identity, not a remote provider's internal routing.
+`requestedModel` in run records is the model Fabric selected at launch, after alias and near-miss resolution, not the caller's selector (with `modelMatch: "exact"` the two name the same model); `model` follows verified child state and actual assistant attribution. The manager and participant UI preserve that observed value; the launch label cannot overwrite it. If assistant attribution drifts after admission, Fabric terminates the child and reports both requested and observed models in the failure. This verifies Pi's local provider/model identity, not a remote provider's internal routing.
 
 Existing workers are not retroactively changed by rebuilding or reloading the parent. Stop and respawn affected workers to apply model admission.
 
