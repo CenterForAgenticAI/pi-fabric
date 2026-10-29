@@ -61,6 +61,7 @@ import {
   type FabricCapabilityViewLease,
 } from "./core/action-registry.js";
 import { FabricSessionApprovals } from "./core/approval-controller.js";
+import type { FabricActionPolicyHooks } from "./core/action-policy-hooks.js";
 import {
   COMPACTION_SEED_DELIVERY,
   CompactController,
@@ -214,6 +215,7 @@ export interface FabricRuntimeStateOptions {
   prewalk?: PrewalkController;
   prewalkDrift?: PrewalkDriftTracker;
   sessionApprovals?: FabricSessionApprovals;
+  actionPolicyHooks?: FabricActionPolicyHooks;
   thinking?: FabricThinkingController;
   paths?: FabricRuntimePaths;
   entryIdentity?: FabricLoadedFileIdentity;
@@ -227,6 +229,7 @@ export interface FabricRuntimeStateOptions {
 
 export class FabricRuntimeState {
   #registry: ActionRegistry | undefined;
+  readonly #actionPolicyHooks: FabricActionPolicyHooks | undefined;
   #config: FabricConfig | undefined;
   #execution: FabricExecutionService | undefined;
   #repairs: RepairCompiler | undefined;
@@ -300,6 +303,7 @@ export class FabricRuntimeState {
     this.prewalk = options.prewalk ?? new PrewalkController();
     this.prewalkDrift = options.prewalkDrift ?? new PrewalkDriftTracker();
     this.sessionApprovals = options.sessionApprovals ?? new FabricSessionApprovals();
+    this.#actionPolicyHooks = options.actionPolicyHooks;
     this.thinking = options.thinking ??
       new FabricThinkingController(pi, () => this.#config?.thinking?.bounds ?? {});
     this.#paths = options.paths;
@@ -720,6 +724,7 @@ export class FabricRuntimeState {
       meshRoot,
       this.#config.mesh.maxEventBytes,
       this.#config.mesh.maxReadEvents,
+      { durability: this.#config.mesh.durability },
     );
     const hostId = identity.kind === "main" ? mainAgentId : `runtime:${sessionId}`;
     this.#control = new FabricControlPlane(this.#mesh, identity, {
@@ -735,6 +740,8 @@ export class FabricRuntimeState {
       ownerIncarnation: this.#control.incarnation,
       recordedLabel: () => this.#recordedLabel,
       labelWanted: () => this.#labelWanted,
+      departedLimit: this.#config.mesh.departedLimit,
+      departedRetentionMs: this.#config.mesh.departedRetentionMs,
       ...(process.env.PI_FABRIC_OWNER_HOST_ID
         ? { selfOwnerHostId: process.env.PI_FABRIC_OWNER_HOST_ID }
         : {}),
@@ -1155,6 +1162,7 @@ export class FabricRuntimeState {
               },
             },
             authorize: (ref, parentToolCallId) => this.#schema!.authorize(ref, parentToolCallId),
+            actionPolicyHooks: this.#actionPolicyHooks,
             jevFabric: this.#shellJobs.durable,
           });
           const setDecisionProfile = (profile: string | null | undefined) => provider.setDecisionProfile(profile);
@@ -1240,6 +1248,7 @@ export class FabricRuntimeState {
     );
     this.#execution.nativeCodemode.setPersistence((type, data) => this.pi.appendEntry(type, data));
     this.#execution.setParticipantRegistry(this.#providerParticipants);
+    this.#execution.setActionPolicyHooks(this.#actionPolicyHooks);
     const events = this.pi.events;
     if (events) this.#execution.setEventEmitter((channel, data) => events.emit(channel, data));
     const decisions = this.#decisions;
@@ -1337,6 +1346,9 @@ export class FabricRuntimeState {
     const eligible = (): boolean => {
       const current = this.#config;
       if (!current?.speculation.enabled) return false;
+      // Hooks may deny even configured allows and can register dynamically.
+      // Run them only at normal approval, never speculatively or twice.
+      if (current.approvals.policyHooks === true) return false;
       return current.executor.kernel === "python"
         ? current.executor.pythonRuntime === "monty" || current.schema.mode === "enforce"
         : current.schema.mode === "enforce" || current.executor.runtime === "quickjs";

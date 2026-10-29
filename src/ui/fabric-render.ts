@@ -527,6 +527,7 @@ const providerCallDetail = (
       case "list":
       case "models":
       case "peers":
+      case "departed":
       case "definitions":
         return countOf(result);
       default:
@@ -932,6 +933,8 @@ export interface FabricMulticallPartialInput {
   showAgentToolPreview?: boolean | undefined;
   spinner?: string | undefined;
   activityLabel?: string | undefined;
+  /** Calls the progress update left out to stay bounded. */
+  omittedCalls?: { count: number; done: number } | undefined;
 }
 
 export const singleCallProgressLine = (
@@ -954,10 +957,12 @@ export const renderFabricMulticallPartial = (
   theme: Theme,
   invalidate?: () => void,
 ): Component => {
-  const done = input.audits.filter((audit) => audit.success !== undefined).length;
+  const omitted = input.omittedCalls?.count ?? 0;
+  const done = input.audits.filter((audit) => audit.success !== undefined).length +
+    (input.omittedCalls?.done ?? 0);
   let header = theme.fg(
     "warning",
-    `◆ ${input.activityLabel ?? "Fabric"} running · ${done}/${input.audits.length} calls`,
+    `◆ ${input.activityLabel ?? "Fabric"} running · ${done}/${input.audits.length + omitted} calls`,
   );
   const progress = input.progress ? compactProgressPreview(input.progress) : "";
   if (progress) header += theme.fg("dim", ` · ${progress}`);
@@ -1012,7 +1017,7 @@ export const renderFabricMulticallPartial = (
     }
   }
 
-  const callsHidden = input.audits.length - callsShown.length;
+  const callsHidden = input.audits.length + omitted - callsShown.length;
   if (callsHidden > 0) {
     const label = `… ${callsHidden} nested ${callsHidden === 1 ? "call" : "calls"} hidden`;
     rows.push(

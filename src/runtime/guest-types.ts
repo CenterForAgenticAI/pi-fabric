@@ -785,6 +785,12 @@ interface FabricAgentsApi {
   main(): Promise<FabricMainAgentInfo>;
   sessions(): Promise<FabricParticipantInfo[]>;
   peers(): Promise<FabricPeerInfo[]>;
+  /** Root sessions no longer live, newest first. Never part of live discovery. */
+  departed(args?: { limit?: number }): Promise<Array<{
+    id: string; kind: "root"; rootId: string; ownerHostId: string; ownerIdentityId: string; ownerIncarnation?: string;
+    name: string; label?: string; cwd?: string; sessionId?: string;
+    status: "stopped" | "lost"; startedAt: number; lastSeenAt: number;
+  }>>;
   /** Named agent files that agents.run and agents.spawn accept in agent. */
   definitions(): Promise<FabricAgentDefinition[]>;
   subscribe(args: {

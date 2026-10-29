@@ -215,7 +215,9 @@ class ResidentHost {
     this.#responsesPath = path.join(config.residencyRoot, "responses");
     this.#agentsPath = path.join(config.residencyRoot, "agents");
     this.#deliveryPrefix = residentDeliveryPrefix(config.rootId);
-    this.mesh = new MeshStore(config.meshRoot, config.mesh.maxEventBytes, config.mesh.maxReadEvents);
+    this.mesh = new MeshStore(config.meshRoot, config.mesh.maxEventBytes, config.mesh.maxReadEvents, {
+      durability: config.mesh.durability,
+    });
     this.control = new FabricControlPlane(this.mesh, this.identity, {
       enabled: true,
       hostId: this.hostId,
@@ -850,6 +852,8 @@ class ResidentHost {
     }
     for (const module of modules) await loadRunnerModule(module).catch(() => undefined);
     await this.agents.recoverHostedRuns().catch(() => []);
+    // Opted-in pi-durable worker runs (agents.durableWorkerRecovery at launch).
+    await this.agents.recoverWorkerRuns().catch(() => []);
   }
 
   #recoverInterruptedRequests(): void {

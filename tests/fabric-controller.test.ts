@@ -700,6 +700,43 @@ describe("FabricUiController widget arrow entry", () => {
     }
   });
 
+  it.each(["regular", "fullscreen"] as const)("lets Main hover win after returning from a conversation in %s mode", async (layout) => {
+    const { controller, editor, list, focused } = mount(layout);
+    let returnToMain!: () => void;
+    const closed = new Promise<void>((resolve) => { returnToMain = resolve; });
+    const open = vi.spyOn(controller, "openConversation").mockImplementation(() => closed);
+    try {
+      const widget = list();
+      const pointer = (type: "move" | "click", y: number) => widget.handleMouse({
+        type, button: type === "click" ? "left" : "none", x: 4, y, screenX: 4, screenY: y,
+        width: 120, height: 40, shift: false, alt: false, ctrl: false,
+      });
+      widget.render(120);
+      pointer("click", 2);
+      expect(open).toHaveBeenCalledWith(expect.anything(), "agent-1");
+      returnToMain();
+      await vi.waitFor(() => expect(focused()).toBe(widget));
+      expect(widget.render(120)[2]).toMatch(/^● reviewer/);
+
+      // The native list retains keyboard selection after the preview closes.
+      // Main must still win on hover without typing to release that focus.
+      for (let index = 0; index < 2; index++) {
+        pointer("move", 1);
+        const main = widget.render(120);
+        expect(main[1]).toMatch(/^● Fabric/);
+        expect(main[2]).toMatch(/^○ reviewer/);
+        pointer("move", 2);
+        expect(widget.render(120)[2]).toMatch(/^● reviewer/);
+      }
+      expect(editor.handleInput).not.toHaveBeenCalled();
+      expect(open).toHaveBeenCalledTimes(1);
+    } finally {
+      returnToMain();
+      open.mockRestore();
+      controller.stop();
+    }
+  });
+
   it("moves the label to the editor border and collapses the list while only Main is left", () => {
     const { controller, editorBox, list } = mount("regular", { agents: false, label: "PBO-21" });
     try {

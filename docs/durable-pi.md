@@ -131,15 +131,86 @@ switches receive fresh request identities and do not replay old answers.
 Old leaf-adapter locators/journals are not silently migrated into worker stores.
 
 Worker retries retain the original prompt identity, so a completed journal can
-restore its answer even if the parent died before saving completion. Automatic
-reattachment after the owning Fabric/resident process restarts currently covers
-hosted adapters, not this built-in worker; `agents.wait` on such a run fails at
-once when its resident host is gone and settles the run failed with outcome
-`indeterminate`. Recovery of completed conversations
+restore its answer even if the parent died before saving completion. By
+default, automatic reattachment after the owning Fabric/resident process
+restarts covers hosted adapters, not this built-in worker; `agents.wait` on such
+a run fails at once when its resident host is gone and settles the run failed
+with outcome `indeterminate`. Recovery of completed conversations
 with additional steering/follow-up user messages also remains incomplete: strict
 transcript correlation fails closed to avoid attributing a stale answer.
 Control acknowledgements do not provide an end-to-end exactly-once delivery
 contract; do not blindly resubmit a command whose acknowledgement was lost.
+
+## Opt-in: reattach after a resident host restart
+
+Set `agents.durableWorkerRecovery: true` to let a resident host recover its
+own unfinished `pi-durable` worker runs. It applies only to runs launched with
+`residency: "durable"`, runner `pi-durable`, and the `process` transport, on
+POSIX. Each such launch writes `worker-recovery.json` beside the run: the run
+id, the absolute deadline, the current worker PID, and the worker launch. The
+marker is **untrusted input**, not launch authority. The host also writes a
+receipt under `<runRoot>.worker-launch-authority/<id>.json`, a sibling of
+the host run root, outside all child run directories and nested run roots. The receipt pins every launch argument, PID and deadline, plus
+the current host's agent configuration, binaries, inherited tools and policy.
+Recovery requires an exact match; this covers optional/future arguments too,
+including runner, child binaries, extensions, kernels and capability settings.
+The run root and receipt directory, like the host configuration, must remain
+host-controlled: this is not isolation against a process with arbitrary
+same-user filesystem access. Both files are removed on settlement. An
+explicit stop deletes the file as soon as it is requested, before Fabric
+signals the worker, so a host that dies partway through a stop leaves nothing
+to recover. Every other settlement this host makes deletes the file before it
+writes the terminal record. A later host therefore never recovers a run Fabric
+already finished or stopped.
+
+When the host closes, it leaves these workers running. The next resident host,
+whether started by a new session or by `agents.wait` after the old host died,
+reads each file and decides:
+
+- **Worker still running.** Fabric checks the PID and that its command line
+  still carries `--id <run id>`. It then adopts the worker and waits for its
+  result. Nothing is relaunched.
+- **Worker gone.** Fabric relaunches the same launch in the same run directory,
+  with the same prompt and the progress so far carried over, and with
+  `--timeout-ms` set to what remains of the original deadline. `pi-durable`
+  reopens its journal, so completed work is not repeated.
+- **Worker recorded a stop but is still running.** Fabric waits up to seven
+  seconds for it to exit and then relaunches it. If it is still running, the run
+  settles `indeterminate` and no new launch is attempted.
+- **Recovery file does not match this host.** A missing or mismatched host
+  receipt, including a legacy marker-only run or a changed host policy, settles
+  the run `indeterminate` without adopting or starting a process. The launch
+  also has to use this host's worker and the run's own id, cwd and file paths.
+  Files over 8 MiB, malformed files and files whose id does not name their run
+  directory cannot authorize a launch.
+- **No first status.** A valid marker can precede the worker's first status
+  write. Recovery explicitly publishes a failed, `indeterminate` status and
+  removes the marker. The run is not silently left without an owner.
+  It does not guess at, signal or relaunch a possibly still-running worker.
+- **Deadline passed, or liveness cannot be verified.** This covers a PID owned
+  by another user and an unreadable command line. The run settles `failed` with
+  `outcome: "indeterminate"` and a reason. `agents.wait` returns that result
+  and does not throw.
+
+The option is off by default; with it off, no file is written and behaviour is
+unchanged. A run launched while the option was on keeps its marker; changing
+the host policy (including turning the option off) settles it indeterminate.
+The former authority is not revived. Windows, other transports, and
+waits from another session of the project (`waitProjectAgent`) are not covered.
+
+A hard-killed outer worker can leave its detached durable child alive briefly.
+Outer-PID disappearance does **not** prove the child released its SQLite lease;
+a relaunch during that window can fail with a storage-lock error. Recovery does
+not steal/delete leases or kill guessed child PIDs. The lease still excludes
+concurrent journal writers, but automatic recovery across that cleanup window
+is not guaranteed. Graceful external-stop recovery waits for child shutdown;
+unknown worker liveness always settles indeterminate without a relaunch.
+
+Lifecycle events that the worker wrote but the old host had not read when it
+died are not replayed. The new host starts reading `lifecycle.jsonl` from its
+size at recovery. The run's status, turns, tool calls and usage are unaffected,
+because they come from `status.json`; only those intermediate `pi.*` events
+and their token-usage ledger entries are lost.
 
 ## Advanced: manually registered leaf adapter
 

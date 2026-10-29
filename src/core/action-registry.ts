@@ -145,11 +145,18 @@ export interface FabricCapabilityViewLease extends FabricCapabilityResolution {
   release(): Promise<void>;
 }
 
+/** Built-in providers that hide tools outside a child's allowlist. */
+interface AllowlistAwareProvider extends FabricProvider {
+  notPermitted?(actionName: string): string | undefined;
+}
+
 export interface FabricRegistryInvocationContext extends FabricInvocationContext {
   authorize?(action: ResolvedFabricAction): Promise<void>;
   approve(
     action: ResolvedFabricAction,
     args: Record<string, unknown>,
+    /** Effective call lifetime, including runtime deadline and registry/binding revocation. */
+    signal?: AbortSignal,
   ): Promise<void>;
   audits: FabricCallAudit[];
   maxResultChars: number;
@@ -991,7 +998,7 @@ export class ActionRegistry {
       );
       if (catalog.invalid) throw new Error(`Invalid arguments for ${ref}: ${catalog.invalid}`);
       if (context.approve) {
-        await runAbortable(context.signal, () => context.approve!(structuredClone(action), snapshotArguments(catalog.args)));
+        await runAbortable(context.signal, () => context.approve!(structuredClone(action), snapshotArguments(catalog.args), context.signal));
       }
       const acquired = await runAbortable(context.signal, () =>
         this.#runPlanned(binding, providerActionName, authority, "acquire", catalog.args, context, undefined, adopt),
@@ -1143,7 +1150,7 @@ export class ActionRegistry {
       }
 
       failureStage = "approve";
-      await runAbortable(context.signal, () => context.approve(structuredClone(action), snapshotArguments(catalog.args)));
+      await runAbortable(context.signal, () => context.approve(structuredClone(action), snapshotArguments(catalog.args), context.signal));
 
       failureStage = "invoke";
       const nestedToolCallId = `${NESTED_TOOL_CALL_ID_PREFIX}${randomUUID()}`;
@@ -1613,6 +1620,10 @@ export class ActionRegistry {
         ...(descriptor.name !== actionName ? { repairedFrom: actionName } : {}),
       };
     }
+    // A tool the parent has but this child's allowlist withholds is not
+    // unknown: say so, and never repair the name to a permitted neighbour.
+    const notPermitted = (provider as AllowlistAwareProvider).notPermitted?.(actionName);
+    if (notPermitted) throw new FabricResolutionError(notPermitted);
     if (!allowRepair) return { suggestions: [] };
     const declared = (await this.#declaredActionNames(provider, context)).filter(
       (name) => !activeQuarantinedRefNames().has(`${provider.name}.${name}`),

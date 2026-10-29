@@ -180,6 +180,7 @@ where absent values do not participate, and time spent inside a `humanWaitRefs` 
     "extensions": true,
     "defaultTools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
     "retainRuns": false,
+    "durableWorkerRecovery": false,
     "notifyOnComplete": true,
     "budgetUsd": 0,
     "maxTokensPerChild": 0,
@@ -233,7 +234,11 @@ where absent values do not participate, and time spent inside a `humanWaitRefs` 
     "actorPollMs": 250,
     "actorQueueLimit": 32,
     "eventContextChars": 40000,
-    "peerNotices": true
+    "peerNotices": true,
+    "departedLimit": 32,
+    "departedRetentionMs": 604800000,
+
+    "durability": "default"
   },
   "memory": {
     "enabled": true,
@@ -488,6 +493,56 @@ Fabric risk classes are `read`, `write`, `execute`, `network`, and `agent`. Appr
 - While the prompt is open, the program deadline is paused (see [`executor.humanWaitRefs`](#executor-timeouts-and-ceilings)); the program resumes with the budget it had left. Cancellation still closes the prompt at once.
 - Fabric serializes concurrent requests so a one-time approval never silently widens to sibling calls. Session-wide grants apply to native calls and to `fabric_exec`. Escape, dismissal, unavailable interactive UI, and session restart all fail closed.
 - `approvals.headless` (default `"deny"`) chooses what an approval does without an interactive UI. `"decision"` raises a durable user-held approval decision for `fabric_exec` actions and waits up to `approvals.headlessTimeoutMs` (default `300000`, bounded to 1 s..24 h). Only an explicit approve answer from `/fabric decisions` or `pi-fabric decisions answer` runs the action once; deny, cancel, expiry, and abort deny it. Any other value keeps `"deny"`. See [durable decisions](decisions.md#headless-approvals).
+- `approvals.policyHooks` (default off) lets extensions take part in `fabric_exec` approvals. See [extension action policy hooks](#extension-action-policy-hooks).
+
+### Extension action policy hooks
+
+An extension can register a policy hook that Fabric consults at the approve stage of every `fabric_exec` action: `pi.*`, `extensions.*`, `mcp.*`, `agents.*` (including `agents.spawn` and `agents.create`), `mesh.*`, `memory.*`, `state.*`, `schema.*` and external providers. Fabric consults hooks only when `approvals.policyHooks` is `true`; any other value leaves approvals exactly as configured. Hooks do not see direct tool calls the model makes outside `fabric_exec`; Pi's own `tool_call` event already covers those.
+
+```json
+{
+  "approvals": {
+    "policyHooks": true
+  }
+}
+```
+
+Register a hook over `pi.events`. Registration is accepted whether or not the setting is on. A second registration under the same `name` replaces the first and keeps its place in registration order, so a reloaded extension does not stack copies:
+
+```ts
+import { FABRIC_ACTION_POLICY_REGISTER_EVENT } from "pi-fabric/protocol";
+
+let unregister: (() => void) | undefined;
+pi.events.emit(FABRIC_ACTION_POLICY_REGISTER_EVENT, {
+  version: 1,
+  name: "my-policy-engine",
+  hook: async ({ action, args, context, signal }) => {
+    if (action.ref.startsWith("mcp.crm.") && action.risk === "write" && outsideWorkingHours()) {
+      return { decision: "deny", reason: "CRM writes are closed outside working hours" };
+    }
+    if (action.ref === "agents.spawn" && args.runner === "claude") {
+      return { decision: "hold", reason: "Claude runners need a grant" };
+    }
+    return undefined; // no opinion
+  },
+  respond: (result) => { if (result.ok) unregister = result.unregister; },
+});
+```
+
+The hook receives private copies of the resolved action (`ref`, `provider`, `risk`, `effect`) and the validated arguments, a `context`, and an abort `signal`. In a `fabric_exec` program, `context` has `caller: "program"` and the outer `parentToolCallId`. In a Jev program launched from one, it has `caller: "jev"` and the `parentToolCallId` of the call that launched the program. Its answer combines with the configured policy as follows:
+
+| Hook answer | Effect |
+|---|---|
+| `{ decision: "deny", reason }` | Denies the call, like an `approvals.actions` deny. Nothing lifts it. |
+| `{ decision: "hold", reason }` | Asks a person even when the configuration or a session grant would allow the call: the permission prompt, or a [headless decision](decisions.md#headless-approvals) when `approvals.headless` is `"decision"`. Without either, the call fails closed. A configured deny still denies. |
+| `{ decision: "allow" }` | Settles an `ask` or `auto` prompt without asking. It never lifts an `approvals.actions` deny or a risk-class `deny`. |
+| `undefined` | No opinion; the configured policy decides. |
+
+Hooks run before the configured approvals, so they also see calls that `approvals.actions` or a risk-class `deny` will deny anyway. Do not read a hook call as proof that the action ran.
+
+With several hooks, deny beats hold, and hold beats allow; among equal answers, the first registered hook names the verdict. A hook that throws, answers anything else, or takes longer than 5 seconds counts as a deny that names the hook. The 5-second timeout is fixed and not configurable yet. Control characters in a reason are replaced with spaces, and a reason is cut at 500 characters. When a hook `allow` settles an `ask` or `auto` prompt, the run trace records a `fabric.approval.auto` entry with `decision: "allow"` and `policyHook` set to the hook's name; the auto classifier does not run. Cancelling the program aborts the hook's signal and cancels the call instead. While any hook is registered, Fabric treats every action as possibly interactive when it decides whether to arm a durable tool fence. `schema.commit` is approved as both `write` and `execute`, so hooks see it twice.
+
+Actions inside Jev programs pass through the same hooks. Jev programs do not raise headless decisions, so a `hold` there without an interactive UI fails closed. Hooks do not cover direct model tool calls (Pi's `tool_call` event already reaches those), component calls, actors, or agent admission that bypasses the action registry.
 
 ### Per-action approval overrides
 
@@ -599,6 +654,7 @@ Other agent settings:
 - `defaultTools`: the default tool allowlist for children.
 - `budgetUsd`: shared append-only cost ledger across a recursion tree (0 disables).
 - `maxTokensPerChild`: cumulative token bound per child (0 disables).
+- `durableWorkerRecovery` (default `false`): let a restarted resident host re-attach, or relaunch on its journal, an unfinished `pi-durable` run launched with `residency: "durable"` on the `process` transport. A run it cannot recover settles with `outcome: "indeterminate"`. See [durable-pi.md](durable-pi.md#opt-in-reattach-after-a-resident-host-restart).
 - `notifyOnComplete`: show concise detached `agents.spawn()` completion notices and batch unread results for Main at a safe tool-turn boundary (or wake idle Main). `wait`/`join` and terminal `status` retract pending notifications; running/UI status does not. Escape/error parks results until new input.
 - `sessionExport`: export each agent run's usage as an attributed pi-format session file (on by default).
 - `sessionExportDir`: override the export store root (default `~/.pi-fabric/agent`, with `PI_FABRIC_AGENT_DIR` taking precedence).
@@ -692,6 +748,10 @@ See the [interface reference](interface.md).
 
 Mesh data lives at `<project>/.pi/fabric/mesh` by default. Set `mesh.root` to a relative or absolute path to relocate durable topics, shared state, and actor sessions. Add `.pi/fabric/mesh/` to the project's ignore file unless you version the coordination log on purpose. Set `mesh.enabled` to `false` to disable both mesh actions and ambient actor restoration.
 
+Every Fabric session reads `PI_FABRIC_MESH_ROOT`. When the variable is set, the session uses that directory as its mesh root and ignores `mesh.root`. Give an absolute path: Fabric does not resolve the value against the project, so a relative path depends on the process working directory. Fabric sets the same variable for the agents and actors it launches, so they share their parent's root.
+
+Everything the mesh stores lives under that one directory: topics, shared state, the participant directory, decisions, grants, schedules, the project-scope actor registry (`<root>/actors`) and resident hosts (`<root>/residency/`, one directory per root session). Root sessions in different projects that point at the same directory therefore share one coordination plane. They also share one project-scope actor registry, so the ownership and adoption rules below apply across those projects, and a durable agent in one project is visible to `agents.status` in the others. Use `scope: "session"` for actors that must stay with the session that created them.
+
 `mesh.actorScope` is the default storage scope for `agents.create`; each actor can override it with `scope: "project"` or `scope: "session"`. Both scopes run concurrently:
 
 - `"project"` (default) uses `.pi/fabric/mesh/actors/`. Actors survive `/new` and appear in every trusted Pi session for the project.
@@ -712,6 +772,10 @@ call override → session binding → project default → Fabric default
 `mesh.eventContextChars` bounds the sanitized JSON context attached to each host-event activation. Over the limit, Fabric drops the oldest transcript lines first and keeps the digest. It shortens the digest, and marks it `truncated: true`, only when the digest alone exceeds the limit. Fabric extracts images first. It stores redacted image descriptors in the mailbox and registry, then sends the raw images to the actor out of band. The character limit never truncates image base64 because base64 is not part of that JSON context.
 
 `mesh.peerNotices` (default `true`) tells the model of a root session with a UI when another root Pi session joins or leaves the project. The notice is appended to the transcript and never changes the system prompt. See [peer presence notices](agents.md#peer-presence-notices).
+
+`mesh.departedLimit` (default `32`, range `0`–`1000`) caps the stopped-session tombstones a root writes when it closes cleanly; `0` writes none and prunes none, but `agents.departed()` still lists other sessions' departures, up to 32 by default. `mesh.departedRetentionMs` (default 7 days, range 1 minute–90 days) is how long stopped and lost roots stay in `agents.departed()`. A closing root prunes tombstones past either bound. Live discovery never reads tombstones. See [unified participants](agents.md#unified-participants-and-steering).
+
+`mesh.durability` is `"default"` or `"fsync"`. With `"default"`, mesh writes reach the operating system before a call returns, so they survive a crash of the Pi process but can be lost on a power failure or kernel panic. With `"fsync"`, every committed write (event appends, shared state, the sequence counter, schedules, grants, and event-log compaction) is passed to `fsync`, together with its directory entry. Store construction flushes the entire ancestor chain of the mesh root, even if another writer pre-created it; later writes flush only within that established root (and its parent entry). The root's parent namespace must not be renamed or replaced during the store lifetime. These barriers finish before `mesh.publish`, `mesh.put`, `mesh.delete`, a grant, or a revocation returns. A failed flush is reported (the write may already be visible); retries repeat the barriers and do not assume existing paths are already durable. Each write then waits for the disk, so busy topics pay a per-event cost. On macOS, `fsync` does not flush the drive's own cache (Node cannot issue `F_FULLFSYNC`), and Windows skips the directory flush. The resident host uses the same setting. The `pi-fabric mesh` and `pi-fabric decisions` commands do not read Fabric configuration, so their writes keep the default. A change applies to sessions started after it.
 
 Mesh topics, shared state, and the participant directory remain project-scoped. Every runtime publishes one short-lived host lease and records for the roots, agents, and actors it owns. `agents.members()` and `mesh.members()` read those records. `agents.main()` and `agents.peers()` project roots. When a lease expires, its records leave normal discovery together. `mesh.actorPollMs` controls fallback polling for actor events and owner-addressed commands when filesystem notifications are unavailable.
 

@@ -92,6 +92,8 @@ export class SessionLabelPresenter {
   #syncing: Promise<void> | undefined;
   #syncAgain = false;
   #closed = false;
+  /** Set once the session shuts down or its context goes stale: no more syncs start. */
+  #stopped = false;
 
   constructor(
     private readonly pi: ExtensionAPI,
@@ -105,6 +107,13 @@ export class SessionLabelPresenter {
         () => this.#scheduleEventSync(),
       );
       if (typeof unsubscribe === "function") this.#unsubscribe.push(unsubscribe as () => void);
+      // Pi invalidates this context right after session_shutdown, so no timer may
+      // outlive it. close() still restores the tab and pane names.
+      const unsubscribeShutdown = (pi.on as (event: string, handler: () => void) => unknown)(
+        "session_shutdown",
+        () => this.#stop(),
+      );
+      if (typeof unsubscribeShutdown === "function") this.#unsubscribe.push(unsubscribeShutdown as () => void);
     }
     const intervalMs = options.intervalMs ?? SESSION_LABEL_INTERVAL_MS;
     if (intervalMs > 0) {
@@ -133,10 +142,11 @@ export class SessionLabelPresenter {
 
   /**
    * Bring the footer and Herdr names in line with the label and settings.
-   * Never throws: a failed Herdr request is retried on the next sync.
+   * Never rejects: a failed socket request is retried on the next sync, and a
+   * stale context (the session was replaced or reloaded) stops the timers.
    */
   sync(): Promise<void> {
-    if (this.#closed) return Promise.resolve();
+    if (this.#closed || this.#stopped) return Promise.resolve();
     if (this.#syncing) {
       this.#syncAgain = true;
       return this.#syncing;
@@ -146,7 +156,11 @@ export class SessionLabelPresenter {
         do {
           this.#syncAgain = false;
           await this.#syncOnce();
-        } while (this.#syncAgain && !this.#closed);
+        } while (this.#syncAgain && !this.#closed && !this.#stopped);
+      } catch {
+        // Timer callbacks must not reject. Once the context is stale, every
+        // later sync would throw the same way, so stop instead of retrying.
+        if (!this.#contextActive()) this.#stop();
       } finally {
         this.#syncing = undefined;
       }
@@ -164,18 +178,38 @@ export class SessionLabelPresenter {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#stop();
+    await this.#syncing?.catch(() => undefined);
+    try {
+      this.#setFooter(undefined);
+    } catch {
+      // A stale context has no footer left to clear; the tab and pane names still do.
+    }
+    for (const name of [...this.#applied.values()]) await this.#remove(name);
+  }
+
+  /** Stop the timers and event subscriptions; close() still restores the names. */
+  #stop(): void {
+    this.#stopped = true;
     for (const unsubscribe of this.#unsubscribe.splice(0)) unsubscribe();
     if (this.#timer) clearInterval(this.#timer);
     if (this.#eventTimer) clearTimeout(this.#eventTimer);
     this.#timer = undefined;
     this.#eventTimer = undefined;
-    await this.#syncing?.catch(() => undefined);
-    this.#setFooter(undefined);
-    for (const name of [...this.#applied.values()]) await this.#remove(name);
+  }
+
+  /** False once Pi has invalidated the captured context after a session replacement or reload. */
+  #contextActive(): boolean {
+    try {
+      void this.context.mode;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   #scheduleEventSync(): void {
-    if (this.#closed) return;
+    if (this.#closed || this.#stopped) return;
     if (this.#eventTimer) clearTimeout(this.#eventTimer);
     this.#eventTimer = setTimeout(() => {
       this.#eventTimer = undefined;

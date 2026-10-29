@@ -173,6 +173,7 @@ Fabric copies only those question fields. The decision is always held by `"user"
 | --- | --- | --- |
 | `approvals.headless` | `"deny"` | `"decision"` turns no-UI approvals into user-held decisions |
 | `approvals.headlessTimeoutMs` | `300000` | headless approval deadline (1 s to 24 h) |
+| `approvals.policyHooks` | off | consult [extension action policy hooks](configuration.md#extension-action-policy-hooks); a `hold` uses the headless path above |
 | `agents.childQuestions` | `"cancel"` | `"route"` forwards child dialogs to the parent |
 | `agents.childQuestionTimeoutMs` | `600000` | default routed dialog deadline (1 s to 24 h) |
 | `agents.childQuestionTools` | `["ask"]` | tools a routed Pi child gets for asking; `[]` grants none |
