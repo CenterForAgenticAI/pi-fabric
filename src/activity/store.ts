@@ -110,6 +110,10 @@ const labelForCall = (ref: string, args: Record<string, unknown>): string => {
   return target ? `${ref} · ${target}` : ref;
 };
 
+// Providers report metrics; NaN or Infinity must not reach the totals.
+const finiteCount = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : undefined;
+
 const metricsFrom = (value: unknown): FabricActivityMetrics | undefined => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
@@ -117,11 +121,11 @@ const metricsFrom = (value: unknown): FabricActivityMetrics | undefined => {
     typeof record.usage === "object" && record.usage !== null && !Array.isArray(record.usage)
       ? (record.usage as Record<string, unknown>)
       : undefined;
-  const input = typeof usage?.input === "number" ? usage.input : 0;
-  const output = typeof usage?.output === "number" ? usage.output : 0;
+  const input = finiteCount(usage?.input) ?? 0;
+  const output = finiteCount(usage?.output) ?? 0;
   const tokens = input + output;
-  const toolCalls = typeof record.toolCalls === "number" ? record.toolCalls : undefined;
-  const cost = typeof usage?.cost === "number" ? usage.cost : undefined;
+  const toolCalls = finiteCount(record.toolCalls);
+  const cost = finiteCount(usage?.cost);
   if (tokens <= 0 && toolCalls === undefined && cost === undefined) return undefined;
   return {
     ...(tokens > 0 ? { tokens } : {}),
@@ -475,13 +479,14 @@ export class FabricActivityStore {
       const name = cleanText(update.name, MAX_NAME_CHARS);
       if (name) call.label = name;
     } else if (update.type === "metrics") {
+      const tokens = finiteCount(update.tokens);
+      const toolCalls = finiteCount(update.toolCalls);
+      const cost = finiteCount(update.cost);
       call.metrics = {
         ...(call.metrics ?? {}),
-        ...(typeof update.tokens === "number" ? { tokens: Math.max(0, update.tokens) } : {}),
-        ...(typeof update.toolCalls === "number"
-          ? { toolCalls: Math.max(0, update.toolCalls) }
-          : {}),
-        ...(typeof update.cost === "number" ? { cost: Math.max(0, update.cost) } : {}),
+        ...(tokens !== undefined ? { tokens } : {}),
+        ...(toolCalls !== undefined ? { toolCalls } : {}),
+        ...(cost !== undefined ? { cost } : {}),
       };
     }
     if (before.progress === call.progress && before.entityId === call.entityId &&
