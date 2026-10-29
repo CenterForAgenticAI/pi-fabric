@@ -10,6 +10,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { AgentManager } from "../src/agents/manager.js";
 import type { AgentRunRecord } from "../src/agents/types.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
+import { readWorkerRecovery, writeWorkerRecovery } from "../src/agents/worker-recovery.js";
 
 // No dist dependency and no fake Pi binary: manager -> compiled parent worker
 // -> compiled durable host -> native SDK RPC/tools, with only inference offline.
@@ -71,7 +72,7 @@ beforeAll(() => {
   `);
 });
 
-function setup(inherited = false, entry = workerPath) {
+function setup(inherited = false, entry = workerPath, durableWorkerRecovery = false) {
   const cwd = path.join(root, `case-${++sequence}`);
   const agentDir = path.join(cwd, "agent");
   fs.mkdirSync(agentDir, { recursive: true });
@@ -88,7 +89,7 @@ function setup(inherited = false, entry = workerPath) {
   fs.writeFileSync(path.join(cwd, "fixture.txt"), "private fixture");
   const manager = new AgentManager(cwd, {
     ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi-durable", transport: "process", extensions: true,
-    timeoutMs: 20000, maxConcurrent: 1,
+    timeoutMs: 20000, maxConcurrent: 1, durableWorkerRecovery,
   }, { workerPath: entry, runRoot: path.join(cwd, "runs"), fullCodeMode: false,
     // Must never fall back to the native CLI, even on startup/replay failures.
     piBinary: path.join(cwd, "forbidden-native-fallback"),
@@ -124,6 +125,51 @@ async function restart(directory: string, first: Pick<AgentRunRecord, "id" | "na
 const events = (file: string) => fs.readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
 
 describe("AgentManager real durable parent worker", () => {
+  it.each([false, true])("handles a native externally stopped worker without unsafe replay or injected execution (tampered=%s)", async tampered => {
+    const { manager, cwd } = setup(false, workerPath, true);
+    const effect = path.join(cwd, "effects"); vi.stubEnv("DURABLE_TEST_EFFECT", effect);
+    const handle = await manager.spawn({ task: "hold effect", tools: ["hold_effect"], residency: "durable" });
+    const directory = manager.runDirectory(handle.id)!;
+    const until = async (condition: () => boolean) => {
+      const deadline = Date.now() + 15000;
+      while (!condition()) { if (Date.now() > deadline) throw new Error("native recovery probe timed out"); await new Promise(resolve => setTimeout(resolve, 25)); }
+    };
+    await until(() => fs.existsSync(effect));
+    const recovery = readWorkerRecovery(directory)!;
+    await manager.close();
+    // A graceful external stop waits for the actual durable child/lease to
+    // close, unlike merely observing the outer wrapper's PID disappear.
+    process.kill(-recovery.pid, "SIGTERM");
+    await until(() => { try { process.kill(recovery.pid, 0); return false; } catch { return true; } });
+    expect(JSON.parse(fs.readFileSync(path.join(directory, "status.json"), "utf8")).status).toBe("stopped");
+    const executionMarker = path.join(cwd, "injected-execution");
+    if (tampered) {
+      const payload = path.join(cwd, "payload.mjs");
+      fs.writeFileSync(payload, `import fs from 'node:fs';fs.writeFileSync(${JSON.stringify(executionMarker)}, 'executed');process.stdin.resume();`);
+      const forged = readWorkerRecovery(directory)!;
+      const args = forged.launch.workerArguments;
+      args[args.indexOf("--runner") + 1] = "pi";
+      args[args.indexOf("--pi-binary") + 1] = payload;
+      writeWorkerRecovery(directory, forged);
+    }
+    const second = new AgentManager(cwd, manager.config, {
+      workerPath, runRoot: path.join(cwd, "runs"), fullCodeMode: false,
+      piBinary: path.join(cwd, "forbidden-native-fallback"),
+    }); managers.push(second);
+    if (tampered) {
+      expect(await second.recoverWorkerRuns()).toEqual([]);
+      expect(JSON.parse(fs.readFileSync(path.join(directory, "status.json"), "utf8"))).toMatchObject({ status: "failed", outcome: "indeterminate" });
+      expect(fs.existsSync(executionMarker)).toBe(false);
+      expect(fs.readFileSync(effect, "utf8")).toBe("effect\n");
+      return;
+    }
+    expect(await second.recoverWorkerRuns()).toEqual([handle.id]);
+    const result = await second.wait(handle.id);
+    expect(result.status, result.error).toBe("completed");
+    expect(fs.readFileSync(effect, "utf8")).toBe("effect\n");
+    expect(readWorkerRecovery(directory)).toBeUndefined();
+  }, 30000);
+
   it("routes worker fetches through Pi's proxy dispatcher and keeps NO_PROXY hosts direct (#270)", async () => {
     const origin = http.createServer((request, response) => response.end(request.headers.host?.split(":")[0]));
     const tunnels: string[] = [];

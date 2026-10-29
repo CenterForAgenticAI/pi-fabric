@@ -12,6 +12,7 @@ import { constrainChildToolSelection, readChildToolAllowlist } from "../core/chi
 import { resolveAgentCwd } from "../agents/manager.js";
 import { BUILT_IN_RUNNER_IDS, requireAgentRunner } from "../agents/runner-registry.js";
 import { isFabricWorktreePath } from "../agents/worktree-paths.js";
+import { hasWorkerRecovery } from "../agents/worker-recovery.js";
 import { executeFile, processIsAlive, spawnDetached } from "../agents/transports/process-utils.js";
 import { readJsonlPage } from "../log-tail.js";
 import type { FabricOwnedModelGuidance } from "../components/model-guidance.js";
@@ -366,13 +367,21 @@ export class ResidencyClient {
     this.options.onResultConsumed?.(id);
   }
 
+  #workerStopNeedsRecovery(id: string, status: AgentRunRecord | AgentHandleInfo): boolean {
+    const directory = this.#metadata(id)?.runDirectory;
+    // A worker can write stopped before exiting. Only the host's settlement
+    // (which removes the marker first) makes that stop consumable.
+    return status.runner === "pi-durable" && status.status === "stopped" &&
+      typeof directory === "string" && hasWorkerRecovery(directory);
+  }
+
   async waitAgent(id: string, signal?: AbortSignal): Promise<AgentRunResult> {
     const aborted = (): Error => new Error(`Waiting for durable Fabric agent ${id} was aborted`);
     let hostStarts = 0;
     while (true) {
       if (signal?.aborted) throw aborted();
       const status = this.statusAgent(id);
-      if (terminal(status.status) && "startedAt" in status) {
+      if (terminal(status.status) && "startedAt" in status && !this.#workerStopNeedsRecovery(id, status)) {
         this.acknowledgeCompletion(id);
         return status as AgentRunResult;
       }
@@ -381,11 +390,12 @@ export class ResidencyClient {
       // in case the host settled the run and exited between the two reads.
       if (!this.#liveOwner()) {
         const current = this.statusAgent(id);
-        if (terminal(current.status) && "startedAt" in current) continue;
-        // A new host re-attaches only hosted runs (AgentManager.recoverHostedRuns).
-        // Nothing settles any other run once its host is gone, so settle it here
-        // as the host does for a hosted run it cannot re-attach, and fail now.
-        if (!("hosted" in current && current.hosted)) {
+        if (terminal(current.status) && "startedAt" in current && !this.#workerStopNeedsRecovery(id, current)) continue;
+        // A new host reattaches hosted runs and opted-in durable workers.
+        // Preserve main's explicit settlement for runs with no recovery owner.
+        const runDirectory = this.#metadata(id)?.runDirectory;
+        const recoverableWorker = typeof runDirectory === "string" && hasWorkerRecovery(runDirectory);
+        if (!("hosted" in current && current.hosted) && !recoverableWorker) {
           const error = `Durable Fabric agent ${id} (runner ${current.runner}) cannot finish: its resident host ${this.hostId} stopped, and a new host re-attaches only hosted runs`;
           this.#settleIndeterminate(id, error);
           throw new Error(error);
