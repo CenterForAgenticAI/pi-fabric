@@ -382,12 +382,19 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
   {
     name: "models",
     description:
-      "List models exposed by the selected runner. Claude models are enumerated from the installed Claude Code runtime, not hard-coded.",
+      "List models exposed by the selected runner. Claude models are enumerated from the installed Claude Code runtime, not hard-coded. Pass model to look up one exact key instead of reading the whole list.",
     inputSchema: {
       type: "object",
       properties: {
         runner: { type: "string", pattern: RUNNER_ID_SOURCE, maxLength: 64 },
         refresh: { type: "boolean" },
+        model: {
+          type: "string",
+          minLength: 1,
+          maxLength: 256,
+          description:
+            "Exact model key (the key field of an unfiltered entry, e.g. provider/id or claude/<value>). Returns only the entries whose key matches exactly and case-sensitively, with no alias or fuzzy resolution; an unknown key returns [].",
+        },
       },
       additionalProperties: false,
     },
