@@ -538,11 +538,11 @@ export class FabricActivityStore {
     this.#emit(run, call);
   }
 
-  finish(runId: string, success: boolean, error?: string): void {
+  /** `cancelled` comes from the caller's abort signal, never from error text. */
+  finish(runId: string, success: boolean, error?: string, cancelled = false): void {
     const run = this.#runs.get(runId);
     if (!run || run.status !== "running") return;
     const now = Date.now();
-    const cancelled = Boolean(error && /cancel(?:led|ed)/i.test(error));
     run.status = success ? "completed" : cancelled ? "cancelled" : "failed";
     run.updatedAt = now;
     run.finishedAt = now;

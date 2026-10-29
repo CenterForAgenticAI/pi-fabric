@@ -209,7 +209,7 @@ describe("FabricActivityStore", () => {
     store.phase("run-2", { name: "Execute" });
     store.beginCall("run-2", { callId: "call-2", ref: "pi.bash", args: {} });
     store.finishCall("run-2", "call-2", { success: false, error: "command failed" });
-    store.finish("run-2", false, "Execution cancelled");
+    store.finish("run-2", false, "Execution cancelled", true);
 
     expect(store.get("run-2")).toMatchObject({
       status: "cancelled",
@@ -304,6 +304,17 @@ describe("FabricActivityStore", () => {
 
     const plain = store.start("hint-3");
     expect(plain.name).toBe("Fabric program");
+  });
+
+  it("keeps a failed run failed when its error text mentions cancelling", () => {
+    const store = new FabricActivityStore();
+    store.start("run-error");
+    store.finish("run-error", false, "Order service rejected the request: already cancelled upstream");
+    expect(store.get("run-error")?.status).toBe("failed");
+
+    store.start("run-aborted");
+    store.finish("run-aborted", false, "Owned work stopped", true);
+    expect(store.get("run-aborted")?.status).toBe("cancelled");
   });
 });
 
