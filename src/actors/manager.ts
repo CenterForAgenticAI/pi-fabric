@@ -366,7 +366,6 @@ export class ActorManager {
     if (sameName && sameName.status !== "stopped") {
       throw new Error(`A Fabric actor named ${name} is already active (${sameName.id})`);
     }
-    if (sameName?.status === "stopped") await this.remove(sameName.id);
     if (!request.instructions.trim()) throw new Error("Actor instructions must not be empty");
     if (Buffer.byteLength(request.instructions, "utf8") > this.meshConfig.maxEventBytes) {
       throw new Error(`Actor instructions exceed ${this.meshConfig.maxEventBytes} bytes`);
@@ -403,6 +402,9 @@ export class ActorManager {
     }
     // Forwarded by the creating session (validated, fail closed) or this session's own.
     const principalScope = launchScope(undefined, request.principalScope);
+    // Remove a stopped namesake only after the whole request has validated, so a
+    // rejected create leaves the existing actor and its session directory intact.
+    if (sameName?.status === "stopped") await this.remove(sameName.id);
     const id = randomUUID().replaceAll("-", "");
     const actorDirectory = path.join(this.#actorRoot, id);
     fs.mkdirSync(actorDirectory, { recursive: true, mode: 0o700 });
