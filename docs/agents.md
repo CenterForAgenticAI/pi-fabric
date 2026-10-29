@@ -919,7 +919,7 @@ return rlm.query({
 
 `agents.recursive` (default `false`) makes nested agents recursive unless a call says otherwise. With `true`, a Pi-runner `agents.run`, `agents.spawn` or `agents.handoff` request that omits `recursive` behaves as `recursive: true`. The child gets `fabric_exec`, `agents.*` with the delegated `agent` risk, and its own children. The existing bounds still apply: `agents.maxDepth` (default `2`), `agents.maxPerExecution` and `agents.budgetUsd`.
 
-The default is resolved once, where the request enters the manager, and it resolves to `false` rather than failing when recursion would be refused or unusable:
+The default is resolved once, where the request enters the manager, and it resolves to `false`, and the request still launches, when recursion would be refused or unusable:
 
 - An explicit `recursive: true` or `false` wins. An explicit `extensions: false`, `agents.extensions: false`, or a `tools` list with `-fabric_exec` also wins.
 - Runners without the `recursiveFabric` capability (`claude`, `veda`, custom runners, the hosted `pi-durable-leaf` factory) keep their native surface. Only an explicit `recursive: true` on them is an error.
