@@ -26,6 +26,7 @@ it("recovers an externally stopped worker before returning or consuming completi
     expect(metadata().completionConsumedAt).toBeUndefined();
     removeWorkerRecovery(directory);
     fs.writeFileSync(path.join(directory, "status.json"), JSON.stringify({ ...record, status: "completed", text: "recovered" }));
+    return { format: RESIDENT_HOST_FORMAT, hostId: client.hostId, pid: process.pid, token: "test-owner", startedAt: 1, readyAt: 1 };
   });
   expect(await client.waitAgent(id, AbortSignal.timeout(2000))).toMatchObject({ status: "completed", text: "recovered" });
   expect(start).toHaveBeenCalledOnce(); expect(metadata().completionConsumedAt).toBeTypeOf("number");

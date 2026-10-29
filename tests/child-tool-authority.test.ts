@@ -52,7 +52,13 @@ async function forward(cwd: string, request: AgentRunRequest): Promise<AgentRunR
     meshRoot: path.join(cwd, "mesh"), actorRoot: path.join(cwd, "actors"), residencyRoot: path.join(cwd, "resident"),
     fullCodeMode: false, agents: DEFAULT_FABRIC_CONFIG.agents, mesh: DEFAULT_FABRIC_CONFIG.mesh, retention: DEFAULT_FABRIC_CONFIG.retention,
     workerPath, fabricExtensionPath: fixture, piBinary: "unused", claudeBinary: "unused", vedaBinary: "unused",
-  } });
+  },
+    // Outbound serialization does not use delivery/discovery dependencies.
+    // Fail explicitly if that boundary changes rather than silently omitting them.
+    get mesh(): never { throw new Error("Unexpected mesh access in forwarding probe"); },
+    get participants(): never { throw new Error("Unexpected participant access in forwarding probe"); },
+    get mainAgent(): never { throw new Error("Unexpected Main access in forwarding probe"); },
+  });
   vi.spyOn(client, "ensureHost").mockResolvedValue({} as never);
   let forwarded: AgentRunRequest | undefined;
   const original = fs.writeFileSync;
