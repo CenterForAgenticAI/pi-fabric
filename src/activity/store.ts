@@ -320,8 +320,9 @@ export class FabricActivityStore {
     const label = cleanText(input.label, MAX_NAME_CHARS);
     if (!label) throw new Error("Workflow activity item label must not be empty");
     const now = Date.now();
-    const status = input.status ?? "running";
     let item = run.items.find((candidate) => candidate.id === id);
+    // An update that names no status keeps the item's current one.
+    const status = input.status ?? item?.status ?? "running";
     const phaseId =
       input.phase !== undefined
         ? this.#resolvePhaseId(run, input.phase)

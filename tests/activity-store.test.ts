@@ -327,5 +327,21 @@ describe("FabricActivityStore", () => {
 
     expect(store.get("run-stop")?.calls.map((call) => call.status)).toEqual(["stopped", "failed"]);
   });
+
+  it("keeps an item's status when an update omits it", () => {
+    const store = new FabricActivityStore();
+    store.start("run-item");
+    store.upsertItem("run-item", { id: "pkg", label: "Package", status: "completed" });
+    const finishedAt = store.get("run-item")?.items[0]?.finishedAt;
+    store.upsertItem("run-item", { id: "pkg", label: "Package", detail: "late note" });
+
+    expect(store.get("run-item")?.items[0]).toMatchObject({
+      status: "completed",
+      detail: "late note",
+      finishedAt,
+    });
+    store.upsertItem("run-item", { id: "fresh", label: "Fresh" });
+    expect(store.get("run-item")?.items[1]?.status).toBe("running");
+  });
 });
 
