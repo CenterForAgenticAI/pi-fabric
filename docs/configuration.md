@@ -692,6 +692,10 @@ See the [interface reference](interface.md).
 
 Mesh data lives at `<project>/.pi/fabric/mesh` by default. Set `mesh.root` to a relative or absolute path to relocate durable topics, shared state, and actor sessions. Add `.pi/fabric/mesh/` to the project's ignore file unless you version the coordination log on purpose. Set `mesh.enabled` to `false` to disable both mesh actions and ambient actor restoration.
 
+Every Fabric session reads `PI_FABRIC_MESH_ROOT`. When the variable is set, the session uses that directory as its mesh root and ignores `mesh.root`. Give an absolute path: Fabric does not resolve the value against the project, so a relative path depends on the process working directory. Fabric sets the same variable for the agents and actors it launches, so they share their parent's root.
+
+Everything the mesh stores lives under that one directory: topics, shared state, the participant directory, decisions, grants, schedules, the project-scope actor registry (`<root>/actors`) and resident hosts (`<root>/residency/`, one directory per root session). Root sessions in different projects that point at the same directory therefore share one coordination plane. They also share one project-scope actor registry, so the ownership and adoption rules below apply across those projects, and a durable agent in one project is visible to `agents.status` in the others. Use `scope: "session"` for actors that must stay with the session that created them.
+
 `mesh.actorScope` is the default storage scope for `agents.create`; each actor can override it with `scope: "project"` or `scope: "session"`. Both scopes run concurrently:
 
 - `"project"` (default) uses `.pi/fabric/mesh/actors/`. Actors survive `/new` and appear in every trusted Pi session for the project.
