@@ -343,5 +343,26 @@ describe("FabricActivityStore", () => {
     store.upsertItem("run-item", { id: "fresh", label: "Fresh" });
     expect(store.get("run-item")?.items[1]?.status).toBe("running");
   });
+
+  it("ignores non-finite call metrics", () => {
+    const store = new FabricActivityStore();
+    store.start("run-metrics");
+    store.beginCall("run-metrics", { callId: "call", ref: "pi.bash", args: {} });
+    store.updateCall("run-metrics", "call", { type: "metrics", tokens: 10, toolCalls: 2, cost: 0.5 });
+    store.updateCall("run-metrics", "call", {
+      type: "metrics",
+      tokens: Number.NaN,
+      toolCalls: Number.POSITIVE_INFINITY,
+      cost: Number.NaN,
+    });
+    expect(store.get("run-metrics")?.calls[0]?.metrics).toEqual({ tokens: 10, toolCalls: 2, cost: 0.5 });
+
+    store.beginCall("run-metrics", { callId: "result", ref: "agents.run", args: {} });
+    store.finishCall("run-metrics", "result", {
+      success: true,
+      result: { toolCalls: Number.NaN, usage: { input: Number.NaN, output: 5, cost: Number.POSITIVE_INFINITY } },
+    });
+    expect(store.get("run-metrics")?.calls[1]?.metrics).toEqual({ tokens: 5 });
+  });
 });
 
