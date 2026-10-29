@@ -15,7 +15,16 @@ const posixRel = (value: string): string => value.replaceAll("\\", "/");
 const isCowUnavailable = (error: unknown): boolean => {
   if (typeof error !== "object" || error === null || !("code" in error)) return false;
   const code = (error as { code?: unknown }).code;
-  return code === "ENOTSUP" || code === "EOPNOTSUPP" || code === "EXDEV" || code === "ENOTSUPP";
+  // Windows libuv rejects COPYFILE_FICLONE_FORCE with ENOSYS; some Linux
+  // filesystems without the clone ioctl report ENOTTY.
+  return (
+    code === "ENOTSUP" ||
+    code === "EOPNOTSUPP" ||
+    code === "EXDEV" ||
+    code === "ENOTSUPP" ||
+    code === "ENOSYS" ||
+    code === "ENOTTY"
+  );
 };
 
 const cloneEntry = async (from: string, to: string): Promise<void> => {
