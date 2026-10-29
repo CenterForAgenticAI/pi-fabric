@@ -33,23 +33,30 @@ import {
 export const buildCaptureSection = (
   { config, theme, options, apply, persist }: Pick<SettingsSectionContext<"keepVisibleCandidates">, "config" | "theme" | "options" | "apply" | "persist">,
 ): SettingItem => {
+  // Exclusive modes declare only fabric_exec, so this list does nothing there.
+  const exclusive = config.fullCodeMode || config.schema.mode === "enforce";
+  const keepVisibleValue = (count: number) =>
+    exclusive ? `${formatToolCount(count)} (no effect)` : formatToolCount(count);
+  const keepVisibleDescription = exclusive
+    ? "No effect in full code or Schema enforce mode: only fabric_exec is declared. Use foreground.tools in fabric.json to declare a tool beside it."
+    : "Captured tool names that stay model-visible despite hideFromModel.";
   const keepVisibleItem = setting(
     "capture.keepVisible",
     "Keep visible",
-    formatToolCount(config.capture.keepVisible.length),
-    { description: "Captured tool names that stay model-visible despite hideFromModel." },
+    keepVisibleValue(config.capture.keepVisible.length),
+    { description: keepVisibleDescription },
   );
 
   keepVisibleItem.submenu = listSubmenu(
     theme,
     "capture.keepVisible",
     "Keep visible",
-    "Captured tool names that stay model-visible despite hideFromModel.",
+    keepVisibleDescription,
     options.keepVisibleCandidates,
     config.capture.keepVisible,
     (selected) => {
       apply("capture.keepVisible", selected);
-      keepVisibleItem.currentValue = formatToolCount(selected.length);
+      keepVisibleItem.currentValue = keepVisibleValue(selected.length);
     },
   );
 
