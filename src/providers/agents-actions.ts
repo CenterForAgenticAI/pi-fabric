@@ -382,7 +382,7 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
   {
     name: "models",
     description:
-      "List models exposed by the selected runner. Claude models are enumerated from the installed Claude Code runtime, not hard-coded.",
+      "List models exposed by the selected runner. Claude models are enumerated from the installed Claude Code runtime, not hard-coded. Veda returns an empty list: pass its backend model or alias directly as model.",
     inputSchema: {
       type: "object",
       properties: {
@@ -613,7 +613,7 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
   {
     name: "compact",
     description:
-      "Request an advisory compaction of a running Pi-runner child agent's context at its next safe boundary (between its own turns), preserving the child's accumulated context. Rejected for Claude-runner children. The child pi core applies the compaction; Fabric only forwards the intent.",
+      "Request an advisory compaction of a running Pi-runner child agent's context at its next safe boundary (between its own turns), preserving the child's accumulated context. Rejected for Claude and Veda children and for registered runners without the compaction capability. The child pi core applies the compaction; Fabric only forwards the intent.",
     inputSchema: {
       type: "object",
       properties: {
