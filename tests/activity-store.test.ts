@@ -364,5 +364,20 @@ describe("FabricActivityStore", () => {
     });
     expect(store.get("run-metrics")?.calls[1]?.metrics).toEqual({ tokens: 5 });
   });
+
+  it("caps entity ids that have no identifier characters", () => {
+    const store = new FabricActivityStore();
+    store.start("run-id");
+    const raw = "/".repeat(10_000);
+    store.beginCall("run-id", { callId: "entity", ref: "pi.bash", args: {} });
+    store.updateCall("run-id", "entity", { type: "entity", id: raw, kind: "custom" });
+    store.beginCall("run-id", { callId: "result", ref: "agents.run", args: {} });
+    store.finishCall("run-id", "result", { success: true, result: { id: raw } });
+
+    for (const call of store.get("run-id")?.calls ?? []) {
+      expect(call.entityId?.length ?? 0).toBeGreaterThan(0);
+      expect(call.entityId!.length).toBeLessThanOrEqual(160);
+    }
+  });
 });
 
