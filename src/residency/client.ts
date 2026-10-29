@@ -359,13 +359,21 @@ export class ResidencyClient {
     this.options.onResultConsumed?.(id);
   }
 
+  #workerStopNeedsRecovery(id: string, status: AgentRunRecord | AgentHandleInfo): boolean {
+    const directory = this.#metadata(id)?.runDirectory;
+    // A worker can write stopped before exiting. Only the host's settlement
+    // (which removes the marker first) makes that stop consumable.
+    return status.runner === "pi-durable" && status.status === "stopped" &&
+      typeof directory === "string" && hasWorkerRecovery(directory);
+  }
+
   async waitAgent(id: string, signal?: AbortSignal): Promise<AgentRunResult> {
     const aborted = (): Error => new Error(`Waiting for durable Fabric agent ${id} was aborted`);
     let hostStarts = 0;
     while (true) {
       if (signal?.aborted) throw aborted();
       const status = this.statusAgent(id);
-      if (terminal(status.status) && "startedAt" in status) {
+      if (terminal(status.status) && "startedAt" in status && !this.#workerStopNeedsRecovery(id, status)) {
         this.acknowledgeCompletion(id);
         return status as AgentRunResult;
       }
@@ -374,13 +382,13 @@ export class ResidencyClient {
       // in case the host settled the run and exited between the two reads.
       if (!this.#liveOwner()) {
         const current = this.statusAgent(id);
-        if (terminal(current.status) && "startedAt" in current) continue;
+        if (terminal(current.status) && "startedAt" in current && !this.#workerStopNeedsRecovery(id, current)) continue;
         // A new host reattaches hosted runs and opted-in durable workers.
         // Preserve main's explicit settlement for runs with no recovery owner.
         const runDirectory = this.#metadata(id)?.runDirectory;
         const recoverableWorker = typeof runDirectory === "string" && hasWorkerRecovery(runDirectory);
         if (!("hosted" in current && current.hosted) && !recoverableWorker) {
-          const error = `Durable Fabric agent ${id} (runner ${current.runner}) cannot finish: its resident host ${this.hostId} stopped, and a new host re-attaches only hosted or opted-in worker runs`;
+          const error = `Durable Fabric agent ${id} (runner ${current.runner}) cannot finish: its resident host ${this.hostId} stopped, and a new host re-attaches only hosted runs`;
           this.#settleIndeterminate(id, error);
           throw new Error(error);
         }

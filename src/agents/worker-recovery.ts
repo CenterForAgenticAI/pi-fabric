@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { writeJsonAtomic } from "../core/atomic-write.js";
 import type { AgentTransportHandle, AgentTransportLaunch } from "./types.js";
 
@@ -8,8 +9,9 @@ import type { AgentTransportHandle, AgentTransportLaunch } from "./types.js";
  * Opt-in reattachment of built-in `pi-durable` worker runs after the resident
  * host that launched them stops (`agents.durableWorkerRecovery`).
  *
- * The file below is the per-run authority: a run recovers only when its launch
- * wrote one. An explicit stop deletes it as soon as the stop is requested,
+ * The file below is an untrusted recovery hint. A host-owned receipt outside
+ * the run directory must authorize its complete contents before use. An explicit
+ * stop deletes it as soon as the stop is requested,
  * before Fabric signals the worker, and every other settlement deletes it
  * before the terminal record lands. A recovery file beside a worker-written
  * terminal "stopped" record therefore means the stop came from outside Fabric
@@ -45,8 +47,38 @@ export const writeWorkerRecovery = (runDirectory: string, record: WorkerRecovery
   writeJsonAtomic(workerRecoveryPath(runDirectory), record, { mode: 0o600 });
 };
 
+// A sibling of the host run root, never a child run's directory or nested
+// --run-root. The host must control this directory and its parent just as it
+// controls its configuration; mode 0700 is not same-UID process isolation.
+export const workerRecoveryAuthorityRoot = (runRoot: string): string =>
+  `${path.resolve(runRoot)}.worker-launch-authority`;
+
+const authorityPath = (runDirectory: string): string =>
+  path.join(workerRecoveryAuthorityRoot(path.dirname(runDirectory)), `${path.basename(runDirectory)}.json`);
+
+/** Called only with an admitted in-memory launch (or its verified receipt), never a marker. */
+export const authorizeWorkerRecovery = (runDirectory: string, recovery: WorkerRecoveryRecord, policy: string): void => {
+  fs.mkdirSync(path.dirname(authorityPath(runDirectory)), { recursive: true, mode: 0o700 });
+  writeJsonAtomic(authorityPath(runDirectory), { recovery, policy }, { mode: 0o600 });
+};
+
+export const readWorkerRecoveryAuthority = (runDirectory: string, policy?: string): WorkerRecoveryRecord | undefined => {
+  const content = readBounded(authorityPath(runDirectory));
+  if (!content) return undefined;
+  try {
+    const receipt = JSON.parse(content);
+    if (policy !== undefined && receipt.policy !== policy) return undefined;
+    return parseWorkerRecovery(JSON.stringify(receipt.recovery), runDirectory);
+  } catch {
+    return undefined;
+  }
+};
+
 export const removeWorkerRecovery = (runDirectory: string): void => {
   fs.rmSync(workerRecoveryPath(runDirectory), { force: true });
+  fs.rmSync(authorityPath(runDirectory), { force: true });
+  // Remove an empty host receipt directory, but never another run's receipt.
+  try { fs.rmdirSync(workerRecoveryAuthorityRoot(path.dirname(runDirectory))); } catch { /* not empty or already gone */ }
 };
 
 export const hasWorkerRecovery = (runDirectory: string): boolean =>
@@ -55,10 +87,12 @@ export const hasWorkerRecovery = (runDirectory: string): boolean =>
 const readBounded = (file: string): string | undefined => {
   let descriptor: number | undefined;
   try {
-    descriptor = fs.openSync(file, "r");
+    descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
     const stat = fs.fstatSync(descriptor);
     if (!stat.isFile() || stat.size > WORKER_RECOVERY_MAX_BYTES) return undefined;
-    return fs.readFileSync(descriptor, "utf8");
+    const buffer = Buffer.alloc(stat.size);
+    const bytes = fs.readSync(descriptor, buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, bytes).toString("utf8");
   } catch {
     return undefined;
   } finally {
@@ -74,6 +108,10 @@ const readBounded = (file: string): string | undefined => {
 export const readWorkerRecovery = (runDirectory: string): WorkerRecoveryRecord | undefined => {
   const content = readBounded(workerRecoveryPath(runDirectory));
   if (content === undefined) return undefined;
+  return parseWorkerRecovery(content, runDirectory);
+};
+
+const parseWorkerRecovery = (content: string, runDirectory: string): WorkerRecoveryRecord | undefined => {
   let raw: unknown;
   try {
     raw = JSON.parse(content);
@@ -141,14 +179,16 @@ const insideDirectory = (directory: string, file: string): boolean => {
  * Why a recovery file must not be acted on by this host, or undefined when it
  * may. The file sits in the run directory, so anything that can write there
  * could otherwise point a relaunch at another program, working directory, run
- * id, or status file. The launch must use this host's worker, name this run,
- * and keep every file the worker writes inside the run directory, at the paths
- * this host reads.
+ * id, or status file. Every launch field must exactly match the host-owned
+ * receipt, including approved external paths and optional capabilities. The
+ * launch must also use this host's worker and this run's id/cwd/status paths.
  */
 export const workerRecoveryMismatch = (
   recovery: WorkerRecoveryRecord,
-  expected: { runDirectory: string; workerPath: string; cwd: string },
+  expected: { runDirectory: string; workerPath: string; cwd: string; policy?: string },
 ): string | undefined => {
+  const authority = readWorkerRecoveryAuthority(expected.runDirectory, expected.policy);
+  if (!authority || !isDeepStrictEqual(authority, recovery)) return "host launch receipt";
   const { launch } = recovery;
   if (path.basename(expected.runDirectory) !== recovery.id || launch.id !== recovery.id) return "run id";
   if (path.resolve(launch.workerPath) !== path.resolve(expected.workerPath)) return "worker path";

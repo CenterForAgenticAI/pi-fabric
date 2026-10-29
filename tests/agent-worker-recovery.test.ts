@@ -9,6 +9,7 @@ import {
   readWorkerRecovery,
   WORKER_RECOVERY_FILE,
   WORKER_RECOVERY_MAX_BYTES,
+  workerRecoveryAuthorityRoot,
 } from "../src/agents/worker-recovery.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 
@@ -120,7 +121,10 @@ afterEach(async () => {
   }
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(workerRecoveryAuthorityRoot(root), { recursive: true, force: true });
+  }
 });
 
 describe.skipIf(process.platform === "win32")("pi-durable worker recovery after a host restart (#314)", () => {
@@ -178,7 +182,7 @@ describe.skipIf(process.platform === "win32")("pi-durable worker recovery after 
     process.kill(-pid!, "SIGKILL");
     await until(() => !alive(pid!), "the worker to die");
     const file = path.join(runDirectory, WORKER_RECOVERY_FILE);
-    fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, "utf8")), deadlineAt: Date.now() - 1 }));
+    vi.spyOn(Date, "now").mockReturnValue(readWorkerRecovery(runDirectory)!.deadlineAt + 1);
 
     const second = manager(root, true);
     expect(await second.recoverWorkerRuns()).toEqual([]);
@@ -312,6 +316,67 @@ describe.skipIf(process.platform === "win32")("pi-durable worker recovery after 
     expect(fs.existsSync(path.join(root, "elsewhere.json"))).toBe(false);
     expect(fs.existsSync(path.join(runDirectory, WORKER_RECOVERY_FILE))).toBe(false);
   }, 30_000);
+
+  it("rejects the real runner/binary injection before any child executes", async () => {
+    const { root, runDirectory, pid } = await orphanedRun();
+    await killWorker(pid!);
+    const executed = path.join(root, "executed");
+    const payload = path.join(root, "payload.mjs");
+    fs.writeFileSync(payload, `import fs from 'node:fs';fs.writeFileSync(${JSON.stringify(executed)}, 'executed');`);
+    tamper(runDirectory, value => {
+      setArgument(value.launch.workerArguments, "runner", "pi");
+      setArgument(value.launch.workerArguments, "pi-binary", payload);
+    });
+    const second = manager(root, true);
+    expect(await second.recoverWorkerRuns()).toEqual([]);
+    expect(readStatus(runDirectory)).toMatchObject({ status: "failed", outcome: "indeterminate" });
+    expect(fs.existsSync(executed)).toBe(false);
+    expect(attempts(runDirectory)).toBe("1");
+  });
+
+  it("settles a marker with no first status explicitly indeterminate", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "worker-startup-window-")); roots.push(root);
+    const workerPath = path.join(root, "slow.mjs"); fs.writeFileSync(workerPath, "setInterval(() => {}, 1000);");
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, budgetUsd: 0, retainRuns: true, transport: "process" as const, sessionExport: false, durableWorkerRecovery: true };
+    const first = new AgentManager(process.cwd(), config, { workerPath, runRoot: root }); managers.push(first);
+    const handle = await first.spawn({ task: "go", runner: "pi-durable", residency: "durable", extensions: false });
+    const directory = path.join(root, handle.id), recovery = readWorkerRecovery(directory)!; pids.push(recovery.pid);
+    await first.close(); await killWorker(recovery.pid);
+    expect(readStatus(directory)).toBeUndefined();
+    const second = new AgentManager(process.cwd(), config, { workerPath, runRoot: root }); managers.push(second);
+    expect(await second.recoverWorkerRuns()).toEqual([]);
+    expect(readStatus(directory)).toMatchObject({ id: handle.id, status: "failed", outcome: "indeterminate" });
+    expect(readWorkerRecovery(directory)).toBeUndefined();
+  });
+
+  it("settles a malformed recovery marker without executing or recreating authority", async () => {
+    const { root, runDirectory, pid } = await orphanedRun(); await killWorker(pid!);
+    fs.writeFileSync(path.join(runDirectory, WORKER_RECOVERY_FILE), "{bad json");
+    const second = manager(root, true);
+    expect(await second.recoverWorkerRuns()).toEqual([]);
+    expect(readStatus(runDirectory)).toMatchObject({ status: "failed", outcome: "indeterminate" });
+    expect(fs.existsSync(workerRecoveryAuthorityRoot(root))).toBe(false);
+    expect(attempts(runDirectory)).toBe("1");
+  });
+
+  it("settles a missing host receipt instead of recreating authority from the marker", async () => {
+    const { root, runDirectory, pid } = await orphanedRun(); await killWorker(pid!);
+    fs.rmSync(workerRecoveryAuthorityRoot(root), { recursive: true });
+    const second = manager(root, true);
+    expect(await second.recoverWorkerRuns()).toEqual([]);
+    expect(readStatus(runDirectory)).toMatchObject({ status: "failed", outcome: "indeterminate" });
+    expect(readWorkerRecovery(runDirectory)).toBeUndefined();
+    expect(fs.existsSync(workerRecoveryAuthorityRoot(root))).toBe(false);
+    expect(attempts(runDirectory)).toBe("1");
+  });
+
+  it("refuses old launch authority after current host token limits change", async () => {
+    const { root, runDirectory, pid } = await orphanedRun(); await killWorker(pid!);
+    const second = new AgentManager(process.cwd(), { ...DEFAULT_FABRIC_CONFIG.agents, budgetUsd: 0, retainRuns: true, transport: "process", sessionExport: false, durableWorkerRecovery: true, maxTokensPerChild: 1 }, { workerPath: path.resolve("tests/fixtures/fake-worker.mjs"), runRoot: root }); managers.push(second);
+    expect(await second.recoverWorkerRuns()).toEqual([]);
+    expect(readStatus(runDirectory)).toMatchObject({ status: "failed", outcome: "indeterminate" });
+    expect(attempts(runDirectory)).toBe("1");
+  });
 
   it("keeps today's behaviour when agents.durableWorkerRecovery is off", async () => {
     const { root, runDirectory } = await orphanedRun(false);

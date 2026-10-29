@@ -61,13 +61,17 @@ import { AgentAdmission, assertAgentTask, beginAgentSettlement, createAgentLifec
 import { removeTree } from "./rm.js";
 import {
   adoptedWorkerHandle,
+  hasWorkerRecovery,
   probeWorker,
   readWorkerRecovery,
+  readWorkerRecoveryAuthority,
   removeWorkerRecovery,
   workerRecoveryMismatch,
+  authorizeWorkerRecovery,
   writeWorkerRecovery,
   WORKER_RECOVERY_FORMAT,
   type WorkerLiveness,
+  type WorkerRecoveryRecord,
 } from "./worker-recovery.js";
 import { HerdrTransport } from "./transports/herdr-transport.js";
 import { LocaltermTransport } from "./transports/localterm-transport.js";
@@ -214,7 +218,7 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
   hosted?: HostedRun;
   /** Opt-in pi-durable recovery (agents.durableWorkerRecovery): the absolute
    *  launch deadline persisted in worker-recovery.json beside the run. */
-  workerRecovery?: { deadlineAt: number };
+  workerRecovery?: { deadlineAt: number; policy: string };
   /** Left running by a closing durable host for the next host to re-attach. */
   workerDetached?: boolean;
   kernel?: FabricKernel;
@@ -1257,6 +1261,10 @@ export class AgentManager {
         workerArguments: [...runnerLaunch.workerArguments],
       };
       if (this.#closing) throw new Error("Fabric agent manager is closing");
+      const recoveryPolicy = this.config.durableWorkerRecovery === true &&
+        residency === "durable" && runner === "pi-durable" &&
+        adapter.kind === "process" && process.platform !== "win32"
+        ? this.#workerRecoveryPolicy() : undefined;
       const transport = await this.#launchTransport(adapter, launch);
       const lifecycle = createAgentLifecycle<AgentRunResult>(release);
       if (signal?.aborted || this.#closing) {
@@ -1318,14 +1326,8 @@ export class AgentManager {
       }
       this.#runs.set(id, managed);
       this.#unregisteredTransports.delete(transport);
-      if (
-        this.config.durableWorkerRecovery === true &&
-        residency === "durable" &&
-        runner === "pi-durable" &&
-        adapter.kind === "process" &&
-        process.platform !== "win32"
-      ) {
-        managed.workerRecovery = { deadlineAt: Date.now() + timeoutMs };
+      if (recoveryPolicy !== undefined) {
+        managed.workerRecovery = { deadlineAt: Date.now() + timeoutMs, policy: recoveryPolicy };
         this.#persistWorkerRecovery(managed);
       }
       this.#invalidateUiList();
@@ -1547,6 +1549,21 @@ export class AgentManager {
     return recovered;
   }
 
+  #workerRecoveryPolicy(): string {
+    // A changed host configuration must not silently revive the old authority.
+    // Pin binaries and all agent limits, including tools, depth and token caps.
+    return JSON.stringify({
+      config: this.config, worker: this.#workerPath, pi: this.#piBinary,
+      claude: this.#claudeBinary, veda: this.#vedaBinary, extension: this.#fabricExtensionPath,
+      project: this.#projectRoot, mesh: this.#meshRoot, host: this.#hostId, identity: this.#identityId,
+      depth: this.#currentDepth, fullCodeMode: this.#fullCodeMode,
+      writePolicy: this.#parentWritePolicy, lineage: this.#parentLineage,
+      thinkingBounds: this.#thinkingBounds?.(),
+      kernel: this.#kernel(), pythonRuntime: this.#pythonRuntime(), executor: this.#executorRuntime?.(),
+      inheritedTools: this.#inheritedToolAllowlist?.entries,
+    });
+  }
+
   #persistWorkerRecovery(managed: ManagedAgent): void {
     if (!managed.workerRecovery) return;
     // A requested stop or a settlement already removed the file; a relaunch
@@ -1562,7 +1579,7 @@ export class AgentManager {
       removeWorkerRecovery(managed.runDirectory);
       return;
     }
-    writeWorkerRecovery(managed.runDirectory, {
+    const recovery: WorkerRecoveryRecord = {
       format: WORKER_RECOVERY_FORMAT,
       id: managed.id,
       runner: "pi-durable",
@@ -1576,7 +1593,10 @@ export class AgentManager {
         workerArguments: [...managed.launch.workerArguments],
       },
       writtenAt: Date.now(),
-    });
+    };
+    // Publish trusted authority first; a crash between writes fails closed.
+    authorizeWorkerRecovery(managed.runDirectory, recovery, managed.workerRecovery.policy);
+    writeWorkerRecovery(managed.runDirectory, recovery);
   }
 
   /**
@@ -1599,10 +1619,38 @@ export class AgentManager {
       if (this.#closing || this.#runs.has(entry) || !/^[0-9a-f]{32}$/.test(entry)) continue;
       const runDirectory = path.join(this.#runRoot, entry);
       const recovery = readWorkerRecovery(runDirectory);
-      if (!recovery || recovery.id !== entry) continue;
       const statusFile = path.join(runDirectory, "status.json");
       const record = readRecord(statusFile);
-      if (!record || record.id !== entry || record.hosted) continue;
+      if (!recovery || recovery.id !== entry) {
+        if (!hasWorkerRecovery(runDirectory)) continue;
+        // An unreadable/malformed marker is no launch authority, but an old
+        // handle must still get an explicit outcome instead of looping forever.
+        removeWorkerRecovery(runDirectory);
+        if (record?.id === entry && !record.hosted && (!terminalStatuses.has(record.status) || record.status === "stopped")) {
+          const { currentTool: _tool, blockedOn: _blocked, sleeping: _sleeping, ...rest } = record;
+          const now = Date.now();
+          writeRecord(statusFile, { ...rest, status: "failed", outcome: "indeterminate",
+            error: "Invalid durable worker recovery marker; the run outcome is indeterminate", updatedAt: now, finishedAt: now });
+        }
+        continue;
+      }
+      if (!record || record.id !== entry) {
+        // The marker may precede the first worker status. Own this crash window
+        // explicitly; do not execute anything or forget an unfinished run.
+        const now = Date.now();
+        removeWorkerRecovery(runDirectory);
+        writeRecord(statusFile, {
+          id: entry, name: recovery.launch.name, task: "", runner: "pi-durable",
+          cwd: recovery.launch.cwd, residency: "durable", transport: "process",
+          status: "failed", outcome: "indeterminate",
+          error: "Durable worker recovery has no valid initial status; the run outcome is indeterminate",
+          startedAt: recovery.writtenAt, updatedAt: now, finishedAt: now,
+          turns: 0, toolCalls: 0, text: "",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+        });
+        continue;
+      }
+      if (record.hosted) continue;
       // A worker-written "stopped" beside a recovery file was an outside
       // signal (every Fabric settlement removes the file first).
       if (terminalStatuses.has(record.status) && record.status !== "stopped") {
@@ -1627,22 +1675,24 @@ export class AgentManager {
         indeterminate("The pi-durable runner is not registered in this process");
         continue;
       }
-      if (recovery.deadlineAt <= now) {
-        indeterminate("The durable worker run passed its deadline while no resident host owned it");
-        continue;
-      }
-      if (workerRecoveryMismatch(recovery, { runDirectory, workerPath: this.#workerPath, cwd: record.cwd })) {
+      const policy = this.#workerRecoveryPolicy();
+      const authority = readWorkerRecoveryAuthority(runDirectory, policy);
+      if (!authority || workerRecoveryMismatch(recovery, { runDirectory, workerPath: this.#workerPath, cwd: record.cwd, policy })) {
         // Checked before anything is adopted or started: whatever can write the
         // run directory could otherwise point a relaunch at another program,
         // directory, or run.
         indeterminate("The recovery file does not match this host");
         continue;
       }
-      let liveness = probeWorker(recovery.pid, entry);
+      if (authority.deadlineAt <= now) {
+        indeterminate("The durable worker run passed its deadline while no resident host owned it");
+        continue;
+      }
+      let liveness = probeWorker(authority.pid, entry);
       if (record.status === "stopped" && liveness === "alive") {
         // The worker wrote its terminal record and may still be exiting; a
         // relaunch now would put two writers on one journal.
-        liveness = await this.#waitForWorkerExit(recovery.pid, entry);
+        liveness = await this.#waitForWorkerExit(authority.pid, entry);
         if (liveness === "alive") {
           indeterminate(`Worker process ${recovery.pid} recorded a stop but did not exit`);
           continue;
@@ -1652,10 +1702,22 @@ export class AgentManager {
         indeterminate(`Fabric cannot verify whether worker process ${recovery.pid} is still running`);
         continue;
       }
-      if (liveness === "dead" && !fs.existsSync(recovery.launch.workerPath)) {
+      if (liveness === "dead" && !fs.existsSync(authority.launch.workerPath)) {
         indeterminate(`The worker entry ${recovery.launch.workerPath} no longer exists`);
         continue;
       }
+      // Only the authorized launch may supply executable/cleanup selection.
+      // Worker-written status is telemetry, not authority (including model and
+      // worktree, which are used by relaunch and settlement).
+      const argument = (name: string): string | undefined => {
+        const index = authority.launch.workerArguments.indexOf(`--${name}`);
+        return index < 0 ? undefined : authority.launch.workerArguments[index + 1];
+      };
+      const kernel = argument("kernel");
+      const model = argument("model");
+      const thinking = argument("thinking") as AgentRunRecord["thinking"];
+      const branch = argument("branch");
+      const worktree = argument("worktree");
       const adapter = await this.#resolveTransport("process");
       const managed: ManagedAgent = {
         id: entry,
@@ -1663,8 +1725,8 @@ export class AgentManager {
         task: record.task,
         runner: "pi-durable",
         runnerAdapter,
-        ...(record.kernel ? { kernel: record.kernel } : {}),
-        recursive: record.recursive === true,
+        ...(kernel === "typescript" || kernel === "python" ? { kernel } : {}),
+        recursive: JSON.parse(argument("granted-risks") ?? "[]").includes("agent"),
         residency: "durable",
         cwd: record.cwd,
         statusFile,
@@ -1673,18 +1735,18 @@ export class AgentManager {
         lifecycleOffset: fileSize(path.join(runDirectory, "lifecycle.jsonl")),
         lifecycleRemainder: Buffer.alloc(0),
         runDirectory,
-        transport: adoptedWorkerHandle(recovery.pid, entry),
+        transport: adoptedWorkerHandle(authority.pid, entry),
         adapter,
-        launch: recovery.launch,
+        launch: authority.launch,
         startupAttempts: 1,
         ...createAgentLifecycle<AgentRunResult>(() => {}),
         abortSignal: undefined,
         abortHandler: undefined,
-        ...(record.model ? { model: record.model } : {}),
-        ...(record.thinking ? { thinking: record.thinking } : {}),
-        ...(record.branch ? { branch: record.branch } : {}),
-        ...(record.worktree ? { worktree: record.worktree } : {}),
-        workerRecovery: { deadlineAt: recovery.deadlineAt },
+        ...(model ? { model } : {}),
+        ...(thinking ? { thinking } : {}),
+        ...(branch ? { branch } : {}),
+        ...(worktree ? { worktree } : {}),
+        workerRecovery: { deadlineAt: authority.deadlineAt, policy },
         settled: false,
         background: true,
         lastLivenessCheckAt: 0,
