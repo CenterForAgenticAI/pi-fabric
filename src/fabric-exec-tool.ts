@@ -920,10 +920,7 @@ export const createFabricExecTool = (
           const details = createFabricPartialExecutionDetails(snapshot);
           onUpdate({
             content: [{ type: "text", text: details.progress ?? "" }],
-            details: {
-              ...details,
-              ...(snapshot.deadlineAt !== undefined ? { deadlineAt: snapshot.deadlineAt } : {}),
-            },
+            details,
           });
         },
       });

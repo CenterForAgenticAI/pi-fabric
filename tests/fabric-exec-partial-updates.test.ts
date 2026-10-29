@@ -1,6 +1,7 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { normalizeFabricConfig } from "../src/config.js";
+import { FABRIC_PARTIAL_UPDATE_MAX_BYTES } from "../src/audit/details.js";
 import { ActionRegistry } from "../src/core/action-registry.js";
 import { FabricExecutionService } from "../src/execution-service.js";
 import type { FabricState } from "../src/fabric-state.js";
@@ -11,7 +12,7 @@ const CALLS = 400;
 // Each call sends and returns about 2.3 KB, like one batched classifier request.
 const PAYLOAD = "q".repeat(2_300);
 // A fixed ceiling far below a 4 MB transport line, independent of the call count.
-const MAX_UPDATE_BYTES = 256 * 1024;
+const MAX_UPDATE_BYTES = FABRIC_PARTIAL_UPDATE_MAX_BYTES;
 
 const plainTheme = {
   fg: (_color: string, text: string) => text,
@@ -100,4 +101,26 @@ return n;`;
     expect(card).toContain(`${CALLS}/${CALLS} calls`);
     expect(card).toContain(`… ${CALLS - 8} nested calls hidden`);
   }, 120_000);
+
+  it("bounds real phase updates while keeping the return value and deadline", async () => {
+    const { tool, context } = harness();
+    const sizes: number[] = [];
+    const deadlines: number[] = [];
+    const result = await tool.execute!(
+      "large-phases",
+      { code: 'for (let i = 0; i < 8; i++) await phase("phase-" + i + "\\0".repeat(20_000)); return 8;', resultFormat: "json", timeout_ms: 30_000 } as never,
+      undefined,
+      (update) => {
+        sizes.push(Buffer.byteLength(JSON.stringify(update), "utf8"));
+        const deadline = (update.details as { deadlineAt?: number } | undefined)?.deadlineAt;
+        if (deadline !== undefined) deadlines.push(deadline);
+      },
+      context as never,
+    );
+    expect(result.isError ?? false).toBe(false);
+    expect(result.content).toEqual([{ type: "text", text: "8" }]);
+    expect(sizes.length).toBeGreaterThan(0);
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(MAX_UPDATE_BYTES);
+    expect(deadlines.length).toBeGreaterThan(0);
+  }, 30_000);
 });

@@ -281,6 +281,8 @@ const omittedCalls = (value: unknown): { omittedCalls: FabricOmittedCalls } | un
 
 /** Byte budget for the call audits in one fabric_exec progress update. */
 export const FABRIC_PARTIAL_AUDITS_MAX_BYTES = 128 * 1024;
+/** Complete onUpdate envelope, including the second copy of progress in content. */
+export const FABRIC_PARTIAL_UPDATE_MAX_BYTES = 256 * 1024;
 // The expanded live card shows the first 30 calls; the collapsed one shows
 // running calls first. Keep those, plus the newest, and count the rest.
 const PARTIAL_HEAD_AUDITS = 30;
@@ -292,6 +294,7 @@ const SLIM_TEXT_CHARS = 240;
 
 export interface FabricPartialExecutionDetails {
   progress?: string;
+  deadlineAt?: number;
   phases: string[];
   audits: FabricLegacyRenderAudit[];
   omittedCalls?: FabricOmittedCalls;
@@ -331,6 +334,7 @@ export const createFabricPartialExecutionDetails = (input: {
   audits: readonly FabricPersistableAuditInput[];
   phases: readonly string[];
   progress?: string | undefined;
+  deadlineAt?: number | undefined;
 }): FabricPartialExecutionDetails => {
   const total = input.audits.length;
   const running: number[] = [];
@@ -367,10 +371,24 @@ export const createFabricPartialExecutionDetails = (input: {
   const progress = input.progress === undefined || input.progress.length <= PARTIAL_PROGRESS_CHARS
     ? input.progress
     : `…${input.progress.slice(-PARTIAL_PROGRESS_CHARS)}`;
-  return {
+  const details: FabricPartialExecutionDetails = {
     ...(progress !== undefined ? { progress } : {}),
-    phases: input.phases.slice(-PARTIAL_PHASES),
+    ...(input.deadlineAt !== undefined ? { deadlineAt: input.deadlineAt } : {}),
+    phases: [],
     audits,
     ...(omitted > 0 ? { omittedCalls: { count: omitted, done: omittedDone } } : {}),
   };
+  // Audits take at most 128 KiB, and each copy of the 8,001-code-unit
+  // progress string takes at most six bytes per code unit in JSON. This
+  // leaves room below 256 KiB even before admitting any phase names.
+  // Measure the actual envelope: UTF-8 and JSON escaping are not char counts.
+  let bytes = serializedBytes({ content: [{ type: "text", text: progress ?? "" }], details });
+  for (let index = input.phases.length - 1; index >= Math.max(0, input.phases.length - PARTIAL_PHASES); index--) {
+    const phase = clipText(input.phases[index]!, SLIM_TEXT_CHARS);
+    const extra = serializedBytes(phase) + (details.phases.length > 0 ? 1 : 0);
+    if (bytes + extra > FABRIC_PARTIAL_UPDATE_MAX_BYTES) break;
+    details.phases.unshift(phase);
+    bytes += extra;
+  }
+  return details;
 };
