@@ -161,6 +161,49 @@ describe("GlobalActorRegistry", () => {
     expect(renamed.name).toBe("reviewer-2");
   });
 
+  it("keeps capability requirements through export, import, and update", () => {
+    const { agentDir, registry } = setup();
+    const created = registry.create({
+      ...baseRequest,
+      requires: ["demo.echo", { ref: "optional.missing", optional: true }],
+    });
+    const expected = [{ ref: "demo.echo" }, { ref: "optional.missing", optional: true }];
+    expect(created.requires).toEqual(expected);
+
+    const reloaded = new GlobalActorRegistry(agentDir, 64 * 1024);
+    const stored = reloaded.resolve("reviewer");
+    expect(stored?.requires).toEqual(expected);
+    expect(reloaded.toRequest(stored!).requires).toEqual(expected);
+
+    expect(reloaded.update(created.id, { instructions: "Be brief." }).requires).toEqual(expected);
+    expect(reloaded.update(created.id, { requires: ["other.tool"] }).requires).toEqual([
+      { ref: "other.tool" },
+    ]);
+    expect(reloaded.update(created.id, { requires: [] })).not.toHaveProperty("requires");
+  });
+
+  it("replaces every field on overwrite instead of keeping stale ones", () => {
+    const { agentDir, registry } = setup();
+    const original = registry.create({
+      ...baseRequest,
+      runner: "pi",
+      kernel: "python",
+      model: "openai/gpt-5",
+      requires: ["demo.echo"],
+    });
+    const replaced = registry.create({ ...baseRequest, runner: "claude" }, true);
+    expect(replaced.id).toBe(original.id);
+    expect(replaced.createdAt).toBe(original.createdAt);
+    expect(replaced.runner).toBe("claude");
+    expect(replaced).not.toHaveProperty("kernel");
+    expect(replaced).not.toHaveProperty("model");
+    expect(replaced).not.toHaveProperty("requires");
+
+    const reloaded = new GlobalActorRegistry(agentDir, 64 * 1024);
+    expect(reloaded.resolve("reviewer")).toMatchObject({ id: original.id, runner: "claude" });
+    expect(reloaded.resolve("reviewer")).not.toHaveProperty("kernel");
+  });
+
 
   it("normalizes impossible legacy trigger settings while keeping active modes passive by default", () => {
     const { agentDir } = setup();

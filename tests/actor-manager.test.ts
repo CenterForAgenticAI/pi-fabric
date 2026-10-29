@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { GlobalActorRegistry } from "../src/actors/global-registry.js";
 import { ActorManager, ActorRegistryOwnershipError } from "../src/actors/manager.js";
 import type { FabricCapabilityRequirement } from "../src/components/types.js";
 import type { FabricCapabilityViewLease } from "../src/core/action-registry.js";
@@ -363,6 +364,25 @@ describe("ActorManager", () => {
       ],
       capabilityDigest: "semantic-digest",
     });
+  });
+
+  it("keeps capability requirements through a global template export and import round trip", async () => {
+    const acquire = vi.fn(async (): Promise<FabricCapabilityViewLease> => {
+      throw new Error("not activated in this test");
+    });
+    const { actors, root } = setup(false, undefined, acquire);
+    const requires = [{ ref: "demo.echo" }, { ref: "optional.missing", optional: true }];
+    const source = await actors.create({
+      name: "bounded",
+      instructions: "Use only committed capabilities.",
+      requires: ["demo.echo", { ref: "optional.missing", optional: true }],
+    });
+    const templates = new GlobalActorRegistry(path.join(root, "agent"), 64 * 1024);
+    const template = templates.create(actors.definition(source.id));
+    const imported = await actors.create(templates.toRequest(template, "bounded copy"));
+    expect(actors.status(imported.id).requirements).toEqual(requires);
+    expect(actors.definition(imported.id).requires).toEqual(requires);
+    expect(acquire).not.toHaveBeenCalled();
   });
 
   it("keeps mailbox work queued until required capabilities become available", async () => {
