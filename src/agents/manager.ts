@@ -1561,6 +1561,9 @@ export class AgentManager {
       thinkingBounds: this.#thinkingBounds?.(),
       kernel: this.#kernel(), pythonRuntime: this.#pythonRuntime(), executor: this.#executorRuntime?.(),
       inheritedTools: this.#inheritedToolAllowlist?.entries,
+      // Exact fabric_exec authority is stored outside entries; pin both so
+      // revoking recursion cannot reuse an otherwise identical launch receipt.
+      inheritedFabricExec: this.#inheritedToolAllowlist?.fabricExec,
     });
   }
 

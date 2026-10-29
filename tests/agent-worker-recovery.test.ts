@@ -91,7 +91,7 @@ const killWorker = async (pid: number): Promise<void> => {
 };
 
 /** Launch a durable pi-durable REATTACH run and close its host, leaving the worker. */
-const orphanedRun = async (durableWorkerRecovery = true) => {
+const orphanedRun = async (durableWorkerRecovery = true, recursive?: boolean) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-worker-recovery-"));
   roots.push(root);
   vi.stubEnv("PI_FABRIC_DEPTH", "0");
@@ -100,7 +100,8 @@ const orphanedRun = async (durableWorkerRecovery = true) => {
     task: "REATTACH",
     runner: "pi-durable",
     residency: "durable",
-    extensions: false,
+    extensions: recursive === true,
+    ...(recursive === undefined ? {} : { recursive }),
   });
   const runDirectory = path.join(root, handle.id);
   await until(() => readStatus(runDirectory)?.status === "running", "the first attempt to start");
@@ -377,6 +378,41 @@ describe.skipIf(process.platform === "win32")("pi-durable worker recovery after 
     expect(readStatus(runDirectory)).toMatchObject({ status: "failed", outcome: "indeterminate" });
     expect(attempts(runDirectory)).toBe("1");
   });
+
+  it.each([
+    { label: "revoked", next: '["read"]', allowed: false },
+    { label: "unchanged", next: '["read","fabric_exec"]', allowed: true },
+  ])("checks the separate fabric_exec recovery authority ($label)", async ({ next, allowed }) => {
+    vi.stubEnv("PI_FABRIC_TOOL_ALLOWLIST", '["read","fabric_exec"]');
+    const { root, id, runDirectory, pid, recovery } = await orphanedRun(true, true);
+    expect(JSON.parse(argument(recovery!.launch.workerArguments, "tools")!)).toContain("fabric_exec");
+    await killWorker(pid!);
+
+    // Both policies have entries=["read"]; only the separately stored bit changes.
+    vi.stubEnv("PI_FABRIC_TOOL_ALLOWLIST", next);
+    const second = manager(root, true);
+    const recovered = await second.recoverWorkerRuns();
+    const relaunched = readWorkerRecovery(runDirectory);
+    if (relaunched && relaunched.pid !== pid) pids.push(relaunched.pid);
+    expect(recovered).toEqual(allowed ? [id] : []);
+    if (allowed) {
+      expect(JSON.parse(argument(relaunched!.launch.workerArguments, "tools")!)).toContain("fabric_exec");
+      fs.writeFileSync(path.join(runDirectory, "release"), "");
+      expect((await second.wait(id)).status).toBe("completed");
+    } else {
+      expect(readStatus(runDirectory)).toMatchObject({ status: "failed", outcome: "indeterminate" });
+      expect(attempts(runDirectory)).toBe("1");
+      expect(relaunched).toBeUndefined();
+      // The same current host may start a fresh child, but cannot give it the revoked tool.
+      const fresh = await second.spawn({ task: "REATTACH", runner: "pi-durable", residency: "durable", recursive: true });
+      const freshDirectory = path.join(root, fresh.id);
+      const freshRecovery = readWorkerRecovery(freshDirectory)!;
+      pids.push(freshRecovery.pid);
+      expect(JSON.parse(argument(freshRecovery.launch.workerArguments, "tools")!)).not.toContain("fabric_exec");
+      fs.writeFileSync(path.join(freshDirectory, "release"), "");
+      expect((await second.wait(fresh.id)).status).toBe("completed");
+    }
+  }, 30_000);
 
   it("keeps today's behaviour when agents.durableWorkerRecovery is off", async () => {
     const { root, runDirectory } = await orphanedRun(false);
