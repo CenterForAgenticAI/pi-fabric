@@ -336,7 +336,8 @@ export async function runFabricCommand(
   }
   if (command === "decisions") {
     const { openFabricDecisions } = await import("../decisions/command.js");
-    await openFabricDecisions(state.mesh, context, argumentsList[0]);
+    const renderers = state.questionRenderers.active(state.config.ui.questionRenderers);
+    await openFabricDecisions(state.mesh, context, argumentsList[0], renderers);
     return;
   }
   if (command === "programs" || command === "run") {
