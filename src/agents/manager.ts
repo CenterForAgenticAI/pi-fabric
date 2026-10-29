@@ -975,6 +975,8 @@ export class AgentManager {
     const id = randomUUID().replaceAll("-", "");
     const name = runName(request);
     const runDirectory = path.join(this.#runRoot, id);
+    // Opt-in (agents.durableWorkerSession): a pi-durable child keeps a session file with a worker-role entry.
+    const durableSession = runner === "pi-durable" && this.config.durableWorkerSession === true;
     const taskFile = path.join(runDirectory, "task.txt");
     const statusFile = path.join(runDirectory, "status.json");
     const lifecycleFile = path.join(runDirectory, "lifecycle.jsonl");
@@ -985,7 +987,8 @@ export class AgentManager {
       ? path.join(runDirectory, "images.json")
       : undefined;
     try {
-      fs.mkdirSync(runDirectory, { recursive: true });
+      // With a durable session, 0700: the pi-durable worker refuses a run directory that group or others can write.
+      fs.mkdirSync(runDirectory, durableSession ? { recursive: true, mode: 0o700 } : { recursive: true });
       fs.writeFileSync(taskFile, request.task, { encoding: "utf8", mode: 0o600 });
       if (imagesFile) {
         fs.writeFileSync(imagesFile, JSON.stringify(request.images), {
@@ -1043,8 +1046,10 @@ export class AgentManager {
         childIndex: this.#childIndex++,
         worker: true,
       };
+      // Only a pi-durable child with agents.durableWorkerSession gets the worker-role entry, written into the seed in the same write that creates it.
+      const seedOptions = durableSession ? { workerRole: true } : {};
       const sessionFile = request.forkSeed
-        ? writeForkSession(request.forkSeed, agentCwd, path.join(runDirectory, "fork-session"), request.thinkingTransfer)
+        ? writeForkSession(request.forkSeed, agentCwd, path.join(runDirectory, "fork-session"), request.thinkingTransfer, seedOptions)
         : request.sessionSeed
         ? writeHandoffSession(
             request.sessionSeed,
@@ -1053,6 +1058,7 @@ export class AgentManager {
             request.thinkingTransfer,
             request.handoffCompact,
             request.handoffCompact ? await this.#resolveHandoffCompactionBudget?.(model, agentCwd) : undefined,
+            seedOptions,
           )
         : request.sessionFile;
       const timeoutMs = effectiveAgentTimeoutMs(
@@ -1184,6 +1190,7 @@ export class AgentManager {
         ...(systemPrompt ? ["--system-prompt", systemPrompt] : []),
         "--persist-session",
         String(request.persistSession === true),
+        ...(durableSession ? ["--durable-session", "true"] : []),
         "--model-admission",
         this.config.modelAdmission ?? "strict",
         ...(sessionFile ? ["--session-file", sessionFile] : []),

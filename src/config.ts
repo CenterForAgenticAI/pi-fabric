@@ -225,6 +225,11 @@ export interface FabricAgentConfig {
    * worker runs after a restart, or relaunches them on their journal.
    */
   durableWorkerRecovery?: boolean;
+  /**
+   * Opt-in: a pi-durable worker keeps a private Pi session file in its run
+   * directory, with a worker-role entry, so a relaunch keeps extension state.
+   */
+  durableWorkerSession?: boolean;
   notifyOnComplete: boolean;
   budgetUsd: number;
   maxTokensPerChild: number;
@@ -568,6 +573,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     defaultTools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
     retainRuns: false,
     durableWorkerRecovery: false,
+    durableWorkerSession: false,
     notifyOnComplete: true,
     budgetUsd: 0,
     maxTokensPerChild: 0,
@@ -1284,6 +1290,10 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       durableWorkerRecovery: booleanValue(
         agents.durableWorkerRecovery,
         DEFAULT_FABRIC_CONFIG.agents.durableWorkerRecovery ?? false,
+      ),
+      durableWorkerSession: booleanValue(
+        agents.durableWorkerSession,
+        DEFAULT_FABRIC_CONFIG.agents.durableWorkerSession ?? false,
       ),
       notifyOnComplete: booleanValue(
         agents.notifyOnComplete,

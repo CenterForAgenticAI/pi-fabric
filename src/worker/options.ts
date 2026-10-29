@@ -76,6 +76,10 @@ export const parseWorkerOptions = (
     throw new Error("Invalid worker persist-session flag");
   }
   const persistSession = persistSessionSource === "true";
+  const durableSessionSource = optional(args, "durable-session");
+  if (durableSessionSource !== undefined && durableSessionSource !== "true") {
+    throw new Error("Invalid worker durable-session flag");
+  }
   const modelAdmissionSource = optional(args, "model-admission");
   if (
     modelAdmissionSource !== undefined &&
@@ -167,6 +171,9 @@ export const parseWorkerOptions = (
   if (persistSession && runner !== "claude") {
     throw new Error("Worker persist-session requires the Claude runner");
   }
+  if (durableSessionSource !== undefined && runner !== "pi-durable") {
+    throw new Error("Worker durable-session requires the pi-durable runner");
+  }
   const extensions = required(args, "extensions") === "true";
   const selectedKernel = args.get("kernel");
   const pythonRuntime = args.get("python-runtime") ?? "monty";
@@ -213,6 +220,7 @@ export const parseWorkerOptions = (
     ...(thinkingBounds ? { thinkingBounds } : {}),
     ...(systemPrompt ? { systemPrompt } : {}),
     ...(persistSession ? { persistSession: true } : {}),
+    ...(durableSessionSource === "true" ? { durableSession: true } : {}),
     ...(modelAdmission ? { modelAdmission } : {}),
     ...(sessionFile ? { sessionFile } : {}),
     ...(sessionExportFile ? { sessionExportFile } : {}),
