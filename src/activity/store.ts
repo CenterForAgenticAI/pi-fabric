@@ -474,7 +474,7 @@ export class FabricActivityStore {
       const message = cleanText(update.message, MAX_DETAIL_CHARS);
       if (message) call.progress = message;
     } else if (update.type === "entity") {
-      call.entityId = cleanId(update.id, update.id);
+      call.entityId = cleanId(update.id, update.id.slice(0, 160));
       call.entityKind = update.kind;
       const name = cleanText(update.name, MAX_NAME_CHARS);
       if (name) call.label = name;
@@ -533,7 +533,7 @@ export class FabricActivityStore {
     }
     if (typeof input.result === "object" && input.result !== null && !Array.isArray(input.result)) {
       const record = input.result as Record<string, unknown>;
-      if (typeof record.id === "string") call.entityId = cleanId(record.id, record.id);
+      if (typeof record.id === "string") call.entityId = cleanId(record.id, record.id.slice(0, 160));
       if (call.kind === "agent") call.entityKind = "agent";
       if (call.kind === "actor") call.entityKind = "actor";
       if (!error && typeof record.error === "string") {
