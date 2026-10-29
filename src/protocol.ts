@@ -1,3 +1,4 @@
+import type { FabricActionPolicyHookV1 } from "./core/action-policy-hooks.js";
 import type {
   BashOperations,
   BashToolOptions,
@@ -700,6 +701,45 @@ export const readFabricPeerAwaitSettleRequestV1 = (
     return undefined;
   }
   return value as FabricPeerAwaitSettleRequestV1;
+};
+
+/**
+ * Host-local registration of an extension action policy hook (issue #312).
+ * Fabric consults registered hooks at the fabric_exec approve stage only when
+ * `approvals.policyHooks` is true. Registering under an existing `name`
+ * replaces that hook. `respond`, when given, receives an `unregister`
+ * function that removes only this registration.
+ */
+export const FABRIC_ACTION_POLICY_REGISTER_EVENT = "pi-fabric:action-policy:register:v1";
+
+export interface FabricActionPolicyRegistrationV1 {
+  version: 1;
+  /** Must match `[A-Za-z0-9@][A-Za-z0-9@._/-]{0,63}`; shown in denial messages. */
+  name: string;
+  hook: FabricActionPolicyHookV1;
+  respond?: (result: { ok: true; unregister: () => void } | { ok: false; error: string }) => void;
+}
+
+export const readFabricActionPolicyRegistrationV1 = (
+  value: unknown,
+): FabricActionPolicyRegistrationV1 | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (
+    record.version !== 1 ||
+    typeof record.name !== "string" ||
+    typeof record.hook !== "function" ||
+    (record.respond !== undefined && typeof record.respond !== "function")
+  ) {
+    return undefined;
+  }
+  // Copy named fields: a later change to the caller's object changes nothing here.
+  return {
+    version: 1,
+    name: record.name,
+    hook: record.hook as FabricActionPolicyRegistrationV1["hook"],
+    ...(record.respond ? { respond: record.respond as NonNullable<FabricActionPolicyRegistrationV1["respond"]> } : {}),
+  };
 };
 
 export const FABRIC_DECISIONS_CAPABILITY_EVENT = "pi-fabric:decisions:capability:v1";

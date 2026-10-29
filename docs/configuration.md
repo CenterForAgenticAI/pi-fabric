@@ -492,6 +492,56 @@ Fabric risk classes are `read`, `write`, `execute`, `network`, and `agent`. Appr
 - While the prompt is open, the program deadline is paused (see [`executor.humanWaitRefs`](#executor-timeouts-and-ceilings)); the program resumes with the budget it had left. Cancellation still closes the prompt at once.
 - Fabric serializes concurrent requests so a one-time approval never silently widens to sibling calls. Session-wide grants apply to native calls and to `fabric_exec`. Escape, dismissal, unavailable interactive UI, and session restart all fail closed.
 - `approvals.headless` (default `"deny"`) chooses what an approval does without an interactive UI. `"decision"` raises a durable user-held approval decision for `fabric_exec` actions and waits up to `approvals.headlessTimeoutMs` (default `300000`, bounded to 1 s..24 h). Only an explicit approve answer from `/fabric decisions` or `pi-fabric decisions answer` runs the action once; deny, cancel, expiry, and abort deny it. Any other value keeps `"deny"`. See [durable decisions](decisions.md#headless-approvals).
+- `approvals.policyHooks` (default off) lets extensions take part in `fabric_exec` approvals. See [extension action policy hooks](#extension-action-policy-hooks).
+
+### Extension action policy hooks
+
+An extension can register a policy hook that Fabric consults at the approve stage of every `fabric_exec` action: `pi.*`, `extensions.*`, `mcp.*`, `agents.*` (including `agents.spawn` and `agents.create`), `mesh.*`, `memory.*`, `state.*`, `schema.*` and external providers. Fabric consults hooks only when `approvals.policyHooks` is `true`; any other value leaves approvals exactly as configured. Hooks do not see direct tool calls the model makes outside `fabric_exec`; Pi's own `tool_call` event already covers those.
+
+```json
+{
+  "approvals": {
+    "policyHooks": true
+  }
+}
+```
+
+Register a hook over `pi.events`. Registration is accepted whether or not the setting is on. A second registration under the same `name` replaces the first and keeps its place in registration order, so a reloaded extension does not stack copies:
+
+```ts
+import { FABRIC_ACTION_POLICY_REGISTER_EVENT } from "pi-fabric/protocol";
+
+let unregister: (() => void) | undefined;
+pi.events.emit(FABRIC_ACTION_POLICY_REGISTER_EVENT, {
+  version: 1,
+  name: "my-policy-engine",
+  hook: async ({ action, args, context, signal }) => {
+    if (action.ref.startsWith("mcp.crm.") && action.risk === "write" && outsideWorkingHours()) {
+      return { decision: "deny", reason: "CRM writes are closed outside working hours" };
+    }
+    if (action.ref === "agents.spawn" && args.runner === "claude") {
+      return { decision: "hold", reason: "Claude runners need a grant" };
+    }
+    return undefined; // no opinion
+  },
+  respond: (result) => { if (result.ok) unregister = result.unregister; },
+});
+```
+
+The hook receives private copies of the resolved action (`ref`, `provider`, `risk`, `effect`) and the validated arguments, a `context`, and an abort `signal`. In a `fabric_exec` program, `context` has `caller: "program"` and the outer `parentToolCallId`. In a Jev program launched from one, it has `caller: "jev"` and the `parentToolCallId` of the call that launched the program. Its answer combines with the configured policy as follows:
+
+| Hook answer | Effect |
+|---|---|
+| `{ decision: "deny", reason }` | Denies the call, like an `approvals.actions` deny. Nothing lifts it. |
+| `{ decision: "hold", reason }` | Asks a person even when the configuration or a session grant would allow the call: the permission prompt, or a [headless decision](decisions.md#headless-approvals) when `approvals.headless` is `"decision"`. Without either, the call fails closed. A configured deny still denies. |
+| `{ decision: "allow" }` | Settles an `ask` or `auto` prompt without asking. It never lifts an `approvals.actions` deny or a risk-class `deny`. |
+| `undefined` | No opinion; the configured policy decides. |
+
+Hooks run before the configured approvals, so they also see calls that `approvals.actions` or a risk-class `deny` will deny anyway. Do not read a hook call as proof that the action ran.
+
+With several hooks, deny beats hold, and hold beats allow; among equal answers, the first registered hook names the verdict. A hook that throws, answers anything else, or takes longer than 5 seconds counts as a deny that names the hook. The 5-second timeout is fixed and not configurable yet. Control characters in a reason are replaced with spaces, and a reason is cut at 500 characters. When a hook `allow` settles an `ask` or `auto` prompt, the run trace records a `fabric.approval.auto` entry with `decision: "allow"` and `policyHook` set to the hook's name; the auto classifier does not run. Cancelling the program aborts the hook's signal and cancels the call instead. While any hook is registered, Fabric treats every action as possibly interactive when it decides whether to arm a durable tool fence. `schema.commit` is approved as both `write` and `execute`, so hooks see it twice.
+
+Actions inside Jev programs pass through the same hooks. Jev programs do not raise headless decisions, so a `hold` there without an interactive UI fails closed. Hooks do not cover direct model tool calls (Pi's `tool_call` event already reaches those), component calls, actors, or agent admission that bypasses the action registry.
 
 ### Per-action approval overrides
 

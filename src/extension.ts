@@ -77,12 +77,14 @@ import { classifyToolResult } from "./repairs/classify.js";
 import { getActiveRepairCompiler } from "./repairs/active.js";
 import { piHostCompatibilityWarning } from "./host-compatibility.js";
 import {
+  FABRIC_ACTION_POLICY_REGISTER_EVENT,
   FABRIC_COMPACTION_OWNER_EVENT,
   FABRIC_COMPONENT_REGISTER_EVENT,
   FABRIC_PROGRAM_RUN_EVENT,
   FABRIC_PROVIDER_REGISTER_EVENT,
   FABRIC_PROVIDER_WITHDRAW_EVENT,
   FABRIC_TOOL_PLACEMENT_EVENT,
+  readFabricActionPolicyRegistrationV1,
   FABRIC_HOST_POLICY_EVENT,
   readFabricHostPolicyRequestV1,
   readFabricProviderWithdrawalV1,
@@ -311,6 +313,24 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
       if (!state.withdrawExternal(withdrawal.name, withdrawal.generation) && process.env.PI_FABRIC_DEBUG) {
         console.debug(`[pi-fabric] ignored provider withdrawal: ${withdrawal.name}`);
       }
+    },
+  );
+
+  // Extension action policy hooks (issue #312). Registration is always
+  // accepted; hooks are consulted only when approvals.policyHooks is true.
+  const unsubscribeActionPolicyRegistration = pi.events.on(
+    FABRIC_ACTION_POLICY_REGISTER_EVENT,
+    (value: unknown) => {
+      const registration = readFabricActionPolicyRegistrationV1(value);
+      if (!registration) throw new Error("Invalid Pi Fabric action policy hook registration");
+      let unregister: () => void;
+      try {
+        unregister = state.actionPolicyHooks.register(registration.name, registration.hook);
+      } catch (error) {
+        registration.respond?.({ ok: false, error: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      registration.respond?.({ ok: true, unregister });
     },
   );
 
@@ -1286,6 +1306,8 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     unsubscribeToolPlacement();
     unsubscribeHostPolicy();
     unsubscribeProgramRun();
+    unsubscribeActionPolicyRegistration();
+    state.actionPolicyHooks.clear();
     programRunContext = undefined;
     pendingHandoffs.clear();
     directToolApproval.clear();

@@ -114,6 +114,8 @@ export interface FabricApprovalConfig {
   headless?: "deny" | "decision";
   /** Headless approval decision deadline; absent means 5 minutes. */
   headlessTimeoutMs?: number;
+  /** Consult extension action policy hooks at the approve stage; absent means off. */
+  policyHooks?: boolean;
 }
 
 /** Session-start background revalidation scope for the MCP descriptor cache:
@@ -1149,6 +1151,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       ...(approvals.headlessTimeoutMs === undefined ? {} : {
         headlessTimeoutMs: boundedInteger(approvals.headlessTimeoutMs, 300_000, 1_000, 86_400_000),
       }),
+      ...(approvals.policyHooks === true ? { policyHooks: true } : {}),
     },
     mcp: {
       enabled: booleanValue(mcp.enabled, DEFAULT_FABRIC_CONFIG.mcp.enabled),
