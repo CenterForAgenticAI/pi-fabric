@@ -77,8 +77,11 @@ describe("short-lock rename-claim", () => {
     let verified = 0;
     reapLockByRenameClaim(lock, () => {
       if (verified++ > 0) return false;
-      // A new owner takes the free lock path, so the rename-back fails.
-      expect(tryAcquireShortLock(lock, intruder)).toBe(true);
+      // A legacy client does not honor claim barriers and can still occupy
+      // the canonical path. Upgraded acquisition must refuse this window.
+      expect(tryAcquireShortLock(lock, intruder)).toBe(false);
+      fs.mkdirSync(lock);
+      fs.writeFileSync(path.join(lock, "owner"), intruder);
       return false;
     });
     expect(claims(lock)).toHaveLength(1);
@@ -96,7 +99,7 @@ describe("short-lock rename-claim", () => {
     const fresh = `${lock}.reap-8-t${Date.now()}-${uuid}`;
     for (const claim of [dated, legacy, fresh]) {
       fs.mkdirSync(claim);
-      fs.writeFileSync(path.join(claim, "owner"), `old\n7\n${Date.now()}\n`);
+      fs.writeFileSync(path.join(claim, "owner"), `old\n7\n${Date.now() - 3_600_000}\n`);
     }
     const past = new Date(Date.now() - 60_000);
     fs.utimesSync(legacy, past, past);

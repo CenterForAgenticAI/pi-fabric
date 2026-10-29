@@ -1,7 +1,8 @@
 // Cross-process exclusive lock for Fabric's durable stores (the repair
 // table, the compiled entropy surface). Acquisition is a bounded retry over
-// mkdir; stale-lock recovery is an exclusive rename claim, so racing
-// reapers can never delete a lock a fresh writer owns.
+// mkdir plus a post-publication claim barrier and ownership check. Stale
+// recovery uses rename claims; displaced live owners keep excluding writers
+// even if restoration fails (see docs/short-lock-protocol.md).
 
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
