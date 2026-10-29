@@ -398,6 +398,24 @@ describe("Fabric configuration", () => {
     expect(normalizeFabricConfig({ mesh: { peerNotices: "no" } }).mesh.peerNotices).toBe(true);
   });
 
+  it("bounds the departed-session tombstone count and retention", () => {
+    expect(DEFAULT_FABRIC_CONFIG.mesh.departedLimit).toBe(32);
+    expect(DEFAULT_FABRIC_CONFIG.mesh.departedRetentionMs).toBe(604_800_000);
+    expect(normalizeFabricConfig({ mesh: { departedLimit: 0 } }).mesh.departedLimit).toBe(0);
+    expect(normalizeFabricConfig({ mesh: { departedLimit: 5 } }).mesh.departedLimit).toBe(5);
+    expect(normalizeFabricConfig({ mesh: { departedLimit: -1 } }).mesh.departedLimit).toBe(0);
+    expect(normalizeFabricConfig({ mesh: { departedLimit: 5_000 } }).mesh.departedLimit).toBe(1_000);
+    expect(normalizeFabricConfig({ mesh: { departedLimit: "8" } }).mesh.departedLimit).toBe(32);
+    const retention = normalizeFabricConfig({ mesh: { departedRetentionMs: 3_600_000 } });
+    expect(retention.mesh.departedRetentionMs).toBe(3_600_000);
+    expect(
+      normalizeFabricConfig({ mesh: { departedRetentionMs: 1_000 } }).mesh.departedRetentionMs,
+    ).toBe(60_000);
+    expect(
+      normalizeFabricConfig({ mesh: { departedRetentionMs: "1h" } }).mesh.departedRetentionMs,
+    ).toBe(604_800_000);
+  });
+
   it("normalizes the ESC halt toggle for actors", () => {
     expect(DEFAULT_FABRIC_CONFIG.ui.haltOnEscape).toBe(true);
     const disabled = normalizeFabricConfig({ ui: { haltOnEscape: false } });

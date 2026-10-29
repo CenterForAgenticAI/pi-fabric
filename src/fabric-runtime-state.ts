@@ -735,6 +735,8 @@ export class FabricRuntimeState {
       ownerIncarnation: this.#control.incarnation,
       recordedLabel: () => this.#recordedLabel,
       labelWanted: () => this.#labelWanted,
+      departedLimit: this.#config.mesh.departedLimit,
+      departedRetentionMs: this.#config.mesh.departedRetentionMs,
       ...(process.env.PI_FABRIC_OWNER_HOST_ID
         ? { selfOwnerHostId: process.env.PI_FABRIC_OWNER_HOST_ID }
         : {}),

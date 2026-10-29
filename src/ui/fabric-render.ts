@@ -527,6 +527,7 @@ const providerCallDetail = (
       case "list":
       case "models":
       case "peers":
+      case "departed":
       case "definitions":
         return countOf(result);
       default:

@@ -323,6 +323,16 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
     risk: "read",
   },
   {
+    name: "departed",
+    description: "List root Pi sessions that are no longer live, newest first: status stopped (closed cleanly) or lost (lease expired without closing), with sessionId, cwd, label and lastSeenAt. Live sessions are never included.",
+    inputSchema: {
+      type: "object",
+      properties: { limit: { type: "number", minimum: 1 } },
+      additionalProperties: false,
+    },
+    risk: "read",
+  },
+  {
     name: "definitions",
     description: "List the named agent files that agents.run and agents.spawn accept in agent: name, description, path, scope (user or project), the file it shadows, and warnings for ignored fields. A file that cannot be read appears with an error.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
