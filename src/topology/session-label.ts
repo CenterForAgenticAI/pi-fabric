@@ -91,6 +91,7 @@ export class SessionLabelPresenter {
   #recordedPeer: string | undefined;
   #syncing: Promise<void> | undefined;
   #syncAgain = false;
+  #syncStopped = false;
   #closed = false;
 
   constructor(
@@ -134,9 +135,10 @@ export class SessionLabelPresenter {
   /**
    * Bring the footer and Herdr names in line with the label and settings.
    * Never throws: a failed Herdr request is retried on the next sync.
+   * Other failures stop syncing because the session context may be stale.
    */
   sync(): Promise<void> {
-    if (this.#closed) return Promise.resolve();
+    if (this.#closed || this.#syncStopped) return Promise.resolve();
     if (this.#syncing) {
       this.#syncAgain = true;
       return this.#syncing;
@@ -147,6 +149,13 @@ export class SessionLabelPresenter {
           this.#syncAgain = false;
           await this.#syncOnce();
         } while (this.#syncAgain && !this.#closed);
+      } catch {
+        // A replaced session's context must not be touched on the next tick.
+        this.#syncStopped = true;
+        if (this.#timer) clearInterval(this.#timer);
+        if (this.#eventTimer) clearTimeout(this.#eventTimer);
+        this.#timer = undefined;
+        this.#eventTimer = undefined;
       } finally {
         this.#syncing = undefined;
       }
@@ -175,7 +184,7 @@ export class SessionLabelPresenter {
   }
 
   #scheduleEventSync(): void {
-    if (this.#closed) return;
+    if (this.#closed || this.#syncStopped) return;
     if (this.#eventTimer) clearTimeout(this.#eventTimer);
     this.#eventTimer = setTimeout(() => {
       this.#eventTimer = undefined;

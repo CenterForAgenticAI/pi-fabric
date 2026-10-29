@@ -92,6 +92,7 @@ const present = (options: {
   settings: () => FabricSessionLabelConfig;
   environment?: NodeJS.ProcessEnv;
   mode?: ExtensionContext["mode"];
+  intervalMs?: number;
   hasUI?: boolean;
   on?: ExtensionAPI["on"];
   theme?: ExtensionContext["ui"]["theme"];
@@ -108,14 +109,49 @@ const present = (options: {
     label: options.label ?? (() => "FAB-3"),
     settings: options.settings,
     environment: options.environment ?? {},
-    intervalMs: 0,
+    intervalMs: options.intervalMs ?? 0,
     ...(options.shownInWidget ? { shownInWidget: options.shownInWidget } : {}),
   });
   presenters.push(presenter);
-  return { presenter, setStatus };
+  return { presenter, setStatus, context };
 };
 
 describe("session label footer", () => {
+  it.each(["interval", "event", "explicit"])("stops syncing a stale context after an %s sync", async (trigger) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const handlers = new Map<string, () => unknown>();
+      const on = ((event: string, handler: () => unknown) => {
+        handlers.set(event, handler);
+        return () => handlers.delete(event);
+      }) as unknown as ExtensionAPI["on"];
+      const { presenter, setStatus, context } = present({ settings: () => settings(), intervalMs: 1_000, on });
+      await presenter.sync();
+      expect(setStatus).toHaveBeenCalledWith(SESSION_LABEL_STATUS_KEY, "Fabric FAB-3");
+
+      const mode = vi.fn(() => {
+        throw new Error("This extension ctx is stale after session replacement or reload...");
+      });
+      Object.defineProperty(context, "mode", { get: mode, configurable: true });
+      if (trigger === "interval") await vi.advanceTimersByTimeAsync(750);
+      handlers.get("session_info_changed")?.();
+      expect(vi.getTimerCount()).toBe(2);
+      if (trigger === "explicit") await expect(presenter.sync()).resolves.toBeUndefined();
+      else await vi.advanceTimersByTimeAsync(trigger === "interval" ? 250 : 500);
+      await presenter.settled();
+
+      expect(mode).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+      handlers.get("session_info_changed")?.();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(presenter.sync()).resolves.toBeUndefined();
+      expect(mode).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows the Fabric label in the footer once and clears it on close", async () => {
     const { presenter, setStatus } = present({ settings: () => settings() });
 
