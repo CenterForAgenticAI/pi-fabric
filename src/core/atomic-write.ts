@@ -27,18 +27,23 @@ const errorCode = (error: unknown): string | undefined =>
     : undefined;
 
 // Portable synchronous sleep for the retry window (Atomics.wait is legal on
-// the Node main thread). If unavailable, retries proceed immediately — still
-// correct, just less cooperative under contention.
-const syncSleep = (() => {
+// the Node main thread). Undefined when SharedArrayBuffer or Atomics is
+// unavailable; callers whose bound is a wait, not an attempt count, must then
+// bound by the clock instead (releaseShortLock).
+const blockingSleep: ((ms: number) => void) | undefined = (() => {
   try {
     const buffer = new Int32Array(new SharedArrayBuffer(4));
     return (ms: number): void => {
       Atomics.wait(buffer, 0, 0, ms);
     };
   } catch {
-    return (): void => undefined;
+    return undefined;
   }
 })();
+
+// Rename retries proceed immediately without a blocking sleep: still correct,
+// just less cooperative under contention.
+const syncSleep = (ms: number): void => blockingSleep?.(ms);
 
 export const renameAtomic = (
   source: string,
@@ -235,6 +240,12 @@ export const OWNER_HEARTBEAT_TTL_MS = 45_000;
 /**
  * Short-lived locks carry no heartbeat. Across namespaces their creation time
  * stands in for one, so a crashed foreign holder cannot strand a lock forever.
+ *
+ * The ceiling has an inherent cost: a holder suspended past it (SIGSTOP, a
+ * laptop sleep, a debugger) is reaped while it still believes it holds the
+ * lock, and on resuming it can finish one write after another process took
+ * the lock. Its release stays safe: releaseShortLock only removes a lock
+ * whose owner file carries its own token, so it never frees the new holder.
  */
 export const SHORT_LOCK_MAX_HOLD_MS = 10 * 60_000;
 // Linux reports process start in clock ticks since boot; the wall-clock
@@ -526,6 +537,231 @@ export const lockOwnerProvablyDead = (
   ) === "dead";
 };
 
+// ---------------------------------------------------------------------------
+// Short-lived directory locks (`mkdir` claim + `owner` file). Four stores share
+// this protocol: the mesh store, the actor registry and binding stores, and
+// the generic file lock. Their critical sections are synchronous or short
+// file I/O, so a lock that outlives SHORT_LOCK_MAX_HOLD_MS has leaked.
+//
+// Owner file: `token\npid\ncreatedAt\n{identity}\n`. Older readers only
+// consume the first three lines.
+
+const CLAIM_INFIX = ".reap-";
+/** How long a release keeps looking for a lock a reaper is holding. */
+export const SHORT_LOCK_RELEASE_RETRY_MS = 25;
+const CLAIM_SWEEP_INTERVAL_MS = 1_000;
+// Upper bound on release attempts when no blocking sleep exists.
+const RELEASE_SPIN_ATTEMPT_CAP = 10_000;
+const DIGITS = /^\d+$/;
+
+/** Owner file text for a short lock acquired with `token`. */
+export const formatShortLockOwner = (token: string): string =>
+  `${token}\n${process.pid}\n${Date.now()}\n${encodeOwnerIdentityLine()}\n`;
+
+export interface ShortLockOwner {
+  token: string;
+  /** Absent when the pid line is missing or not a positive decimal pid. */
+  pid?: number;
+  /** Absent when the creation line is missing or not a decimal number. */
+  createdAt?: number;
+  identityLine?: string;
+}
+
+/**
+ * Parses a short-lock owner file field by field. A missing, empty or partial
+ * file yields no pid: such a lock says nothing about its owner and is judged
+ * by its age alone, never as a dead owner.
+ */
+export const parseShortLockOwner = (text: string): ShortLockOwner => {
+  const [token = "", pidText = "", createdText = "", identityLine] = text.split("\n").map((line) => line.trim());
+  const pid = DIGITS.test(pidText) ? Number(pidText) : Number.NaN;
+  const createdAt = DIGITS.test(createdText) ? Number(createdText) : Number.NaN;
+  return {
+    token,
+    ...(Number.isSafeInteger(pid) && pid > 0 ? { pid } : {}),
+    ...(Number.isSafeInteger(createdAt) ? { createdAt } : {}),
+    ...(identityLine ? { identityLine } : {}),
+  };
+};
+
+export interface ShortLockJudgeOptions {
+  staleMs: number;
+  /** The store's pre-identity probe for owners without an identity line. */
+  legacyAlive?: (pid: number) => boolean;
+  probes?: LivenessProbes;
+}
+
+/**
+ * True when a short lock may be reaped.
+ * - No usable pid (missing, empty or partial owner file): only when the lock
+ *   is older than the stale window. Its owner may be mid-acquire.
+ * - Within the stale window: only when the owner is provably dead.
+ * - Older than max(SHORT_LOCK_MAX_HOLD_MS, staleMs): always. A live owner
+ *   this old has leaked the lock; no critical section runs that long.
+ * - Otherwise: when the owner is dead (namespace-safe liveness).
+ * A creation time that is missing or in the future falls back to the
+ * directory's mtime.
+ * The hold ceiling lets a suspended holder finish one write after a reaper
+ * took its lock; see SHORT_LOCK_MAX_HOLD_MS.
+ */
+export const shortLockReapable = (
+  ownerText: string | undefined,
+  lockModifiedAt: number | undefined,
+  options: ShortLockJudgeOptions,
+): boolean => {
+  const now = (options.probes?.now ?? Date.now)();
+  const owner = parseShortLockOwner(ownerText ?? "");
+  const since = owner.createdAt !== undefined && owner.createdAt <= now
+    ? owner.createdAt
+    : lockModifiedAt;
+  if (since === undefined) return false;
+  const age = now - since;
+  if (owner.pid === undefined) return age > options.staleMs;
+  if (age <= options.staleMs) {
+    return lockOwnerProvablyDead(
+      owner.pid,
+      owner.identityLine,
+      options.probes === undefined ? {} : { probes: options.probes },
+    );
+  }
+  const ceiling = Math.max(SHORT_LOCK_MAX_HOLD_MS, options.staleMs);
+  if (age > ceiling) return true;
+  return lockOwnerLiveness(owner.pid, since, owner.identityLine, {
+    ...(options.legacyAlive === undefined ? {} : { legacyAlive: options.legacyAlive }),
+    ...(options.probes === undefined ? {} : { probes: options.probes }),
+    maxHoldMs: ceiling,
+  }) === "dead";
+};
+
+const readOwnerText = (directory: string): string | undefined => {
+  try {
+    return fs.readFileSync(path.join(directory, "owner"), "utf8");
+  } catch {
+    return undefined;
+  }
+};
+
+const modifiedAt = (directory: string): number | undefined => {
+  try {
+    return fs.statSync(directory).mtimeMs;
+  } catch {
+    return undefined;
+  }
+};
+
+const ownerToken = (directory: string): string | undefined => readOwnerText(directory)?.split("\n", 1)[0];
+
+/** Device and inode of a lock directory; bigint so Windows file ids stay exact. */
+export interface LockInode {
+  dev: bigint;
+  ino: bigint;
+}
+
+const lockInode = (directory: string): LockInode | undefined => {
+  try {
+    const { dev, ino } = fs.lstatSync(directory, { bigint: true });
+    return { dev, ino };
+  } catch {
+    return undefined;
+  }
+};
+
+const sameInode = (left: LockInode, right: LockInode): boolean =>
+  left.dev === right.dev && left.ino === right.ino;
+
+// link() is unsupported on some filesystems (FAT/exFAT, some network and
+// FUSE mounts, sandboxes that forbid hard links).
+const LINK_UNSUPPORTED_CODES = new Set(["EPERM", "ENOTSUP", "EXDEV", "ENOSYS"]);
+
+/**
+ * Publishes `temporary` as `ownerPath` without replacing an existing owner:
+ * link() fails EEXIST where rename() would overwrite. Returns false on EEXIST.
+ * Where link() is unsupported it falls back to rename(), which cannot refuse
+ * an existing owner; on those filesystems the reaper rename-back race below
+ * can still let two holders overlap.
+ */
+const publishShortLockOwner = (temporary: string, ownerPath: string): boolean => {
+  try {
+    fs.linkSync(temporary, ownerPath);
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === "EEXIST") return false;
+    if (code === undefined || !LINK_UNSUPPORTED_CODES.has(code)) throw error;
+    renameAtomic(temporary, ownerPath);
+    return true;
+  }
+  try {
+    fs.unlinkSync(temporary);
+  } catch {
+    // The lock is held; a leftover temp leaves with the directory.
+  }
+  return true;
+};
+
+/** A fresh claim path beside `lock`; the `t<ms>` part dates it for sweeps. */
+const claimPath = (lock: string): string =>
+  `${lock}${CLAIM_INFIX}${process.pid}-t${Date.now()}-${randomUUID()}`;
+
+/** Claim directories beside `lock`, as absolute paths. */
+const listClaims = (lock: string): string[] => {
+  const prefix = `${path.basename(lock)}${CLAIM_INFIX}`;
+  try {
+    return fs.readdirSync(path.dirname(lock))
+      .filter((name: string) => name.startsWith(prefix))
+      .map((name: string) => path.join(path.dirname(lock), name));
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * Creates the lock directory exclusively and publishes its owner file
+ * atomically. `mkdir` stays the only claim, exactly as older versions use it,
+ * so mixed versions still exclude each other. The owner is written to a
+ * temporary file inside the lock and hard-linked into place: a reader sees no
+ * owner (judged by the directory's age) or a complete one, never an empty or
+ * partial owner. Returns false on contention.
+ *
+ * The link refuses to publish over an existing owner. A reaper whose claim
+ * held a live lock renames it back, and POSIX rename() silently replaces the
+ * empty directory this call just created. Publishing then targets the other
+ * owner's directory; link() fails EEXIST, so this returns false and removes
+ * only its own temporary file, never the directory (it is the other owner's
+ * lock). See publishShortLockOwner for the rename fallback.
+ */
+export const tryAcquireShortLock = (lock: string, ownerText: string): boolean => {
+  try {
+    fs.mkdirSync(lock, { mode: 0o700 });
+  } catch (error) {
+    if (errorCode(error) === "EEXIST") return false;
+    throw error;
+  }
+  const temporary = path.join(lock, `owner.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    fs.writeFileSync(temporary, ownerText, { encoding: "utf8", mode: 0o600 });
+    if (publishShortLockOwner(temporary, path.join(lock, "owner"))) return true;
+  } catch (error) {
+    // ENOENT: a reaper claimed the directory mid-publish. Whatever it puts
+    // back has no owner and ages out; retry as contention.
+    if (errorCode(error) === "ENOENT") return false;
+    try {
+      fs.rmSync(temporary, { force: true });
+      // Only an empty directory is removed: never another owner's lock.
+      fs.rmdirSync(lock);
+    } catch {
+      // The lock ages out.
+    }
+    throw error;
+  }
+  // EEXIST: another owner's live lock sits at `lock`. Contention.
+  try {
+    fs.rmSync(temporary, { force: true });
+  } catch {
+    // A stray temp leaves with that owner's directory.
+  }
+  return false;
+};
+
 /**
  * Removes the lock directory `lock` only when `verify(claimed)` accepts the
  * directory this process claimed by renaming it. Returns true when it removed
@@ -538,28 +774,188 @@ export const lockOwnerProvablyDead = (
  * only one process can move the directory, and removal targets the claimed
  * path, never the live lock path. A claim that turns out to hold a live
  * lock is renamed back before any destructive step; a live lock is never
- * deleted, even if the rename-back races a fresh writer.
+ * deleted, even if the rename-back races a fresh writer. A live owner that
+ * releases while its lock sits at the claim path takes it from there
+ * (releaseShortLock), so the rename-back then finds nothing to restore.
+ *
+ * `expected` is the lock directory's inode when the caller judged it (stat it
+ * before reading the owner); without it the lock is stat'd just before the
+ * rename. When the claimed directory is a different inode, the lock was
+ * reaped and re-acquired in between: the claim holds someone else's live
+ * lock, so it is renamed back at once, without reading its owner or calling
+ * `verify`, and never deleted. If that rename-back fails it is left for its
+ * owner's release or the claim sweep.
+ *
+ * Residual window: between the claim and the rename-back the lock path is
+ * free. A writer that creates its empty directory there is replaced by the
+ * rename-back (tryAcquireShortLock then refuses to publish over the restored
+ * owner), and one that already published makes the rename-back fail. Closing
+ * the window needs an atomic no-replace rename (renameat2 RENAME_NOREPLACE),
+ * which Node does not expose. Inode reuse within the window is also not
+ * detected, but `verify` still compares the owner.
  */
-export const reapLockByRenameClaim = (lock: string, verify: (claimed: string) => boolean): boolean => {
-  const claim = `${lock}.reap-${process.pid}-${randomUUID()}`;
+export const reapLockByRenameClaim = (
+  lock: string,
+  verify: (claimed: string) => boolean,
+  expected: LockInode | undefined = lockInode(lock),
+): boolean => {
+  if (expected === undefined) return false;
+  const claim = claimPath(lock);
   try {
     fs.renameSync(lock, claim);
   } catch {
+    return false;
+  }
+  const claimed = lockInode(claim);
+  if (claimed === undefined || !sameInode(claimed, expected)) {
+    try {
+      fs.renameSync(claim, lock);
+    } catch {
+      // Left as a claim: its owner's release takes it, or the sweep does.
+    }
     return false;
   }
   if (!verify(claim)) {
     try {
       fs.renameSync(claim, lock);
     } catch {
-      // `lock` was recreated after the claim. Re-verify before any
-      // destructive step so a claimed live lock is only ever abandoned as
-      // garbage, never deleted.
+      // `lock` was recreated after the claim, or the owner released from the
+      // claim path. Re-verify before any destructive step so a claimed live
+      // lock is only ever left for its owner's release or the stale sweep,
+      // never deleted.
       if (verify(claim)) fs.rmSync(claim, { recursive: true, force: true });
     }
     return false;
   }
   fs.rmSync(claim, { recursive: true, force: true });
   return true;
+};
+
+const lastClaimSweep = new Map<string, number>();
+
+/**
+ * Removes claim directories beside `lock` older than `staleMs`: reapers or
+ * releasers that died mid-claim, or rename-backs that lost a race. A claim
+ * is never the live lock path, so removing one cannot break exclusion; the
+ * age bound keeps a reaper's in-flight claim intact. Returns the count.
+ *
+ * A claim's age comes from the `t<ms>` stamp in its name, which is the
+ * claimant's clock, not this process's: a claimant whose clock runs ahead
+ * makes its claim look younger, one that runs behind makes it look older.
+ * Claims without a stamp (older versions) fall back to the directory's mtime,
+ * which is when its contents last changed, not when it was claimed.
+ */
+export const sweepStaleLockClaims = (lock: string, staleMs: number, now = Date.now()): number => {
+  let removed = 0;
+  for (const claim of listClaims(lock)) {
+    const stamp = /-t(\d{1,15})-[^-]/.exec(path.basename(claim).slice(path.basename(lock).length + CLAIM_INFIX.length));
+    let since = stamp ? Number(stamp[1]) : Number.NaN;
+    if (!Number.isSafeInteger(since)) {
+      try {
+        since = fs.lstatSync(claim).mtimeMs;
+      } catch {
+        continue;
+      }
+    }
+    if (now - since <= staleMs) continue;
+    try {
+      fs.rmSync(claim, { recursive: true, force: true });
+      removed += 1;
+    } catch {
+      // Another sweeper or the owner's release got there first.
+    }
+  }
+  return removed;
+};
+
+/**
+ * One stale-lock recovery step for a contended short lock: sweeps old claim
+ * directories (at most once a second per lock and process), judges the lock
+ * with shortLockReapable, and removes it through a rename claim that
+ * re-verifies the same owner text and verdict. True when it removed the lock
+ * and acquisition should retry at once. Never throws.
+ */
+export const reapStaleShortLock = (lock: string, options: ShortLockJudgeOptions): boolean => {
+  try {
+    const now = Date.now();
+    if (now - (lastClaimSweep.get(lock) ?? 0) >= CLAIM_SWEEP_INTERVAL_MS) {
+      lastClaimSweep.set(lock, now);
+      if (lastClaimSweep.size > 256) lastClaimSweep.delete(lastClaimSweep.keys().next().value!);
+      sweepStaleLockClaims(lock, options.staleMs, now);
+    }
+    // Stat before reading: the rename claim must take this same directory.
+    const judged = lockInode(lock);
+    if (judged === undefined) return false;
+    const owner = readOwnerText(lock);
+    const lockModifiedAt = modifiedAt(lock);
+    if (lockModifiedAt === undefined) return false;
+    if (!shortLockReapable(owner, lockModifiedAt, options)) return false;
+    // Re-read: a rotated owner is judged afresh on the next attempt.
+    if (readOwnerText(lock) !== owner) return false;
+    return reapLockByRenameClaim(lock, (claimed) =>
+      readOwnerText(claimed) === owner && shortLockReapable(owner, modifiedAt(claimed), options), judged);
+  } catch {
+    return false;
+  }
+};
+
+/** Moves `source` to a private claim and deletes it when it holds `token`. */
+const takeOwnLock = (lock: string, source: string, token: string): boolean => {
+  if (ownerToken(source) !== token) return false;
+  const trash = claimPath(lock);
+  try {
+    fs.renameSync(source, trash);
+  } catch {
+    return false;
+  }
+  if (ownerToken(trash) === token) {
+    fs.rmSync(trash, { recursive: true, force: true });
+    return true;
+  }
+  // Another owner's directory replaced ours between the read and the rename.
+  try {
+    fs.renameSync(trash, source);
+  } catch {
+    // Left as a claim: its owner's release takes it, or the sweep does.
+  }
+  return false;
+};
+
+/**
+ * Releases a short lock acquired with `token`. The lock may be sitting at a
+ * reaper's claim path (`<lock>.reap-*`) while the reaper verifies it; the
+ * release then takes it from there, so the reaper's rename-back finds nothing
+ * and cannot restore a released lock. A rename-back may also land between
+ * two checks, so the release retries for a bounded few milliseconds.
+ * Returns false when the lock was not found (reaped, or replaced by an
+ * owner with another token, which is never touched).
+ */
+export const releaseShortLock = (
+  lock: string,
+  token: string,
+  retryMs = SHORT_LOCK_RELEASE_RETRY_MS,
+): boolean => {
+  // With a blocking sleep the bound is counted in 1 ms sleeps, not wall-clock
+  // reads, so a frozen or faked clock cannot turn it into a spin. Without one,
+  // counting attempts would collapse the window to microseconds, so the clock
+  // bounds it and a hard attempt cap still stops a frozen or rewound clock.
+  const deadline = Date.now() + retryMs;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      if (takeOwnLock(lock, lock, token)) return true;
+      for (const claim of listClaims(lock)) {
+        if (takeOwnLock(lock, claim, token)) return true;
+      }
+    } catch {
+      // Raced with a reaper or sweeper; look again.
+    }
+    if (blockingSleep !== undefined) {
+      if (attempt >= retryMs) return false;
+      blockingSleep(1);
+    } else if (attempt >= RELEASE_SPIN_ATTEMPT_CAP || Date.now() >= deadline) {
+      return false;
+    }
+  }
 };
 
 /**

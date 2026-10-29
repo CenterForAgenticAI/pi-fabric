@@ -436,9 +436,11 @@ describe("MeshStore lock recovery", () => {
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
-  it("sweeps a lock whose owner file is corrupt", async () => {
+  it("sweeps a lock whose owner file is corrupt once it is older than the stale window", async () => {
     const store = createStore();
     const lockPath = holdLock(store, "not-a-valid-owner");
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockPath, past, past);
 
     const event = await store.publish({ topic: "team.auth", from: identity, text: "recovered" });
 
@@ -585,5 +587,88 @@ describe("MeshStore lock recovery", () => {
       store.publish({ topic: "team.auth", from: identity, text: "blocked" }),
     ).rejects.toThrow("Timed out waiting for the Fabric mesh lock");
     expect(fs.existsSync(lockPath)).toBe(true);
+  });
+});
+
+describe("MeshStore short-lock leaks (#323)", () => {
+  const holdLock = (store: MeshStore, owner: string): string => {
+    const lockPath = path.join(store.root, ".lock");
+    fs.mkdirSync(lockPath, { mode: 0o700 });
+    fs.writeFileSync(path.join(lockPath, "owner"), owner);
+    return lockPath;
+  };
+  const age = (target: string, ms: number): void => {
+    const past = new Date(Date.now() - ms);
+    fs.utimesSync(target, past, past);
+  };
+
+  it("partial owner: keeps a fresh lock with an empty owner file until the stale window passes", async () => {
+    const store = createStore({ lockTimeoutMs: 300, staleLockMs: 30_000 });
+    const lockPath = holdLock(store, "");
+    await expect(
+      store.publish({ topic: "team.auth", from: identity, text: "blocked" }),
+    ).rejects.toThrow("Timed out waiting for the Fabric mesh lock");
+    expect(fs.readFileSync(path.join(lockPath, "owner"), "utf8")).toBe("");
+
+    age(lockPath, 60_000);
+    const event = await store.publish({ topic: "team.auth", from: identity, text: "recovered" });
+    expect(event.sequence).toBe(1);
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("partial owner: publishes the owner file atomically, never empty at the lock path", async () => {
+    const store = createStore();
+    const ownerPath = path.join(store.root, ".lock", "owner");
+    const writeFileSync = fs.writeFileSync;
+    const targets: string[] = [];
+    vi.spyOn(fs, "writeFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, data: unknown, options?: unknown) => {
+      targets.push(String(file));
+      if (String(file).startsWith(`${ownerPath}.`)) expect(fs.existsSync(ownerPath)).toBe(false);
+      return writeFileSync(file, data as string, options as fs.WriteFileOptions);
+    }) as typeof fs.writeFileSync);
+    await store.publish({ topic: "team.auth", from: identity, text: "hello" });
+    expect(targets).not.toContain(ownerPath);
+    expect(targets.some((target) => target.startsWith(`${ownerPath}.`))).toBe(true);
+  });
+
+  it("hold ceiling: reaps a live same-host owner's leaked lock and keeps a young one", async () => {
+    const leaked = createStore({ lockTimeoutMs: 2_000, staleLockMs: 30_000 });
+    const leakedPath = holdLock(leaked, `leaked\n${process.pid}\n${Date.now() - 3_600_000}\n${encodeOwnerIdentityLine()}\n`);
+    const event = await leaked.publish({ topic: "team.auth", from: identity, text: "recovered" });
+    expect(event.sequence).toBe(1);
+    expect(fs.existsSync(leakedPath)).toBe(false);
+
+    const young = createStore({ lockTimeoutMs: 300, staleLockMs: 30_000 });
+    const owner = `held\n${process.pid}\n${Date.now() - 5_000}\n${encodeOwnerIdentityLine()}\n`;
+    const youngPath = holdLock(young, owner);
+    await expect(
+      young.publish({ topic: "team.auth", from: identity, text: "blocked" }),
+    ).rejects.toThrow("Timed out waiting for the Fabric mesh lock");
+    expect(fs.readFileSync(path.join(youngPath, "owner"), "utf8")).toBe(owner);
+  });
+
+  it("rename-claim: sweeps stale claim dirs while recovering a lock", async () => {
+    const store = createStore();
+    const lockPath = holdLock(store, `crashed\n999999999\n${Date.now() - 60_000}\n`);
+    const stale = `${lockPath}.reap-7-00000000-0000-4000-8000-000000000000`;
+    fs.mkdirSync(stale);
+    fs.writeFileSync(path.join(stale, "owner"), `old\n7\n${Date.now() - 60_000}\n`);
+    age(stale, 60_000);
+    await store.publish({ topic: "team.auth", from: identity, text: "recovered" });
+    expect(fs.readdirSync(store.root).filter((name) => name.startsWith(".lock"))).toEqual([]);
+  });
+
+  it("rename-claim: a release while a reaper holds the lock leaves no lock behind", async () => {
+    const store = createStore();
+    const lockPath = path.join(store.root, ".lock");
+    const claim = `${lockPath}.reap-1-t${Date.now()}-00000000-0000-4000-8000-000000000000`;
+    await store.publish({ topic: "team.auth", from: identity, text: "warm" });
+    await store.transact(() => {
+      // A reaper claims the live lock just before the critical section ends.
+      fs.renameSync(lockPath, claim);
+    });
+    // The reaper's rename-back now finds nothing to restore.
+    expect(() => fs.renameSync(claim, lockPath)).toThrow();
+    expect(fs.existsSync(lockPath)).toBe(false);
   });
 });
