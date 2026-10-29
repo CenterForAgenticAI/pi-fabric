@@ -1100,13 +1100,14 @@ const skipRealResidentHost = (skip: (condition: boolean, note?: string) => void)
 };
 
 describe("durable wait after the resident host dies", () => {
-  it("settles an opted-in pi-durable run a new host cannot recover as indeterminate instead of failing the wait (#314)", { timeout: 60_000 }, async ({ skip }) => {
+  it("settles an expired pi-durable marker without host authority as indeterminate instead of failing the wait (#314)", { timeout: 60_000 }, async ({ skip }) => {
     skipRealResidentHost(skip);
     const state = await rootHarness("resident-wait-indeterminate-worker");
     state.config.piBinary = path.resolve("node_modules/.bin/pi");
     vi.stubEnv("PI_CODING_AGENT_DIR", path.join(state.root, "pi-agent"));
     const id = seedRunningDurableAgent(state, { hosted: false });
-    // The run's deadline passed while no host owned it.
+    // This hand-written marker has no host-owned launch receipt. Authority
+    // validation must reject it before even considering the expired deadline.
     writeWorkerRecoveryFile(state, id, { deadlineAt: Date.now() - 1 });
     const client = new ResidencyClient({
       config: state.config,
@@ -1121,8 +1122,10 @@ describe("durable wait after the resident host dies", () => {
         id,
         status: "failed",
         outcome: "indeterminate",
-        error: "The durable worker run passed its deadline while no resident host owned it; the run outcome is indeterminate",
+        error: "The recovery file does not match this host; the run outcome is indeterminate",
       });
+      expect(fs.existsSync(path.join(state.config.residencyRoot, "runs", id, "worker-recovery.json"))).toBe(false);
+      await expect(client.waitAgent(id, AbortSignal.timeout(20_000))).resolves.toMatchObject(result);
     } finally {
       await client.close();
       await state.participants.close();

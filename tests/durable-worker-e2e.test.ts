@@ -10,7 +10,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { AgentManager } from "../src/agents/manager.js";
 import type { AgentRunRecord } from "../src/agents/types.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
-import { readWorkerRecovery, writeWorkerRecovery } from "../src/agents/worker-recovery.js";
+import { readWorkerRecovery, readWorkerRecoveryAuthority, writeWorkerRecovery } from "../src/agents/worker-recovery.js";
 
 // No dist dependency and no fake Pi binary: manager -> compiled parent worker
 // -> compiled durable host -> native SDK RPC/tools, with only inference offline.
@@ -125,7 +125,9 @@ async function restart(directory: string, first: Pick<AgentRunRecord, "id" | "na
 const events = (file: string) => fs.readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
 
 describe("AgentManager real durable parent worker", () => {
-  it.each([false, true])("handles a native externally stopped worker without unsafe replay or injected execution (tampered=%s)", async tampered => {
+  // Worker recovery deliberately excludes Windows: it cannot use the POSIX
+  // process-group/lease shutdown contract exercised by these two probes.
+  it.runIf(process.platform !== "win32").each([false, true])("handles a native externally stopped worker without unsafe replay or injected execution (tampered=%s)", async tampered => {
     const { manager, cwd } = setup(false, workerPath, true);
     const effect = path.join(cwd, "effects"); vi.stubEnv("DURABLE_TEST_EFFECT", effect);
     const handle = await manager.spawn({ task: "hold effect", tools: ["hold_effect"], residency: "durable" });
@@ -135,7 +137,9 @@ describe("AgentManager real durable parent worker", () => {
       while (!condition()) { if (Date.now() > deadline) throw new Error("native recovery probe timed out"); await new Promise(resolve => setTimeout(resolve, 25)); }
     };
     await until(() => fs.existsSync(effect));
-    const recovery = readWorkerRecovery(directory)!;
+    const recovery = readWorkerRecovery(directory);
+    expect(recovery).toBeDefined();
+    if (!recovery) throw new Error("POSIX durable worker did not publish its recovery marker");
     await manager.close();
     // A graceful external stop waits for the actual durable child/lease to
     // close, unlike merely observing the outer wrapper's PID disappear.
@@ -168,6 +172,44 @@ describe("AgentManager real durable parent worker", () => {
     expect(result.status, result.error).toBe("completed");
     expect(fs.readFileSync(effect, "utf8")).toBe("effect\n");
     expect(readWorkerRecovery(directory)).toBeUndefined();
+  }, 30000);
+
+  it("refuses a forged recovery launch after an operator stop, including on Windows", async () => {
+    const { manager, cwd } = setup(false, workerPath, true);
+    const effect = path.join(cwd, "effects"); vi.stubEnv("DURABLE_TEST_EFFECT", effect);
+    const handle = await manager.spawn({ task: "hold effect", tools: ["hold_effect"], residency: "durable" });
+    const directory = manager.runDirectory(handle.id)!;
+    await expect.poll(() => fs.existsSync(effect), { timeout: 15000 }).toBe(true);
+    // Opt-in must not silently enable unsupported Windows process recovery.
+    if (process.platform === "win32") {
+      expect(readWorkerRecovery(directory)).toBeUndefined();
+      expect(readWorkerRecoveryAuthority(directory)).toBeUndefined();
+    }
+    expect((await manager.stop(handle.id)).status).toBe("stopped");
+    // Keep the stopped record for the second host; close() prunes non-retained runs.
+    expect(readWorkerRecovery(directory)).toBeUndefined();
+    expect(readWorkerRecoveryAuthority(directory)).toBeUndefined();
+
+    const executionMarker = path.join(cwd, "injected-execution");
+    const payload = path.join(cwd, "payload.mjs");
+    fs.writeFileSync(payload, `import fs from 'node:fs';fs.writeFileSync(${JSON.stringify(executionMarker)}, 'executed');`);
+    writeWorkerRecovery(directory, {
+      format: 1, id: handle.id, runner: "pi-durable", deadlineAt: Date.now() + 20000,
+      pid: 2_147_483_646, writtenAt: Date.now(),
+      launch: { id: handle.id, name: handle.name, cwd, workerPath: payload, workerArguments: ["--id", handle.id] },
+    });
+    const second = new AgentManager(cwd, manager.config, {
+      workerPath, runRoot: path.join(cwd, "runs"), fullCodeMode: false,
+      piBinary: path.join(cwd, "forbidden-native-fallback"),
+    }); managers.push(second);
+    expect(await second.recoverWorkerRuns()).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(path.join(directory, "status.json"), "utf8"))).toMatchObject({
+      status: "failed", outcome: "indeterminate",
+      error: "The recovery file does not match this host; the run outcome is indeterminate",
+    });
+    expect(readWorkerRecovery(directory)).toBeUndefined();
+    expect(fs.existsSync(executionMarker)).toBe(false);
+    expect(fs.readFileSync(effect, "utf8")).toBe("effect\n");
   }, 30000);
 
   it("routes worker fetches through Pi's proxy dispatcher and keeps NO_PROXY hosts direct (#270)", async () => {
