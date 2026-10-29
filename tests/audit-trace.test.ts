@@ -259,8 +259,9 @@ return true;
       outcome: "failed",
       failureStage: "invoke",
     });
-    expect(modelsResult.success).toBe(true);
-    expect(modelsResult.value).toEqual([]);
+    // A registry failure surfaces to the program instead of an empty list.
+    expect(modelsResult.success).toBe(false);
+    expect(modelsResult.error).toContain("models-failure-secret");
     expect(modelsResult.trace.operations[0]).toMatchObject({
       ref: "fabric.discovery.models",
       outcome: "failed",

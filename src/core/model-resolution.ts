@@ -318,6 +318,7 @@ export const resolveFabricModel = (
 
 const unavailablePiModelError = (
   query: string,
+  registryError: unknown,
   resolution?: Extract<FabricModelResolution, { kind: "ambiguous" | "not-found" }>,
 ): Error => {
   const detail = resolution?.kind === "not-found" && resolution.tried !== undefined
@@ -325,8 +326,11 @@ const unavailablePiModelError = (
     : resolution?.kind === "ambiguous"
       ? ` Visible matches: ${resolution.candidates.map(modelKey).join(", ")}.`
       : "";
+  const registry = registryError === undefined
+    ? ""
+    : ` The model registry failed: ${registryError instanceof Error ? registryError.message : String(registryError)}.`;
   return new Error(
-    `Model ${JSON.stringify(query)} is not available to this Pi session.${detail} ` +
+    `Model ${JSON.stringify(query)} is not available to this Pi session.${detail}${registry} ` +
       'Use agents.models({ runner: "pi" }) to list the models visible to this session.',
   );
 };
@@ -343,6 +347,8 @@ export const resolveAvailablePiModel = (
     aliases: FabricModelAliases;
     available: readonly FabricModelCandidate[];
     lastUsed?: FabricModelUsage;
+    /** Why the visible set is empty, when reading the registry threw. */
+    registryError?: unknown;
   },
 ): FabricModelCandidate => {
   const query = selector.trim();
@@ -363,12 +369,12 @@ export const resolveAvailablePiModel = (
       options.lastUsed,
     )?.model;
     if (closest) return closest;
-    throw unavailablePiModelError(query);
+    throw unavailablePiModelError(query, options.registryError);
   }
 
   const resolution = resolveFabricModel(query, options);
   if (resolution.kind === "resolved" || resolution.kind === "already-active") {
     return resolution.model;
   }
-  throw unavailablePiModelError(query, resolution);
+  throw unavailablePiModelError(query, options.registryError, resolution);
 };
