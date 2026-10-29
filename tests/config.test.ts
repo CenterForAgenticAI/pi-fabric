@@ -36,6 +36,18 @@ afterEach(() => {
 });
 
 describe("Fabric configuration", () => {
+  it("defaults CPU slices to JSON-safe unlimited and validates millisecond limits", () => {
+    expect(DEFAULT_FABRIC_CONFIG.executor.maxCpuSliceMs).toBe(0);
+    expect(normalizeFabricConfig({}).executor.maxCpuSliceMs).toBe(0);
+    expect(JSON.parse(JSON.stringify(DEFAULT_FABRIC_CONFIG)).executor.maxCpuSliceMs).toBe(0);
+    for (const [value, expected] of [
+      [1000, 1000], [12.9, 12], [0, 0], [-1, 0],
+      [Infinity, 0], [NaN, 0], ["1000", 0], [null, 0],
+      [Number.MAX_VALUE, Number.MAX_SAFE_INTEGER],
+    ]) {
+      expect(normalizeFabricConfig({ executor: { maxCpuSliceMs: value } }).executor.maxCpuSliceMs).toBe(expected);
+    }
+  });
   it("normalizes models.aliases into fallback chains", () => {
     expect(DEFAULT_FABRIC_CONFIG.models.aliases).toEqual({});
     expect(normalizeFabricConfig({}).models.aliases).toEqual({});

@@ -33,6 +33,7 @@ import {
   effectiveToolCaptureConfig,
 } from "./config.js";
 import type { CompactionHandlers } from "./compaction/hook.js";
+import type { CompactionOwnerSlot } from "./compaction/claim-events.js";
 import { compactAtConfiguredThreshold, type AutoCompactionTrigger } from "./compaction/threshold.js";
 import type { CompactionOwnerObserver } from "./compaction/owner.js";
 import { unregisteredRunnerNotice } from "./agents/runner-notice.js";
@@ -45,6 +46,7 @@ import {
   ownsFabricToolSource,
 } from "./core/tool-ownership.js";
 import { readChildToolAllowlist } from "./core/child-tool-allowlist.js";
+import { FabricHostPolicy } from "./core/host-policy.js";
 import { formatForeground } from "./core/foreground-tools.js";
 import {
   expandSkillDirMarkersForRead,
@@ -76,12 +78,15 @@ import { getActiveRepairCompiler } from "./repairs/active.js";
 import { piHostCompatibilityWarning } from "./host-compatibility.js";
 import {
   FABRIC_ACTION_POLICY_REGISTER_EVENT,
+  FABRIC_COMPACTION_OWNER_EVENT,
   FABRIC_COMPONENT_REGISTER_EVENT,
   FABRIC_PROGRAM_RUN_EVENT,
   FABRIC_PROVIDER_REGISTER_EVENT,
   FABRIC_PROVIDER_WITHDRAW_EVENT,
   FABRIC_TOOL_PLACEMENT_EVENT,
   readFabricActionPolicyRegistrationV1,
+  FABRIC_HOST_POLICY_EVENT,
+  readFabricHostPolicyRequestV1,
   readFabricProviderWithdrawalV1,
   readFabricToolPlacementRequestV1,
   snapshotFabricProgramRunRequestV1,
@@ -103,9 +108,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { captureLoadedFileIdentity } from "./build-identity.js";
 
-export const FABRIC_MANAGED_HOST_VERSION = 1;
+export const FABRIC_MANAGED_HOST_VERSION = 2;
 export type { FabricManagedHostOptions } from "./managed-host.js";
 import type { FabricManagedHostOptions } from "./managed-host.js";
+
+// Pi 1.2 also fires before_agent_start for a run that a custom message starts
+// (pi.sendMessage(..., { triggerTurn: true }) while idle). That event carries
+// messageType "custom" and the message, but no prompt; a Pi 1.1 event carries
+// only the prompt. Returns the user's prompt, or undefined when no user prompt
+// started the run, so additions derived from the prompt skip that run.
+const userPromptText = (
+  event: { readonly messageType?: unknown; readonly prompt?: unknown },
+): string | undefined =>
+  event.messageType === "custom" || typeof event.prompt !== "string" ? undefined : event.prompt;
 
 export function createFabricExtension(entryUrl: string) {
 // Absolute path to the Fabric skills bundled with this extension. Resolved
@@ -209,7 +224,17 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
   );
   const capturedTools = new CapturedToolCatalog();
   const proxyContract = new ProxyContractLedger();
+  // At most one extension owns compaction instead of Fabric. The claim code
+  // loads on the first owner message; `yielded` is a deliberate yield the
+  // compaction hook noted for the ownership observer (pi-vcc sentinel or
+  // override), which the next session_compact consumes.
+  const ownerSlot: CompactionOwnerSlot = { closed: false, yielded: false };
+  const compactionOwner = () => ownerSlot.host?.active;
+  let ownerCode: Promise<typeof import("./compaction/claim-events.js")> | undefined;
+  const hostPolicy = new FabricHostPolicy();
   const state = new FabricState(pi, capturedTools, {
+    compactionOwner,
+    hostPolicy,
     paths: FABRIC_RUNTIME_PATHS,
     ...(FABRIC_ENTRY_IDENTITY ? { entryIdentity: FABRIC_ENTRY_IDENTITY } : {}),
     ...(options.managedHost ? {managedHost: options.managedHost} : {}),
@@ -318,6 +343,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     return (name) => {
       if (allowlist && !allowlist.has(name)) return false;
       const captured = capturedTools.get(name) !== undefined;
+      if (hostPolicy.previewDenial(PI_CORE_TOOL_NAME_SET.has(name) ? "pi" : "extensions", name)) return false;
       if (PI_CORE_TOOL_NAME_SET.has(name)) {
         if (!registry.has("pi")) return false;
         if (options.managedHost) return captured;
@@ -347,6 +373,20 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     },
   );
 
+  // An embedding host narrows this instance before it runs anything (from its
+  // extension factory or session_start). Fabric replies before emit returns;
+  // accepted means the policy is in force. The first program or provider call
+  // seals it, so a later request is refused instead of racing admitted work.
+  const unsubscribeHostPolicy = pi.events.on(FABRIC_HOST_POLICY_EVENT, (value: unknown) => {
+    const read = readFabricHostPolicyRequestV1(value);
+    if (!read) return;
+    if (!read.ok) {
+      read.reply({ version: 1, accepted: false, reason: `Invalid Pi Fabric host policy: ${read.reason}` });
+      return;
+    }
+    read.request.reply(hostPolicy.apply(read.request.policy));
+  });
+
   // Host program runs (daemons, embedders) use the live session's context.
   let programRunContext: ExtensionContext | undefined;
   const unsubscribeProgramRun = pi.events.on(FABRIC_PROGRAM_RUN_EVENT, (value: unknown) => {
@@ -362,9 +402,26 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     );
   });
 
+  // Messages share one load promise, so they are answered in emit order.
+  const unsubscribeOwner = pi.events.on(FABRIC_COMPACTION_OWNER_EVENT, (value: unknown) =>
+    (ownerCode ??= import("./compaction/claim-events.js")).then(
+      ({ handleCompactionOwnerMessage }) =>
+        handleCompactionOwnerMessage(ownerSlot, value, state, () => programRunContext),
+      (error: unknown) => {
+        ownerCode = undefined;
+        // No claim code: the reply is the only channel left.
+        try {
+          (value as { reply?: (result: unknown) => void } | null)?.reply?.({
+            ok: false,
+            error: `Fabric compaction owner support failed to load: ${String(error)}`,
+          });
+        } catch {}
+      },
+    ));
+
   pi.on("resources_discover", async (_event, context) => {
     if (!state.bootstrapped) await state.bootstrap(context);
-    return { skillPaths: fabricSkillPaths(FABRIC_SKILLS_DIR, state.config.executor.kernel) };
+    return { skillPaths: state.managedHostOptions ? [] : fabricSkillPaths(FABRIC_SKILLS_DIR, state.config.executor.kernel) };
   });
 
   // The window title is the declared milestone, not nested call detail: it
@@ -481,6 +538,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
       enabled: () => state.initialized,
       ownsInput: () => fabricUi.ownsInput,
       jobs: () => state.shellJobs,
+      programs: () => state.programTasks,
     });
   };
 
@@ -756,9 +814,18 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     }
   });
 
+  // A compaction owner claim runs its own triggers, so Fabric's threshold
+  // and headroom triggers stand down while it is held.
   pi.on("agent_settled", async (event, context) => {
+    if (state.managedHostOptions) {
+      // Managed runtimes never construct native prewalk/compact controllers.
+      // The Pi-owned mode also leaves automatic compaction scheduling to the host.
+      if (state.config.compaction.engine === "fabric") await compactAtConfiguredThreshold(context, state.config);
+      if (state.initialized) await state.publishHostLifecycle("pi.agent_settled", event);
+      return;
+    }
     if (!state.initialized) {
-      await compactAtConfiguredThreshold(context, state.config);
+      if (!compactionOwner()) await compactAtConfiguredThreshold(context, state.config);
       return;
     }
     const sessionId = context.sessionManager.getSessionId();
@@ -787,12 +854,14 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     // so ExtensionRunner does not finish this handler (and Pi does not publish
     // its public agent_settled event) before compaction settles.
     await state.compact.maybeCommit(context);
-    await compactAtConfiguredThreshold(
-      context,
-      state.config,
-      (trigger: AutoCompactionTrigger, committed: boolean) =>
-        state.compact.noteAutoCompaction(trigger, committed),
-    );
+    if (!compactionOwner()) {
+      await compactAtConfiguredThreshold(
+        context,
+        state.config,
+        (trigger: AutoCompactionTrigger, committed: boolean) =>
+          state.compact.noteAutoCompaction(trigger, committed),
+      );
+    }
     await state.publishHostLifecycle("pi.agent_settled", event);
   });
 
@@ -926,14 +995,15 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
   // The observer loads at the first committed compaction; a deliberate yield
   // noted before then is handed over when it does.
   let compactionOwners: Promise<CompactionOwnerObserver> | undefined;
-  let compactionYieldPending = false;
   pi.on("session_compact", async (event, context) => {
-    const fabricEngine = (state.bootstrapped ? state.config : DEFAULT_FABRIC_CONFIG).compaction.engine === "fabric";
+    // A claimed owner's result is expected, not a lost ownership race.
+    const fabricEngine = !compactionOwner()
+      && (state.bootstrapped ? state.config : DEFAULT_FABRIC_CONFIG).compaction.engine === "fabric";
     const observer = await (compactionOwners ??= import("./compaction/owner.js").then(
       (module) => new module.CompactionOwnerObserver(),
     ));
-    if (compactionYieldPending) {
-      compactionYieldPending = false;
+    if (ownerSlot.yielded) {
+      ownerSlot.yielded = false;
       observer.noteDeliberateYield();
     }
     const { warning } = observer.observe(
@@ -976,11 +1046,18 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
         ? state.config.compaction.outputReserveTokens
         : DEFAULT_FABRIC_CONFIG.compaction.outputReserveTokens,
     onYield: () => {
-      compactionYieldPending = true;
+      ownerSlot.yielded = true;
     },
+    getOwnerClaim: compactionOwner,
   }));
-  pi.on("session_before_compact", async (event, context) => (await compactionHandlers()).beforeCompact(event, context));
-  pi.on("session_before_tree", async (event, context) => (await compactionHandlers()).beforeTree(event, context));
+  pi.on("session_before_compact", async (event, context) => {
+    if (state.managedHostOptions?.compaction === "pi") return;
+    return (await compactionHandlers()).beforeCompact(event, context);
+  });
+  pi.on("session_before_tree", async (event, context) => {
+    if (state.managedHostOptions?.compaction === "pi") return;
+    return (await compactionHandlers()).beforeTree(event, context);
+  });
 
   // No extractive module import, branch read or model call until explicit opt-in
   // reaches a real agent boundary. Context replay only reads the prepared view.
@@ -1001,6 +1078,11 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
   });
   pi.on("before_agent_start", async (event, context) => {
     if (!extractiveConfig()?.enabled) { invalidateExtractive(true); return; }
+    // A custom message has no prompt to rank against, and the view anchors
+    // before the last user message, which here is an earlier turn. Drop any
+    // prepared view but keep the annotation cache for the next user run.
+    const prompt = userPromptText(event);
+    if (prompt === undefined) { invalidateExtractive(); return; }
     const epoch = ++extractiveEpoch;
     const sessionId = context.sessionManager.getSessionId();
     const leaf = context.sessionManager.getLeafId();
@@ -1008,7 +1090,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     if (epoch !== extractiveEpoch || !extractiveConfig()?.enabled || context.signal?.aborted ||
       context.sessionManager.getSessionId() !== sessionId || context.sessionManager.getLeafId() !== leaf) return;
     extractiveHistory ??= new ExtractiveHistory(extractiveConfig);
-    await extractiveHistory.prepare(context, event.messageType !== "custom" ? event.prompt : "");
+    await extractiveHistory.prepare(context, prompt);
   });
 
   pi.on("context", async (event, context) => {
@@ -1081,6 +1163,8 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
       defaultFabricExecutionGuidance,
       extensionToolRosterGuidance,
       fabricExecutionKernelGuidance,
+      managedHostExecutionGuidance,
+      managedHostKernelGuidance,
       fabricSchemaGuidance,
     } = await (promptGuidance ??= import("./core/prompt-guidance.js"));
     const skills = event.systemPromptOptions.skills ?? [];
@@ -1088,14 +1172,18 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     // Pi omits its entire skill catalog when the active tool set lacks a tool
     // named read. Restore Pi's discovered catalog (already bound to one skill
     // tree); full code mode adapts its loader to Fabric's nested pi.read path.
-    const systemPrompt = restoreSkillsForFullCodePrompt(event.systemPrompt, skills, effectiveFullCodeMode);
+    const managedHost = state.managedHostOptions;
+    const skillReader = managedHost ? managedHost.skillReader ?? null : undefined;
+    const systemPrompt = restoreSkillsForFullCodePrompt(event.systemPrompt, skills, effectiveFullCodeMode, skillReader);
     // Pi expands the invoked skill into the user message, but wrappers may
     // delegate by name. Resolve only explicit invocation lines so full code
     // mode preserves Pi's progressive skill loading without exposing read.
     // Turn-derived: delivered via the message channel (below), never the
     // system prompt, so the cached system prefix stays byte-stable.
-    const skillReferenceGuidance = effectiveFullCodeMode
-      ? buildSkillReferenceGuidance(event.messageType !== "custom" ? event.prompt : "", skills)
+    // A run that a custom message starts has no prompt and gets none.
+    const prompt = userPromptText(event);
+    const skillReferenceGuidance = effectiveFullCodeMode && prompt !== undefined
+      ? buildSkillReferenceGuidance(prompt, skills, skillReader)
       : undefined;
     const currentModel = context.model
       ? `${context.model.provider}/${context.model.id}`
@@ -1105,17 +1193,17 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
       target: process.env.PI_FABRIC_PARENT_RUN ? "participant" : "main",
       defaults: [{
         slot: FABRIC_EXECUTION_GUIDANCE_SLOT,
-        content: defaultFabricExecutionGuidance(effectiveFullCodeMode, config.executor.kernel, config.executor.pythonRuntime, config.executor.codemodeProfile),
+        content: managedHost ? managedHostExecutionGuidance(managedHost) : defaultFabricExecutionGuidance(effectiveFullCodeMode, config.executor.kernel, config.executor.pythonRuntime, config.executor.codemodeProfile),
       }],
     });
     // A child's prompt names only the tools its allowlist lets it call; the
     // captured-tools provider refuses the rest as "not permitted by this
     // child's tool allowlist".
     const toolAllowlist = readChildToolAllowlist();
-    const overrideGuidance = effectiveFullCodeMode
+    const overrideGuidance = effectiveFullCodeMode && !managedHost
       ? coreOverridePromptGuidance(capturedTools, toolAllowlist).trim()
       : undefined;
-    const extensionRoster = effectiveFullCodeMode
+    const extensionRoster = effectiveFullCodeMode && !managedHost
       ? extensionToolRosterGuidance(capturedTools.list().filter(entry =>
           (toolAllowlist === undefined || toolAllowlist.has(entry.name)) &&
           (!config.mcp.enabled || !isSelectedNativeMcpTool(entry.definition, config.mcp.nativeServers)),
@@ -1125,12 +1213,13 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     // from the current prompt (skill references) rides
     // the message channel so provider prefix caches never cold-prefill.
     const guidance = [
-      fabricExecutionKernelGuidance(effectiveFullCodeMode, config.executor.kernel, config.executor.pythonRuntime, config.executor.codemodeProfile),
+      managedHost ? managedHostKernelGuidance(managedHost) : fabricExecutionKernelGuidance(effectiveFullCodeMode, config.executor.kernel, config.executor.pythonRuntime, config.executor.codemodeProfile),
       resolvedGuidance.slotText,
       fabricSchemaGuidance(schemaMode),
       overrideGuidance,
       extensionRoster,
       resolvedGuidance.appendText,
+      managedHost?.guidance,
     ].filter((section): section is string => Boolean(section)).join("\n\n");
     // Turn-varying content (skill reference guidance) is delivered here as a
     // persistent message, not appended to the system prompt. Keeping the
@@ -1155,6 +1244,9 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
   // spending hint budget, echoing tokens, or burning ash.
   pi.on("before_agent_start", (event) => {
     if (!pi.getActiveTools().includes("fabric_exec")) return;
+    // A run that a custom message starts has no prompt; remind on a user run.
+    const prompt = userPromptText(event);
+    if (prompt === undefined) return;
     const captureSnapshot = state.cwd ? capturePolicy() : undefined;
     if (
       !captureSnapshot?.enabled ||
@@ -1166,7 +1258,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     const names = rewritableHiddenCapturedToolNames(hiddenCapturedToolNames());
     if (names.length === 0) return;
     const mentioned = proxyContractMentionsInSkills(
-      event.messageType !== "custom" ? event.prompt : "",
+      prompt,
       event.systemPrompt,
       names,
     );
@@ -1190,6 +1282,12 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
   installTerminalTitle(pi, fabricTerminalTitle);
 
   pi.on("session_shutdown", async (_event, context) => {
+    // A claim never outlives the runtime it was made in: reload, session
+    // replacement and quit all shut this instance down. Cleared before any
+    // await, so a later step that throws cannot leave the old handle active.
+    unsubscribeOwner();
+    ownerSlot.closed = true;
+    ownerSlot.host?.clear();
     entropyStopping = true;
     clearEntropyRetry();
     // Queue the richest final window and let async I/O/cooperative scoring
@@ -1206,6 +1304,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     unsubscribeProviderRegistration();
     unsubscribeProviderWithdrawal();
     unsubscribeToolPlacement();
+    unsubscribeHostPolicy();
     unsubscribeProgramRun();
     unsubscribeActionPolicyRegistration();
     state.actionPolicyHooks.clear();

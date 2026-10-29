@@ -82,8 +82,39 @@ describe("native conversation chrome", () => {
     expect(footerIndex).toBeGreaterThan(rules[1]!.index);
     expect(lines[footerIndex + 1]).toContain("idle · ↑1.2k ↓400 R600 $0.012 · ?/128k ctx");
     expect(lines[footerIndex + 1]).toContain("?/128k ctx");
-    expect(lines[footerIndex + 1]).toMatch(/openai\/child-model • low$/);
+    expect(lines[footerIndex + 1]).toMatch(/\(openai\) child-model • low$/);
     view.dispose();
+  });
+
+  it("formats provider-qualified and bare models like Main without losing model subpaths", () => {
+    expect(plain(conversationFooter({ ...target, model: "openai/gpt-6.1-sol", thinking: "high" }, theme, 140))[1])
+      .toMatch(/\(openai\) gpt-6\.1-sol • high$/);
+    expect(plain(conversationFooter({ ...target, model: "gateway/vendor/model", thinking: "off" }, theme, 140))[1])
+      .toMatch(/\(gateway\) vendor\/model • thinking off$/);
+    expect(plain(conversationFooter({ ...target, model: "local-model" }, theme, 140))[1])
+      .toMatch(/local-model • low$/);
+  });
+
+  it("honors copy-on-select being disabled for footer selections", async () => {
+    const copy = vi.fn(async (_text: string) => {});
+    const view = new FabricConversationView(tui, theme, {
+      state: new FabricConversationState(), targets: () => [target], initialTargetId: target.id,
+      appearance: { editorPaddingX: 0, outputPad: 0, copyOnSelect: false },
+      transcript: () => nativeTranscript(), loadOlder: () => false, loadNewer: () => false, loadLatest: () => false,
+      copyToClipboard: copy, send: vi.fn(), stop: vi.fn(), close: vi.fn(),
+    });
+    try {
+      const frame = plain(view.render(120));
+      const y = frame.findIndex(line => line.includes("(openai) child-model"));
+      const x = frame[y]!.indexOf("(openai)");
+      const event = { button: "left" as const, x, y, screenX: x, screenY: y, width: 120, height: 22,
+        shift: false, alt: false, ctrl: false };
+      view.handleMouse({ ...event, type: "press" });
+      view.handleMouse({ ...event, type: "release", x: x + 8 });
+      expect(copy).not.toHaveBeenCalled();
+      view.handleInput("\x03");
+      await vi.waitFor(() => expect(copy).toHaveBeenCalledWith("(openai)"));
+    } finally { view.dispose(); }
   });
 
   it("keeps the draft cursor visible in a one-row terminal", () => {
@@ -160,7 +191,7 @@ describe("native conversation chrome", () => {
       const footer = lines.findIndex((line) => line.includes("/repo/child (feature/chat)"));
       expect(lines[footer]).toBe("/repo/child (feature/chat) • chat-test • read-only");
       expect(lines[footer + 1]).toContain("completed · ↑1.2k ↓400 R600 $0.012 · ?/128k ctx");
-      expect(lines.filter((line) => line.includes("openai/child-model"))).toHaveLength(1);
+      expect(lines.filter((line) => line.includes("(openai) child-model"))).toHaveLength(1);
       expect(lines.join("\n")).not.toContain("Target finished");
     } finally { view.dispose(); render.mockRestore(); }
   });

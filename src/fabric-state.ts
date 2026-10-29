@@ -52,14 +52,20 @@ import type { FabricRuntimeState } from "./fabric-runtime-state.js";
 import type { DecisionStore } from "./decisions/store.js";
 import type { FabricRuntimePaths } from "./runtime-paths.js";
 import type { FabricLoadedFileIdentity } from "./build-identity.js";
+import type { ActiveCompactionOwner } from "./compaction/claim.js";
 
 import { FabricManagedHost, type FabricManagedHostOptions } from "./managed-host.js";
+import { FabricProgramTasks } from "./core/program-tasks.js";
+import type { FabricHostPolicy } from "./core/host-policy.js";
 
 export interface FabricStateOptions {
   managedHost?: FabricManagedHostOptions;
   paths?: FabricRuntimePaths;
   runtimeLoader?: () => Promise<typeof import("./fabric-runtime-state.js")>;
   entryIdentity?: FabricLoadedFileIdentity;
+  /** The extension holding the compaction owner claim; compact.* routes there. */
+  compactionOwner?: () => ActiveCompactionOwner | undefined;
+  hostPolicy?: FabricHostPolicy;
 }
 
 type ActivationHook = (context: ExtensionContext) => void | Promise<void>;
@@ -89,6 +95,8 @@ export class FabricState {
   readonly sessionApprovals = new FabricSessionApprovals();
   /** Extension hooks registered over pi.events; consulted only when approvals.policyHooks is true. */
   readonly actionPolicyHooks = new FabricActionPolicyHooks();
+  /** Foreground `fabric_exec` programs the Ctrl+B chord can move to the background. */
+  readonly programTasks = new FabricProgramTasks();
   // agent_end must revert an override even before activation; the controller
   // itself loads only when an override can exist.
   readonly thinking: FabricThinkingHost;
@@ -133,6 +141,10 @@ export class FabricState {
     return this.#config;
   }
 
+  get managedHostOptions(): Readonly<FabricManagedHostOptions> | undefined {
+    return this.#managedHost?.options;
+  }
+
   get cwd(): string | undefined {
     return this.#cwd;
   }
@@ -145,6 +157,7 @@ export class FabricState {
       policy: config.foreground,
       mode: config.schema.mode === "enforce" ? "enforce" : config.fullCodeMode ? "full-code" : "orchestration",
       managedHost: this.#managedHost !== undefined,
+      managedForeground: this.#managedHost?.options.foreground,
       registered: this.pi.getAllTools(),
       active: new Set(active ?? this.pi.getActiveTools()),
       allowlist: readChildToolAllowlist(),
@@ -564,6 +577,8 @@ export class FabricState {
         ...(this.#options.paths ? { paths: this.#options.paths } : {}),
         ...(this.#entryIdentity ? { entryIdentity: this.#entryIdentity } : {}),
         foregroundTools: () => this.foregroundTools().tools,
+        compactionOwner: this.#options.compactionOwner,
+        ...(this.#options.hostPolicy ? { hostPolicy: this.#options.hostPolicy } : {}),
       },
     );
   }

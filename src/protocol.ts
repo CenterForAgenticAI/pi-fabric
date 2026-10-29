@@ -1,5 +1,11 @@
-import type { BashOperations, BashToolOptions, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { FabricActionPolicyHookV1 } from "./core/action-policy-hooks.js";
+import type {
+  BashOperations,
+  BashToolOptions,
+  CompactionResult,
+  ExtensionContext,
+  SessionBeforeCompactEvent,
+} from "@earendil-works/pi-coding-agent";
 
 /** Host-local opt-in on a bash ToolDefinition; never serialized into guest schemas. */
 export const FABRIC_BASH_MIDDLEWARE = Symbol.for("pi-fabric:bash-middleware:v1");
@@ -277,6 +283,274 @@ export type {
   FabricChildTraceContextRequestV1,
   FabricTraceContextV1,
 } from "./agents/trace-context.js";
+
+/**
+ * Host-local compaction ownership. One extension at a time may claim
+ * compaction from Fabric: Fabric's compactor, threshold trigger and threshold
+ * deferral stand down, and `compact.*` program calls route to the owner.
+ * `/tree` branch summaries stay with Fabric unless the claim sets
+ * `branchSummary`. Fabric drops the claim on withdrawal, when `signal`
+ * aborts, and at its own `session_shutdown` (reload, session switch, quit).
+ * Fabric loads its claim code on the first message, so the reply may come
+ * after `emit` returns.
+ */
+export const FABRIC_COMPACTION_OWNER_EVENT = "pi-fabric:compaction-owner:v1";
+
+export type FabricCompactionOwnerRequestFieldV1 = "reason" | "instructions" | "preserve" | "requestedBy" | "seed";
+export type FabricCompactionOwnerCarryFieldV1 = "items" | "add" | "remove" | "clear";
+export type FabricCompactionOwnerActionNameV1 = "request" | "status" | "pressure" | "carry" | "cancel";
+
+export interface FabricCompactionOwnerIdentityV1 {
+  /** 1-128 characters, no control characters or surrounding whitespace. */
+  name: string;
+  /** 1-64 characters, same rules. */
+  version: string;
+}
+
+/** Validated `compact.request` arguments; only declared fields ever appear. */
+export interface FabricCompactionOwnerRequestV1 {
+  reason?: string;
+  instructions?: string;
+  preserve?: string[];
+  requestedBy?: string;
+  /**
+   * Text to send after the owner's compaction commits. Send it as Fabric
+   * does: a labelled custom message that starts a turn, not a user message.
+   */
+  seed?: string;
+}
+
+/** Validated `compact.carry` arguments; an empty object reads the list. */
+export interface FabricCompactionOwnerCarryUpdateV1 {
+  items?: string[];
+  add?: string[];
+  remove?: string[];
+  clear?: boolean;
+}
+
+export interface FabricCompactionOwnerCarryResultV1 {
+  items: string[];
+}
+
+/** The owner's own ladder, reported beside Fabric's pressure band. */
+export interface FabricCompactionOwnerPressureV1 {
+  /** 1-64 characters. */
+  stage: string;
+  /** At most 16 named finite numbers (names 1-64 characters). */
+  thresholds?: Record<string, number>;
+}
+
+type FabricCompactionOwnerResult<T> = T | Promise<T>;
+
+/** Passed to every owner handler. */
+export interface FabricCompactionOwnerCallV1 {
+  /** The invoking session's extension context, when Fabric has one. */
+  context: ExtensionContext | undefined;
+  /**
+   * Aborts when the calling program is cancelled or the handler runs longer
+   * than 30 seconds. Fabric has already failed the program call by then,
+   * naming the owner and the action; stop the work.
+   */
+  signal: AbortSignal;
+}
+
+/**
+ * Supported `compact.*` actions. An absent action, or a request/carry field
+ * absent from `fields`, fails the program call with an error naming the owner.
+ * Every handler receives `{ context, signal }` (`FabricCompactionOwnerCallV1`).
+ */
+export interface FabricCompactionOwnerActionsV1 {
+  request?: {
+    fields: readonly FabricCompactionOwnerRequestFieldV1[];
+    handler: (request: FabricCompactionOwnerRequestV1, call: FabricCompactionOwnerCallV1) => unknown;
+  };
+  /** Result: JSON, at most 16 KiB; reported as `ownerStatus`. */
+  status?: { handler: (call: FabricCompactionOwnerCallV1) => unknown };
+  pressure?: {
+    handler: (call: FabricCompactionOwnerCallV1) => FabricCompactionOwnerResult<FabricCompactionOwnerPressureV1>;
+  };
+  carry?: {
+    fields: readonly FabricCompactionOwnerCarryFieldV1[];
+    handler: (
+      update: FabricCompactionOwnerCarryUpdateV1,
+      call: FabricCompactionOwnerCallV1,
+    ) => FabricCompactionOwnerResult<FabricCompactionOwnerCarryResultV1>;
+  };
+  cancel?: { handler: (call: FabricCompactionOwnerCallV1) => unknown };
+}
+
+export type FabricCompactionFallbackResultV1 =
+  | { ok: true; compaction: CompactionResult }
+  | { ok: false; reason: string };
+
+export interface FabricCompactionFallbackOptionsV1 {
+  /** Carry-forward items to render; omitted renders Fabric's stored list. */
+  carry?: readonly string[];
+}
+
+/** Returned to the claimant only; the token is the withdrawal credential. */
+export interface FabricCompactionOwnerHandleV1 {
+  readonly token: string;
+  /** False once the claim is withdrawn or cleared. */
+  readonly active: boolean;
+  /** Releases the claim and restores Fabric's engine; false when no longer held. */
+  withdraw(): boolean;
+  /**
+   * Fabric's deterministic summary (summary compiler plus its enrichers) for
+   * the given `session_before_compact` event. Return `{ compaction }` from
+   * the owner's own handler when its model summary fails.
+   */
+  fallback(
+    event: SessionBeforeCompactEvent,
+    context?: ExtensionContext,
+    options?: FabricCompactionFallbackOptionsV1,
+  ): FabricCompactionFallbackResultV1;
+}
+
+export type FabricCompactionOwnerClaimResultV1 =
+  | {
+    ok: true;
+    handle: FabricCompactionOwnerHandleV1;
+    /**
+     * Fabric's carry-forward items when the claim was made, as a frozen copy.
+     * Under the claim `compact.carry` goes to the owner, so this is the list
+     * the owner takes over. Absent when Fabric has not started the session
+     * yet (the owner's `session_start` ran before Fabric's).
+     */
+    carry?: readonly string[];
+  }
+  | { ok: false; error: string; holder?: FabricCompactionOwnerIdentityV1 };
+
+export interface FabricCompactionOwnerClaimV1 {
+  version: 1;
+  type: "claim";
+  owner: FabricCompactionOwnerIdentityV1;
+  actions: FabricCompactionOwnerActionsV1;
+  /** Also take `/tree` branch summaries. Omitted or false: Fabric keeps them. */
+  branchSummary?: boolean;
+  /** Aborting releases the claim; bind it to the owner's own lifetime. */
+  signal?: AbortSignal;
+  /**
+   * Called once, possibly after `emit` returns. Wait with a timeout, abort
+   * `signal` when giving up, and withdraw a grant that arrives late.
+   */
+  reply: (result: FabricCompactionOwnerClaimResultV1) => void;
+}
+
+export type FabricCompactionOwnerWithdrawResultV1 =
+  | { ok: true }
+  | { ok: false; error: string };
+
+export interface FabricCompactionOwnerWithdrawV1 {
+  version: 1;
+  type: "withdraw";
+  /** The token from the claim handle; any other token is refused. */
+  token: string;
+  reply?: (result: FabricCompactionOwnerWithdrawResultV1) => void;
+}
+
+export type FabricCompactionOwnerMessageV1 =
+  | FabricCompactionOwnerClaimV1
+  | FabricCompactionOwnerWithdrawV1;
+export const FABRIC_HOST_POLICY_EVENT = "pi-fabric:host-policy:v1";
+export const MAX_FABRIC_HOST_POLICY_NAMES = 256;
+
+/** Every policy field this build enforces. A request naming any other field is refused. */
+export const FABRIC_HOST_POLICY_FIELDS = ["owner", "reason", "deniedTools", "deniedProviders", "allowedRefs"] as const;
+export type FabricHostPolicyField = (typeof FABRIC_HOST_POLICY_FIELDS)[number];
+
+/**
+ * The one restriction an embedding host (for example a delegate worker runner)
+ * places on this Fabric instance. The host sends it before the instance runs
+ * anything; Fabric seals it on the first program or provider call, so it
+ * cannot be replaced, widened or added to afterwards.
+ *
+ * - `deniedTools`: Pi core and captured extension tool names refused through
+ *   `pi.*` and `extensions.*`.
+ * - `deniedProviders`: Fabric providers refused entirely.
+ * - `allowedRefs`: exact `provider.action` refs, or `provider.*`, that the
+ *   host allows outside `pi.*` and `extensions.*`. Those providers do not
+ *   replay Pi `tool_call` hooks. Without an entry, only Fabric's fixed set of
+ *   built-in read-only actions is allowed; a provider's own `risk` label never
+ *   grants anything.
+ *
+ * Any policy also refuses native executors, which bypass tool hooks.
+ */
+export interface FabricHostPolicyV1 {
+  owner: string;
+  reason: string;
+  deniedTools?: string[];
+  deniedProviders?: string[];
+  allowedRefs?: string[];
+}
+
+/** `accepted: true` means the policy is in force and will be sealed unchanged. */
+export type FabricHostPolicyReplyV1 =
+  | { version: 1; accepted: true; digest: string; enforced: FabricHostPolicyField[] }
+  | { version: 1; accepted: false; reason: string };
+
+/** Host-local synchronous request; Fabric replies before `emit` returns. */
+export interface FabricHostPolicyRequestV1 {
+  policy: FabricHostPolicyV1;
+  reply: (reply: FabricHostPolicyReplyV1) => void;
+}
+
+const HOST_POLICY_FIELD_SET: ReadonlySet<string> = new Set(FABRIC_HOST_POLICY_FIELDS);
+const HOST_POLICY_REF = /^[a-z][a-z0-9_-]*\.(?:\*|[^\s*]+(?:\.\*)?)$/;
+// Same rule as the registry's provider names, so an entry that can never name
+// a provider ("MCP", "mcp ") is refused instead of acknowledged and ignored.
+const HOST_POLICY_PROVIDER = /^[a-z][a-z0-9_-]*$/;
+// Tool names as model APIs accept them: letters, digits, `_` and `-`.
+const HOST_POLICY_TOOL = /^[A-Za-z0-9_-]+$/;
+
+const boundedNames = (value: unknown, pattern?: RegExp): value is string[] =>
+  Array.isArray(value) &&
+  value.length <= MAX_FABRIC_HOST_POLICY_NAMES &&
+  value.every((name) => typeof name === "string" && name.length > 0 && name.length <= 256 && (!pattern || pattern.test(name)));
+
+const boundedLabel = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0 && value.length <= 1_024;
+
+/**
+ * Copies named fields only. A request without a reply function is ignored.
+ * A malformed policy, or one with a field this build does not enforce, is
+ * refused whole with a reason and never partially applied.
+ */
+export const readFabricHostPolicyRequestV1 = (
+  value: unknown,
+):
+  | { ok: true; request: FabricHostPolicyRequestV1 }
+  | { ok: false; reason: string; reply: FabricHostPolicyRequestV1["reply"] }
+  | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.reply !== "function") return undefined;
+  const reply = record.reply as FabricHostPolicyRequestV1["reply"];
+  const refuse = (reason: string) => ({ ok: false as const, reason, reply });
+  const raw = record.policy;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return refuse("policy must be an object");
+  const policy = raw as Record<string, unknown>;
+  const unknown = Object.keys(policy).filter((key) => !HOST_POLICY_FIELD_SET.has(key));
+  if (unknown.length > 0) return refuse(`unsupported policy fields: ${unknown.slice(0, 8).join(", ")}`);
+  if (!boundedLabel(policy.owner) || !boundedLabel(policy.reason)) return refuse("owner and reason must be non-empty strings of at most 1024 characters");
+  if (policy.deniedTools !== undefined && !boundedNames(policy.deniedTools, HOST_POLICY_TOOL)) return refuse("deniedTools must be a list of tool names (letters, digits, _ and -)");
+  if (policy.deniedProviders !== undefined && !boundedNames(policy.deniedProviders, HOST_POLICY_PROVIDER)) return refuse("deniedProviders must be a list of provider names (lowercase letters, digits, _ and -, starting with a letter)");
+  if (policy.allowedRefs !== undefined && !boundedNames(policy.allowedRefs, HOST_POLICY_REF)) return refuse("allowedRefs must be a list of provider.action or provider.* refs");
+  return {
+    ok: true,
+    request: {
+      policy: {
+        owner: policy.owner,
+        reason: policy.reason,
+        ...(policy.deniedTools ? { deniedTools: [...policy.deniedTools] } : {}),
+        ...(policy.deniedProviders ? { deniedProviders: [...policy.deniedProviders] } : {}),
+        ...(policy.allowedRefs ? { allowedRefs: [...policy.allowedRefs] } : {}),
+      },
+      reply,
+    },
+  };
+};
+
 export const FABRIC_COMPONENT_REGISTER_EVENT = "pi-fabric:component:register:v1";
 export const FABRIC_COMPONENT_DISCOVER_EVENT = "pi-fabric:component:discover:v1";
 export const FABRIC_PREWALK_REQUEST_EVENT = "pi-fabric:prewalk:request:v1";
@@ -733,6 +1007,7 @@ export interface FabricCapabilityCatalog {
 export interface FabricProviderListRequest {
   namespace?: string;
   query?: string;
+  /** Optional presentation cap. Omitted means enumerate all matching descriptors. */
   limit?: number;
 }
 
@@ -896,6 +1171,10 @@ export interface FabricInvocationContext {
   // Ephemeral renderer-only metadata. It is exposed to live Fabric previews but
   // never projected into the durable execution trace.
   attachPreview?(preview: unknown): void;
+  // Host-supplied inside fabric_exec. A provider calls this when a successful
+  // nested tool result sets Pi's `terminate: true`; the outer fabric_exec
+  // result then carries `terminate: true` once the program succeeds.
+  requestTerminate?(): void;
   capabilityView?: FabricCommittedCapabilityView;
   /** Frozen host-issued scope; set by the registry only, absent when unscoped. */
   scope?: Readonly<FabricScope>;

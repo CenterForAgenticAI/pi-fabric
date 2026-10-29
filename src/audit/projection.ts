@@ -134,6 +134,8 @@ const idOnlyAgentActions = new Set([
   "agents.join",
   "agents.status",
   "agents.stop",
+  "agents.sleep",
+  "agents.wake",
   "agents.cleanup",
   "agents.ask",
   "agents.tell",
