@@ -708,7 +708,9 @@ describe("MeshStore short-lock leaks (#323)", () => {
     const lockPath = holdLock(store, `crashed\n999999999\n${Date.now() - 60_000}\n`);
     const stale = `${lockPath}.reap-7-00000000-0000-4000-8000-000000000000`;
     fs.mkdirSync(stale);
-    fs.writeFileSync(path.join(stale, "owner"), `old\n7\n${Date.now() - 60_000}\n`);
+    // Claim age alone no longer authorizes deletion. Make the owner exceed
+    // the hold ceiling as well, independent of whether PID 7 exists on this OS.
+    fs.writeFileSync(path.join(stale, "owner"), `old\n${process.pid}\n${Date.now() - 3_600_000}\n`);
     age(stale, 60_000);
     await store.publish({ topic: "team.auth", from: identity, text: "recovered" });
     expect(fs.readdirSync(store.root).filter((name) => name.startsWith(".lock"))).toEqual([]);
