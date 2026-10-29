@@ -316,5 +316,16 @@ describe("FabricActivityStore", () => {
     store.finish("run-aborted", false, "Owned work stopped", true);
     expect(store.get("run-aborted")?.status).toBe("cancelled");
   });
+
+  it("keeps a stopped call stopped instead of failed", () => {
+    const store = new FabricActivityStore();
+    store.start("run-stop");
+    store.beginCall("run-stop", { callId: "stopped", ref: "agents.run", args: {} });
+    store.finishCall("run-stop", "stopped", { success: true, result: { id: "agent-9", status: "stopped" } });
+    store.beginCall("run-stop", { callId: "timed-out", ref: "agents.run", args: {} });
+    store.finishCall("run-stop", "timed-out", { success: true, result: { status: "timed_out" } });
+
+    expect(store.get("run-stop")?.calls.map((call) => call.status)).toEqual(["stopped", "failed"]);
+  });
 });
 

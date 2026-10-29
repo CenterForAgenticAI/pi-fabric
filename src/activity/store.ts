@@ -130,10 +130,11 @@ const metricsFrom = (value: unknown): FabricActivityMetrics | undefined => {
   };
 };
 
-const isFailedResult = (value: unknown): boolean => {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+const resultStatus = (value: unknown): "failed" | "stopped" | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const status = (value as Record<string, unknown>).status;
-  return status === "failed" || status === "stopped" || status === "timed_out";
+  if (status === "stopped") return "stopped";
+  return status === "failed" || status === "timed_out" ? "failed" : undefined;
 };
 
 // Store payloads are bounded JSON values. Freeze copies, never provider objects.
@@ -506,8 +507,8 @@ export class FabricActivityStore {
     const call = this.#callIndex.get(runId)?.get(callId);
     if (!call) return;
     const now = Date.now();
-    const resultFailed = isFailedResult(input.result);
-    call.status = input.success && !resultFailed ? "completed" : "failed";
+    const reported = resultStatus(input.result);
+    call.status = !input.success ? "failed" : reported ?? "completed";
     call.updatedAt = now;
     call.finishedAt = now;
     const error = cleanText(input.error, MAX_DETAIL_CHARS);
