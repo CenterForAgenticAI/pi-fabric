@@ -21,6 +21,8 @@ export interface FabricPersistedExecutionDetailsV1 {
   outputFormat?: "yaml" | "json";
   outputFormatStartLine?: number;
   outputFormatLines?: number;
+  /** Audits the size bound dropped; the resumed card still counts them. */
+  omittedCalls?: FabricOmittedCalls;
 }
 
 /**
@@ -147,7 +149,12 @@ export const createFabricPersistedExecutionDetails = (input: {
     serializedBytes(details) > FABRIC_EXECUTION_DETAILS_MAX_BYTES &&
     details.audits.length > 0
   ) {
-    details.audits.pop();
+    const dropped = details.audits.pop()!;
+    const omitted = details.omittedCalls ?? { count: 0, done: 0 };
+    details.omittedCalls = {
+      count: omitted.count + 1,
+      done: omitted.done + (dropped.success !== undefined ? 1 : 0),
+    };
   }
   // Assessment rows are optional observability: they yield before the trace,
   // and their totals survive.
