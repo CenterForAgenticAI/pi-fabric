@@ -271,7 +271,7 @@ const atomicWrite = (
   if (Buffer.byteLength(serialized, "utf8") > maxBytes) {
     throw new Error(`Fabric mesh state exceeds ${maxBytes} bytes`);
   }
-  writeFileAtomic(filePath, serialized, { fsync });
+  writeFileAtomic(filePath, serialized, fsync ? { fsync: true, durabilityRoot: path.dirname(filePath) } : undefined);
 };
 
 // Host invariant for the proved reducer: the persisted clock covers every
@@ -397,6 +397,8 @@ export class MeshStore {
     this.#lockTimeoutMs = Math.max(100, Math.floor(options.lockTimeoutMs ?? LOCK_TIMEOUT_MS));
     this.#staleLockMs = Math.max(100, Math.floor(options.staleLockMs ?? STALE_LOCK_MS));
     this.durable = options.durability === "fsync";
+    // Establish every ancestor link once, even for a pre-created root. Later
+    // writes can stop at this root while its parent namespace stays unchanged.
     mkdirDurable(root, 0o700, this.durable);
   }
 
@@ -1002,7 +1004,7 @@ export class MeshStore {
   }
 
   async #withLock<T>(operation: () => T): Promise<T> {
-    mkdirDurable(this.root, 0o700, this.durable);
+    mkdirDurable(this.root, 0o700, this.durable, this.root);
     const deadline = Date.now() + this.#lockTimeoutMs;
     const token = randomUUID();
     while (!tryAcquireShortLock(this.#lockPath, formatShortLockOwner(token))) {
@@ -1063,7 +1065,6 @@ export class MeshStore {
       fs.appendFileSync(this.#eventsPath, line, { encoding: "utf8", mode: 0o600 });
       return;
     }
-    const created = !fs.existsSync(this.#eventsPath);
     const descriptor = fs.openSync(this.#eventsPath, "a", 0o600);
     try {
       fs.writeFileSync(descriptor, line, "utf8");
@@ -1071,7 +1072,8 @@ export class MeshStore {
     } finally {
       fs.closeSync(descriptor);
     }
-    if (created) fsyncDirectory(this.root);
+    // Existence is not a durability barrier (including after an earlier failure).
+    fsyncDirectory(this.root);
   }
 
   #compactEventLog(): void {

@@ -93,7 +93,7 @@ const writeGrants = (store: Pick<MeshStore, "root" | "durable">, grants: MeshGra
   if (Buffer.byteLength(serialized, "utf8") > MAX_GRANT_FILE_BYTES) {
     throw new Error(`Fabric mesh grants exceed ${MAX_GRANT_FILE_BYTES} bytes`);
   }
-  writeFileAtomic(grantsPath(store), serialized, { mode: 0o600, fsync: store.durable });
+  writeFileAtomic(grantsPath(store), serialized, { mode: 0o600, fsync: store.durable, durabilityRoot: store.root });
 };
 
 const info = (grant: MeshGrantRecord): MeshGrantInfo => ({

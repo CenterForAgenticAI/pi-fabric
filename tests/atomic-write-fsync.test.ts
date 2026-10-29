@@ -42,7 +42,7 @@ const trackFsync = (): string[] => {
 };
 
 describe("writeFileAtomic fsync", () => {
-  it("flushes the temporary file and the parent directory only when asked", () => {
+  it.skipIf(process.platform === "win32")("flushes ancestor links, the temporary file and its directory only when asked", () => {
     const root = tempRoot();
     const target = path.join(root, "value.json");
     const flushed = trackFsync();
@@ -50,10 +50,11 @@ describe("writeFileAtomic fsync", () => {
     writeFileAtomic(target, "one");
     expect(flushed).toEqual([]);
 
-    writeFileAtomic(target, "two", { fsync: true });
+    writeFileAtomic(target, "two", { fsync: true, durabilityRoot: root });
     expect(fs.readFileSync(target, "utf8")).toBe("two");
-    expect(path.basename(flushed[0]!)).toMatch(/^value\.json\..+\.tmp$/);
-    expect(flushed.slice(1)).toEqual([root]);
+    expect(flushed[0]).toBe(path.dirname(root));
+    expect(path.basename(flushed[1]!)).toMatch(/^value\.json\..+\.tmp$/);
+    expect(flushed.slice(2)).toEqual([root]);
     // Windows does not keep POSIX permission bits.
     if (process.platform !== "win32") expect(fs.statSync(target).mode & 0o777).toBe(0o600);
     expect(fs.readdirSync(root)).toEqual(["value.json"]);
@@ -90,7 +91,7 @@ describe("writeFileAtomic fsync", () => {
     expect(() => fsyncDirectory(root)).toThrow("permission denied");
   });
 
-  it("flushes the parent of every directory mkdirDurable creates", () => {
+  it.skipIf(process.platform === "win32")("flushes every link in scope even when directories already exist", () => {
     const root = tempRoot();
     const leaf = path.join(root, "a", "b", "mesh");
     const flushed = trackFsync();
@@ -99,20 +100,20 @@ describe("writeFileAtomic fsync", () => {
     expect(flushed).toEqual([]);
     fs.rmSync(path.join(root, "a"), { recursive: true });
 
-    mkdirDurable(leaf, 0o700, true);
+    mkdirDurable(leaf, 0o700, true, path.join(root, "a"));
     expect(fs.statSync(leaf).isDirectory()).toBe(true);
     expect(flushed).toEqual([path.join(root, "a", "b"), path.join(root, "a"), root]);
 
     flushed.length = 0;
-    mkdirDurable(leaf, 0o700, true);
-    expect(flushed).toEqual([]);
+    mkdirDurable(leaf, 0o700, true, path.join(root, "a"));
+    expect(flushed).toEqual([path.join(root, "a", "b"), path.join(root, "a"), root]);
   });
 
   it.skipIf(process.platform === "win32")("flushes new parent directories of a durable write", () => {
     const root = tempRoot();
     const target = path.join(root, "nested", "value.json");
     const flushed = trackFsync();
-    writeFileAtomic(target, "one", { fsync: true });
+    writeFileAtomic(target, "one", { fsync: true, durabilityRoot: path.join(root, "nested") });
     // mkdir flushes the new directory's parent first, then the file and its directory.
     expect(flushed[0]).toBe(root);
     expect(path.basename(flushed[1]!)).toMatch(/^value\.json\..+\.tmp$/);

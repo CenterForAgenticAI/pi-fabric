@@ -14,9 +14,14 @@ export interface AtomicWriteOptions {
   // of times with linear backoff before surfacing the error.
   renameRetries?: number;
   renameRetryDelayMs?: number;
-  // Flush the temporary file before the rename and the parent directory
-  // after it, so the committed contents survive a power loss or kernel panic.
+  // Flush the temporary file before rename, its directory after rename, and
+  // the directory's ancestor links. Subject to filesystem/platform support.
   fsync?: boolean;
+  // Inclusive directory boundary for ancestor flushing (default: filesystem
+  // root). Its parent chain must already be durable and must not be renamed
+  // or replaced during the operation. Must contain the target directory.
+  // Ignored without fsync. Useful for stores that establish their root once.
+  durabilityRoot?: string;
 }
 
 const RETRYABLE_RENAME_CODES = new Set(["EPERM", "EACCES", "EEXIST", "EBUSY"]);
@@ -93,26 +98,80 @@ export const fsyncDirectory = (directory: string): void => {
   }
 };
 
+// Never infer durability from existence: another creator (or a failed prior
+// attempt) may have made any of these directories without flushing its parent.
+// No cache is populated before or after a barrier, so retries repeat the work.
+const directoryBarriers = (directory: string, durabilityRoot?: string): string[] => {
+  const resolved = path.resolve(directory);
+  const boundary = durabilityRoot === undefined ? path.parse(resolved).root : path.resolve(durabilityRoot);
+  const relative = path.relative(boundary, resolved);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error("durabilityRoot must contain the target directory");
+  }
+  const parents: string[] = [];
+  for (let current = resolved; ; current = path.dirname(current)) {
+    const parent = path.dirname(current);
+    if (parents.at(-1) !== parent) parents.push(parent);
+    // path.relative also handles case-insensitive drive/root spellings on Windows.
+    if (path.relative(boundary, current) === "") return parents;
+  }
+};
+
 /**
- * `mkdir -p` that, when `fsync` is set, also flushes the parent of every
- * directory it created, so a new directory chain survives a power loss. An
- * existing directory costs nothing beyond the mkdir.
+ * mkdir -p plus barriers for every ancestor link, including pre-existing ones.
+ * By default the crash boundary is the filesystem root. With an explicit
+ * inclusive durabilityRoot, its parent chain must already be durable; require
+ * that parent to exist so mkdir cannot silently create above the boundary.
+ * Ancestors must not be concurrently renamed/replaced. Concurrent creators
+ * and retries after failed mkdir/fsync are safe: all barriers run again.
  */
-export const mkdirDurable = (directory: string, mode: number, fsync: boolean): void => {
+export const mkdirDurable = (
+  directory: string,
+  mode: number,
+  fsync: boolean,
+  durabilityRoot?: string,
+): void => {
   if (!fsync) {
     fs.mkdirSync(directory, { recursive: true, mode });
     return;
   }
-  // Find the missing levels ourselves rather than comparing against the path
-  // mkdirSync returns: on Windows that path can use another spelling (8.3
-  // short names, case) than `directory`, and the walk would never stop.
-  const missing: string[] = [];
-  for (let current = path.resolve(directory); !fs.existsSync(current); current = path.dirname(current)) {
-    missing.push(current);
-    if (path.dirname(current) === current) break;
+  const parents = directoryBarriers(directory, durabilityRoot);
+  if (durabilityRoot !== undefined && !fs.statSync(parents.at(-1)!).isDirectory()) {
+    throw new Error("durabilityRoot parent must be an existing durable directory");
   }
   fs.mkdirSync(directory, { recursive: true, mode });
-  for (const created of missing) fsyncDirectory(path.dirname(created));
+  for (const parent of parents) fsyncDirectory(parent);
+};
+
+const fsyncDirectoryAsync = async (directory: string): Promise<void> => {
+  let handle: fs.promises.FileHandle | undefined;
+  try {
+    handle = await fs.promises.open(directory, "r");
+    await handle.sync();
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === undefined || !UNSUPPORTED_DIRECTORY_FSYNC_CODES.has(code)) throw error;
+  } finally {
+    await handle?.close();
+  }
+};
+
+const mkdirDurableAsync = async (
+  directory: string,
+  mode: number,
+  fsync: boolean,
+  durabilityRoot?: string,
+): Promise<void> => {
+  if (!fsync) {
+    await fs.promises.mkdir(directory, { recursive: true, mode });
+    return;
+  }
+  const parents = directoryBarriers(directory, durabilityRoot);
+  if (durabilityRoot !== undefined && !(await fs.promises.stat(parents.at(-1)!)).isDirectory()) {
+    throw new Error("durabilityRoot parent must be an existing durable directory");
+  }
+  await fs.promises.mkdir(directory, { recursive: true, mode });
+  for (const parent of parents) await fsyncDirectoryAsync(parent);
 };
 
 export const writeFileAtomic = (
@@ -120,7 +179,7 @@ export const writeFileAtomic = (
   contents: string,
   options?: AtomicWriteOptions,
 ): void => {
-  mkdirDurable(path.dirname(filePath), options?.dirMode ?? 0o700, options?.fsync === true);
+  mkdirDurable(path.dirname(filePath), options?.dirMode ?? 0o700, options?.fsync === true, options?.durabilityRoot);
   const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
     if (options?.fsync) {
@@ -192,17 +251,25 @@ const writeFileAtomicAsync = async (
   contents: string,
   options?: AtomicWriteOptions,
 ): Promise<void> => {
-  await fs.promises.mkdir(path.dirname(filePath), {
-    recursive: true,
-    mode: options?.dirMode ?? 0o700,
-  });
+  await mkdirDurableAsync(path.dirname(filePath), options?.dirMode ?? 0o700, options?.fsync === true, options?.durabilityRoot);
   const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    await fs.promises.writeFile(temporary, contents, {
-      encoding: "utf8",
-      mode: options?.mode ?? 0o600,
-    });
+    if (options?.fsync) {
+      const handle = await fs.promises.open(temporary, "wx", options.mode ?? 0o600);
+      try {
+        await handle.writeFile(contents, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    } else {
+      await fs.promises.writeFile(temporary, contents, {
+        encoding: "utf8",
+        mode: options?.mode ?? 0o600,
+      });
+    }
     await renameAtomicAsync(temporary, filePath, options);
+    if (options?.fsync) await fsyncDirectoryAsync(path.dirname(filePath));
   } finally {
     await fs.promises.rm(temporary, { force: true });
   }

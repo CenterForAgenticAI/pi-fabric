@@ -30,7 +30,7 @@ type TracedIo =
   | { op: "rename"; from: string; to: string };
 
 /** Records fsync and rename calls in order, resolving each fsynced descriptor to its path and open flags. */
-const traceDurableIo = (): TracedIo[] => {
+const traceDurableIo = (beforeFsync?: (target: string) => void): TracedIo[] => {
   const trace: TracedIo[] = [];
   const descriptors = new Map<number, { path: string; flags: string }>();
   const realOpen = fs.openSync;
@@ -43,6 +43,7 @@ const traceDurableIo = (): TracedIo[] => {
   vi.spyOn(fs, "fsyncSync").mockImplementation((descriptor: number) => {
     const opened = descriptors.get(descriptor) ?? { path: "?", flags: "?" };
     trace.push({ op: "fsync", path: opened.path, flags: opened.flags });
+    beforeFsync?.(opened.path);
     realFsync(descriptor);
   });
   const realRename = fs.renameSync;
@@ -152,11 +153,66 @@ describe("MeshStore", () => {
 
     const root = path.join(base, "fabric", "mesh");
     new MeshStore(root, 64 * 1024, 100, { durability: "fsync" });
-    expect(flushed).toEqual([path.join(base, "fabric"), base]);
+    const expected: string[] = [];
+    for (let parent = path.dirname(root); ; parent = path.dirname(parent)) {
+      expected.push(parent);
+      if (parent === path.dirname(parent)) break;
+    }
+    expect(flushed).toEqual(expected);
 
     flushed.length = 0;
     new MeshStore(root, 64 * 1024, 100, { durability: "fsync" });
-    expect(flushed).toEqual([]);
+    expect(flushed).toEqual(expected);
+  });
+
+  it.skipIf(process.platform === "win32")("makes a pre-created root durable and bounds later writes to its namespace", async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-mesh-"));
+    roots.push(base);
+    const root = path.join(base, "a", "mesh");
+    new MeshStore(root, 64 * 1024, 100); // Another writer did mkdir without barriers.
+    const trace = traceDurableIo();
+    const store = new MeshStore(root, 64 * 1024, 100, { durability: "fsync" });
+    expect(trace).toContainEqual({ op: "fsync", path: base, flags: "r" });
+    expect(trace).toContainEqual({ op: "fsync", path: path.dirname(base), flags: "r" });
+    trace.length = 0;
+    await store.put({ key: "acknowledged", value: 1, identity });
+    expect(store.get("acknowledged")?.value).toBe(1);
+    expect(trace).toContainEqual({ op: "fsync", path: root, flags: "r" });
+    expect(trace).toContainEqual({ op: "fsync", path: path.dirname(root), flags: "r" });
+    expect(trace.some((event) => event.op === "fsync" && event.path === base)).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")("retries the root's full chain after a constructor barrier fails", () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-mesh-"));
+    roots.push(base);
+    const root = path.join(base, "a", "mesh");
+    vi.spyOn(fs, "fsyncSync").mockImplementationOnce(() => {
+      throw Object.assign(new Error("injected EIO"), { code: "EIO" });
+    });
+    expect(() => new MeshStore(root, 64 * 1024, 100, { durability: "fsync" })).toThrow("injected EIO");
+    vi.mocked(fs.fsyncSync).mockRestore();
+    const trace = traceDurableIo();
+    new MeshStore(root, 64 * 1024, 100, { durability: "fsync" });
+    for (const directory of [path.dirname(root), base, path.dirname(base)]) {
+      expect(trace).toContainEqual({ op: "fsync", path: directory, flags: "r" });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("flushes an existing event-log entry after an earlier append barrier failed", async () => {
+    const store = createStore({ durability: "fsync" });
+    // Fail only the root barrier after writing the event, not the lock's parent barrier.
+    let fail = true;
+    const trace = traceDurableIo((target) => {
+      if (fail && target === store.root) throw Object.assign(new Error("injected EIO"), { code: "EIO" });
+    });
+    await expect(store.publish({ topic: "team.auth", from: identity, text: "one" })).rejects.toThrow("injected EIO");
+    expect(fs.existsSync(path.join(store.root, "events.jsonl"))).toBe(true);
+    fail = false;
+    trace.length = 0;
+    await store.publish({ topic: "team.auth", from: identity, text: "two" });
+    const eventSync = trace.findIndex((event) => event.op === "fsync" && event.path.endsWith("events.jsonl"));
+    expect(eventSync).toBeGreaterThanOrEqual(0);
+    expect(trace[eventSync + 1]).toEqual({ op: "fsync", path: store.root, flags: "r" });
   });
 
   it("repairs an interrupted append without reusing sequence numbers", async () => {
