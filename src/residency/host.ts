@@ -215,7 +215,9 @@ class ResidentHost {
     this.#responsesPath = path.join(config.residencyRoot, "responses");
     this.#agentsPath = path.join(config.residencyRoot, "agents");
     this.#deliveryPrefix = residentDeliveryPrefix(config.rootId);
-    this.mesh = new MeshStore(config.meshRoot, config.mesh.maxEventBytes, config.mesh.maxReadEvents);
+    this.mesh = new MeshStore(config.meshRoot, config.mesh.maxEventBytes, config.mesh.maxReadEvents, {
+      durability: config.mesh.durability,
+    });
     this.control = new FabricControlPlane(this.mesh, this.identity, {
       enabled: true,
       hostId: this.hostId,

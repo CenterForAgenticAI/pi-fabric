@@ -16,6 +16,7 @@ import {
   migrateFabricConfigDocument,
 } from "./config-migrations.js";
 import type { FabricComponentEntry } from "./components/types.js";
+import type { MeshDurability } from "./mesh/store.js";
 import type { FabricRisk } from "./protocol.js";
 import type { FabricKernel } from "./runtime/kernel.js";
 import {
@@ -340,6 +341,9 @@ export interface FabricMeshConfig {
   departedLimit: number;
   /** Age after which stopped and lost sessions leave agents.departed(). */
   departedRetentionMs: number;
+
+  /** `"fsync"` flushes every committed mesh write to stable storage before the call returns. */
+  durability: MeshDurability;
 }
 
 interface FabricRepairsConfig {
@@ -623,6 +627,8 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     peerNotices: true,
     departedLimit: 32,
     departedRetentionMs: 7 * 24 * 60 * 60 * 1_000,
+
+    durability: "default",
   },
   models: {
     aliases: {},
@@ -859,6 +865,9 @@ const compactionPressureBandsValue = (
 
 const actorScopeValue = (value: unknown, fallback: FabricActorScope): FabricActorScope =>
   value === "project" || value === "session" ? value : fallback;
+
+const meshDurabilityValue = (value: unknown, fallback: MeshDurability): MeshDurability =>
+  value === "default" || value === "fsync" ? value : fallback;
 
 const schemaModeValue = (value: unknown, fallback: FabricSchemaMode): FabricSchemaMode =>
   value === "off" || value === "audit" || value === "enforce" ? value : fallback;
@@ -1451,6 +1460,8 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         60_000,
         90 * 24 * 60 * 60 * 1_000,
       ),
+
+      durability: meshDurabilityValue(mesh.durability, DEFAULT_FABRIC_CONFIG.mesh.durability),
     },
     models: {
       aliases: normalizeModelAliases(modelsSection.aliases),
