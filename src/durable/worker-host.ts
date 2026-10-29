@@ -10,6 +10,7 @@ import {
   type CreateAgentSessionRuntimeFactory, type LoadExtensionsResult,
   type ProjectTrustContext, type ProjectTrustHandler,
 } from "@earendil-works/pi-coding-agent";
+import { nativeFabricExecExclusions } from "../core/child-tool-allowlist.js";
 import { durableExtensionLoadError } from "./extension-load-error.js";
 import { createDurableAgentSession } from "./session.js";
 import { openDurableWorkerStorage } from "./storage.js";
@@ -167,6 +168,8 @@ export async function createDurableWorkerRuntime(options: DurableWorkerOptions):
         ...(selection.model ? { model: selection.model } : {}),
         ...((options.thinking ?? selection.thinkingLevel) ? { thinkingLevel: (options.thinking ?? selection.thinkingLevel)! } : {}),
         ...(options.tools ? { tools: options.tools } : {}),
+        // Apply after wildcard expansion, including /new, /fork and /resume.
+        excludeTools: [...(options.excludeTools ?? []), ...nativeFabricExecExclusions(options.tools)],
         ...(options.noTools ? { noTools: options.noTools } : {}),
       });
       // A normal /new, /fork, or /resume is a new request, not crash recovery

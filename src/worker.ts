@@ -7,6 +7,7 @@ import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { assertWorkerRuntime, writeWorkerStartupFailure } from "./worker/startup.js";
 import { explainMissingInstall } from "./worker/missing-install.js";
 import { normalizeRunDisplay } from "./run-display.js";
+import { nativeFabricExecExclusions } from "./core/child-tool-allowlist.js";
 
 import { StringDecoder } from "node:string_decoder";
 import type { ImageContent } from "@earendil-works/pi-ai";
@@ -357,6 +358,10 @@ const main = async (): Promise<void> => {
   }
   if (options.tools.length > 0) piArguments.push("--tools", options.tools.join(","));
   else piArguments.push("--no-tools"); // explicit empty allowlist => no tools, not Pi defaults
+  // Native wildcard/modifier expansion must not resurrect the recursive tool.
+  // Persisted worker argv re-applies this boundary on every replay/relaunch.
+  const excludedTools = nativeFabricExecExclusions(options.tools);
+  if (excludedTools.length) piArguments.push("--exclude-tools", excludedTools.join(","));
   if (options.model) piArguments.push("--model", options.model);
   if (thinking) piArguments.push("--thinking", thinking);
   if (options.systemPrompt) piArguments.push("--append-system-prompt", options.systemPrompt);

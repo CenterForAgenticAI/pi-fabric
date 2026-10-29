@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readChildToolAllowlist } from "../src/core/child-tool-allowlist.js";
+import { constrainChildToolSelection, nativeFabricExecExclusions, readChildToolAllowlist } from "../src/core/child-tool-allowlist.js";
 import { PiToolsProvider } from "../src/providers/pi-tools-provider.js";
 import { CapturedToolsProvider } from "../src/providers/captured-tools-provider.js";
 import { CapturedToolCatalog } from "../src/capture/catalog.js";
@@ -42,6 +42,20 @@ describe("child optional tool allowlist", () => {
     const all = readChildToolAllowlist('["*"]')!;
     expect(all.has("mcp__srv__lookup")).toBe(true);
     expect(all.has("fabric_exec")).toBe(false);
+  });
+
+  it("constrains signed selectors without inheriting unknown native defaults", () => {
+    const read = readChildToolAllowlist('["read"]')!;
+    expect(constrainChildToolSelection(["+read", "-write", "+bash"], read)).toEqual(["read"]);
+    expect(constrainChildToolSelection(["-write"], read)).toEqual([]);
+    expect(readChildToolAllowlist('["+read","+fabric_exec"]')!.fabricExec).toBe(false);
+    expect(readChildToolAllowlist('["+read","-read"]')!.entries).toEqual([]);
+    for (const raw of ['["read","+bash"]', '["+*"]', '["read,bash"]', '[""]']) {
+      expect(readChildToolAllowlist(raw)!.entries).toEqual([]);
+      expect(() => constrainChildToolSelection(JSON.parse(raw), read)).toThrow(/Invalid child tools/);
+    }
+    expect(nativeFabricExecExclusions(["*"])).toEqual(["fabric_exec"]);
+    expect(nativeFabricExecExclusions(["fabric_exec"])).toEqual([]);
   });
 
   it("filters discovery and blocks preparation and execution before any side effect", async () => {

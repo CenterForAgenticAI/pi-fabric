@@ -3,7 +3,13 @@ import { isFabricThinking, normalizeThinkingBounds } from "../thinking.js";
 import { aliasThinking, type FabricModelAliases } from "../core/model-resolution.js";
 import { isFabricRunnerId } from "./runner-registry.js";
 
-const stringArray = (value: unknown): string[] | undefined => Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : undefined;
+const stringArray = (value: unknown): string[] | undefined => {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+    throw new Error("Agent tools must be an array of strings");
+  }
+  return [...value];
+};
 const checkedKernel = (value: unknown): AgentRunRequest["kernel"] => {
   if (value === undefined || value === "inherit" || value === "typescript" || value === "python") return value;
   throw new Error(`Invalid Fabric agent kernel: ${String(value)}`);

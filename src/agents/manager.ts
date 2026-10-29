@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readChildToolAllowlist } from "../core/child-tool-allowlist.js";
+import { constrainChildToolSelection, readChildToolAllowlist } from "../core/child-tool-allowlist.js";
 import { writeJsonAtomic } from "../core/atomic-write.js";
 import {
   DEFAULT_FABRIC_CONFIG,
@@ -2553,7 +2553,8 @@ export class AgentManager {
 
   #childTools(request: AgentRunRequest, runner: FabricRunnerAdapter, requiresFabricKernel = false): string[] {
     const requested = request.tools ?? this.config.defaultTools;
-    const tools = requested.filter(
+    const nativePi = runner.id === "pi" || runner.id === "pi-durable";
+    const tools = nativePi ? constrainChildToolSelection(requested, this.#inheritedToolAllowlist) : requested.filter(
       (tool) => tool !== "fabric_exec" &&
         (this.#inheritedToolAllowlist === undefined || this.#inheritedToolAllowlist.has(tool)),
     );
@@ -2579,11 +2580,14 @@ export class AgentManager {
     }
     // A parent launched without fabric_exec never hands it to a child.
     if (
+      request.recursiveToolAuthority === undefined &&
+      !requested.includes("-fabric_exec") &&
       (this.#inheritedToolAllowlist === undefined || this.#inheritedToolAllowlist.fabricExec) &&
       runner.capabilities.recursiveFabric &&
       (request.recursive || ((this.#fullCodeMode || requiresFabricKernel) && extensions))
     ) {
-      tools.push("fabric_exec");
+      tools.push(nativePi && tools.some(tool => tool.startsWith("+") || tool.startsWith("-"))
+        ? "+fabric_exec" : "fabric_exec");
     }
     return [...new Set(tools)];
   }

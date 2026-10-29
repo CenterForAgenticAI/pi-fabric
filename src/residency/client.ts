@@ -8,7 +8,7 @@ import {
 } from "../core/atomic-write.js";
 import type { FabricActorInfo, FabricActorRequest } from "../actors/types.js";
 import type { FabricAgentLog, AgentHandleInfo, AgentRunRecord, AgentRunRequest, AgentRunResult } from "../agents/types.js";
-import { readChildToolAllowlist } from "../core/child-tool-allowlist.js";
+import { constrainChildToolSelection, readChildToolAllowlist } from "../core/child-tool-allowlist.js";
 import { resolveAgentCwd } from "../agents/manager.js";
 import { BUILT_IN_RUNNER_IDS, requireAgentRunner } from "../agents/runner-registry.js";
 import { isFabricWorktreePath } from "../agents/worktree-paths.js";
@@ -278,8 +278,15 @@ export class ResidencyClient {
     }
     // Freeze inherited optional-tool authority before transferring to an existing host.
     const allowedTools = this.#inheritedToolAllowlist;
+    const requested = request.tools ?? this.options.config.agents.defaultTools;
     const tools = allowedTools === undefined ? undefined
-      : (request.tools ?? this.options.config.agents.defaultTools).filter((tool) => allowedTools.has(tool));
+      : runner === "pi" || runner === "pi-durable"
+        ? constrainChildToolSelection(requested, allowedTools)
+        : requested.filter((tool) => allowedTools.has(tool));
+    // This is attenuation, not an assertion of authority: even a malformed or
+    // user-supplied value can only deny. Never forward an "allow" capability.
+    const denyRecursiveTool = request.recursiveToolAuthority !== undefined ||
+      (allowedTools !== undefined && !allowedTools.fabricExec) || requested.includes("-fabric_exec");
     await this.ensureHost();
     const response = await this.#command(
       {
@@ -287,7 +294,8 @@ export class ResidencyClient {
         operation: "spawn",
         requestId: randomUUID(),
         rootId: this.options.config.rootId,
-        request: { ...resolvedRequest, ...(tools ? { tools } : {}), residency: "durable" },
+        request: { ...resolvedRequest, ...(tools ? { tools } : {}),
+          ...(denyRecursiveTool ? { recursiveToolAuthority: "deny" as const } : {}), residency: "durable" },
         ...(runnerModule ? { runnerModule } : {}),
         createdAt: Date.now(),
       },
