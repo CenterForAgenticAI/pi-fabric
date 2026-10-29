@@ -541,9 +541,22 @@ const main = async (): Promise<void> => {
     stallWatchdog.dispose();
     if (closeTimer || killTimer) return;
     // RPC EOF requests disposal, but a stuck extension can prevent process exit.
-    closeTimer = setTimeout(() => failStalledChild(
-      `${terminalError ?? "Child Pi settled"}; child did not exit after stdin closed for ${KILL_GRACE_MS}ms`,
-    ), KILL_GRACE_MS);
+    closeTimer = setTimeout(() => {
+      const answered = isPi && answerProjected && !sawAgentError && !endedOnToolCall && !terminalError;
+      if (!answered || terminalStatus) {
+        failStalledChild(
+          `${terminalError ?? "Child Pi settled"}; child did not exit after stdin closed for ${KILL_GRACE_MS}ms`,
+        );
+        return;
+      }
+      // The answer is already recorded; a slow exit does not undo it.
+      terminalStatus = "completed";
+      appendLog(`${JSON.stringify({
+        type: "fabric_exit_warning",
+        warning: `child did not exit after stdin closed for ${KILL_GRACE_MS}ms; terminated it after its final answer`,
+      })}\n`);
+      killChild();
+    }, KILL_GRACE_MS);
     closeTimer.unref();
   };
 
