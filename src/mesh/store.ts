@@ -873,16 +873,21 @@ export class MeshStore {
 
   list(prefix = "", limit = 100): MeshStateEntry[] {
     const boundedLimit = Math.max(1, Math.min(Math.floor(limit), this.maxReadEvents));
-    return this.listAll(prefix).slice(0, boundedLimit);
+    return this.#listEntries(prefix).slice(0, boundedLimit).map((entry) => jsonClone(entry));
   }
 
   /** Internal project-state scan for host-managed indexes that must reconcile every key. */
   listAll(prefix = ""): MeshStateEntry[] {
+    return this.#listEntries(prefix).map((entry) => jsonClone(entry));
+  }
+
+  // Cached entries never escape without cloning. Bound public reads before
+  // copying payloads so a small page does not serialize the entire mesh.
+  #listEntries(prefix: string): MeshStateEntry[] {
     if (prefix) this.#validateKey(prefix);
     return Object.values(this.#readCachedState().entries)
       .filter((entry) => !prefix || entry.key.startsWith(prefix))
-      .sort((left, right) => left.key.localeCompare(right.key))
-      .map((entry) => jsonClone(entry));
+      .sort((left, right) => left.key.localeCompare(right.key));
   }
 
   async put(input: {

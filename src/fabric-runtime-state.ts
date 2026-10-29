@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { FabricHostPolicy } from "./core/host-policy.js";
 import { resolveAgentDir } from "./core/agent-dir.js";
 import { loadHostSdk } from "./core/host-sdk.js";
 import { requestChildTraceContext } from "./agents/trace-context-request.js";
@@ -60,7 +61,13 @@ import {
   type FabricCapabilityViewLease,
 } from "./core/action-registry.js";
 import { FabricSessionApprovals } from "./core/approval-controller.js";
-import { CompactController, type CompactLastCommit, type CompactPendingIntent } from "./core/compact-controller.js";
+import {
+  COMPACTION_SEED_DELIVERY,
+  CompactController,
+  type CompactLastCommit,
+  type CompactPendingIntent,
+} from "./core/compact-controller.js";
+import type { ActiveCompactionOwner } from "./compaction/claim.js";
 import { FabricToolResultProxy } from "./core/tool-result-proxy.js";
 import { FabricExecutionService, type FabricExecutionResult } from "./execution-service.js";
 import { RepairCompiler } from "./repairs/compiler.js";
@@ -212,6 +219,10 @@ export interface FabricRuntimeStateOptions {
   entryIdentity?: FabricLoadedFileIdentity;
   /** Foreground tools declared beside fabric_exec; fences cache holds. */
   foregroundTools?: () => readonly string[];
+  /** The extension holding the compaction owner claim; compact.* routes there. */
+  compactionOwner?: (() => ActiveCompactionOwner | undefined) | undefined;
+  /** Restrictions the embedding host applied through FABRIC_HOST_POLICY_EVENT. */
+  hostPolicy?: FabricHostPolicy;
 }
 
 export class FabricRuntimeState {
@@ -249,6 +260,7 @@ export class FabricRuntimeState {
   #residency: ResidencyClient | undefined;
   #agentsProvider: AgentsProvider | undefined;
   #compact: CompactController | undefined;
+  readonly #compactionOwner: (() => ActiveCompactionOwner | undefined) | undefined;
   #schema: SchemaController | undefined;
   #componentSupervisor: FabricComponentSupervisor | undefined;
   #componentLoader: FabricComponentLoader | undefined;
@@ -275,6 +287,7 @@ export class FabricRuntimeState {
   readonly #managedHost: FabricManagedHost | undefined;
   readonly #entryIdentity: FabricLoadedFileIdentity | undefined;
   readonly #foregroundTools: (() => readonly string[]) | undefined;
+  readonly #hostPolicy: FabricHostPolicy | undefined;
   #widgetDismissedAt = 0;
   #suppressResidentGuidanceSync = false;
 
@@ -293,6 +306,8 @@ export class FabricRuntimeState {
     this.#managedHost = options.managedHost;
     this.#entryIdentity = options.entryIdentity;
     this.#foregroundTools = options.foregroundTools;
+    this.#compactionOwner = options.compactionOwner;
+    this.#hostPolicy = options.hostPolicy;
   }
 
   get initialized(): boolean {
@@ -553,6 +568,7 @@ export class FabricRuntimeState {
     this.#registry = new ActionRegistry(
       new FabricToolResultProxy(() => this.capturedTools.runner),
     );
+    this.#registry.setHostPolicy(this.#hostPolicy);
     this.#configureSpeculation();
     this.#unsubscribeCapturedCatalog?.();
     this.#unsubscribeCapturedCatalog = this.capturedTools.subscribe(() => {
@@ -745,6 +761,9 @@ export class FabricRuntimeState {
     this.#compact = new CompactController({
       onRequest: (intent) => void this.#publishCompactEvent("requested", intent),
       onCommit: (info) => void this.#publishCompactEvent(info.status, info),
+      // A labelled Fabric message, never a user prompt: the model reads who
+      // asked for it, and no slash command or template expands.
+      sendSeed: (message) => this.pi.sendMessage(message, COMPACTION_SEED_DELIVERY),
     });
     await builtins.install(createProviderComponent({
       provider: "compact",
@@ -752,6 +771,7 @@ export class FabricRuntimeState {
       create: () => new CompactProvider(this.#compact!, {
         config: () => (this.#config ?? DEFAULT_FABRIC_CONFIG).compaction,
         appendEntry: (customType, data) => this.pi.appendEntry(customType, data),
+        ...(this.#compactionOwner ? { owner: this.#compactionOwner } : {}),
       }),
     }));
     const agentConfig = enforceSchema
