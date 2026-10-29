@@ -547,7 +547,7 @@ export class FabricExecutionService {
       recordAutoDecision,
       this.brokeredNetwork,
       this.#headlessApproval
-        ? (action, reason) => this.#headlessApproval!(action, reason, options.signal)
+        ? (action, reason, signal) => this.#headlessApproval!(action, reason, signal ?? options.signal)
         : undefined,
       policyHooks && this.config.approvals.policyHooks === true
         ? policyHooks.bind({
@@ -818,13 +818,14 @@ export class FabricExecutionService {
               },
             }
           : {}),
-        approve: async (action, preparedArgs) => {
+        approve: async (action, preparedArgs, signal = callContext.signal) => {
           if (action.ref === "schema.commit") {
-            await approval.approve({ ...action, risk: "write" }, preparedArgs, approvalWait);
-            await approval.approve({ ...action, risk: "execute" }, preparedArgs, approvalWait);
+            await approval.approve({ ...action, risk: "write" }, preparedArgs, approvalWait, signal);
+            await approval.approve({ ...action, risk: "execute" }, preparedArgs, approvalWait, signal);
           } else {
-            await approval.approve(action, preparedArgs, approvalWait);
+            await approval.approve(action, preparedArgs, approvalWait, signal);
           }
+          signal.throwIfAborted();
           // Approved: the effect is next. A resume never repeats a call after this.
           if (journal && callContext.journalSeq !== undefined && !fenceFreeAction(action) && !stagedActionRefs.has(action.ref)) {
             journal.intent(callContext.journalSeq, action.ref);

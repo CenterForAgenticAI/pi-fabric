@@ -67,8 +67,8 @@ const boundedReason = (raw: string): string => {
 
 /** Read a hook's answer by named fields; anything else is malformed. */
 const readDecision = (value: unknown): { decision: "allow" | "deny" | "hold"; reason?: string } | undefined | "malformed" => {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== "object" || Array.isArray(value)) return "malformed";
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return "malformed";
   const record = value as Record<string, unknown>;
   const decision = record.decision;
   if (decision === "allow") return { decision };
@@ -81,7 +81,7 @@ const readDecision = (value: unknown): { decision: "allow" | "deny" | "hold"; re
 const precedence = { deny: 3, hold: 2, allow: 1 } as const;
 
 export class FabricActionPolicyHooks {
-  readonly #hooks = new Map<string, FabricActionPolicyHookV1>();
+  readonly #hooks = new Map<string, { hook: FabricActionPolicyHookV1 }>();
 
   constructor(readonly timeoutMs = DEFAULT_ACTION_POLICY_HOOK_TIMEOUT_MS) {}
 
@@ -100,9 +100,10 @@ export class FabricActionPolicyHooks {
       throw new Error("Action policy hook name must match [A-Za-z0-9@][A-Za-z0-9@._/-]{0,63}");
     }
     if (typeof hook !== "function") throw new Error("Action policy hook must be a function");
-    this.#hooks.set(name, hook);
+    const registration = { hook };
+    this.#hooks.set(name, registration);
     return () => {
-      if (this.#hooks.get(name) === hook) this.#hooks.delete(name);
+      if (this.#hooks.get(name) === registration) this.#hooks.delete(name);
     };
   }
 
@@ -113,18 +114,20 @@ export class FabricActionPolicyHooks {
   /**
    * Bind the hooks to one call site as an approval policy gate. `signal` is
    * read at each evaluation, so a caller can hand over to a later signal.
+   * An explicit per-call signal takes precedence; concurrent calls never
+   * share mutable cancellation state.
    */
   bind(
     context: FabricActionPolicyContextV1,
     signal?: () => AbortSignal | undefined,
   ): {
     readonly active: boolean;
-    evaluate(action: ResolvedFabricAction, args: Record<string, unknown>): Promise<FabricActionPolicyVerdict | undefined>;
+    evaluate(action: ResolvedFabricAction, args: Record<string, unknown>, callSignal?: AbortSignal): Promise<FabricActionPolicyVerdict | undefined>;
   } {
     const hooks = this;
     return {
       get active() { return hooks.size > 0; },
-      evaluate: (action, args) => hooks.evaluate(action, args, context, signal?.()),
+      evaluate: (action, args, callSignal) => hooks.evaluate(action, args, context, callSignal ?? signal?.()),
     };
   }
 
@@ -142,7 +145,7 @@ export class FabricActionPolicyHooks {
     signal?.throwIfAborted();
     const hooks = [...this.#hooks];
     if (hooks.length === 0) return undefined;
-    const answers = await Promise.all(hooks.map(([name, hook]) => this.#ask(name, hook, action, args, context, signal)));
+    const answers = await Promise.all(hooks.map(([name, { hook }]) => this.#ask(name, hook, action, args, context, signal)));
     signal?.throwIfAborted();
     let verdict: FabricActionPolicyVerdict | undefined;
     for (const answer of answers) {
@@ -185,7 +188,10 @@ export class FabricActionPolicyHooks {
         signal: controller.signal,
       };
       const answer = readDecision(await Promise.race([
-        Promise.resolve().then(() => hook(input)),
+        Promise.resolve().then(() => {
+          controller.signal.throwIfAborted();
+          return hook(input);
+        }),
         deadline,
         cancelled,
       ]));

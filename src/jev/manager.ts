@@ -144,7 +144,7 @@ export class JevProgramManager {
         ref: "jev.spawn", provider: "jev", name: "spawn",
         description: "Observe future Main lifecycle events and explicitly selected content for a bounded Jev program",
         inputSchema: {}, risk: "read",
-      }, { observe });
+      }, { observe }, undefined, context.signal);
       if (this.#closed) throw new Error("Jev program manager is closed");
       context.signal?.throwIfAborted();
       if (observe && observationHost!.revision !== observationRevision)
@@ -238,11 +238,11 @@ export class JevProgramManager {
                 parentToolCallId: `jev:${id}`, nestedToolCallId: `jev:${id}:${info.toolCalls}`,
                 update() {}, activity() {}, attachMedia() {}, attachPreview() {},
                 authorize: async action => { await this.options.authorize?.(action.ref, `jev:${id}`); },
-                approve: async (action, prepared) => {
+                approve: async (action, prepared, approvalSignal = signal) => {
                   if (action.ref === "schema.commit") {
-                    await approval.approve({ ...action, risk: "write" }, prepared);
-                    await approval.approve({ ...action, risk: "execute" }, prepared);
-                  } else await approval.approve(action, prepared);
+                    await approval.approve({ ...action, risk: "write" }, prepared, undefined, approvalSignal);
+                    await approval.approve({ ...action, risk: "execute" }, prepared, undefined, approvalSignal);
+                  } else await approval.approve(action, prepared, undefined, approvalSignal);
                 },
                 audits, maxResultChars: ref === "jev.decide" ? DECISION_MAX_BYTES : ref === "jev.evaluate" ? 1_048_576 : config.executor.maxNestedResultChars,
               });
