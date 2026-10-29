@@ -56,11 +56,13 @@ beforeAll(() => {
       if (mode === 'reject') { emit({ ...response, success: false, error: 'storage unavailable' }); continue; }
       if (mode === 'wrong-command') { emit({ ...response, command: 'get_state' }); continue; }
       const assistant = { role: 'assistant', provider: 'durable-offline', model: 'test',
-        content: [{ type: 'text', text: 'recorded answer' }], usage: { input: 7, output: 3, cost: { total: 0.1 } },
+        content: mode === 'tool-use' ? [{ type: 'toolCall', id: 'call-1', name: 'read', arguments: {} }] : [{ type: 'text', text: 'recorded answer' }], usage: { input: 7, output: 3, cost: { total: 0.1 } },
         stopReason: mode === 'error' ? 'error' : 'stop', errorMessage: 'recorded provider failure' };
       const messages = [
         { role: 'user', content: 'old actor turn' }, { ...assistant, usage: { input: 100000, output: 10000 } },
-        { role: 'user', content: mode === 'stale' ? 'wrong task' : 'task' }, assistant,
+        { role: 'user', content: mode === 'stale' ? 'wrong task' : 'task' },
+        mode === 'tool-use' ? { ...assistant, stopReason: 'toolUse' } : assistant,
+        ...(mode === 'tool-use' ? [{ role: 'toolResult', toolCallId: 'call-1', toolName: 'read', content: [{ type: 'text', text: 'file' }], isError: false }] : []),
       ];
       // A response for another request must not consume this retrieval.
       emit({ ...response, id: 'unrelated-request', data: { messages: [] } });
@@ -301,6 +303,23 @@ describe("AgentManager real durable parent worker", () => {
     expect(fs.existsSync(effect)).toBe(false);
   }, 30000);
 
+  it.each(["pi-durable", "pi"] as const)("fails a %s child whose run ends on a terminating tool call without an answer", async runner => {
+    const { manager: durable, cwd } = setup();
+    const manager = runner === "pi-durable" ? durable : new AgentManager(cwd, {
+      ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi", transport: "process", timeoutMs: 20000, maxConcurrent: 1,
+    }, { workerPath, runRoot: path.join(cwd, "runs-pi"), fullCodeMode: false,
+      piBinary: path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js") });
+    if (manager !== durable) managers.push(manager);
+    const result = await manager.run({
+      task: "terminate fixture", tools: ["terminate_probe"],
+      ...(runner === "pi" ? { model: "durable-offline/test" } : {}),
+    });
+    expect(result.status, result.error).toBe("failed");
+    expect(result.error).toBe("Pi ended the run after a tool call without a final answer (tool: terminate_probe)");
+    expect(result.text).toBe("Compacting first.");
+    expect(result.toolCalls).toBe(1);
+  }, 30000);
+
   it("fails an extensions: false child closed when no installed extension registers the provider", async () => {
     const { manager } = setup();
     const result = await manager.run({ task: "never sent", extensions: false, model: "absent-provider/model" });
@@ -345,6 +364,7 @@ describe("compiled parent recorded-result RPC failure boundaries", () => {
     ["stale", "submitted prompt"],
     ["exit", "exited before recorded result retrieval"],
     ["timeout", "retrieval timed out"],
+    ["tool-use", "Pi ended the run after a tool call without a final answer (tool: read)"],
   ] as const)("handles %s without falling back or accepting an unrelated response", async (mode, error) => {
     const { cwd } = setup();
     vi.stubEnv("DURABLE_RPC_FAULT", mode);
@@ -357,5 +377,6 @@ describe("compiled parent recorded-result RPC failure boundaries", () => {
       expect(result.usage).toEqual({ input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0.1 });
       expect(result.turns).toBe(1);
     }
+    if (mode === "tool-use") expect(result.text).toBe("");
   }, 15000);
 });
