@@ -743,9 +743,11 @@ const LINK_UNSUPPORTED_CODES = new Set(["EPERM", "ENOTSUP", "EXDEV", "ENOSYS"]);
 /**
  * Publishes `temporary` as `ownerPath` without replacing an existing owner:
  * link() fails EEXIST where rename() would overwrite. Returns false on EEXIST.
- * Where link() is unsupported it falls back to rename(), which cannot refuse
- * an existing owner; on those filesystems the reaper rename-back race below
- * can still let two holders overlap.
+ * Where link() is unsupported, rename() is safe only after checking for an
+ * existing owner *with the unique temporary already inside the directory*.
+ * That nonempty directory cannot be replaced by a rename-back. If it moves,
+ * rename's unique source disappears too, so publication fails with ENOENT.
+ * This assumes cooperating clients move whole lock directories, not temps.
  */
 const publishShortLockOwner = (temporary: string, ownerPath: string): boolean => {
   try {
@@ -754,6 +756,12 @@ const publishShortLockOwner = (temporary: string, ownerPath: string): boolean =>
     const code = errorCode(error);
     if (code === "EEXIST") return false;
     if (code === undefined || !LINK_UNSUPPORTED_CODES.has(code)) throw error;
+    try {
+      fs.lstatSync(ownerPath);
+      return false;
+    } catch (ownerError) {
+      if (errorCode(ownerError) !== "ENOENT") throw ownerError;
+    }
     renameAtomic(temporary, ownerPath);
     return true;
   }
@@ -770,21 +778,23 @@ const claimPath = (lock: string): string =>
   `${lock}${CLAIM_INFIX}${process.pid}-t${Date.now()}-${randomUUID()}`;
 
 /** Claim directories beside `lock`, as absolute paths. */
-const listClaims = (lock: string): string[] => {
+const listClaims = (lock: string, strict = false): string[] => {
   const prefix = `${path.basename(lock)}${CLAIM_INFIX}`;
   try {
     return fs.readdirSync(path.dirname(lock))
       .filter((name: string) => name.startsWith(prefix))
       .map((name: string) => path.join(path.dirname(lock), name));
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     return [];
   }
 };
 
 /**
  * Creates the lock directory exclusively and publishes its owner file
- * atomically. `mkdir` stays the only claim, exactly as older versions use it,
- * so mixed versions still exclude each other. The owner is written to a
+ * atomically. `mkdir` stays the canonical claim, as in older versions.
+ * Upgraded acquirers additionally refuse in-flight rename claims (see below).
+ * The owner is written to a
  * temporary file inside the lock and hard-linked into place: a reader sees no
  * owner (judged by the directory's age) or a complete one, never an empty or
  * partial owner. Returns false on contention.
@@ -795,6 +805,14 @@ const listClaims = (lock: string): string[] => {
  * owner's directory; link() fails EEXIST, so this returns false and removes
  * only its own temporary file, never the directory (it is the other owner's
  * lock). See publishShortLockOwner for the rename fallback.
+ *
+ * After publication, a strict claim scan is followed by canonical inode and
+ * owner verification. A displaced successful holder remains in a claim, so
+ * no successor may enter until it is restored or released. If displacement
+ * occurs after this scan/check, the next acquirer sees that claim instead.
+ * Fail closed on scan errors. Older binaries do not honor this barrier and
+ * retain their rename-window race; ordinary mixed-version mkdir contention
+ * still works. See docs/short-lock-protocol.md.
  */
 export const tryAcquireShortLock = (lock: string, ownerText: string): boolean => {
   try {
@@ -803,10 +821,22 @@ export const tryAcquireShortLock = (lock: string, ownerText: string): boolean =>
     if (errorCode(error) === "EEXIST") return false;
     throw error;
   }
+  const created = lockInode(lock);
   const temporary = path.join(lock, `owner.${process.pid}.${randomUUID()}.tmp`);
   try {
     fs.writeFileSync(temporary, ownerText, { encoding: "utf8", mode: 0o600 });
-    if (publishShortLockOwner(temporary, path.join(lock, "owner"))) return true;
+    if (publishShortLockOwner(temporary, path.join(lock, "owner"))) {
+      try {
+        const claims = listClaims(lock, true);
+        const canonical = lockInode(lock);
+        if (claims.length === 0 && created !== undefined && canonical !== undefined
+          && sameInode(created, canonical) && readOwnerText(lock) === ownerText) return true;
+      } catch {
+        // Cannot establish exclusion: withdraw, never enter the critical section.
+      }
+      releaseShortLock(lock, parseShortLockOwner(ownerText).token, 0);
+      return false;
+    }
   } catch (error) {
     // ENOENT: a reaper claimed the directory mid-publish. Whatever it puts
     // back has no owner and ages out; retry as contention.
@@ -853,13 +883,12 @@ export const tryAcquireShortLock = (lock: string, ownerText: string): boolean =>
  * `verify`, and never deleted. If that rename-back fails it is left for its
  * owner's release or the claim sweep.
  *
- * Residual window: between the claim and the rename-back the lock path is
- * free. A writer that creates its empty directory there is replaced by the
- * rename-back (tryAcquireShortLock then refuses to publish over the restored
- * owner), and one that already published makes the rename-back fail. Closing
- * the window needs an atomic no-replace rename (renameat2 RENAME_NOREPLACE),
- * which Node does not expose. Inode reuse within the window is also not
- * detected, but `verify` still compares the owner.
+ * The claim itself is an acquisition barrier even on an inode mismatch.
+ * A successor can populate the canonical directory but must withdraw before
+ * entering its critical section while this claim exists. Restoration may
+ * still fail; the barrier then persists until owner release or safe stale
+ * cleanup. No compare-and-rename primitive or recursively reaped guard is
+ * needed. Inode reuse is not detected here; `verify` also compares the owner.
  */
 export const reapLockByRenameClaim = (
   lock: string,
@@ -902,9 +931,9 @@ const lastClaimSweep = new Map<string, number>();
 
 /**
  * Removes claim directories beside `lock` older than `staleMs`: reapers or
- * releasers that died mid-claim, or rename-backs that lost a race. A claim
- * is never the live lock path, so removing one cannot break exclusion; the
- * age bound keeps a reaper's in-flight claim intact. Returns the count.
+ * releasers that died mid-claim, or rename-backs that lost a race. Claims
+ * are acquisition barriers: age alone must not discard a displaced live
+ * holder. Require the ordinary owner-staleness verdict too. Returns the count.
  *
  * A claim's age comes from the `t<ms>` stamp in its name, which is the
  * claimant's clock, not this process's: a claimant whose clock runs ahead
@@ -925,6 +954,13 @@ export const sweepStaleLockClaims = (lock: string, staleMs: number, now = Date.n
       }
     }
     if (now - since <= staleMs) continue;
+    let owner: string | undefined;
+    try {
+      owner = fs.readFileSync(path.join(claim, "owner"), "utf8");
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") continue;
+    }
+    if (!shortLockReapable(owner, modifiedAt(claim), { staleMs, probes: { now: () => now } })) continue;
     try {
       fs.rmSync(claim, { recursive: true, force: true });
       removed += 1;
