@@ -1346,6 +1346,9 @@ export class FabricRuntimeState {
     const eligible = (): boolean => {
       const current = this.#config;
       if (!current?.speculation.enabled) return false;
+      // Hooks may deny even configured allows and can register dynamically.
+      // Run them only at normal approval, never speculatively or twice.
+      if (current.approvals.policyHooks === true) return false;
       return current.executor.kernel === "python"
         ? current.executor.pythonRuntime === "monty" || current.schema.mode === "enforce"
         : current.schema.mode === "enforce" || current.executor.runtime === "quickjs";
