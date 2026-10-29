@@ -305,6 +305,9 @@ export class FabricState {
   participantInfos(options: FabricParticipantListOptions = {}): FabricParticipantInfo[] {
     return this.#current()?.participantInfos(options) ?? [];
   }
+  residentAgentForUi(id: string): ReturnType<FabricRuntimeState["residentAgentForUi"]> {
+    return this.#current()?.residentAgentForUi(id);
+  }
   queueUserMessage(targetId: string, message: string, delivery: FabricAgentMessageDelivery): Promise<FabricAgentMessageResult> {
     return this.#required().queueUserMessage(targetId, message, delivery);
   }

@@ -455,6 +455,12 @@ export class FabricRuntimeState {
     return this.#participants?.list(options) ?? [];
   }
 
+  /** Read only this root's resident run metadata; never start or control the host. */
+  residentAgentForUi(id: string): import("./agents/types.js").AgentRunRecord | import("./agents/types.js").AgentHandleInfo | undefined {
+    if (!this.#residency?.hasAgent(id)) return undefined;
+    try { return this.#residency.statusAgent(id); } catch { return undefined; }
+  }
+
   #wantLabel(): void {
     if (this.#labelWanted) return;
     this.#labelWanted = true;
