@@ -152,6 +152,10 @@ The reply is `{ version: 1, mode, tools }`. `mode` is `"full-code"`, `"enforce"`
 
 `model` wins when both apply; optional `programCallable` lists the reported `model` tools that a program can also call, such as foreground tools, and is omitted when empty. Omitting `tools` reports every tool registered with Pi; at most 1,024 names of up to 256 characters each are accepted. An invalid query gets no reply. Placement describes state at the time of the query. A later mode change, reload, or tool refresh can change it, so query when you need the answer and do not cache it.
 
+## Compaction owner claim
+
+An extension that writes its own compaction summaries claims compaction from Fabric with `FABRIC_COMPACTION_OWNER_EVENT` (`pi-fabric:compaction-owner:v1`). Fabric's compactor and thresholds stand down, `compact.*` program calls route to the owner, and the reply carries a handle with `withdraw()` and Fabric's deterministic `fallback()`, plus Fabric's carry list at cut-over. Fabric loads its claim code on the first message, so the reply may arrive after `emit` returns: wait with a timeout, abort the claim's `signal` when giving up, and withdraw a grant that arrives late. Owner handlers receive `{ context, signal }` and are bounded at 30 seconds. One claim is held at a time; withdrawal, the claim's abort signal, or Fabric's `session_shutdown` ends it. See [compaction owner claim](programmatic-compaction.md#compaction-owner-claim).
+
 ## Invocation costs and guarantees
 
 | Access pattern | Work and allocation | Guarantees |
@@ -218,7 +222,7 @@ Trusted embedding code can opt into a closed-world provider authority:
 ```ts
 import piFabric, { FABRIC_MANAGED_HOST_VERSION } from "pi-fabric";
 
-if (FABRIC_MANAGED_HOST_VERSION !== 1) throw new Error("Unsupported managed host");
+if (FABRIC_MANAGED_HOST_VERSION !== 2) throw new Error("Unsupported managed host");
 await piFabric(pi, { managedHost: { providers: ["agents", "memory", "compact"] } });
 // Register all three host-owned implementations using the v1 registration event before activation.
 ```
@@ -231,8 +235,29 @@ idempotent; changing an implementation after activation requires a new host. Pro
 one host lifetime, and `close()` is awaited once after final publication withdrawal.
 
 Managed mode ignores ambient configuration and fixes execution to full-code TypeScript QuickJS.
+The v2 factory adds optional controls; `{ providers }` alone remains valid:
+
+```ts
+await piFabric(pi, { managedHost: {
+  providers: ["mcp"],
+  foreground: ["ask_user_questions", "ai_todo_write", "run_delegated_task"],
+  guidance: "Apply the host's workflow and receipt-reconciliation policy.",
+  skillReader: "mcp.files.read",
+  executor: { maxCpuSliceMs: 1000 },
+  compaction: "pi",
+} });
+```
+
+- `foreground` defaults to `[]`. Up to eight exact registered names can remain declared beside `fabric_exec`; Pi exposure, active-set and inherited allowlist checks still apply. Direct calls keep the same `tool_call` hooks and approval ref, prompt-cache fence and [placement reporting](#tool-placement-query). `model-only` tools do not gain a program-callable path.
+- Stable execution guidance names only the host-authorized provider namespaces and is emitted once through the execution-guidance slot. Tool and `code` descriptions stay short and refer to it. `guidance` appends trusted host instructions once to the system prompt; the existing execution guidance slot can still replace the default. Provider registration remains v1: its event and payload do not change.
+- `skillReader` names the host's dotted callable reader, for example `mcp.files.read`. Without it, Fabric omits its skill-loading instruction and delegated-skill hint. Managed hosts supply their own skill resources; Fabric does not contribute bundled coding workflows.
+- `executor.maxCpuSliceMs` defaults to `1000`, must be a positive safe integer, and limits uninterrupted guest CPU, not host-provider execution. Whole-program timeouts remain separate.
+- `compaction` is `"fabric"` by default, preserving existing behavior; `"pi"` leaves compaction to the embedding host and its saved formats.
+
+Options are copied when the host is created. Later mutation of the caller's arrays or executor object cannot widen the host policy. See the [migration and changelog](managed-host-migration.md).
+
 Native MCP, agent spawning, mesh, filesystem memory discovery, schema effects, speculative work,
-prewalk, repairs, entropy compilation, and model-visible component control are unavailable.
+prewalk, repairs, entropy compilation, Jev, and model-visible component control are unavailable.
 A supplied memory implementation remains discoverable without enabling native memory scanning.
 Every pinned component activation/reload uses the same host replacement; it cannot resurrect a
 native provider. Non-core providers omitted from the host list expose no actions. Pi core calls
@@ -243,6 +268,36 @@ Missing or withdrawn overrides fail closed.
 The host remains responsible for OS isolation, resource loading, broker authorization and
 cancellation, and for exposing only trusted extension code. This option does not sandbox arbitrary
 host-side extensions. In particular, do not auto-load plugins from the agent's computer snapshot.
+
+## Host policy
+
+An extension that embeds Fabric for a restricted agent, such as a worker runner, can narrow that Fabric instance with `FABRIC_HOST_POLICY_EVENT` (`pi-fabric:host-policy:v1`). Unlike `managedHost`, it works for a Fabric that Pi's resource loader loaded, because no factory call is needed. Send it from the host's extension factory, before the instance runs anything. Fabric replies before `emit` returns:
+
+```ts
+import { FABRIC_HOST_POLICY_EVENT, type FabricHostPolicyReplyV1 } from "pi-fabric";
+
+let reply: FabricHostPolicyReplyV1 | undefined;
+pi.events.emit(FABRIC_HOST_POLICY_EVENT, {
+  policy: { owner: "my-host", reason: "read-only worker", deniedTools: ["write", "edit"], allowedRefs: ["agents.status"] },
+  reply: (value: FabricHostPolicyReplyV1) => { reply = value; },
+});
+if (!reply?.accepted) {
+  // Fabric is absent, too old, already sealed, or refused the policy: do not expose fabric_exec.
+}
+```
+
+An accepted reply is `{ version: 1, accepted: true, digest, enforced }`. `enforced` lists every policy field this build enforces. `digest` is a SHA-256 over the accepted policy. A refusal is `{ version: 1, accepted: false, reason }`. Fabric refuses a policy that is malformed, names a field it does not enforce, follows an earlier accepted policy, or arrives after the instance ran a program or a provider call. A request without a `reply` function gets no answer.
+
+The policy is sealed on the first program or provider call. It cannot be replaced, widened or added to after that, so no call admitted before the policy can run under it. It lasts as long as the extension instance: a new session on the same instance keeps it, and `/reload` creates a new instance that starts without one.
+
+Fabric decides from the `provider.action` ref as the program wrote it, before any provider code runs, including `describe`, `list` and `prepareArguments`. When Fabric repairs a misspelled name, such as `pi.Write` or `pi.save` for `pi.write`, it calls the provider's `describe` and `list` to find the canonical action, then decides again on that action before `prepareArguments` or the provider runs. A repaired name never reaches an action the policy refuses:
+
+- `deniedTools` refuses those names through `pi.*` and `extensions.*`. Each entry is a tool name of letters, digits, `_` and `-`. Other `pi.*` and `extensions.*` calls replay Pi `tool_call` hooks, so the host's own guards see them. While a policy is active, a non-read `pi.*` tool fails closed when no hook runner exists.
+- `deniedProviders` refuses whole providers. Each entry must be a valid provider name: lowercase letters, digits, `_` and `-`, starting with a letter. A policy with an entry that breaks either rule, such as `"MCP"` or `"mcp "`, is refused whole.
+- Every other action is refused unless it matches a host `allowedRefs` entry or is one of Fabric's fixed built-in read-only actions. An entry is an exact ref, or a prefix ending in `.*`, such as `mcp.docs.*`. The fixed set is `cache.status`, `compact.pressure`, `compact.status`, `components.describe`, `components.graph`, `components.list`, `components.status`, `memory.expand`, `memory.recall`, `memory.sessions`, `programs.get`, `programs.list`, `schema.status`, `state.get`, `state.history` and `thinking.status`. Third parties cannot register those provider names. Fabric never uses a provider's own `risk` label to allow an action.
+- Native executors (CPython, `node-process`, `bun-process`) are refused, because they run outside every tool hook.
+
+Refused actions and providers are left out of listings, search, catalogs and program type declarations.
 
 ## Principal and scope
 

@@ -423,6 +423,60 @@ describe("ParticipantDirectory", () => {
     expect(stale.every((participant) => participant.stale)).toBe(true);
   });
 
+  it("reads live participants and cold self records without enumerating the directory", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-topology-"));
+    roots.push(root);
+    const identity: MeshIdentity = {
+      id: "session:direct", name: "main", kind: "main", sessionId: "direct",
+    };
+    const meshRoot = path.join(root, "mesh");
+    const directory = createDirectory(meshRoot, identity, identity.id, () => [
+      rootRecord(identity.id, identity.id, "direct"),
+      agentRecord("agent:direct", identity.id, identity.id, identity.id),
+    ]);
+    await directory.start();
+    const expected = directory.list({ scope: "project" });
+    const scans = vi.spyOn(directory.mesh, "listAll");
+    const child = directory.get("agent:direct")!;
+    expect(child).toEqual(expected.find((entry) => entry.id === "agent:direct"));
+    expect(directory.get("main")).toEqual(expected.find((entry) => entry.id === identity.id));
+    expect(scans).not.toHaveBeenCalled();
+    child.capabilities.push("ask");
+    expect(directory.get("agent:direct")?.capabilities).not.toContain("ask");
+
+    const cold = createDirectory(meshRoot, identity, identity.id, () => []);
+    const coldScans = vi.spyOn(cold.mesh, "listAll");
+    expect(cold.self()).toMatchObject({ id: identity.id, local: true, stale: false });
+    expect(coldScans).not.toHaveBeenCalled();
+
+    const writer = new MeshStore(meshRoot, 64 * 1024, 1_000);
+    const host = writer.listAll("topology/hosts/")[0]!;
+    await writer.put({ key: host.key, value: { ...(host.value as object), expiresAt: 0 }, identity });
+    expect(directory.get("agent:direct")).toBeUndefined();
+  });
+
+  it("does not alias distinct participant IDs with the same UTF-8 hash", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-topology-"));
+    roots.push(root);
+    const identity: MeshIdentity = {
+      id: "session:utf8", name: "main", kind: "main", sessionId: "utf8",
+    };
+    const meshRoot = path.join(root, "mesh");
+    const storedId = "agent:\ufffd", requestedId = "agent:\ud800";
+    const directory = createDirectory(meshRoot, identity, identity.id, () => [
+      rootRecord(identity.id, identity.id, "utf8"),
+      agentRecord(storedId, identity.id, identity.id, identity.id),
+    ]);
+    await directory.start();
+    expect(directory.get(storedId)?.id).toBe(storedId);
+    expect(directory.get(requestedId)).toBeUndefined();
+
+    const alias = createDirectory(meshRoot, {
+      id: requestedId, name: "alias", kind: "agent", sessionId: "alias",
+    }, identity.id, () => []);
+    expect(alias.self().id).toBe(requestedId);
+  });
+
   it("keeps the same topology API in local-only mode", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-topology-"));
     roots.push(root);

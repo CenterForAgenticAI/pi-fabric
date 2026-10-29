@@ -15,7 +15,10 @@ const managers: AgentManager[] = [];
 afterEach(async () => {
   await Promise.all(managers.splice(0).map(manager => manager.close()));
   vi.unstubAllEnvs();
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+  // Workers are closed above; Windows may briefly retain released file handles.
+  for (const root of roots.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
 });
 const setup = (scenario = "handled", accelerated = false, timeoutMs = 5_000) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-prompt-"));

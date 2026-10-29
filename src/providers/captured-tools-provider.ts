@@ -150,6 +150,8 @@ export class CapturedToolsProvider implements FabricProvider {
     const result = await this.#scheduler.run(entry.definition.executionMode, () =>
       runAbortable(context.signal, () => this.#invokeCaptured(entry, args, context)),
     );
+    // Native projection drops the flag, so report it out of band.
+    if (result.terminate === true && !result.isError) context.requestTerminate?.();
     return context.nativeToolResult ? nativeToolResult(entry.definition, result, result.isError) : result;
   }
 

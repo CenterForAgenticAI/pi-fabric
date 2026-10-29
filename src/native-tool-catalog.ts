@@ -64,6 +64,9 @@ export function searchNativeTools(entries: NativeToolEntry[], query: unknown, li
   if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit <= 0) throw new Error("searchTools() limit must be a positive integer");
   if (namespace != null && typeof namespace !== "string") throw new Error("searchTools() namespace must be a string");
   const docs = entries.filter(entry => !namespace || entry.namespace?.name === namespace || (entry.namespace && nativeToolIdentifier(entry.namespace.name) === namespace));
+  const exactQuery = query.trim();
+  const exact = docs.filter(entry => [entry.name, entry.rawName, entry.ref, entry.rawName.split("__").at(-1)].includes(exactQuery));
+  if (exact.length) return exact.slice(0, limit);
   const terms = [...new Set(tokenize(query))];
   const counts = docs.map(entry => {
     const map = new Map<string, number>();

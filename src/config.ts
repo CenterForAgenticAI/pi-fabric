@@ -79,6 +79,8 @@ interface FabricExecutorConfig {
   /** Policy maximum for any executor deadline, including per-invocation
    * requests and per-ref floors. Values above this are visibly normalized. */
   maxTimeoutMs: number;
+  /** Maximum uninterrupted guest CPU slice in ms; 0 disables the limit (Infinity). */
+  maxCpuSliceMs: number;
   /** Exact-ref deadline floors (ms) for known long-running host calls, e.g.
    * "extensions.subagent". Keys are exact refs; no wildcard matching. */
   hostCallTimeouts: Record<string, number>;
@@ -500,6 +502,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     codemodeProfile: "additive",
     timeoutMs: 120_000,
     maxTimeoutMs: 900_000,
+    maxCpuSliceMs: 0,
     hostCallTimeouts: {},
     humanWaitRefs: ["extensions.ask", "decisions.wait"],
     shellHangMs: DEFAULT_SHELL_HANG_MS,
@@ -1084,6 +1087,12 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
           .map(([ref, value]) => [ref, boundedInteger(value, 1_000, 1_000, executorMaxTimeoutMs)]),
       ),
       humanWaitRefs: humanWaitRefsValue(executor.humanWaitRefs),
+      maxCpuSliceMs: boundedInteger(
+        executor.maxCpuSliceMs,
+        DEFAULT_FABRIC_CONFIG.executor.maxCpuSliceMs,
+        0,
+        Number.MAX_SAFE_INTEGER,
+      ),
       timeoutMs: boundedInteger(
         executor.timeoutMs,
         DEFAULT_FABRIC_CONFIG.executor.timeoutMs,
