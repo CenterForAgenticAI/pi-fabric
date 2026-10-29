@@ -13,8 +13,9 @@ const native = (name: string): FabricActionDescriptor => {
 };
 const run = native("run");
 const properties = { ...(run.inputSchema as {properties: Record<string, unknown>}).properties };
+// modelMatch is resolved against this process's registry; the host owns model selection here.
 // Named agent files are a local-host feature; a hosted execution port never reads the caller's disk.
-for (const key of ["transport", "persona", "agent"]) delete properties[key];
+for (const key of ["transport", "persona", "modelMatch", "agent"]) delete properties[key];
 Object.assign(properties, {
   runner: {type: "string", enum: ["pi"]},
   kernel: {type: "string", enum: ["typescript", "inherit"]},
@@ -24,6 +25,7 @@ Object.assign(properties, {
   cwd: {type: "string", description: "Host-authorized placement selector; never resolved by Fabric"},
   images: {type: "array", items: {type: "object", properties: {type: {const: "image"}, data: {type: "string"}, mimeType: {type: "string"}}, required: ["type", "data", "mimeType"], additionalProperties: false}},
   systemPrompt: {type: "string"},
+  model: {type: "string", description: "Pi model selector for this child. The host resolves it with its own model registry and aliases; this hosted service has no exact-match mode."},
 });
 const runSchema = {type: "object", properties, required: ["task"], additionalProperties: false};
 const spawnSchema = {type: "object", properties: {...properties, residency: {type: "string", enum: ["session", "durable"]}}, required: ["task"], additionalProperties: false};
