@@ -236,6 +236,28 @@ describe("Fabric agent list", () => {
     expect(widget.render(100)[advisor]).toMatch(/^○ advisor/);
   });
 
+  it("hovers native Main without changing keyboard traversal or opening a conversation", () => {
+    const { widget, opened, released } = setup();
+    widget.focused = true;
+    widget.selectFirst();
+    expect(widget.render(100)[2]).toMatch(/^● security-reviewer/);
+
+    expect(mouse(widget, "move", 1)).toEqual({ handled: true, render: true });
+    expect(widget.render(100)[1]).toMatch(/^● Fabric/);
+    expect(widget.render(100)[2]).toMatch(/^○ security-reviewer/);
+    expect(mouse(widget, "move", 1)).toEqual({ handled: true });
+    // Leaving Main restores the retained keyboard selection, without a keypress.
+    mouse(widget, "move", 0);
+    expect(widget.render(100)[2]).toMatch(/^● security-reviewer/);
+    mouse(widget, "move", 1);
+    expect(widget.render(100)[1]).toMatch(/^● Fabric/);
+
+    // Main remains pointer-only: Up from the first agent returns to the editor.
+    widget.handleInput("\x1b[A");
+    expect(released()).toBe(1);
+    expect(opened).toEqual([]);
+  });
+
   it("a click on a row focuses the list when the host cannot open it", () => {
     const { widget, opened } = setup({ open: false });
     const lines = widget.render(100);
