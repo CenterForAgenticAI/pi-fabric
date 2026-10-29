@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import { AGENTS_ACTION_DESCRIPTORS } from "../src/providers/agents-actions.js";
 import { EXACT_MODEL_FORM_ERROR, EXACT_MODEL_RUNNER_ERROR } from "../src/core/model-resolution.js";
+import { modelPinFailure } from "../src/agents/model-pin.js";
 import type { FabricLifecyclePublishRequest } from "../src/lifecycle/types.js";
 import { snapshotHandoffSession } from "../src/agents/handoff.js";
 import {
@@ -469,7 +470,7 @@ describe("AgentManager", () => {
   };
   const flag = (args: string[], name: string): string | undefined => args[args.indexOf(name) + 1];
 
-  it("forces strict model admission and the exact-match flag for an exact request, on the first launch and on every retry, whatever agents.modelAdmission says", async () => {
+  it("forces strict model admission and the pin flag for an exact request, on the first launch and on every retry, whatever agents.modelAdmission says", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
     const manager = new AgentManager(process.cwd(), { ...DEFAULT_FABRIC_CONFIG.agents, modelAdmission: "permissive" }, {
@@ -493,7 +494,7 @@ describe("AgentManager", () => {
     }
   });
 
-  it("keeps the configured admission and sends no exact-match flag for a default request", async () => {
+  it("keeps the configured admission and sends no pin flag for a default request", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
     const manager = new AgentManager(process.cwd(), { ...DEFAULT_FABRIC_CONFIG.agents, modelAdmission: "permissive" }, {
@@ -589,6 +590,40 @@ describe("AgentManager", () => {
       fs.readFileSync(path.join(manager.runDirectory(result.id)!, "startup-attempts"), "utf8"),
     ).toBe("1");
   });
+
+  it("launches an exact run once when its pin error spells a credential error", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker-startup-retry.mjs"),
+      runRoot: root,
+      preparePiModel: async (model) => model,
+    });
+    managers.push(manager);
+
+    const result = await manager.run({ task: "Pin violation", model: "lab/pinned", modelMatch: "exact", transport: "process" });
+
+    expect(result.status).toBe("failed");
+    expect(result.error).toBe(modelPinFailure({ pinned: "lab/pinned", actual: "lab/missing credentials" }));
+    expect(fs.readFileSync(path.join(manager.runDirectory(result.id)!, "startup-attempts"), "utf8")).toBe("1");
+  });
+
+  it("still retries that credential-looking error when the run is not an exact one", async () => {
+    // Control: the pin rule is what stops the retry, not the error text.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker-startup-retry.mjs"),
+      runRoot: root,
+      preparePiModel: async (model) => model,
+    });
+    managers.push(manager);
+
+    const result = await manager.run({ task: "Pin violation", model: "lab/pinned", transport: "process" });
+
+    expect(result.status).toBe("failed");
+    expect(Number(fs.readFileSync(path.join(manager.runDirectory(result.id)!, "startup-attempts"), "utf8"))).toBeGreaterThan(1);
+  }, 30_000);
 
   it("retries a child whose transport exits before producing a result", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));

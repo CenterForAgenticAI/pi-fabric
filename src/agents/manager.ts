@@ -45,6 +45,7 @@ import {
   readHostedRunState,
   type HostedRunHooks,
 } from "./hosted-run.js";
+import { isModelPinFailure } from "./model-pin.js";
 import { resolvePiBinary } from "./pi-binary.js";
 import {
   inheritedSessionPinsFromEnv,
@@ -2270,6 +2271,10 @@ export class AgentManager {
   ): Promise<boolean> {
     if (
       managed.hosted ||
+      // Decided first, from the exit status and the fixed prefix: no text
+      // classifier below may see a pin error, because a model id can spell
+      // "missing credentials".
+      (managed.modelMatch === "exact" && isModelPinFailure(record)) ||
       // A custom worker that already made progress is never re-run blind.
       (!BUILT_IN_RUNNER_IDS.has(managed.runner) && this.#observedWork(managed)) ||
       managed.startupAttempts >= AGENT_STARTUP_MAX_ATTEMPTS ||
@@ -2317,6 +2322,7 @@ export class AgentManager {
       // Fabric never re-prompts a hosted run, and only its own worker
       // understands the continuation task and --carry-over prefix.
       managed.hosted ||
+      (managed.modelMatch === "exact" && isModelPinFailure(record)) ||
       !BUILT_IN_RUNNER_IDS.has(managed.runner) ||
       managed.settled ||
       this.#closing ||
