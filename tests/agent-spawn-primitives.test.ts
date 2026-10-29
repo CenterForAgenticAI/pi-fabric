@@ -385,6 +385,33 @@ describe("agent manager spawning primitives", () => {
     expect(await launchedTools(["-ask"])).not.toContain("ask");
   });
 
+  it("never gives a child fabric_exec its parent was not allowed", async () => {
+    const cwd = tempRoot("pi-fabric-fabric-exec-nested-");
+    const launchedTools = async (
+      request: Partial<AgentRunRequest>,
+      options: ConstructorParameters<typeof AgentManager>[2] = {},
+    ): Promise<string[]> => {
+      const { manager, runRoot } = createManager(cwd, options);
+      const result = await manager.run({ task: "x", transport: "process", tools: ["read"], ...request });
+      return JSON.parse(launchArgs(runRoot, result.id).tools!) as string[];
+    };
+    // A parent launched without fabric_exec: neither recursion, full code
+    // mode nor a Fabric kernel may hand its child the tool.
+    vi.stubEnv("PI_FABRIC_TOOL_ALLOWLIST", JSON.stringify(["read"]));
+    expect(await launchedTools({ recursive: true })).toEqual(["read"]);
+    expect(await launchedTools({ extensions: true }, { fullCodeMode: true })).toEqual(["read"]);
+    expect(await launchedTools({ extensions: true, kernel: "typescript" })).toEqual(["read"]);
+    // A catch-all pattern does not cover fabric_exec either.
+    vi.stubEnv("PI_FABRIC_TOOL_ALLOWLIST", JSON.stringify(["*"]));
+    expect(await launchedTools({ recursive: true })).toEqual(["read"]);
+    // A parent that holds fabric_exec still passes it on.
+    vi.stubEnv("PI_FABRIC_TOOL_ALLOWLIST", JSON.stringify(["read", "fabric_exec"]));
+    expect(await launchedTools({ recursive: true })).toEqual(["read", "fabric_exec"]);
+    // The host (no inherited allowlist) is unrestricted.
+    vi.stubEnv("PI_FABRIC_TOOL_ALLOWLIST", undefined);
+    expect(await launchedTools({ recursive: true })).toEqual(["read", "fabric_exec"]);
+  });
+
   it("inherits lineage roots and the caller policy in nested managers", async () => {
     const cwd = tempRoot("pi-fabric-wp7-nested-");
     fs.mkdirSync(path.join(cwd, "inside"));

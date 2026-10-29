@@ -1123,12 +1123,59 @@ const seedRunningDurableAgent = (state: RootHarness, options: { hosted: boolean 
 };
 
 // These run a real resident host, so they need the build output and a POSIX host.
+/** The per-run file a host with agents.durableWorkerRecovery writes beside a pi-durable run. */
+const writeWorkerRecoveryFile = (state: RootHarness, id: string, options: { deadlineAt: number }): void => {
+  const runDirectory = path.join(state.config.residencyRoot, "runs", id);
+  fs.writeFileSync(path.join(runDirectory, "worker-recovery.json"), JSON.stringify({
+    format: 1,
+    id,
+    runner: "pi-durable",
+    deadlineAt: options.deadlineAt,
+    // Never a live worker: recovery must not adopt or signal it.
+    pid: 2_147_483_646,
+    launch: { id, name: "orphaned durable worker", cwd: state.root, workerPath: path.join(state.root, "missing-worker.js"), workerArguments: ["--id", id] },
+    writtenAt: 1,
+  }));
+};
+
 const skipRealResidentHost = (skip: (condition: boolean, note?: string) => void): void => {
   skip(!hasResidentHost, "needs dist/residency/launcher.js; run `bun run build` first");
   skip(process.platform === "win32", "POSIX-only: on Windows spawnDetached does not detach the resident host, and the resident-host suites here are not verified there");
 };
 
 describe("durable wait after the resident host dies", () => {
+  it("settles an expired pi-durable marker without host authority as indeterminate instead of failing the wait (#314)", { timeout: 60_000 }, async ({ skip }) => {
+    skipRealResidentHost(skip);
+    const state = await rootHarness("resident-wait-indeterminate-worker");
+    state.config.piBinary = path.resolve("node_modules/.bin/pi");
+    vi.stubEnv("PI_CODING_AGENT_DIR", path.join(state.root, "pi-agent"));
+    const id = seedRunningDurableAgent(state, { hosted: false });
+    // This hand-written marker has no host-owned launch receipt. Authority
+    // validation must reject it before even considering the expired deadline.
+    writeWorkerRecoveryFile(state, id, { deadlineAt: Date.now() - 1 });
+    const client = new ResidencyClient({
+      config: state.config,
+      mesh: state.mesh,
+      participants: state.participants,
+      mainAgent: state.mainAgent,
+      hostPath,
+    });
+    try {
+      const result = await client.waitAgent(id, AbortSignal.timeout(40_000));
+      expect(result).toMatchObject({
+        id,
+        status: "failed",
+        outcome: "indeterminate",
+        error: "The recovery file does not match this host; the run outcome is indeterminate",
+      });
+      expect(fs.existsSync(path.join(state.config.residencyRoot, "runs", id, "worker-recovery.json"))).toBe(false);
+      await expect(client.waitAgent(id, AbortSignal.timeout(20_000))).resolves.toMatchObject(result);
+    } finally {
+      await client.close();
+      await state.participants.close();
+    }
+  });
+
   it("restarts the resident host once for concurrent waiters and returns the re-attached result", { timeout: 60_000 }, async ({ skip }) => {
     skipRealResidentHost(skip);
     const state = await rootHarness("resident-wait-dead-host");
@@ -1237,6 +1284,30 @@ describe("durable wait against a resident host that keeps dying", () => {
       // A later wait returns the settled record instead of failing again.
       await expect(client.waitAgent(id, AbortSignal.timeout(20_000))).resolves.toMatchObject({ status: "failed", outcome: "indeterminate" });
       expect(fs.existsSync(path.join(state.config.residencyRoot, "launches.log"))).toBe(false);
+    } finally {
+      await client.close();
+      await state.participants.close();
+    }
+  });
+
+  it("restarts the host for an opted-in pi-durable worker run that left a recovery file (#314)", { timeout: 30_000 }, async () => {
+    const state = await rootHarness("resident-wait-recoverable-worker");
+    const id = seedRunningDurableAgent(state, { hosted: false });
+    writeWorkerRecoveryFile(state, id, { deadlineAt: Date.now() + 60_000 });
+    const client = new ResidencyClient({
+      config: state.config,
+      mesh: state.mesh,
+      participants: state.participants,
+      mainAgent: state.mainAgent,
+      hostPath: crashingHostPath,
+    });
+    fs.writeFileSync(path.join(state.config.residencyRoot, "fake-host.json"), JSON.stringify({ hostId: client.hostId }));
+    try {
+      // A new host can adopt this run, so the wait restarts it instead of failing at once.
+      await expect(client.waitAgent(id, AbortSignal.timeout(20_000)))
+        .rejects.toThrow(/resident host .* stopped 3 times/);
+      const launches = fs.readFileSync(path.join(state.config.residencyRoot, "launches.log"), "utf8").trim().split("\n");
+      expect(launches).toHaveLength(3);
     } finally {
       await client.close();
       await state.participants.close();

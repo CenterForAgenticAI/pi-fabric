@@ -246,8 +246,8 @@ export const widgetFocusedRowLimit = (maxRows: number, terminalRows?: number): n
   return Math.max(limit, Math.floor(terminalRows * WIDGET_TERMINAL_ROW_SHARE));
 };
 
-/** Header row id when the main session is not itself selectable. */
-const HEADER_ROW = "";
+/** Pointer-only Main row id; distinct from no hover in the render-cache key. */
+const HEADER_ROW = "\0main";
 
 export class FabricWidget implements Component, Focusable {
   constructor(
@@ -328,10 +328,13 @@ export class FabricWidget implements Component, Focusable {
     // The spacer row, when drawn, sits above the header.
     const row = this.#rows.find((candidate) => candidate.line === event.y - this.#spacerRows);
     if (event.type === "move") {
-      // pi-tui has no leave event: the header and spacer rows, which the pointer
-      // crosses on its way back to the editor, clear the hover.
-      if (row?.id === this.#hoveredId) return { handled: true };
-      this.#hoveredId = row?.id;
+      // Native Main is not a keyboard row, but hovering its header must still
+      // override the retained agent selection after a conversation closes.
+      // The spacer and outside rows clear hover; pi-tui has no leave event.
+      const header = event.y === this.#spacerRows && (this.#lastLines?.length ?? 0) > this.#spacerRows;
+      const hoveredId = row?.id ?? (header ? HEADER_ROW : undefined);
+      if (hoveredId === this.#hoveredId) return { handled: true };
+      this.#hoveredId = hoveredId;
       return { handled: true, render: true };
     }
     if (event.type === "press") return { handled: true };
@@ -440,7 +443,9 @@ export class FabricWidget implements Component, Focusable {
       // The selected row draws a filled circle, so redraw with the new selection.
       if (this.focused) ({ lines, rows } = this.#content(snapshot, width));
     }
-    if (this.#hoveredId !== undefined && !rows.some((row) => row.id === this.#hoveredId)) this.#hoveredId = undefined;
+    if (this.#hoveredId !== undefined && this.#hoveredId !== HEADER_ROW && !rows.some((row) => row.id === this.#hoveredId)) {
+      this.#hoveredId = undefined;
+    }
     // Keep the header pinned while keyboard navigation brings any participant
     // or task into view. The footer replaces the old full task-list overlay.
     if (this.focused && body > 1) {

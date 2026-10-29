@@ -80,6 +80,8 @@ export interface AgentRunRequest {
   /** Child thinking bounds; must lie inside the caller's effective bounds. */
   thinkingBounds?: FabricThinkingBounds;
   tools?: string[];
+  /** Host-only attenuation across resident dispatch. Presence can only deny, never grant. */
+  recursiveToolAuthority?: "deny";
   timeoutMs?: number;
   extensions?: boolean;
   recursive?: boolean;

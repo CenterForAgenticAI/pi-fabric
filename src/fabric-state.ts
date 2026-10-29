@@ -20,6 +20,7 @@ import {
   type FabricSchemaMode,
 } from "./config.js";
 import { FabricSessionApprovals } from "./core/approval-controller.js";
+import { FabricActionPolicyHooks } from "./core/action-policy-hooks.js";
 import { readChildToolAllowlist } from "./core/child-tool-allowlist.js";
 import { NO_FOREGROUND, resolveForegroundTools, type FabricForegroundResolution } from "./core/foreground-tools.js";
 import { PrewalkController } from "./prewalk/controller.js";
@@ -92,6 +93,8 @@ export class FabricState {
   readonly prewalk = new PrewalkController();
   readonly prewalkDrift = new PrewalkDriftTracker();
   readonly sessionApprovals = new FabricSessionApprovals();
+  /** Extension hooks registered over pi.events; consulted only when approvals.policyHooks is true. */
+  readonly actionPolicyHooks = new FabricActionPolicyHooks();
   /** Foreground `fabric_exec` programs the Ctrl+B chord can move to the background. */
   readonly programTasks = new FabricProgramTasks();
   // agent_end must revert an override even before activation; the controller
@@ -301,6 +304,9 @@ export class FabricState {
   }
   participantInfos(options: FabricParticipantListOptions = {}): FabricParticipantInfo[] {
     return this.#current()?.participantInfos(options) ?? [];
+  }
+  residentAgentForUi(id: string): ReturnType<FabricRuntimeState["residentAgentForUi"]> {
+    return this.#current()?.residentAgentForUi(id);
   }
   queueUserMessage(targetId: string, message: string, delivery: FabricAgentMessageDelivery): Promise<FabricAgentMessageResult> {
     return this.#required().queueUserMessage(targetId, message, delivery);
@@ -569,6 +575,7 @@ export class FabricState {
         prewalk: this.prewalk,
         prewalkDrift: this.prewalkDrift,
         sessionApprovals: this.sessionApprovals,
+        actionPolicyHooks: this.actionPolicyHooks,
         thinking: await this.thinking.load(),
         ...(this.#options.paths ? { paths: this.#options.paths } : {}),
         ...(this.#entryIdentity ? { entryIdentity: this.#entryIdentity } : {}),

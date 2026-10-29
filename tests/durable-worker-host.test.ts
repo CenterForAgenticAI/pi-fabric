@@ -74,7 +74,9 @@ const fabricWorker = (name: string, code: string) => {
   const agentDir = path.join(root, name, "agent"); fs.mkdirSync(agentDir, { recursive: true });
   fs.writeFileSync(path.join(agentDir, "fabric.json"), JSON.stringify({ fullCodeMode: true, mesh: { enabled: false }, mcp: { enabled: false } }));
   const inherited = Object.fromEntries(["PI_FABRIC_DEPTH", "PI_FABRIC_BUDGET", "PI_FABRIC_BUDGET_FILE", "PI_FABRIC_BUDGET_ID", "PI_FABRIC_WRITE_POLICY", "PI_FABRIC_TOOL_ALLOWLIST", "PI_FABRIC_SCOPE", "PI_FABRIC_LINEAGE", "PI_FABRIC_PARENT_RUN", "PI_FABRIC_ACTOR_ID"].map(key => [key, undefined]));
-  return worker(name, ["-e", path.resolve("dist/index.js")], { ...inherited, PI_OFFLINE: "1", DURABLE_TEST_FABRIC_CODE: code });
+  // Loading an extension is not authority to call it. These journal probes need
+  // an exact fabric_exec grant as well as the core tools their programs use.
+  return worker(name, ["--tools", "read,write,bash,fabric_exec", "-e", path.resolve("dist/index.js")], { ...inherited, PI_OFFLINE: "1", DURABLE_TEST_FABRIC_CODE: code });
 };
 const holdOnGate = (gate: string) => `let gate = await pi.read({ path: ${JSON.stringify(gate)} });\nif (gate.includes("hold")) await tools.progress({ message: "holding" });\nwhile (gate.includes("hold")) { await new Promise(resolve => setTimeout(resolve, 50)); gate = await pi.read({ path: ${JSON.stringify(gate)} }); }\nreturn gate.includes("open") ? "gate-open" : "gate-closed";`;
 
@@ -102,6 +104,7 @@ describe("durable native RPC worker", () => {
     const args = ["--durable-directory", "state", "--durable-run-id", "run", "--append-system-prompt", "instructions", "--append-system-prompt", "schema", "--tools", "read,bash"];
     expect(parseDurableWorkerOptions(args).appendSystemPrompt).toBe("instructions\n\nschema");
     expect(parseDurableWorkerOptions(args).tools).toEqual(["read", "bash"]);
+    expect(parseDurableWorkerOptions([...args, "--exclude-tools", "fabric_exec"]).excludeTools).toEqual(["fabric_exec"]);
     expect(() => parseDurableWorkerOptions([])).toThrow("require");
     expect(() => parseDurableWorkerOptions([...args, "--unsafe"])).toThrow("Unsupported");
     expect(() => parseDurableWorkerOptions([...args, "--model"])).toThrow("Missing");
@@ -133,6 +136,47 @@ describe("durable native RPC worker", () => {
       expect(reopened.messages.filter(event => event.type === "tool_execution_start")).toHaveLength(0);
     } finally { await reopened.stop(); }
   }, 40000);
+
+  it("retains native wildcard exclusion across new, switch and reopened durable sessions", async () => {
+    const name = "authority-replay";
+    const probeFile = path.join(root, name, "active.jsonl");
+    const args = ["--tools", "*", "--exclude-tools", "fabric_exec", "-e", path.resolve("tests/fixtures/authority-pi-extension.ts"), "--model", "authority-offline/test"];
+    const environment = { AUTHORITY_PROBE_FILE: probeFile };
+    const host = await worker(name, args, environment);
+    const command = async (id: string, args: Record<string, unknown>) => {
+      host.send({ ...args, id });
+      const response = await host.wait(event => event.type === "response" && event.id === id);
+      expect(response).toMatchObject({ success: true });
+      return response;
+    };
+    const prompt = async (id: string) => {
+      const start = host.messages.length;
+      host.send({ type: "prompt", id, message: "report" });
+      await host.wait(event => event.type === "agent_settled", start);
+    };
+    const snapshots = () => fs.readFileSync(probeFile, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
+    let beforeReopen = 0;
+    try {
+      await prompt("first");
+      const initial = await command("initial", { type: "get_state" });
+      const initialCount = snapshots().length;
+      await command("new", { type: "new_session" });
+      await prompt("second");
+      const newCount = snapshots().length;
+      expect(newCount).toBeGreaterThan(initialCount);
+      await command("switch", { type: "switch_session", sessionPath: initial.data.sessionFile });
+      beforeReopen = snapshots().length;
+      expect(beforeReopen).toBeGreaterThan(newCount);
+    } finally { await host.stop(); }
+    const reopened = await worker(name, args, environment);
+    try {
+      expect(snapshots().length).toBeGreaterThan(beforeReopen);
+      for (const tools of snapshots()) {
+        expect(tools).toContain("read");
+        expect(tools).not.toContain("fabric_exec");
+      }
+    } finally { await reopened.stop(); }
+  }, 30000);
 
   it("keeps native image input, model selection, and distinct later prompts", async () => {
     const host = await worker("images", ["--no-tools"]);

@@ -8,6 +8,7 @@ import { assertWorkerRuntime, writeWorkerStartupFailure } from "./worker/startup
 import { MODEL_PIN_ENV, MODEL_PIN_EXIT_CODE, modelPinFailure, parseModelPinViolation } from "./agents/model-pin.js";
 import { explainMissingInstall } from "./worker/missing-install.js";
 import { normalizeRunDisplay } from "./run-display.js";
+import { nativeFabricExecExclusions } from "./core/child-tool-allowlist.js";
 
 import { StringDecoder } from "node:string_decoder";
 import type { ImageContent } from "@earendil-works/pi-ai";
@@ -143,6 +144,22 @@ const extractText = (message: Record<string, unknown>): string => {
     )
     .map((part) => part.text)
     .join("");
+};
+
+// Names the tool calls of an assistant message that stopped to run tools.
+// Undefined when the message is a final answer (or an error/abort).
+const toolUseStop = (message: Record<string, unknown>): string | undefined => {
+  if (message.stopReason !== "toolUse") return undefined;
+  const names = Array.isArray(message.content)
+    ? message.content.flatMap((part) => {
+        if (typeof part !== "object" || part === null || Array.isArray(part)) return [];
+        const block = part as Record<string, unknown>;
+        return block.type === "toolCall" && typeof block.name === "string" && block.name.trim()
+          ? [block.name.trim().slice(0, 100)]
+          : [];
+      })
+    : [];
+  return names.length > 0 ? [...new Set(names)].slice(0, 8).join(", ") : "unknown";
 };
 
 const readImages = (filePath: string | undefined): ImageContent[] => {
@@ -351,6 +368,10 @@ const main = async (): Promise<void> => {
   }
   if (options.tools.length > 0) piArguments.push("--tools", options.tools.join(","));
   else piArguments.push("--no-tools"); // explicit empty allowlist => no tools, not Pi defaults
+  // Native wildcard/modifier expansion must not resurrect the recursive tool.
+  // Persisted worker argv re-applies this boundary on every replay/relaunch.
+  const excludedTools = nativeFabricExecExclusions(options.tools);
+  if (excludedTools.length) piArguments.push("--exclude-tools", excludedTools.join(","));
   if (options.model) piArguments.push("--model", options.model);
   if (thinking) piArguments.push("--thinking", thinking);
   if (options.systemPrompt) piArguments.push("--append-system-prompt", options.systemPrompt);
@@ -479,6 +500,9 @@ const main = async (): Promise<void> => {
   let sawAgentError = false;
   let retryPending = false;
   let answerProjected = false;
+  // Set while the run's last assistant message stopped for tool calls; a later
+  // assistant message (the final answer) clears it.
+  let endedOnToolCall: string | undefined;
   let recordedResultPending = false;
   let recordedResultTimer: NodeJS.Timeout | undefined;
   const recordedResultId = `fabric-recorded-result:${options.id}`;
@@ -1007,6 +1031,7 @@ const main = async (): Promise<void> => {
         sawAgentError = true;
         terminalError = assistantError(last);
       }
+      endedOnToolCall = toolUseStop(last);
       enforceTokenLimit();
       update();
       if (!terminalStatus) {
@@ -1121,6 +1146,7 @@ const main = async (): Promise<void> => {
       const messageRecord = message as Record<string, unknown>;
       if (messageRecord.role !== "assistant") return;
       const text = extractText(messageRecord);
+      endedOnToolCall = toolUseStop(messageRecord);
       if (text || messageRecord.stopReason === "error" || messageRecord.stopReason === "aborted") {
         answerProjected = true;
       }
@@ -1557,6 +1583,12 @@ const main = async (): Promise<void> => {
         claudeSteering.length === 0 &&
         claudeFollowUps.length === 0) ||
       (options.runner === "veda" && vedaParsed !== undefined));
+  // A run that stopped after a tool batch (a tool returned terminate: true) has
+  // no final answer, so it must not read as a success.
+  if (isPi && childCompleted && !terminalStatus && endedOnToolCall) {
+    terminalStatus = "failed";
+    terminalError = `Pi ended the run after a tool call without a final answer (tool: ${endedOnToolCall})`;
+  }
   record.status = terminalStatus ?? (childCompleted ? "completed" : "failed");
   if (terminalError) record.error = terminalError;
   if (record.status === "failed" && !record.error) {

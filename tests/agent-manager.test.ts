@@ -1026,7 +1026,8 @@ describe("AgentManager", () => {
       capabilityRequirements: ["pi.read"],
     });
     expect(result.status).toBe("completed");
-    const tools = allowlist === 'invalid' ? ["fabric_exec"] : ["read", "fabric_exec"];
+    // Malformed inherited authority fails closed: no optional tools and no fabric_exec.
+    const tools = allowlist === 'invalid' ? [] : ["read", "fabric_exec"];
     expect(JSON.parse(result.text)).toMatchObject({
       cwd: fs.realpathSync(target), trustFlags: [], tools, toolAllowlistEnv: tools,
       grantedRisksEnv: ["agent"], fullCodeModeEnv: "true", extensions: true,

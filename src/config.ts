@@ -16,6 +16,7 @@ import {
   migrateFabricConfigDocument,
 } from "./config-migrations.js";
 import type { FabricComponentEntry } from "./components/types.js";
+import type { MeshDurability } from "./mesh/store.js";
 import type { FabricRisk } from "./protocol.js";
 import type { FabricKernel } from "./runtime/kernel.js";
 import {
@@ -113,6 +114,8 @@ export interface FabricApprovalConfig {
   headless?: "deny" | "decision";
   /** Headless approval decision deadline; absent means 5 minutes. */
   headlessTimeoutMs?: number;
+  /** Consult extension action policy hooks at the approve stage; absent means off. */
+  policyHooks?: boolean;
 }
 
 /** Session-start background revalidation scope for the MCP descriptor cache:
@@ -217,6 +220,11 @@ export interface FabricAgentConfig {
   extensions: boolean;
   defaultTools: string[];
   retainRuns: boolean;
+  /**
+   * Opt-in: a resident host re-attaches its unfinished built-in pi-durable
+   * worker runs after a restart, or relaunches them on their journal.
+   */
+  durableWorkerRecovery?: boolean;
   notifyOnComplete: boolean;
   budgetUsd: number;
   maxTokensPerChild: number;
@@ -336,6 +344,13 @@ export interface FabricMeshConfig {
   actorContextEntries: number;
   /** Tell a root session's model when other root sessions join or leave the project. */
   peerNotices: boolean;
+  /** Most stopped-session tombstones kept for agents.departed(); 0 writes none but still reads others'. */
+  departedLimit: number;
+  /** Age after which stopped and lost sessions leave agents.departed(). */
+  departedRetentionMs: number;
+
+  /** `"fsync"` flushes every committed mesh write to stable storage before the call returns. */
+  durability: MeshDurability;
 }
 
 interface FabricRepairsConfig {
@@ -552,6 +567,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     extensions: true,
     defaultTools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
     retainRuns: false,
+    durableWorkerRecovery: false,
     notifyOnComplete: true,
     budgetUsd: 0,
     maxTokensPerChild: 0,
@@ -617,6 +633,10 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     eventContextChars: 40_000,
     actorContextEntries: 14,
     peerNotices: true,
+    departedLimit: 32,
+    departedRetentionMs: 7 * 24 * 60 * 60 * 1_000,
+
+    durability: "default",
   },
   models: {
     aliases: {},
@@ -853,6 +873,9 @@ const compactionPressureBandsValue = (
 
 const actorScopeValue = (value: unknown, fallback: FabricActorScope): FabricActorScope =>
   value === "project" || value === "session" ? value : fallback;
+
+const meshDurabilityValue = (value: unknown, fallback: MeshDurability): MeshDurability =>
+  value === "default" || value === "fsync" ? value : fallback;
 
 const schemaModeValue = (value: unknown, fallback: FabricSchemaMode): FabricSchemaMode =>
   value === "off" || value === "audit" || value === "enforce" ? value : fallback;
@@ -1134,6 +1157,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       ...(approvals.headlessTimeoutMs === undefined ? {} : {
         headlessTimeoutMs: boundedInteger(approvals.headlessTimeoutMs, 300_000, 1_000, 86_400_000),
       }),
+      ...(approvals.policyHooks === true ? { policyHooks: true } : {}),
     },
     mcp: {
       enabled: booleanValue(mcp.enabled, DEFAULT_FABRIC_CONFIG.mcp.enabled),
@@ -1257,6 +1281,10 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       extensions: booleanValue(agents.extensions, DEFAULT_FABRIC_CONFIG.agents.extensions),
       defaultTools: configuredTools,
       retainRuns: booleanValue(agents.retainRuns, DEFAULT_FABRIC_CONFIG.agents.retainRuns),
+      durableWorkerRecovery: booleanValue(
+        agents.durableWorkerRecovery,
+        DEFAULT_FABRIC_CONFIG.agents.durableWorkerRecovery ?? false,
+      ),
       notifyOnComplete: booleanValue(
         agents.notifyOnComplete,
         DEFAULT_FABRIC_CONFIG.agents.notifyOnComplete,
@@ -1433,6 +1461,20 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         100,
       ),
       peerNotices: booleanValue(mesh.peerNotices, DEFAULT_FABRIC_CONFIG.mesh.peerNotices),
+      departedLimit: boundedInteger(
+        mesh.departedLimit,
+        DEFAULT_FABRIC_CONFIG.mesh.departedLimit,
+        0,
+        1_000,
+      ),
+      departedRetentionMs: boundedInteger(
+        mesh.departedRetentionMs,
+        DEFAULT_FABRIC_CONFIG.mesh.departedRetentionMs,
+        60_000,
+        90 * 24 * 60 * 60 * 1_000,
+      ),
+
+      durability: meshDurabilityValue(mesh.durability, DEFAULT_FABRIC_CONFIG.mesh.durability),
     },
     models: {
       aliases: normalizeModelAliases(modelsSection.aliases),

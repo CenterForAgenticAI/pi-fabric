@@ -266,6 +266,29 @@ describe("DurableAgent", () => {
     expect(seen.filter(s => s === "finish")).toHaveLength(2);
   });
 
+  it("accepts request tools rebuilt as same-name objects and runs the registered one", async () => {
+    const stale = vi.fn(async () => ({ content: [{ type: "text" as const, text: "stale" }], details: {} }));
+    const current = vi.fn(async () => ({ content: [{ type: "text" as const, text: "current" }], details: {} }));
+    const { agent, faux } = setup(new MemoryStorage(), [tool(stale)]);
+    // A tool loadout refresh replaces every tool object while the request context still holds the old ones.
+    agent.prepareRequest = ({ context }) => { agent.state.tools = [tool(current)]; return { context }; };
+    faux.setResponses([fauxAssistantMessage(fauxToolCall("effect", {}), { stopReason: "toolUse" }), fauxAssistantMessage("done")]);
+    await agent.prompt("go");
+    expect(agent.state.errorMessage).toBeUndefined();
+    expect(current).toHaveBeenCalledOnce();
+    expect(stale).not.toHaveBeenCalled();
+  });
+
+  it("refuses request tools whose name is not registered", async () => {
+    const { agent, faux } = setup(new MemoryStorage(), [tool(async () => ({ content: [], details: {} }))]);
+    const anonymous: AgentTool = { ...tool(async () => ({ content: [], details: {} })), name: "anonymous" };
+    agent.prepareRequest = ({ context }) => ({ context: { ...context, tools: [...(context.tools ?? []), anonymous] } });
+    faux.setResponses([fauxAssistantMessage("done")]);
+    await agent.prompt("go");
+    expect(agent.state.errorMessage).toBe("Durable request tools must be registered in agent.state.tools");
+    expect(faux.state.callCount).toBe(0);
+  });
+
   it("steers after tools and drains followups before idle", async () => {
     const { agent, faux } = setup();
     let n = 0;

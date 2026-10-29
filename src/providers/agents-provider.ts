@@ -849,6 +849,10 @@ export class AgentsProvider implements FabricProvider {
           this.participants.list({ scope: "project", kinds: ["root"] });
       case "peers":
         return this.participants.peers();
+      case "departed":
+        return this.participants.departed?.(
+          typeof args.limit === "number" ? { limit: args.limit } : {},
+        ) ?? [];
       case "definitions": {
         const { listAgentFiles } = await import("../agents/agent-files.js");
         return listAgentFiles(this.#agentFileRoots(context), (notice) => context.update(notice));
