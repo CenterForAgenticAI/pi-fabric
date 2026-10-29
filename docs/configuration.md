@@ -348,60 +348,21 @@ Credentials stay with Pi. Fabric hands a child agent only the model key, and the
 
 With `extensions: false` (per call, or as `agents.extensions`), a Pi child loads none of the user's extensions, so it gets the native tool surface without their tools, commands, or hooks. A model that comes from an extension still resolves. A small Fabric bridge loads the extension that registers the requested provider in an isolated runtime, keeps only that provider registration, and discards every tool, command, flag, renderer, and event handler the extension registered. Fabric first tries extensions whose path names the provider, then the other installed extensions; each tried extension's registration function runs once, and its event handlers never run. Project-local extensions count only in a project that Pi already trusts. Models built into Pi or defined in `models.json` skip the bridge entirely. When no installed extension registers the provider, the child fails before the task is sent, with an error that names the provider and suggests `extensions: true`. Strict model admission is unchanged. This covers both Pi runners (`pi-durable` and `pi`). Provider code that depends on its extension's session hooks, and virtual models routed with `pi.registerVirtualModel()`, still need `extensions: true`. Claude, Veda, and custom runners use their own model catalogs and are unaffected.
 
-### Bundled Coral Bricks provider
+### Installing a provider
 
-Fabric bundles the Coral Bricks provider extension, [`pi-coralbricks-provider`](https://www.npmjs.com/package/pi-coralbricks-provider), so `coralbricks/*` models are available after installing Fabric alone. Disclosure: Fabric's maintainers work at Coral Bricks.
+Install a third-party Pi provider extension separately with `pi install`, or define the provider in Pi's `models.json`. Fabric does not bundle third-party chat model provider extensions. Once Pi lists the provider, its `provider/id` keys work in each place listed above, including `extensions: false` children.
 
-Add a key once, in either form:
+For example, Coral Bricks users can install the optional provider and then authenticate inside Pi:
 
 ```sh
-/login coralbricks                # inside Pi; stores the key in auth.json
-export CORALBRICKS_API_KEY=...    # or in the environment
+pi install npm:pi-coralbricks-provider
 ```
 
-The provider registers keys such as `coralbricks/glm-5.3-fast` and `coralbricks/deepseek-v4.1-flash-fast`. Without a key it serves the model list shipped in the package and makes no network request. With a key it refreshes that list from Coral's API at session start and after `/login`. It loads as its own entry in Fabric's package (`node_modules/pi-coralbricks-provider/index.ts`), outside Fabric's startup graph, so `extensions: false` children resolve `coralbricks/*` models through the bridge above without loading Fabric's main extension.
-
-You can also install `pi-coralbricks-provider` yourself, for example to pick up a newer release before Fabric bundles it. When both copies load, the newest version registers the provider and the other one stays idle, so `/model` lists each model once.
-
-To leave the bundled provider out, replace the plain `npm:pi-fabric` entry in `~/.pi/agent/settings.json` (or a project's `.pi/settings.json`) with the package object form and exclude its path:
-
-```json
-{
-  "packages": [
-    { "source": "npm:pi-fabric", "extensions": ["!node_modules/pi-coralbricks-provider/**"] }
-  ]
-}
+```text
+/login coralbricks
 ```
 
-Fabric's own extension keeps loading. Use the same `source` you installed from (`git:github.com/fabric-runtime/pi-fabric` or a local path). After opting out, `coralbricks/*` models resolve only if you install the provider separately, and an `extensions: false` child that asks for one fails before the task is sent.
-
-Use the Coral Bricks keys wherever Fabric takes a model, for example in aliases that mix providers:
-
-```json
-{
-  "models": {
-    "aliases": {
-      "fast": ["coralbricks/deepseek-v4.1-flash-fast", "google/gemini-2.5-flash"],
-      "deep": { "model": "coralbricks/glm-5.3-fast", "thinking": "high" }
-    }
-  }
-}
-```
-
-Alias resolution uses the first target with a credential, so `fast` falls back to Gemini on a machine without a Coral Bricks key. A program can also run the same task on two providers side by side:
-
-```ts
-const task = "Summarize the error handling in src/worker.ts in five bullets.";
-const [coral, gemini] = await Promise.all([
-  agents.run({ model: "coralbricks/deepseek-v4.1-flash-fast", task, extensions: false }),
-  agents.run({ model: "google/gemini-2.5-flash", task, extensions: false }),
-]);
-return { coral: coral.text, gemini: gemini.text };
-```
-
-### Other providers
-
-Every other provider works the same way. Install its Pi extension with `pi install`, or define it in Pi's `models.json`, and its `provider/id` keys work in each place listed at the start of this section, including `extensions: false` children.
+Existing Coral Bricks users upgrading from a Fabric version that bundled the provider must install it separately to keep using `coralbricks/*` models. No Fabric package filter is needed.
 
 ## Result formatting
 
@@ -601,7 +562,7 @@ Authentication uses `/login jev`/`TYPESAFE_API_KEY` on the TypeSafe route, the e
 
 Fabric clears inactive run artifacts by age. It never truncates active JSONL files. The defaults are:
 
-- `retention.orphanedTempRunMs`: reclaim a managed temporary run root six hours after a sweep **first notices** its owner is dead, provided its contents and descendant liveness can be verified. Live owners/descendants are preserved. Closed, shutdown-confirmed incomplete runs use the same grace from close.
+- `retention.orphanedTempRunMs`: reclaim a managed temporary run root six hours after a sweep **first notices** its owner is dead, provided its contents and descendant liveness can be verified. Past that grace, any owned regular file or directory a run left counts as verified; links, hard-linked files, hosted-run locators, unfinished runs and unknown root entries still keep the root. Live owners/descendants are preserved. Closed, shutdown-confirmed incomplete runs use the same grace from close.
 - `retention.oneShotRunMs`: retain terminal one-shot agent run artifacts for 24 hours. An explicit `agents.cleanup()` may remove them sooner. Graceful shutdown with `agents.retainRuns: true` marks managed roots closed; empty roots are removed immediately. `retainRuns: false` requests deletion after child transports stop, including for managed temporary roots. Inherited nested roots belong to the enclosing agent run: a child manager stops its session children but leaves their terminal status and transcripts for that run's cleanup/retention or the root-session shutdown.
 - `retention.actorRunArchiveMs`: retain terminal actor run archives for seven days. Fabric always preserves the latest run for each actor.
 
@@ -642,7 +603,7 @@ Other agent settings:
 - `sessionExport`: export each agent run's usage as an attributed pi-format session file (on by default).
 - `sessionExportDir`: override the export store root (default `~/.pi-fabric/agent`, with `PI_FABRIC_AGENT_DIR` taking precedence).
 - `worktree.setup`: optional shell command (`/bin/sh`, or `cmd.exe` on Windows) run in each new `worktree: true` checkout before the child starts (unset by default; blank values are ignored). A per-request `worktreeSetup` overrides it, and a non-zero exit fails the launch. See [worktree results and setup](agents.md#transports).
-- `childQuestions`: `"cancel"` (default) cancels every dialog a Pi child opens; `"route"` forwards it to the parent's UI, or to a root-held [decision](decisions.md#routed-child-questions) when the parent has no UI.
+- `childQuestions`: `"cancel"` (default) cancels every dialog a Pi child opens; `"route"` forwards it to the parent's UI, or to a root-held [decision](decisions.md#routed-child-questions) when the parent has no UI. Durable runs always use a decision.
 - `childQuestionTimeoutMs`: default deadline for a routed child dialog (default `600000`, bounded to 1 s..24 h); a dialog's own timeout wins.
 - `childQuestionTools`: exact tool names a Pi child with extensions gets when `childQuestions` is `"route"` (default `["ask"]`; `[]` grants none). Entries with `*`, a leading `+` or `-`, and `fabric_exec` are dropped. The grant never widens an inherited allowlist and is skipped for an empty `tools` list and for `+name`/`-name` tool lists.
 

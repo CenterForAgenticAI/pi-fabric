@@ -72,6 +72,7 @@ export class RuntimeStateBuiltins {
             : {
                 powerShellToolDefinitionFactory,
                 shellJobs: shell.jobs, getShellHangMs: shell.getHangMs,
+                requireToolHooks: () => this.registry.hostPolicy?.active === true,
               },
         ),
       }));
