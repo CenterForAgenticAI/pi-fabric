@@ -1075,9 +1075,10 @@ export class ActorManager {
    * reject every queued message so subsequent execution is cancelled. Unlike
    * stop(), actors stay alive and idle — they keep their identity, session,
    * and subscriptions, and resume responding to future events. Returns the
-   * number of actors that had work to cancel. Also arms a short cooldown that
-   * suppresses host-event dispatch so the interrupt's own turn_end /
-   * agent_settled events do not immediately re-enqueue the actors.
+   * number of actors that had work to cancel. Also arms the stop-the-world
+   * gate, which suppresses host-event and mesh dispatch until the user sends
+   * a new message (the "input" host event), so the interrupt's own turn_end /
+   * agent_settled events do not re-enqueue the actors.
    */
   haltAll(): { halted: number } {
     if (!this.meshConfig.enabled) return { halted: 0 };
