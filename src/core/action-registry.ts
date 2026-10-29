@@ -145,6 +145,11 @@ export interface FabricCapabilityViewLease extends FabricCapabilityResolution {
   release(): Promise<void>;
 }
 
+/** Built-in providers that hide tools outside a child's allowlist. */
+interface AllowlistAwareProvider extends FabricProvider {
+  notPermitted?(actionName: string): string | undefined;
+}
+
 export interface FabricRegistryInvocationContext extends FabricInvocationContext {
   authorize?(action: ResolvedFabricAction): Promise<void>;
   approve(
@@ -1613,6 +1618,10 @@ export class ActionRegistry {
         ...(descriptor.name !== actionName ? { repairedFrom: actionName } : {}),
       };
     }
+    // A tool the parent has but this child's allowlist withholds is not
+    // unknown: say so, and never repair the name to a permitted neighbour.
+    const notPermitted = (provider as AllowlistAwareProvider).notPermitted?.(actionName);
+    if (notPermitted) throw new FabricResolutionError(notPermitted);
     if (!allowRepair) return { suggestions: [] };
     const declared = (await this.#declaredActionNames(provider, context)).filter(
       (name) => !activeQuarantinedRefNames().has(`${provider.name}.${name}`),
