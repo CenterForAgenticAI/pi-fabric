@@ -1,4 +1,5 @@
 import { readTraceContext } from "../agents/trace-context.js";
+import path from "node:path";
 import type { AgentRunCarryOver, AgentWorkerOptions } from "../agents/types.js";
 
 const argumentMap = (argv: readonly string[]): Map<string, string> => {
@@ -184,6 +185,18 @@ export const parseWorkerOptions = (
   if (selectedKernel !== undefined && (!isPi || !extensions)) {
     throw new Error("Explicit worker kernel requires the Pi runner with Fabric extensions enabled");
   }
+  const requiredExtensionsSource = optional(args, "required-extensions");
+  const requiredExtensions = requiredExtensionsSource === undefined
+    ? undefined
+    : JSON.parse(requiredExtensionsSource) as unknown;
+  if (
+    requiredExtensions !== undefined &&
+    (!isPi || extensions || !Array.isArray(requiredExtensions) || requiredExtensions.length === 0 ||
+      requiredExtensions.some((entry) => typeof entry !== "string" || !path.isAbsolute(entry)))
+  ) {
+    // The manager resolved these against the parent's loaded set; anything else is a broken launcher.
+    throw new Error("Invalid worker required extensions: a Pi runner with extensions false and absolute paths");
+  }
   // Old launchers had no flag and always used TypeScript, regardless of ambient env.
   const kernel = isPi && extensions ? selectedKernel ?? "typescript" : undefined;
   return {
@@ -209,6 +222,7 @@ export const parseWorkerOptions = (
     ...(mainAgentId ? { mainAgentId } : {}),
     ...(fabricSessionId ? { fabricSessionId } : {}),
     extensions,
+    ...(requiredExtensions ? { requiredExtensions: requiredExtensions as string[] } : {}),
     tools: JSON.parse(required(args, "tools")) as string[],
     grantedRisks: JSON.parse(required(args, "granted-risks")) as string[],
     transport: required(args, "transport") as AgentWorkerOptions["transport"],
