@@ -110,7 +110,7 @@ const displaySafeCwd = (cwd: string): string => {
 };
 
 const agentStartedMessage = (handle: AgentHandleInfo): string =>
-  `Agent ${handle.name} started via ${handle.runner}/${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""} · cwd ${displaySafeCwd(handle.cwd)}`;
+  `Agent ${handle.name} ${handle.status === "queued" ? "queued for a slot" : "started"} via ${handle.runner}/${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""} · cwd ${displaySafeCwd(handle.cwd)}`;
 
 // Resolve source and executor reasoning channels for the trajectory handoff
 // boundary. The executor model must be registered to transfer at all; an
@@ -674,6 +674,9 @@ export class AgentsProvider implements FabricProvider {
           runRequest(this.#resolvePiModelArgs(spawnArgs, context), context, this.manager, this.modelsConfig()),
           context,
         );
+        if (request.residency === "durable" && request.queue === true) {
+          throw new Error('queue: true is not supported with residency: "durable"');
+        }
         if (request.residency === "durable") this.#assertUnconfinedDurable();
         const kernel = this.manager.resolveKernel(request);
         const { kernel: _requestedKernel, ...requestWithScope } = request;
