@@ -232,6 +232,72 @@ describe("session label footer", () => {
     expect(presenter.labelPending).toBe(false);
   });
 
+  it("stops its timers at session_shutdown, before Pi invalidates the context", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+    try {
+      const handlers = new Map<string, Array<() => unknown>>();
+      const on = ((event: string, handler: () => unknown) => {
+        handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+        return () => handlers.set(event, (handlers.get(event) ?? []).filter((entry) => entry !== handler));
+      }) as unknown as ExtensionAPI["on"];
+      const label = vi.fn(() => "FAB-3");
+      const context = { mode: "tui", hasUI: true, ui: { setStatus: vi.fn() } } as unknown as ExtensionContext;
+      const presenter = new SessionLabelPresenter({ on } as unknown as ExtensionAPI, context, {
+        label, settings: () => settings(), environment: {}, intervalMs: 5_000,
+      });
+      presenters.push(presenter);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await presenter.settled();
+      expect(label).toHaveBeenCalled();
+
+      for (const handler of handlers.get("session_shutdown") ?? []) handler();
+      label.mockClear();
+      await vi.advanceTimersByTimeAsync(30_000);
+      for (const handler of handlers.get("session_info_changed") ?? []) handler();
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(label).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never rejects a sync on a stale context and stops syncing", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+    try {
+      let stale = false;
+      const reads = vi.fn();
+      const setStatus = vi.fn();
+      // Pi's context getters throw once the session is replaced or reloaded.
+      const context = {
+        get mode() {
+          reads();
+          if (stale) throw new Error("This extension ctx is stale after session replacement or reload.");
+          return "tui";
+        },
+        hasUI: true,
+        ui: { setStatus },
+      } as unknown as ExtensionContext;
+      const presenter = new SessionLabelPresenter({ on: () => () => undefined } as unknown as ExtensionAPI, context, {
+        label: () => "FAB-3", settings: () => settings(), environment: {}, intervalMs: 5_000,
+      });
+      presenters.push(presenter);
+      await presenter.sync();
+      expect(setStatus).toHaveBeenCalledWith(SESSION_LABEL_STATUS_KEY, "Fabric FAB-3");
+
+      stale = true;
+      await expect(presenter.sync()).resolves.toBeUndefined();
+      reads.mockClear();
+      await vi.advanceTimersByTimeAsync(30_000);
+      await presenter.settled();
+
+      expect(reads).not.toHaveBeenCalled();
+      await expect(presenter.close()).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("waits for the label to be minted and hides it when the setting is off", async () => {
     let label: string | undefined;
     const current = settings();
