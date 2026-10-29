@@ -176,7 +176,7 @@ reads each file and decides:
   reopens its journal, so completed work is not repeated.
 - **Worker recorded a stop but is still running.** Fabric waits up to seven
   seconds for it to exit and then relaunches it. If it is still running, the run
-  settles `indeterminate` rather than attempting another launch.
+  settles `indeterminate` and no new launch is attempted.
 - **Recovery file does not match this host.** A missing or mismatched host
   receipt, including a legacy marker-only run or a changed host policy, settles
   the run `indeterminate` without adopting or starting a process. The launch
@@ -185,7 +185,7 @@ reads each file and decides:
   directory cannot authorize a launch.
 - **No first status.** A valid marker can precede the worker's first status
   write. Recovery explicitly publishes a failed, `indeterminate` status and
-  removes the marker rather than silently leaving the run without an owner.
+  removes the marker. The run is not silently left without an owner.
   It does not guess at, signal or relaunch a possibly still-running worker.
 - **Deadline passed, or liveness cannot be verified.** This covers a PID owned
   by another user and an unreadable command line. The run settles `failed` with
@@ -194,8 +194,8 @@ reads each file and decides:
 
 The option is off by default; with it off, no file is written and behaviour is
 unchanged. A run launched while the option was on keeps its marker; changing
-the host policy (including turning the option off) settles it indeterminate
-instead of reviving the former authority. Windows, other transports, and
+the host policy (including turning the option off) settles it indeterminate.
+The former authority is not revived. Windows, other transports, and
 waits from another session of the project (`waitProjectAgent`) are not covered.
 
 A hard-killed outer worker can leave its detached durable child alive briefly.
