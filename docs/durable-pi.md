@@ -589,8 +589,9 @@ await host.session.prompt("...");
 **Worker role.** `declareWorkerSessionRole(sessionManager)` appends the same
 worker-role entry described under "Worker role" above to a session you already
 opened. It returns `"seeded"` when it wrote the entry and `"already-seeded"`
-when the session already declared the worker role, so a restart loop does not
-grow the file. Call it before the first prompt and before `bindExtensions`.
+when the latest host role declaration on the active branch is worker, so a restart
+loop does not grow the file. A sibling branch does not count, and a later host
+role override causes the helper to append a fresh worker declaration. Call it before the first prompt and before `bindExtensions`.
 Unlike a Fabric child, whose entry is the tree root, this one is appended after
 whatever the session already holds. Without it the session counts as a
 foreground session with a user at a terminal.

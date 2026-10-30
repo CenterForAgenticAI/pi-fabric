@@ -386,6 +386,28 @@ describe("declareWorkerSessionRole (embedding host)", () => {
     expect((written[0] as any).data).toEqual(workerPolicy);
   });
 
+  it("seeds a branch even when a sibling branch declares worker, then stays idempotent", () => {
+    const manager = SessionManager.inMemory("/tmp");
+    const root = manager.appendMessage({ role: "user", content: "root", timestamp: 1 });
+    manager.appendCustomEntry("context-aware.policy.v1", workerPolicy);
+    manager.branch(root);
+    expect(declareWorkerSessionRole(manager)).toBe("seeded");
+    expect(declareWorkerSessionRole(manager)).toBe("already-seeded");
+    expect(policies(manager.getEntries() as any[])).toHaveLength(2);
+    expect(policies(manager.getBranch() as any[])).toHaveLength(1);
+  });
+
+  it("reasserts worker after a later host override and ignores unrelated policy paths", () => {
+    const manager = SessionManager.inMemory("/tmp");
+    expect(declareWorkerSessionRole(manager)).toBe("seeded");
+    manager.appendCustomEntry("context-aware.policy.v1", { schemaVersion: 1, layer: "host", values: { sessionRole: "foreground" } });
+    manager.appendCustomEntry("context-aware.policy.v1", { schemaVersion: 1, layer: "host", values: { anotherSetting: true } });
+    expect(declareWorkerSessionRole(manager)).toBe("seeded");
+    manager.appendCustomEntry("context-aware.policy.v1", { schemaVersion: 1, layer: "host", values: { anotherSetting: false } });
+    expect(declareWorkerSessionRole(manager)).toBe("already-seeded");
+    expect(policies(manager.getBranch() as any[]).filter(entry => entry.data.values.sessionRole === "worker")).toHaveLength(2);
+  });
+
   it("still writes when the only policy on the session declares another role", () => {
     const manager = SessionManager.inMemory("/tmp");
     manager.appendCustomEntry("context-aware.policy.v1", { schemaVersion: 1, layer: "host", values: { sessionRole: "foreground" } });

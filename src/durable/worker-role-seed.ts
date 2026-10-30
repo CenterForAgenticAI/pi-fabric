@@ -61,23 +61,24 @@ export const workerRoleEntry = (id: string, parentId: string | null, timestamp: 
 /** The structural slice of a Pi `SessionManager` that `declareWorkerSessionRole` needs. */
 export interface WorkerRoleSessionManager {
   appendCustomEntry(customType: string, data?: unknown): unknown;
-  getEntries(): ReadonlyArray<{ type: string; customType?: string; data?: unknown }>;
+  getBranch(): ReadonlyArray<{ type: string; customType?: string; data?: unknown }>;
 }
 
-const declaresWorker = (entry: { type: string; customType?: string; data?: unknown }): boolean => {
-  if (entry.type !== "custom" || entry.customType !== DURABLE_WORKER_POLICY_ENTRY_TYPE) return false;
+const declaredRole = (entry: { type: string; customType?: string; data?: unknown }): unknown => {
+  if (entry.type !== "custom" || entry.customType !== DURABLE_WORKER_POLICY_ENTRY_TYPE) return undefined;
   const data = entry.data as { schemaVersion?: unknown; layer?: unknown; values?: { sessionRole?: unknown } } | undefined;
-  return data?.schemaVersion === 1 && data.layer === "host" && data.values?.sessionRole === "worker";
+  return data?.schemaVersion === 1 && data.layer === "host" ? data.values?.sessionRole : undefined;
 };
 
 /**
  * For an embedding host that owns its session: add the worker-role entry to an open
  * `SessionManager` before the first prompt. It appends, so call it on a new session if
  * the entry should be the tree root. Idempotent: returns "already-seeded" when an entry
- * on the session already declares the worker role, and "seeded" after writing one.
+ * on the active branch most recently declares the worker role, and "seeded" after writing one.
  */
 export const declareWorkerSessionRole = (sessionManager: WorkerRoleSessionManager): "seeded" | "already-seeded" => {
-  if (sessionManager.getEntries().some(declaresWorker)) return "already-seeded";
+  const roles = sessionManager.getBranch().map(declaredRole).filter(role => role !== undefined);
+  if (roles.at(-1) === "worker") return "already-seeded";
   sessionManager.appendCustomEntry(DURABLE_WORKER_POLICY_ENTRY_TYPE, workerRolePolicyData());
   return "seeded";
 };
