@@ -140,12 +140,13 @@ describe("session label footer", () => {
       else await vi.advanceTimersByTimeAsync(trigger === "interval" ? 250 : 500);
       await presenter.settled();
 
-      expect(mode).toHaveBeenCalledTimes(1);
+      // The sync reads mode once, then the catch checks whether the context is stale.
+      expect(mode).toHaveBeenCalledTimes(2);
       expect(vi.getTimerCount()).toBe(0);
       handlers.get("session_info_changed")?.();
       await vi.advanceTimersByTimeAsync(5_000);
       await expect(presenter.sync()).resolves.toBeUndefined();
-      expect(mode).toHaveBeenCalledTimes(1);
+      expect(mode).toHaveBeenCalledTimes(2);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
