@@ -33,15 +33,44 @@ export const addCloneFirstWorktree = async (
   args.push(dest);
   if (options.startPoint) args.push(options.startPoint);
   const added = await executeFile("git", args, { cwd: options.gitRoot, timeoutMs: 60_000 });
-  let cloned = false;
   try {
-    await cloneTree(options.gitRoot, dest, CLONE_SKIP_PREFIXES);
-    cloned = true;
+    let cloned = false;
+    try {
+      await cloneTree(options.gitRoot, dest, CLONE_SKIP_PREFIXES);
+      cloned = true;
+    } catch (error) {
+      // Only a filesystem without copy-on-write falls back to a plain checkout.
+      if (!(error instanceof CowUnavailableError)) throw error;
+    }
+    await executeFile("git", ["reset", "--hard", "HEAD"], { cwd: dest, timeoutMs: 60_000 });
+    await executeFile("git", ["clean", "-fd"], { cwd: dest, timeoutMs: 60_000 });
+    return { cloned, message: added.stdout.trim() };
   } catch (error) {
-    cloned = false;
-    if (!(error instanceof CowUnavailableError) && !(error instanceof Error)) throw error;
+    // `-B` may have reset a branch that existed before; only `-b` created it here.
+    await removeWorktree(options.gitRoot, dest, options.branch?.flag === "-b" ? options.branch.name : undefined)
+      .catch(() => undefined);
+    throw error;
   }
-  await executeFile("git", ["reset", "--hard", "HEAD"], { cwd: dest, timeoutMs: 60_000 });
-  await executeFile("git", ["clean", "-fd"], { cwd: dest, timeoutMs: 60_000 });
-  return { cloned, message: added.stdout.trim() };
+};
+
+/**
+ * Remove a worktree, then its branch when one is named. The branch is deleted
+ * even when the worktree removal fails; the first failure is rethrown.
+ */
+export const removeWorktree = async (gitRoot: string, worktree: string, branch?: string): Promise<void> => {
+  let failure: unknown;
+  try {
+    await executeFile("git", ["worktree", "remove", "--force", worktree], { cwd: gitRoot, timeoutMs: 60_000 });
+  } catch (error) {
+    if (fs.existsSync(worktree)) failure = error;
+    else await executeFile("git", ["worktree", "prune"], { cwd: gitRoot, timeoutMs: 30_000 }).catch(() => undefined);
+  }
+  if (branch) {
+    try {
+      await executeFile("git", ["branch", "-D", branch], { cwd: gitRoot, timeoutMs: 30_000 });
+    } catch (error) {
+      failure ??= error;
+    }
+  }
+  if (failure !== undefined) throw failure;
 };
