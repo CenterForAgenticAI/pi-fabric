@@ -151,6 +151,84 @@ describe("a new durable-session file", () => {
   });
 });
 
+describe("durable-session file safety", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+  const setup = () => {
+    const run = temporary();
+    const folder = path.join(run, "durable-session");
+    fs.mkdirSync(folder, { mode: 0o700 });
+    return { run, folder, file: path.join(folder, "session.jsonl") };
+  };
+
+  it.skipIf(process.platform === "win32")("rejects symlinks, including dangling ones, without touching targets", () => {
+    for (const dangling of [false, true]) {
+      const { run, file } = setup();
+      const target = path.join(temporary(), "target");
+      if (!dangling) { fs.writeFileSync(target, "keep"); fs.chmodSync(target, 0o644); }
+      fs.symlinkSync(target, file);
+      expect(() => createDurableSessionFile(run, run)).toThrow(/regular file/);
+      if (!dangling) { expect(fs.readFileSync(target, "utf8")).toBe("keep"); expect(fs.statSync(target).mode & 0o777).toBe(0o644); }
+    }
+  });
+
+  it("rejects a directory at the session path", () => {
+    const { run, file } = setup();
+    fs.mkdirSync(file);
+    expect(() => createDurableSessionFile(run, run)).toThrow(/regular file/);
+  });
+
+  it.skipIf(process.platform === "win32")("rejects foreign-owned files before cleanup or chmod", () => {
+    const { run, file } = setup();
+    fs.writeFileSync(file, "keep", { mode: 0o644 });
+    fs.chmodSync(file, 0o644);
+    const original = fs.lstatSync.bind(fs);
+    vi.spyOn(fs, "lstatSync").mockImplementation(((p: fs.PathLike, ...args: unknown[]) => {
+      const stat = original(p) as fs.Stats;
+      if (String(p) === file) Object.defineProperty(stat, "uid", { value: process.getuid!() + 1 });
+      return stat;
+    }) as typeof fs.lstatSync);
+    expect(() => createDurableSessionFile(run, run)).toThrow(/not owned/);
+    expect(fs.statSync(file).mode & 0o777).toBe(0o644);
+    expect(fs.readFileSync(file, "utf8")).toBe("keep");
+  });
+
+  it.skipIf(process.platform === "win32")("rejects external hard links without changing their permissions or bytes", () => {
+    const { run, file } = setup();
+    const external = path.join(temporary(), "external");
+    fs.writeFileSync(external, "keep"); fs.chmodSync(external, 0o644);
+    fs.linkSync(external, file);
+    expect(() => createDurableSessionFile(run, run)).toThrow(/hard links/);
+    expect(fs.statSync(external).mode & 0o777).toBe(0o644);
+    expect(fs.readFileSync(external, "utf8")).toBe("keep");
+  });
+
+  it.skipIf(process.platform === "win32")("tightens an existing safe file without changing its contents", () => {
+    const { run, file } = setup();
+    fs.writeFileSync(file, "keep"); fs.chmodSync(file, 0o666);
+    expect(createDurableSessionFile(run, run)).toBe(file);
+    expect(fs.statSync(file).mode & 0o7777).toBe(0o600);
+    expect(fs.readFileSync(file, "utf8")).toBe("keep");
+  });
+
+  it.skipIf(process.platform === "win32")("rejects unsafe race winners and cleans the losing temporary file", () => {
+    for (const kind of ["symlink", "directory", "hardlink"] as const) {
+      const run = temporary();
+      const folder = path.join(run, "durable-session");
+      const file = path.join(folder, "session.jsonl");
+      const target = path.join(temporary(), "target");
+      fs.writeFileSync(target, "keep"); fs.chmodSync(target, 0o644);
+      expect(() => createDurableSessionFile(run, run, { beforeLink: () => {
+        if (kind === "symlink") fs.symlinkSync(target, file);
+        else if (kind === "directory") fs.mkdirSync(file);
+        else fs.linkSync(target, file);
+      } })).toThrow(kind === "hardlink" ? /hard links/ : /regular file/);
+      expect(fs.readdirSync(folder)).toEqual(["session.jsonl"]);
+      expect(fs.readFileSync(target, "utf8")).toBe("keep");
+      expect(fs.statSync(target).mode & 0o777).toBe(0o644);
+    }
+  });
+});
+
 describe("durable-session creation is atomic", () => {
   const leftovers = (folder: string) => fs.readdirSync(folder).filter(name => name !== "session.jsonl");
 

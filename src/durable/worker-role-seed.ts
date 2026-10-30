@@ -174,6 +174,29 @@ const reclaimLeftoverTemps = (folder: string, file: string): void => {
   }
 };
 
+/** Validate existing files and link-race winners before returning them to Pi. */
+const secureSessionFile = (folder: string, file: string): void => {
+  const stat = fs.lstatSync(file);
+  const uid = currentUid();
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Session file must be a regular file: ${file}`);
+  if (uid !== undefined && stat.uid !== uid) throw new Error(`Session file is not owned by this user: ${file}`);
+  reclaimLeftoverTemps(folder, file);
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | NO_FOLLOW);
+  try {
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino || (uid !== undefined && opened.uid !== uid)) {
+      throw new Error(`Session file changed while opening: ${file}`);
+    }
+    if (opened.nlink !== 1) throw new Error(`Session file has external hard links: ${file}`);
+    if (process.platform !== "win32" && (opened.mode & 0o7777) !== 0o600) {
+      fs.fchmodSync(fd, 0o600);
+      if ((fs.fstatSync(fd).mode & 0o7777) !== 0o600) throw new Error(`Session file permissions could not be secured: ${file}`);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+};
+
 /**
  * Create the durable child's private session file, or reuse the existing one.
  *
@@ -183,8 +206,10 @@ const reclaimLeftoverTemps = (folder: string, file: string): void => {
  * header, then the worker-role entry as the tree root): the content goes to
  * `tmp-<uuid>.jsonl` in the same folder (exclusive create, no link following),
  * is synced, then hard-linked to `session.jsonl`. Exactly one concurrent creator
- * wins the link; the others keep the winner's file. An existing file is returned
- * untouched. A crash leaves at most a stray `tmp-<uuid>.jsonl`, possibly as a
+ * wins the link; the others validate the winner's file. Existing files must be
+ * regular, owned by this user and have no external hard links; their permissions
+ * are tightened to 0600 if necessary, without changing their content. A crash
+ * leaves at most a stray `tmp-<uuid>.jsonl`, possibly as a
  * second name for `session.jsonl`; a relaunch removes it and run retention
  * reclaims the pair with the run.
  */
@@ -204,7 +229,7 @@ export const createDurableSessionFile = (
     exists = false;
   }
   if (exists) {
-    reclaimLeftoverTemps(folder, file);
+    secureSessionFile(folder, file);
     return file;
   }
   const timestamp = new Date().toISOString();
@@ -212,6 +237,7 @@ export const createDurableSessionFile = (
   try {
     const fd = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | NO_FOLLOW, 0o600);
     try {
+      if (process.platform !== "win32") fs.fchmodSync(fd, 0o600); // independent of umask
       fs.writeSync(fd, jsonLines([sessionHeader(cwd, timestamp), workerRoleEntry(randomUUID().slice(0, 8), null, timestamp)]));
       fs.fsyncSync(fd);
     } finally {
@@ -226,6 +252,6 @@ export const createDurableSessionFile = (
   } finally {
     fs.rmSync(temporary, { force: true });
   }
-  reclaimLeftoverTemps(folder, file); // a winner that has linked but not yet unlinked its temp
+  secureSessionFile(folder, file); // validate the winner and reclaim its leftover temp
   return file;
 };
