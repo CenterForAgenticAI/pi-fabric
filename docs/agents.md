@@ -119,6 +119,21 @@ return results.map(result => result.status === "fulfilled"
 
 `systemPrompt` on `agents.run` or `agents.spawn` adds text to the child's system prompt. Fabric joins it ahead of any [component model guidance](components.md), and Pi and Claude children append the result to their system prompt with `--append-system-prompt`. A Veda child receives it as a `<system_instructions>` block in its prompt. A blank value is ignored, and durable `agents.spawn` refuses it.
 
+### Child skills
+
+`skills` on `agents.run` or `agents.spawn` chooses the child's Pi skills by name. Fabric looks up each name among the skills this session has loaded, as Pi lists them in its `skill:` commands. A child never gets a skill this session does not have, and a path in place of a name is refused.
+
+| Value | The child gets |
+| --- | --- |
+| omitted | Pi's own skill discovery, as before. |
+| `false` | No skills. |
+| `["writing", "review"]` | Those skills preloaded in full, plus this session's other skills in its skill list. |
+| `{ preload: ["writing"], inherit: false }` | Only the preloaded skills. |
+
+A preloaded skill is placed in the child's system prompt in full, in the `<skill>` block Pi uses for `/skill:name`, after any `systemPrompt` and ahead of component model guidance. Fabric starts the child with `--no-skills` and one `--skill` for each skill it may still list, so it does not run its own discovery. Fabric's bundled skills come from the parent's list too; a child with `skills: false` has none of them.
+
+An unknown name fails before any child starts. The error lists this session's skill names and suggests the closest one. A listed skill whose file cannot be read also fails. Only the `pi` and `pi-durable` runners accept `skills`; Claude and Veda children refuse it before launch, including `skills: false`. `extensions: false` children accept it, because Pi loads skills without extensions. Durable `agents.spawn` refuses it, like `systemPrompt`.
+
 ### Named agent files
 
 A named agent file saves the settings of a child agent in a Markdown file with YAML frontmatter. Pass its name as `agent` to `agents.run` or `agents.spawn` and Fabric fills the request from the file. Files written for Claude Code subagents and for Pi agent profiles load unchanged.
@@ -163,9 +178,11 @@ A project file shadows a user file with the same `name`. Fabric reads the projec
 | `model` | `model` | Resolved like a call's `model`, so `models.aliases` names and their thinking levels apply. `inherit` or no value sets nothing. |
 | `tools` | `tools` | A YAML list or a comma-separated string. Claude Code names map to Pi names without regard to case: `Read` to `read`, `Grep` to `grep`, `Glob` to `find`, `LS` to `ls`, `Bash` to `bash`, `Edit`, `MultiEdit` to `edit`, `Write` to `write`. Other names stay as written. No value means the default allowlist. |
 | `thinking` or `effort` | `thinking` | One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Writing both is an error. |
+| `skills` | `skills` | Skill names to preload (see [Child skills](#child-skills)), as a YAML list or a comma-separated string. An entry can also be `{ name, required }`; a missing skill with `required: false` is skipped with a warning. `source` and `version` load with a warning and are not used. A path is an error. An empty list preloads nothing. |
+| `context.skills` | `skills.inherit` | `true` (the default) keeps this session's other skills in the child's skill list; `false` leaves only the preloaded ones. Other `context` keys are ignored with a warning. |
 | `runtimes.fabric` | request fields | Fabric-only settings under their request field names: `runner`, `kernel`, `model`, `thinking`, `tools`, `timeoutMs`, `readOnly`. They win over the shared fields above. An unknown key is an error. |
 
-Any other top-level field, such as `color`, `skills`, `delegate` or `permissionMode`, is ignored. Fabric reports each one as a warning in `agents.definitions()` and in the run's progress notice. It never fails the run, so a file written for another tool keeps loading. Pi agent profiles accept only seven keys, so a file in `.pi/agents` that you share with that tool must keep to them. Put Fabric-only settings under `runtimes.fabric` only in a folder that tool does not read.
+Any other top-level field, such as `color`, `delegate` or `permissionMode`, is ignored. Fabric reports each one as a warning in `agents.definitions()` and in the run's progress notice. It never fails the run, so a file written for another tool keeps loading. Pi agent profiles accept only seven keys, so a file in `.pi/agents` that you share with that tool must keep to them. Put Fabric-only settings under `runtimes.fabric` only in a folder that tool does not read.
 
 **Override rule.** Fabric fills a request field from the file only when the call leaves it out. A field passed on the call, including an empty list, always wins. `agents.spawn` with `residency: "durable"` refuses a file that has a body, because a durable spawn does not accept `systemPrompt`.
 
@@ -173,7 +190,7 @@ Any other top-level field, such as `color`, `skills`, `delegate` or `permissionM
 
 **Listing.** `agents.definitions()` returns `{ name, description, path, scope, shadows?, warnings, error? }[]` with `scope` set to `"user"` or `"project"`. `shadows` is the path of the user file a project file replaces. A file that cannot be read appears with an `error`. The call reads the folders each time and starts no child.
 
-Fabric does not read actor templates from files (they stay in `global-actors.json`), does not look in `.claude/agents`, and does not preload skills. Fabric loads the file reader and its YAML parser on first use, so a session that never names an agent does not pay for them.
+Fabric does not read actor templates from files (they stay in `global-actors.json`), and does not look in `.claude/agents`. Fabric loads the file reader and its YAML parser on first use, so a session that never names an agent does not pay for them.
 
 ### Requested models are authoritative
 

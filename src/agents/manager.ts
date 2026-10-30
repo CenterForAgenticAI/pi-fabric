@@ -1000,6 +1000,9 @@ export class AgentManager {
     if (request.persona && runner !== "veda") {
       throw new Error(`The persona option is only supported by the Veda runner, not ${runner}`);
     }
+    if (request.childSkills && runner !== "pi" && runner !== "pi-durable") {
+      throw new Error(`The skills option is supported only by the Pi runners, not ${runner}`);
+    }
     if (request.persistSession === true && runner !== "claude") {
       throw new Error("persistSession is only supported by the Claude runner");
     }
@@ -1233,7 +1236,7 @@ export class AgentManager {
       const componentGuidance = recursive
         ? undefined
         : this.#resolveParticipantGuidance?.({ ...(model ? { model } : {}), runner })?.trim();
-      const systemPrompt = [request.systemPrompt?.trim(), componentGuidance]
+      const systemPrompt = [request.systemPrompt?.trim(), request.childSkills?.preload, componentGuidance]
         .filter((section): section is string => Boolean(section))
         .join("\n\n") || undefined;
       const sessionExportDir = resolveSessionExportDir(this.config);
@@ -1335,6 +1338,7 @@ export class AgentManager {
         ...(thinking ? ["--thinking", thinking] : []),
         ...(serializedThinkingBounds ? ["--thinking-bounds", serializedThinkingBounds] : []),
         ...(systemPrompt ? ["--system-prompt", systemPrompt] : []),
+        ...(request.childSkills ? ["--skills", JSON.stringify(request.childSkills.catalog)] : []),
         "--persist-session",
         String(request.persistSession === true),
         ...(durableSession ? ["--durable-session", "true"] : []),

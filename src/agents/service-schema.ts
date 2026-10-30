@@ -15,7 +15,7 @@ const run = native("run");
 const properties = { ...(run.inputSchema as {properties: Record<string, unknown>}).properties };
 // modelMatch is resolved against this process's registry; the host owns model selection here.
 // Named agent files are a local-host feature; a hosted execution port never reads the caller's disk.
-for (const key of ["transport", "persona", "modelMatch", "agent"]) delete properties[key];
+for (const key of ["transport", "persona", "modelMatch", "agent", "skills"]) delete properties[key];
 Object.assign(properties, {
   runner: {type: "string", enum: ["pi"]},
   kernel: {type: "string", enum: ["typescript", "inherit"]},

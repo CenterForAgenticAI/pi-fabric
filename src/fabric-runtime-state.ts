@@ -1120,6 +1120,7 @@ export class FabricRuntimeState {
       () => this.#config?.models ?? DEFAULT_FABRIC_CONFIG.models,
     );
     agentsProvider.providerParticipants = providerParticipants;
+    agentsProvider.sessionCommands = () => this.pi.getCommands();
     this.#agentsProvider = agentsProvider;
     this.#control.start((command, from, signal) =>
       agentsProvider.acceptControl(command, from, signal));

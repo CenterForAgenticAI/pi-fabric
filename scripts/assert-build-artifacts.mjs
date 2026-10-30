@@ -57,6 +57,7 @@ const lazy = [
   "agents/result.js",
   "agents/veda-cli.js",
   "agents/agent-files.js",
+  "agents/child-skills.js",
   "agents/provider-bridge.js",
   "agents/model-pin-guard.js",
   "core/host-sdk.js",

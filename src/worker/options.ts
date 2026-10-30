@@ -70,6 +70,11 @@ export const parseWorkerOptions = (
   const schemaFile = optional(args, "schema-file");
   const imagesFile = optional(args, "images-file");
   const systemPrompt = optional(args, "system-prompt");
+  const skillsSource = optional(args, "skills");
+  const skills = skillsSource === undefined ? undefined : JSON.parse(skillsSource) as unknown;
+  if (skills !== undefined && (!Array.isArray(skills) || !skills.every((entry) => typeof entry === "string" && entry.length > 0))) {
+    throw new Error("Invalid worker skills list");
+  }
   const sessionFile = optional(args, "session-file");
   const persistSessionSource = optional(args, "persist-session");
   if (persistSessionSource !== undefined && persistSessionSource !== "true" && persistSessionSource !== "false") {
@@ -224,6 +229,7 @@ export const parseWorkerOptions = (
     ...(thinking ? { thinking } : {}),
     ...(thinkingBounds ? { thinkingBounds } : {}),
     ...(systemPrompt ? { systemPrompt } : {}),
+    ...(skills ? { skills: skills as string[] } : {}),
     ...(persistSession ? { persistSession: true } : {}),
     ...(durableSessionSource === "true" ? { durableSession: true } : {}),
     ...(modelAdmission ? { modelAdmission } : {}),
