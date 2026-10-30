@@ -37,7 +37,7 @@ export default function (pi) {
 `;
 
 function fixture(options: {
-  extensions: Array<{ dir: string; provider?: string; project?: boolean }>;
+  extensions: Array<{ dir: string; provider?: string; project?: boolean; source?: (marker: string) => string }>;
   settings?: Record<string, unknown>;
   models?: Record<string, unknown>;
 }) {
@@ -55,7 +55,7 @@ function fixture(options: {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const marker = path.join(root, `${extension.dir}.marker`);
     markers[extension.dir] = marker;
-    fs.writeFileSync(file, extensionSource(marker, extension.provider));
+    fs.writeFileSync(file, extension.source?.(marker) ?? extensionSource(marker, extension.provider));
     if (!extension.project) globalPaths.push(file);
   }
   fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ extensions: globalPaths, ...options.settings }));
@@ -182,6 +182,41 @@ describe("extension provider bridge", () => {
     const excluded = path.join(path.dirname(agentDir), "packages", "pi-acme-provider", "index.ts");
     await expect(resolveExtensionProviders({ model: "acme/m1", cwd, agentDir, exclude: [excluded] }))
       .rejects.toThrow(/needs provider "acme"/);
+  });
+
+  it.each([
+    ["a provider registration with its own stream", (marker: string) => `
+import fs from "node:fs";
+export default function (pi) {
+  fs.appendFileSync(${JSON.stringify(marker)}, "loaded\\n");
+  pi.registerProvider("relay", { api: "relay-api", streamSimple: () => { throw new Error("fixture stream"); } });
+}
+`],
+    ["a global API provider registration", (marker: string) => `
+import fs from "node:fs";
+import { registerApiProvider } from "@earendil-works/pi-ai/compat";
+export default function (pi) {
+  fs.appendFileSync(${JSON.stringify(marker)}, "loaded\\n");
+  const stream = () => { throw new Error("fixture stream"); };
+  registerApiProvider({ api: "relay-api", stream, streamSimple: stream }, "relay-fixture");
+}
+`],
+  ] as const)("loads the extension that provides a models.json model's stream API through %s", async (_kind, source) => {
+    const { getApiProvider, unregisterApiProviders } = await import("@earendil-works/pi-ai/compat");
+    const { cwd, agentDir, loads } = fixture({
+      extensions: [{ dir: "pi-unrelated" }, { dir: "pi-relay", source }],
+      models: { providers: { relay: { baseUrl: "https://relay.invalid/v1", apiKey: "none", api: "relay-api",
+        models: [{ id: "m1", name: "Relay", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1024 }] } } },
+    });
+    try {
+      expect(getApiProvider("relay-api")).toBeUndefined();
+      const found = await resolveExtensionProviders({ model: "relay/m1", cwd, agentDir });
+      expect(loads("pi-relay")).toEqual(["loaded"]);
+      const viaConfig = found?.configs.some(({ name, config }) => name === "relay" && config.api === "relay-api" && config.streamSimple);
+      expect(viaConfig || getApiProvider("relay-api") !== undefined).toBe(true);
+    } finally {
+      unregisterApiProviders("relay-fixture");
+    }
   });
 
   it.each([
