@@ -64,7 +64,7 @@ interface FabricAgentRequest {
   runner?: FabricAgentRunner;
   transport?: FabricTransport;
   model?: string;
-  /** Pi only. "exact": model must be a visible provider/id; no alias, closest-match or fuzzy step and no alias thinking level; refused before launch otherwise. */
+  /** Pi only. "exact": select a visible provider/id without aliases or fuzzy matching; strict admission and a partial guard are not final-dispatch enforcement. Later hooks, unknown APIs, providers or extension calls can route data elsewhere. */
   modelMatch?: "exact";
   holdQuestions?: true;
   persona?: string;

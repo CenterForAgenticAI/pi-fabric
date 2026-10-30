@@ -65,7 +65,7 @@ export interface AgentRunRequest {
   pythonRuntime?: FabricPythonRuntime;
   transport?: FabricAgentTransport;
   model?: string;
-  /** "exact": Pi only; model must be a visible provider/id, with no alias, closest-match or fuzzy step. */
+  /** "exact": Pi only; select a visible provider/id without aliases or fuzzy matching. This is not final-dispatch enforcement: later hooks, unknown APIs, providers or extension calls can route data elsewhere. */
   modelMatch?: FabricModelMatch;
   /**
    * A routed question from this run waits for a person: it is raised as a
@@ -307,7 +307,7 @@ export interface AgentWorkerOptions {
   /** pi-durable only (agents.durableWorkerSession): keep a session file in the run directory. */
   durableSession?: boolean;
   modelAdmission?: "strict" | "permissive";
-  /** "exact": the child is pinned to `model`; the worker forces strict admission and loads the pin guard. */
+  /** "exact": strict admission and a pin guard, not final-dispatch enforcement; later hooks, unknown APIs, providers or extension calls can route data elsewhere. */
   modelMatch?: FabricModelMatch;
   sessionFile?: string;
   sessionExportFile?: string;

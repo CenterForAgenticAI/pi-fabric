@@ -2999,6 +2999,11 @@ describe("AgentsProvider switchModel", () => {
         properties: Record<string, unknown>;
       };
       expect(schema.properties.modelMatch).toMatchObject({ type: "string", enum: ["exact"] });
+      const description = (schema.properties.modelMatch as { description: string }).description;
+      expect(description).toMatch(/not a security guarantee or final-dispatch enforcement/);
+      expect(description).toMatch(/later hooks, unknown API payloads, providers and extension-made calls/i);
+      expect(description).toMatch(/only after a call/);
+      expect(description).toMatch(/Do not rely on it to prevent data disclosure/);
       expect(Value.Check(schema, { task: "t", model: "provider/model-a", modelMatch: "exact" })).toBe(true);
       expect(Value.Check(schema, { task: "t", model: "provider/model-a", modelMatch: "fuzzy" })).toBe(false);
     }
@@ -3012,6 +3017,18 @@ describe("AgentsProvider switchModel", () => {
     const handoff = (await provider.describe("handoff", context))?.inputSchema as Parameters<typeof Value.Check>[0];
     expect(Value.Check(handoff, { model: "provider/model-a" })).toBe(true);
     expect(Value.Check(handoff, { model: "provider/model-a", modelMatch: "exact" })).toBe(false);
+  });
+
+  it("prominently documents the exact-model contract before use", () => {
+    for (const file of ["docs/agents.md", "skillsets/typescript/fabric-exec/references/agents.md", "skillsets/python/fabric-exec/references/agents.md"]) {
+      const text = fs.readFileSync(file, "utf8");
+      const start = text.indexOf("modelMatch");
+      const warning = text.indexOf("not a security guarantee or final-dispatch enforcement", start);
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(warning).toBeGreaterThan(start);
+      expect(text.slice(warning, warning + 400)).toMatch(/later hooks, unknown API payloads, providers[, ]+and extension-made calls/i);
+      expect(text.slice(warning, warning + 400)).toMatch(/prevent data disclosure/);
+    }
   });
 
   it("launches near-miss models canonically while isolating unrelated batch failures", async () => {

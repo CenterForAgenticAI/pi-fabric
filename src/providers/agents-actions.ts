@@ -42,7 +42,7 @@ const runProperties = {
     type: "string",
     enum: ["exact"],
     description:
-      "Pi runners only (pi, pi-durable). \"exact\" requires model as a provider/id listed by agents.models({ runner: \"pi\" }) and runs exactly that model: no models.aliases step (an alias named like the model is ignored), no closest or fuzzy match, and no alias thinking level. An unlisted model or any other selector is refused before a child starts, as is any other runner. Omit it for the default resolution.",
+      "Pi runners only (pi, pi-durable). \"exact\" selects a listed provider/id without aliases, closest or fuzzy matching, or alias thinking; invalid selectors and other runners are refused before launch. Admission is strict and a child guard detects model switches and some payload rewrites. This is not a security guarantee or final-dispatch enforcement: later hooks, unknown API payloads, providers and extension-made calls can route data elsewhere; attribution checks may detect drift only after a call. Do not rely on it to prevent data disclosure. Omit for default resolution.",
   },
   persona: {
     type: "string",
