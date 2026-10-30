@@ -8,7 +8,7 @@ import { renameAtomic } from "./core/atomic-write.js";
 import { approvalActionOverridesValue, type FabricActionApprovalMode } from "./core/approval-overrides.js";
 import { foregroundConfigValue, type FabricForegroundConfig } from "./core/foreground-tools.js";
 import { quarantineDamagedFile } from "./core/damaged-file.js";
-import { normalizeModelAliases, type FabricModelAliases } from "./core/model-resolution.js";
+import { normalizeModelAliases, type FabricModelAliases } from "./core/model-aliases.js";
 import { PI_CORE_TOOL_NAME_SET } from "./core/pi-tools.js";
 import { DEFAULT_SHELL_HANG_MS, SHELL_HANG_MAX_MS } from "./core/shell-limits.js";
 import {

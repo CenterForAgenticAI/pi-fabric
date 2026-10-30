@@ -64,6 +64,8 @@ interface FabricAgentRequest {
   runner?: FabricAgentRunner;
   transport?: FabricTransport;
   model?: string;
+  /** Pi only. "exact": model must be a visible provider/id; no alias, closest-match or fuzzy step and no alias thinking level; refused before launch otherwise. */
+  modelMatch?: "exact";
   holdQuestions?: true;
   persona?: string;
   thinking?: FabricThinking;
@@ -803,7 +805,8 @@ interface FabricAgentsApi {
   }): Promise<FabricLifecycleSubscription>;
   subscriptions(args?: { from?: string; to?: string }): Promise<FabricLifecycleSubscription[]>;
   unsubscribe(args: FabricAgentTargetArgs): Promise<{ removed: boolean }>;
-  models(args?: { runner?: FabricAgentRunner; refresh?: boolean }): Promise<FabricModelInfo[]>;
+  /** With model, only entries whose key equals it exactly (no aliases or fuzzy matching); unknown keys give []. */
+  models(args?: { runner?: FabricAgentRunner; refresh?: boolean; model?: string }): Promise<FabricModelInfo[]>;
   stop(args: FabricAgentTargetArgs): Promise<FabricAgentResult | FabricActorInfo | FabricRemoteControlResult>;
   cleanup(args: FabricAgentTargetArgs & { deleteBranch?: boolean; delete_branch?: boolean }): Promise<{ cleaned: boolean }>;
   /** Park an idle hosted run of this session; the runner must declare the sleep capability. */
