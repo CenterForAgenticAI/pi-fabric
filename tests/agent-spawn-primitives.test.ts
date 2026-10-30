@@ -513,10 +513,10 @@ describe("agent manager spawning primitives", () => {
       expect(error).toBeInstanceOf(AggregateError);
       expect(error.message).toContain("Worktree setup command exited with 3");
       expect(error.message).toContain("injected cleanup failure");
-      expect(error.message).toContain(repository);
+      expect(error.message).toContain(JSON.stringify(fs.realpathSync.native(repository)));
       const worktree = git(repository, "worktree", "list", "--porcelain").split("\n").filter((line) => line.startsWith("worktree "))[1]!.slice(9);
       const branch = git(repository, "branch", "--list", "pi-fabric/*").trim().replace(/^\*?\+?\s*/, "");
-      expect(error.message).toContain(worktree);
+      expect(error.message).toContain(JSON.stringify(fs.realpathSync.native(worktree)));
       expect(error.message).toContain(branch);
       git(repository, "worktree", "remove", "--force", worktree);
       git(repository, "branch", "-D", branch);
