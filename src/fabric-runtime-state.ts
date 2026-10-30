@@ -1346,7 +1346,6 @@ export class FabricRuntimeState {
     if (!this.#config || !this.#cwd) return;
     next.schema.mode = this.#config.schema.mode;
     this.#speculation?.reset();
-    const previousComponents = structuredClone(this.#config.components);
     deepAssign(this.#config as unknown as Record<string, unknown>, next as unknown as Record<string, unknown>);
     this.#configureSpeculation();
     void this.#sessionLabel?.sync();
@@ -1360,7 +1359,10 @@ export class FabricRuntimeState {
       if (context.hasUI) context.ui.setStatus("fabric-prewalk", undefined);
     }
     void (this.#componentControl?.reconcile(next.components) ?? this.#componentLoader?.reconcile(next.components))?.catch((error) => {
-      if (this.#config) this.#config.components = previousComponents;
+      // Restore what the loader still runs. A snapshot taken at call time would
+      // hold an earlier reload's entries when that reload is refused as well.
+      const active = this.#componentLoader?.entries();
+      if (this.#config && active) this.#config.components = active;
       const detail = error instanceof Error ? error.message : String(error);
       if (context.hasUI) context.ui.notify(`Pi Fabric component reload failed: ${detail}`, "error");
     });
