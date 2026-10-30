@@ -1116,6 +1116,9 @@ export class AgentManager {
     const release = await this.#semaphore.acquire("native", admissionSignal);
     try {
       if (runner === "pi" || runner === "pi-durable") model = await this.#prepareModel(model, request.modelMatch);
+      // Admission may have succeeded before stop cancelled a queued run while
+      // model preparation was pending. Do not create files or launch a child.
+      queued?.signal.throwIfAborted();
       if (this.#closing) throw new Error("Fabric agent manager is closing");
       this.#semaphore.admit(this.#currentDepth + 1);
     } catch (error) {

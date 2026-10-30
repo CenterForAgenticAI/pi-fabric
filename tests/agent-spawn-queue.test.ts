@@ -113,6 +113,26 @@ describe("agents.spawn queue: true", () => {
     expect(() => manager.status(queued.id)).toThrow("Unknown Fabric agent");
   });
 
+  it("does not launch when stopped during model preparation and releases its slot", async () => {
+    let started!: () => void;
+    const preparing = new Promise<void>((resolve) => { started = resolve; });
+    let finish!: () => void;
+    const deferred = new Promise<void>((resolve) => { finish = resolve; });
+    const { manager, runRoot } = setup({
+      preparePiModel: async () => { started(); await deferred; },
+    });
+    const queued = await manager.spawn({ task: "never runs", runner: "pi", extensions: false, queue: true });
+    await preparing;
+    const stopping = manager.stop(queued.id);
+    finish();
+    expect(await stopping).toMatchObject({ id: queued.id, status: "stopped", turns: 0 });
+    expect(await manager.wait(queued.id)).toMatchObject({ status: "stopped" });
+    expect(fs.existsSync(path.join(runRoot, queued.id))).toBe(false);
+    await expect(manager.cleanup(queued.id)).resolves.toEqual({ cleaned: true });
+    const next = await manager.run({ task: "next", runner: "pi", extensions: false });
+    expect(next.status).toBe("completed");
+  });
+
   it("wait on a queued run resolves with the run's result once it starts and finishes", async () => {
     const { manager } = setup();
     const blocker = await manager.spawn({ task: "HANG blocker", extensions: false });
