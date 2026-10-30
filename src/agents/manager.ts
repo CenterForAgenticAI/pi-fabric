@@ -1095,14 +1095,16 @@ export class AgentManager {
       }
       if (model && runnerAdapter.normalizeModel) model = await runnerAdapter.normalizeModel(model);
     }
-    if (this.#budget) {
+    const checkBudget = () => {
+      if (!this.#budget) return;
       const spent = readBudgetLedger(this.#budget.file).cost;
       if (!budgetAdmits(spent, this.#budget.budget)) {
         throw new Error(
           `Fabric recursion budget exceeded: spent $${spent.toFixed(6)} of $${this.#budget.budget.toFixed(6)}. Increase agents.budgetUsd or simplify the task.`,
         );
       }
-    }
+    };
+    checkBudget();
     const callerSignal = queued?.signal ?? signal;
     const admissionSignal = callerSignal ? AbortSignal.any([callerSignal, this.#closeAbort.signal]) : this.#closeAbort.signal;
     queued?.onQueued({
@@ -1121,6 +1123,8 @@ export class AgentManager {
       // model preparation was pending. Do not create files or launch a child.
       queued?.signal.throwIfAborted();
       if (this.#closing) throw new Error("Fabric agent manager is closing");
+      // Spend may have landed while waiting for a slot or model preparation.
+      checkBudget();
       this.#semaphore.admit(this.#currentDepth + 1);
     } catch (error) {
       release();

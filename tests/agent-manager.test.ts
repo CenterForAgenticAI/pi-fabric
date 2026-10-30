@@ -1374,6 +1374,28 @@ describe("AgentManager", () => {
     );
   });
 
+  it("rechecks the recursion budget after a queued run gets a slot", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-budget-queue-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), { ...DEFAULT_FABRIC_CONFIG.agents, maxConcurrent: 1, budgetUsd: 0.1 }, {
+      workerPath: path.resolve("tests/fixtures/fake-worker-budget.mjs"), runRoot: root,
+    });
+    managers.push(manager);
+    const first = await manager.spawn({ task: "COST 0.1 DELAY 300", transport: "process" });
+    const queued = await manager.spawn({ task: "COST 0.01", transport: "process", queue: true });
+    expect(queued.status).toBe("queued");
+    const next = await manager.spawn({ task: "COST 0.01", transport: "process", queue: true });
+    expect((await manager.wait(first.id)).status).toBe("completed");
+    const result = await manager.wait(queued.id);
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/budget exceeded/);
+    expect(fs.existsSync(path.join(root, queued.id))).toBe(false);
+    const nextResult = await manager.wait(next.id);
+    expect(nextResult.status).toBe("failed");
+    expect(nextResult.error).toMatch(/budget exceeded/);
+    expect(fs.existsSync(path.join(root, next.id))).toBe(false);
+  });
+
   it("refuses a nonfinite accumulated budget observation before spawning a child", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-budget-invalid-"));
     roots.push(root);
