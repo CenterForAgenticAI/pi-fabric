@@ -219,6 +219,33 @@ export default function (pi) {
     }
   });
 
+  it("warns about broken candidates without rejecting a global API registration", async () => {
+    const { getApiProvider, unregisterApiProviders } = await import("@earendil-works/pi-ai/compat");
+    const { cwd, agentDir } = fixture({
+      extensions: [
+        { dir: "pi-relay-broken", source: () => `export default function () { throw new Error("broken fixture"); }` },
+        { dir: "pi-relay-global", source: () => `
+import { registerApiProvider } from "@earendil-works/pi-ai/compat";
+export default function () {
+  const stream = () => { throw new Error("fixture stream"); };
+  registerApiProvider({ api: "relay-api", stream, streamSimple: stream }, "relay-warning-fixture");
+}` },
+      ],
+      models: { providers: { relay: { baseUrl: "https://relay.invalid/v1", apiKey: "none", api: "relay-api",
+        models: [{ id: "m1", name: "Relay", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1024 }] } } },
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(resolveExtensionProviders({ model: "relay/m1", cwd, agentDir })).resolves.toEqual({ configs: [], natives: [] });
+      expect(getApiProvider("relay-api")).toBeDefined();
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0]![0]).toMatch(/pi-relay-broken[\s\S]*inference fails[\s\S]*extensions: true/);
+    } finally {
+      warn.mockRestore();
+      unregisterApiProviders("relay-warning-fixture");
+    }
+  });
+
   it.each([
     ["ask", false],
     ["always", true],

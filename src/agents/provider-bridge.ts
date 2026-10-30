@@ -193,6 +193,13 @@ export async function resolveExtensionProviders(
       found.natives.push(...loaded.natives);
       if (found.natives.length > 0 || found.configs.some(({ config }) => config.streamSimple && config.api === known.api)) break;
     }
+    if (failures.length > 0) {
+      // The global API registry may still have been populated, so this is only
+      // diagnostic. stderr is retained in the worker log without corrupting RPC.
+      const paths = [...new Set(failures)];
+      const shown = paths.slice(0, 5).map((file) => JSON.stringify(file.slice(0, 200)));
+      console.warn(`Provider bridge: extensions failed to load while searching for ${JSON.stringify(options.model.slice(0, 200))}: ${shown.join(", ")}${paths.length > 5 ? ` (and ${paths.length - 5} more)` : ""}. Check these extensions if inference fails, or use extensions: true.`);
+    }
     return found;
   }
   const { named, rest } = orderProviderCandidates(candidates, key.provider);
