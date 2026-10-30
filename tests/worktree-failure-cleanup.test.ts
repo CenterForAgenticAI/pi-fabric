@@ -151,7 +151,7 @@ describe("worktree failure cleanup", () => {
     expect(fabricBranches(repository)).toBe("");
   });
 
-  it("drops the lease and reports git's error when the worktree cannot be removed", async () => {
+  it("retains the lease and retries after the worktree cannot be removed", async () => {
     const repository = initRepository();
     const manager = new WorktreeManager();
     const lease = await manager.create(ID, repository, "reviewer");
@@ -159,8 +159,30 @@ describe("worktree failure cleanup", () => {
 
     await expect(manager.cleanup(ID, true)).rejects.toThrow(/locked/);
 
-    expect(manager.get(ID)).toBeUndefined();
+    expect(manager.get(ID)).toEqual(lease);
     expect(fs.existsSync(lease.path)).toBe(true);
+    git(repository, "worktree", "unlock", lease.path);
+    await expect(manager.cleanup(ID, true)).resolves.toBe(true);
+    expect(manager.get(ID)).toBeUndefined();
+    expect(fs.existsSync(lease.path)).toBe(false);
+    expect(fabricBranches(repository)).toBe("");
+  });
+
+  it("retries cleanup when the branch was already deleted after a removal error", async () => {
+    const repository = initRepository();
+    const manager = new WorktreeManager();
+    const lease = await manager.create(ID, repository, "reviewer");
+    hooks.failGit = (args) => args[0] === "worktree" && args[1] === "remove";
+    // Free the branch independently while leaving a directory at the leased path.
+    git(repository, "worktree", "remove", "--force", lease.path);
+    fs.mkdirSync(lease.path, { recursive: true });
+    await expect(manager.cleanup(ID, true)).rejects.toThrow(/stubbed failure/);
+    expect(fabricBranches(repository)).toBe("");
+    expect(manager.get(ID)).toEqual(lease);
+    fs.rmSync(lease.path, { recursive: true, force: true });
+    hooks.failGit = undefined;
+    await expect(manager.cleanup(ID, true)).resolves.toBe(true);
+    expect(manager.get(ID)).toBeUndefined();
   });
 
   it("keeps git's error text when the cwd is not a Git repository", async () => {

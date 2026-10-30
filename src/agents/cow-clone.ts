@@ -82,5 +82,12 @@ export const cloneTree = async (
   dest: string,
   prefixes: readonly string[] = CLONE_SKIP_PREFIXES,
 ): Promise<void> => {
-  await cloneLevel(source, dest, "", prefixes);
+  await fs.promises.mkdir(dest, { recursive: true });
+  // Resolve both existing directories before calculating the exclusion: Git and
+  // the caller can spell the same Windows path using long and 8.3 names.
+  const [realSource, realDest] = await Promise.all([fs.promises.realpath(source), fs.promises.realpath(dest)]);
+  const relativeDest = path.relative(realSource, realDest);
+  if (!relativeDest) throw new Error("Cannot clone a tree into itself");
+  const inside = relativeDest !== ".." && !relativeDest.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeDest);
+  await cloneLevel(realSource, realDest, "", inside ? [...prefixes, posixRel(relativeDest)] : prefixes);
 };

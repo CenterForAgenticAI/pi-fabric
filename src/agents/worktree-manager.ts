@@ -195,9 +195,8 @@ export class WorktreeManager {
   async cleanup(id: string, deleteBranch = false): Promise<boolean> {
     const lease = this.#leases.get(id);
     if (!lease) return false;
-    // Forget the lease first: a failed removal must not leave a stale lease.
-    this.#leases.delete(id);
     await removeWorktree(lease.gitRoot, lease.path, deleteBranch ? lease.branch : undefined);
+    if (this.#leases.get(id) === lease) this.#leases.delete(id);
     return true;
   }
 }

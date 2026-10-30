@@ -67,7 +67,11 @@ export const removeWorktree = async (gitRoot: string, worktree: string, branch?:
   }
   if (branch) {
     try {
-      await executeFile("git", ["branch", "-D", branch], { cwd: gitRoot, timeoutMs: 30_000 });
+      // A previous cleanup attempt may already have deleted the branch.
+      const existing = await executeFile("git", ["branch", "--list", branch], { cwd: gitRoot, timeoutMs: 30_000 });
+      if (existing.stdout.trim()) {
+        await executeFile("git", ["branch", "-D", branch], { cwd: gitRoot, timeoutMs: 30_000 });
+      }
     } catch (error) {
       failure ??= error;
     }
