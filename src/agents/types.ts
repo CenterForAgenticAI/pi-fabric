@@ -101,6 +101,13 @@ export interface AgentRunRequest {
   residency?: FabricParticipantResidency;
   schema?: Record<string, unknown>;
   systemPrompt?: string;
+  /**
+   * Host-only skills resolved from the caller's `skills` option (see
+   * src/agents/child-skills.ts); never a provider argument. `catalog` holds the
+   * skill files the child loads instead of its own discovery; `preload` is the
+   * system prompt block with the listed skills in full.
+   */
+  childSkills?: { catalog: string[]; preload?: string };
   /** Opt in to Claude Code transcript persistence for hook-based observability. */
   persistSession?: boolean;
   sessionFile?: string;
@@ -285,6 +292,8 @@ export interface AgentWorkerOptions {
   /** Serialized effective bounds forwarded as PI_FABRIC_THINKING_BOUNDS. */
   thinkingBounds?: string;
   systemPrompt?: string;
+  /** Skill files a Pi child loads with --no-skills and one --skill each; absent keeps Pi's discovery. */
+  skills?: string[];
   persistSession?: boolean;
   modelAdmission?: "strict" | "permissive";
   sessionFile?: string;

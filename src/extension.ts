@@ -421,7 +421,9 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
 
   pi.on("resources_discover", async (_event, context) => {
     if (!state.bootstrapped) await state.bootstrap(context);
-    return { skillPaths: state.managedHostOptions ? [] : fabricSkillPaths(FABRIC_SKILLS_DIR, state.config.executor.kernel) };
+    // A child whose parent chose its skills (agents.run skills) gets exactly those.
+    if (state.managedHostOptions || process.env.PI_FABRIC_CHILD_SKILLS === "selected") return { skillPaths: [] };
+    return { skillPaths: fabricSkillPaths(FABRIC_SKILLS_DIR, state.config.executor.kernel) };
   });
 
   // The window title is the declared milestone, not nested call detail: it
