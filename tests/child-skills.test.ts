@@ -267,8 +267,9 @@ describe("child skills launch", () => {
   it("carries --no-skills and --skill into the pi-durable worker", () => {
     const base = ["--durable-directory", "state", "--durable-run-id", "run"];
     expect(parseDurableWorkerOptions(base)).toMatchObject({ noSkills: false, skills: [] });
-    expect(parseDurableWorkerOptions([...base, "--no-skills", "--skill", "/a/SKILL.md", "--skill", "/b/SKILL.md"], "/cwd"))
-      .toMatchObject({ noSkills: true, skills: ["/a/SKILL.md", "/b/SKILL.md"] });
+    const cwd = path.resolve("cwd");
+    expect(parseDurableWorkerOptions([...base, "--no-skills", "--skill", "/a/SKILL.md", "--skill", "b/SKILL.md"], cwd))
+      .toMatchObject({ noSkills: true, skills: [path.resolve(cwd, "/a/SKILL.md"), path.resolve(cwd, "b/SKILL.md")] });
   });
 
   it("adds no Fabric skills in a child whose parent chose its skills", async () => {
