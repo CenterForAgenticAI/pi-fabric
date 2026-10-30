@@ -424,6 +424,45 @@ describe("registered fabric_exec compact transcript rendering", () => {
     expect(expanded).toContain("hunk");
   });
 
+  it("counts resumed audits the size bound dropped from the session record", () => {
+    const args = { code: "return 1" };
+    const audits = Array.from({ length: 40 }, (_, index) => ({
+      ref: "pi.read",
+      provider: "pi",
+      tool: "read",
+      args: { path: `file-${index}.ts` },
+      success: true,
+      result: "y".repeat(30_000),
+    }));
+    const trace = {
+      kind: "pi-fabric.execution",
+      version: 1,
+      outcome: "succeeded",
+      phases: [],
+      operations: audits.map((audit, sequence) => ({
+        type: "call",
+        sequence,
+        ref: audit.ref,
+        provider: audit.provider,
+        action: audit.tool,
+        args: { path: audit.args.path },
+        outcome: "succeeded",
+      })),
+      counts: { droppedValues: 0, truncatedValues: 0, redactedValues: 0, droppedOperations: 0 },
+    };
+    const persisted = JSON.parse(
+      JSON.stringify(createFabricPersistedExecutionDetails({ success: true, trace: trace as never, audits })),
+    ) as { audits: unknown[] };
+    // The 512 KiB bound keeps fewer than 40 audits.
+    expect(persisted.audits.length).toBeLessThan(40);
+
+    const resumed = renderResult(toolFor(stateFor("full")), args, persisted, "", { expanded: true });
+    expect(resumed).toContain("40 nested calls");
+    expect(resumed).toContain(`${40 - persisted.audits.length} nested calls hidden`);
+    const compact = renderResult(toolFor(stateFor("compact")), args, persisted, "");
+    expect(compact).toContain("40 calls");
+  });
+
   it("marks trace-only resumed audits instead of fabricating empty content", () => {
     // Session records written before rich audit persistence: args are
     // privacy-projected and results were never retained.
