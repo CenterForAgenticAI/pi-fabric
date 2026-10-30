@@ -268,7 +268,7 @@ describe("child skills launch", () => {
     const base = ["--durable-directory", "state", "--durable-run-id", "run"];
     expect(parseDurableWorkerOptions(base)).toMatchObject({ noSkills: false, skills: [] });
     expect(parseDurableWorkerOptions([...base, "--no-skills", "--skill", "/a/SKILL.md", "--skill", "/b/SKILL.md"], "/cwd"))
-      .toMatchObject({ noSkills: true, skills: ["/a/SKILL.md", "/b/SKILL.md"] });
+      .toMatchObject({ noSkills: true, skills: [path.resolve("/a/SKILL.md"), path.resolve("/b/SKILL.md")] });
   });
 
   it("adds no Fabric skills in a child whose parent chose its skills", async () => {
