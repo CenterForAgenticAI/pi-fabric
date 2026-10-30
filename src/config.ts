@@ -1704,11 +1704,12 @@ export const effectiveToolCaptureConfig = (
 // Exclusive modes declare only fabric_exec (plus foreground tools in full code
 // mode), so any other keepVisible name has no effect there. Returns those names.
 export const ineffectiveKeepVisible = (
-  config: Pick<FabricConfig, "fullCodeMode" | "capture" | "foreground"> & Partial<Pick<FabricConfig, "schema">>,
+  config: Pick<FabricConfig, "fullCodeMode" | "capture"> & Partial<Pick<FabricConfig, "schema">>,
+  resolvedForeground: readonly string[],
 ): string[] => {
   const enforce = config.schema?.mode === "enforce";
   if (!enforce && !config.fullCodeMode) return [];
-  const foreground = enforce ? [] : config.foreground.tools.map(({ name }) => name);
+  const foreground = enforce ? [] : resolvedForeground;
   return config.capture.keepVisible.filter(
     (name) => name !== "fabric_exec" && !foreground.includes(name),
   );

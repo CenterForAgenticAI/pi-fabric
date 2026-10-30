@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FabricState } from "../src/fabric-state.js";
-import { createFabricPersistedExecutionDetails } from "../src/audit/index.js";
+import { createFabricPersistedExecutionDetails, FabricExecutionTraceRecorder } from "../src/audit/index.js";
 import { createFabricExecTool } from "../src/fabric-exec-tool.js";
 import { defaultCodePreviewSettings } from "../src/ui/code-preview.js";
 import { FabricToolDisplayController } from "../src/ui/tool-display.js";
@@ -94,6 +94,22 @@ const renderResult = (
 const nestedRows = (rendered: string): string[] => rendered.split("\n").slice(1);
 
 describe("registered fabric_exec compact transcript rendering", () => {
+  it("retains trimmed failure counts on a resumed compact card", () => {
+    const recorder = new FabricExecutionTraceRecorder();
+    const details = createFabricPersistedExecutionDetails({
+      success: true, trace: recorder.seal("succeeded", []),
+      audits: [
+        { ref: "ok", success: true },
+        { ref: "failed", success: false, result: "x".repeat(600_000) },
+      ],
+    });
+    expect(details.omittedCalls).toEqual({ count: 1, done: 1, failed: 1 });
+    expect(Buffer.byteLength(JSON.stringify(details))).toBeLessThanOrEqual(512 * 1024);
+    const resumed = JSON.parse(JSON.stringify(details));
+    const card = renderResult(toolFor(stateFor("compact")), { code: "return 1" }, resumed, "1", { theme: semanticTheme });
+    expect(card).toContain("<error>✗ Tools</error>");
+    expect(card).toContain("2 calls · 1 failed");
+  });
   it("keeps the shell background hint visible during streamed output, only while waiting", () => {
     const tool = toolFor(stateFor("full"));
     const args = { code: "await pi.bash({cmd:'build'})" };

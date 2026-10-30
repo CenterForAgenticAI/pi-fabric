@@ -1099,6 +1099,12 @@ return true;
     expect(JSON.stringify(trace)).not.toContain("secret");
   });
 
+  it("reads old and malformed omitted-call summaries safely", () => {
+    expect(readFabricExecutionRenderDetails({ omittedCalls: { count: 3, done: 2 } }).omittedCalls).toEqual({ count: 3, done: 2 });
+    expect(readFabricExecutionRenderDetails({ omittedCalls: { count: 3, done: 2, failed: 99 } }).omittedCalls).toEqual({ count: 3, done: 2, failed: 2 });
+    expect(readFabricExecutionRenderDetails({ omittedCalls: { count: 3, done: 2, failed: -1 } }).omittedCalls).toEqual({ count: 3, done: 2 });
+  });
+
   it("persists bounded mixed-output highlighting metadata", () => {
     const recorder = new FabricExecutionTraceRecorder();
     const details = createFabricPersistedExecutionDetails({

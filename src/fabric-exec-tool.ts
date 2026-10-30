@@ -128,8 +128,9 @@ const compactResultHeader = (
   audits: FabricRenderAudit[],
   failed: boolean,
   omittedCalls = 0,
+  omittedFailed = 0,
 ): string => {
-  const failedCalls = audits.filter((audit) => audit.success === false).length;
+  const failedCalls = audits.filter((audit) => audit.success === false).length + omittedFailed;
   const isFailed = failed || failedCalls > 0;
   return theme.fg(isFailed ? "error" : "success", `${isFailed ? "✗" : "✓"} Tools`) +
     theme.fg(
@@ -754,7 +755,7 @@ export const createFabricExecTool = (
 
       const failedCalls = audits.filter(
         (audit) => audit.success === false,
-      ).length;
+      ).length + (details.omittedCalls?.failed ?? 0);
       const status = failed ? "failed" : "complete";
       const statusColor = failed ? "error" : "success";
       const metadata = [
@@ -763,7 +764,7 @@ export const createFabricExecTool = (
         phases.length > 0 ? countLabel(phases.length, "phase") : undefined,
       ].filter((value): value is string => Boolean(value));
       let text = compact
-        ? compactResultHeader(theme, audits, failed, omittedCalls)
+        ? compactResultHeader(theme, audits, failed, omittedCalls, details.omittedCalls?.failed ?? 0)
         : theme.fg(
             statusColor,
             `${failed ? "✗" : "✓"} Fabric ${status}`,

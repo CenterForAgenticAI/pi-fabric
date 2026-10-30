@@ -358,6 +358,14 @@ describe("foreground extension wiring", () => {
     await host.shutdown();
   });
 
+  it("warns for configured foreground tools refused by the cap", async () => {
+    const host = await boot({ fullCodeMode: true, capture: { keepVisible: ["todo"] }, foreground: { tools: [entry("todo")], maxTools: 0 } });
+    expect(await host.declared()).toEqual(["fabric_exec"]);
+    await host.run("before_agent_start", agentStart);
+    expect(host.notify).toHaveBeenCalledWith(expect.stringContaining("todo stay hidden"), "warning");
+    await host.shutdown();
+  });
+
   it("warns that keepVisible has no effect under Schema enforce without pointing to foreground", async () => {
     const host = await boot({ schema: { mode: "enforce" }, capture: { keepVisible: ["todo"] }, foreground: { tools: [] } });
     await host.run("before_agent_start", agentStart);

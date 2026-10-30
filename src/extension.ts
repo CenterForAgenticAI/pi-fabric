@@ -1385,7 +1385,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
   let keepVisibleNoticeKey: string | undefined;
   pi.on("before_agent_start", (_event, context) => {
     if (!state.bootstrapped) return;
-    const ignored = ineffectiveKeepVisible(state.config);
+    const ignored = ineffectiveKeepVisible(state.config, state.foregroundTools().tools);
     if (ignored.length === 0) return;
     const enforce = state.config.schema.mode === "enforce";
     const key = `${context.sessionManager?.getSessionId?.() ?? ""}\0${ignored.join(",")}`;
