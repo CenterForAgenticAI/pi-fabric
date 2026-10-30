@@ -1622,6 +1622,44 @@ describe("ActorManager", () => {
     expect(fs.existsSync(sessionDirectory)).toBe(false);
   });
 
+  it("preserves a stopped actor and its session when replacement staging fails", async () => {
+    const { actors, root } = setup(true);
+    const stopped = await actors.create({ name: "planner", instructions: "Plan." });
+    await actors.stop(stopped.id);
+    const sessionFile = actors.status(stopped.id).sessionFile!;
+    fs.writeFileSync(sessionFile, "old session contents\n");
+    const actorRoot = path.join(root, "actors");
+    const before = fs.readdirSync(actorRoot);
+    const mkdir = vi.spyOn(fs, "mkdirSync").mockImplementationOnce(() => { throw new Error("injected mkdir failure"); });
+    try {
+      await expect(actors.create({ name: "planner", instructions: "Replace." })).rejects.toThrow("injected mkdir failure");
+    } finally {
+      mkdir.mockRestore();
+    }
+    expect(actors.list()).toMatchObject([{ id: stopped.id, status: "stopped" }]);
+    expect(fs.readFileSync(sessionFile, "utf8")).toBe("old session contents\n");
+    expect(fs.readdirSync(actorRoot)).toEqual(before);
+  });
+
+  it("cleans the staged directory if removing the stopped namesake fails", async () => {
+    const { actors, root } = setup();
+    const stopped = await actors.create({ name: "planner", instructions: "Plan." });
+    await actors.stop(stopped.id);
+    const sessionFile = actors.status(stopped.id).sessionFile!;
+    fs.writeFileSync(sessionFile, "old session contents\n");
+    const actorRoot = path.join(root, "actors");
+    const before = fs.readdirSync(actorRoot);
+    const remove = vi.spyOn(actors, "remove").mockRejectedValueOnce(new Error("injected removal failure"));
+    try {
+      await expect(actors.create({ name: "planner", instructions: "Replace." })).rejects.toThrow("injected removal failure");
+    } finally {
+      remove.mockRestore();
+    }
+    expect(actors.status(stopped.id)).toMatchObject({ status: "stopped" });
+    expect(fs.readFileSync(sessionFile, "utf8")).toBe("old session contents\n");
+    expect(fs.readdirSync(actorRoot)).toEqual(before);
+  });
+
   it("haltAll skips idle and stopped actors and leaves them usable", async () => {
     const { actors } = setup();
     const idle = await actors.create({

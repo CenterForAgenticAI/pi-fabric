@@ -402,12 +402,8 @@ export class ActorManager {
     }
     // Forwarded by the creating session (validated, fail closed) or this session's own.
     const principalScope = launchScope(undefined, request.principalScope);
-    // Remove a stopped namesake only after the whole request has validated, so a
-    // rejected create leaves the existing actor and its session directory intact.
-    if (sameName?.status === "stopped") await this.remove(sameName.id);
     const id = randomUUID().replaceAll("-", "");
     const actorDirectory = path.join(this.#actorRoot, id);
-    fs.mkdirSync(actorDirectory, { recursive: true, mode: 0o700 });
     const actor: ManagedActor = {
       id,
       name,
@@ -441,6 +437,15 @@ export class ActorManager {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
+    // Stage the new directory before removing a stopped namesake. In particular,
+    // a failed mkdir must not destroy the old actor or its session.
+    fs.mkdirSync(actorDirectory, { recursive: true, mode: 0o700 });
+    try {
+      if (sameName?.status === "stopped") await this.remove(sameName.id);
+    } catch (error) {
+      fs.rmSync(actorDirectory, { recursive: true, force: true });
+      throw error;
+    }
     this.#actors.set(id, actor);
     this.#locallyCreated.add(id);
     this.#ownership.set(id, true);
