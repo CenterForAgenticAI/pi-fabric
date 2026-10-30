@@ -340,7 +340,7 @@ export const resolveAvailablePiModel = (
  */
 export const resolveExactAvailablePiModel = (
   selector: string,
-  options: { available: readonly FabricModelCandidate[] },
+  options: { available: readonly FabricModelCandidate[]; registryError?: unknown },
 ): FabricModelCandidate => {
   const query = selector.trim();
   if (!PROVIDER_MODEL_RE.test(query)) throw new Error(EXACT_MODEL_FORM_ERROR);
@@ -348,7 +348,7 @@ export const resolveExactAvailablePiModel = (
   const exact = options.available.find((model) => modelKey(model) === query)
     ?? options.available.find((model) => modelKey(model).toLowerCase() === query.toLowerCase());
   if (exact) return exact;
-  throw unavailablePiModelError(query);
+  throw unavailablePiModelError(query, options.registryError);
 };
 
 /** Resolve a Pi selector by the request's match mode; omitted keeps alias, closest and fuzzy resolution. */
@@ -358,6 +358,7 @@ export const resolvePiModelSelector = (
     aliases: FabricModelAliases;
     available: readonly FabricModelCandidate[];
     lastUsed?: FabricModelUsage;
+    registryError?: unknown;
   },
   modelMatch?: FabricModelMatch,
 ): FabricModelCandidate =>

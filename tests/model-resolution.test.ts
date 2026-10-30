@@ -266,6 +266,12 @@ describe("resolveExactAvailablePiModel", () => {
       .toThrow(/not available to this Pi session/);
   });
 
+  it("reports registry failures for exact selection", () => {
+    expect(() => resolvePiModelSelector("openai/example", {
+      aliases: {}, available: [], registryError: new Error("registry offline"),
+    }, "exact")).toThrow(/model registry failed: registry offline/);
+  });
+
   it("selects exact or default resolution by mode", () => {
     const state = { aliases, available: AVAILABLE };
     expect(resolvePiModelSelector("google/gemini-2.5-pro", state)).toBe(AVAILABLE[3]);
