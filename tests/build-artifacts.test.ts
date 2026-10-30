@@ -142,10 +142,19 @@ describe("published build artifact guards", () => {
     fs.rmSync(path.join(dir, "dist/ui/image-overlays.js"));
     rejected(dir, "ui/image-overlays.js");
   });
-  it.each(["native-discovery.js", "memory/extractive-history.js", "agents/agent-files.js", "durable/worker.js", "durable/worker-host.js"])("requires stable optional entry %s", (entry) => {
+  it.each(["native-discovery.js", "memory/extractive-history.js", "durable/worker.js", "durable/worker-host.js", "durable-host.js", "agents/agent-files.js"])("requires stable optional entry %s", (entry) => {
     const dir = fixture();
     fs.rmSync(path.join(dir, "dist", entry));
     rejected(dir, entry);
+  });
+  it("rejects the durable-host embedding entry in the eager startup graph", () => {
+    const dir = fixture();
+    fs.appendFileSync(path.join(dir, "dist/extension-bootstrap.js"), "\n// src/durable-host.ts\n");
+    rejected(dir, "Startup static graph contains lazy module marker: src/durable-host.ts");
+  });
+  it("exposes ./durable-host with types in the exports map", () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+    expect(manifest.exports["./durable-host"]).toEqual({ types: "./dist/durable-host.d.ts", import: "./dist/durable-host.js" });
   });
   it("rejects the named agent file loader in the startup graph", () => {
     const dir = fixture();
