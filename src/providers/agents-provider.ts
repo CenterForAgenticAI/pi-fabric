@@ -21,6 +21,7 @@ import {
   type ProviderParticipantRegistry,
 } from "../topology/provider-participants.js";
 import { LifecycleBroker } from "../lifecycle/broker.js";
+import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_LIFECYCLE_COALESCE_MS,
   LifecycleDeliveryScheduler,
@@ -359,6 +360,8 @@ export class AgentsProvider implements FabricProvider {
   readonly name = "agents";
   /** Session registry of `provider:` participants; stop/steer/followUp route there. */
   providerParticipants: ProviderParticipantRegistry | undefined;
+  /** This session's commands (pi.getCommands()); the `skills` option resolves against its skills. */
+  sessionCommands: (() => readonly SlashCommandInfo[]) | undefined;
   readonly description =
     "The user-facing Main target, one-shot Pi or Claude Code agents, and persistent mailbox actors over process, tmux, screen, LocalTerm, or Herdr";
 
@@ -642,9 +645,13 @@ export class AgentsProvider implements FabricProvider {
       case "run": {
         const runArgs = await this.#applyAgentFile(args, context);
         const handle = await this.manager.spawn(
-          this.#applySeed(
+          await this.#applyChildSkills(
             runArgs,
-            runRequest(this.#resolvePiModelArgs(runArgs, context), context, this.manager, this.modelsConfig()),
+            this.#applySeed(
+              runArgs,
+              runRequest(this.#resolvePiModelArgs(runArgs, context), context, this.manager, this.modelsConfig()),
+              context,
+            ),
             context,
           ),
           context.signal,
@@ -669,9 +676,13 @@ export class AgentsProvider implements FabricProvider {
         return this.handoff(args, context);
       case "spawn": {
         const spawnArgs = await this.#applyAgentFile(args, context, args.residency);
-        const request = this.#applySeed(
+        const request = await this.#applyChildSkills(
           spawnArgs,
-          runRequest(this.#resolvePiModelArgs(spawnArgs, context), context, this.manager, this.modelsConfig()),
+          this.#applySeed(
+            spawnArgs,
+            runRequest(this.#resolvePiModelArgs(spawnArgs, context), context, this.manager, this.modelsConfig()),
+            context,
+          ),
           context,
         );
         if (request.residency === "durable") this.#assertUnconfinedDurable();
@@ -1345,6 +1356,29 @@ export class AgentsProvider implements FabricProvider {
   }
 
   /** seed: "branch" forks the caller's completed turns; "snippet" prefixes recent text. */
+  /**
+   * Resolve the `skills` option (from the call or an agent file) against this
+   * session's skills before anything starts. An unknown name fails here. The
+   * resolver is imported at first use; a call without skills never loads it.
+   */
+  async #applyChildSkills(
+    args: Record<string, unknown>,
+    request: AgentRunRequest,
+    context: FabricInvocationContext,
+  ): Promise<AgentRunRequest> {
+    if (args.skills === undefined) return request;
+    const { childSkillsSelection, resolveChildSkills, sessionSkills } = await import("../agents/child-skills.js");
+    const selection = childSkillsSelection(args.skills);
+    if (!selection) return request;
+    if (request.residency === "durable") {
+      throw new Error(
+        'A durable agents.spawn does not accept skills (an agent file\'s skills and context.skills count too). Spawn without residency: "durable" or leave skills out.',
+      );
+    }
+    const childSkills = resolveChildSkills(selection, sessionSkills(this.sessionCommands?.() ?? []), (message) => context.update(message));
+    return { ...request, childSkills };
+  }
+
   #applySeed(
     args: Record<string, unknown>,
     request: AgentRunRequest,

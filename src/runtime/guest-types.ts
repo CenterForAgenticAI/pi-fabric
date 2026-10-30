@@ -90,6 +90,8 @@ interface FabricAgentRequest {
   schema?: Record<string, unknown>;
   /** Appended to the child's system prompt (Veda receives it as a <system_instructions> block); blank is ignored and durable spawn refuses it. */
   systemPrompt?: string;
+  /** Pi only. Skills by name from this session: false = none; a list = preload those plus this session's others; inherit: false = only the preloaded ones. */
+  skills?: false | string[] | { preload?: string[]; inherit?: boolean };
   prompt?: string;
   instructions?: string;
   timeout_ms?: number;

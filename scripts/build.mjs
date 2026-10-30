@@ -85,6 +85,8 @@ const lazyEntryPoints = [
   "src/agents/veda-cli.ts",
   // Named agent files and the YAML parser they load; first use of agent: or agents.definitions().
   "src/agents/agent-files.ts",
+  // Child skills option; loaded when agents.run or agents.spawn first names skills.
+  "src/agents/child-skills.ts",
   // Also loaded by the worker as a Pi extension (-e) for confined children.
   "src/agents/write-guard.ts",
   // Also loaded by the worker (-e) so extensions: false children keep

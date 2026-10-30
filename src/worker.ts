@@ -358,6 +358,12 @@ const main = async (): Promise<void> => {
   }
   if (options.tools.length > 0) piArguments.push("--tools", options.tools.join(","));
   else piArguments.push("--no-tools"); // explicit empty allowlist => no tools, not Pi defaults
+  // A skills option replaces the child's own skill discovery with the files the
+  // parent resolved; an empty list leaves it with none.
+  if (options.skills) {
+    piArguments.push("--no-skills");
+    for (const skill of options.skills) piArguments.push("--skill", skill);
+  }
   // Native wildcard/modifier expansion must not resurrect the recursive tool.
   // Persisted worker argv re-applies this boundary on every replay/relaunch.
   const excludedTools = nativeFabricExecExclusions(options.tools);
@@ -444,6 +450,9 @@ const main = async (): Promise<void> => {
       // allowlist, so both Pi and captured-tool providers enforce this
       // child-side allowlist before preparation, discovery, and invocation.
       PI_FABRIC_TOOL_ALLOWLIST: JSON.stringify(options.tools),
+      // The parent chose this child's skills: its Fabric adds no skills of its own.
+      // Cleared otherwise, so a grandchild without the option discovers normally.
+      PI_FABRIC_CHILD_SKILLS: options.skills ? "selected" : undefined,
       ...(options.actorId ? { PI_FABRIC_ACTOR_ID: options.actorId } : {}),
       ...(options.actorName ? { PI_FABRIC_ACTOR_NAME: options.actorName } : {}),
       PI_FABRIC_CAPABILITY_REQUIREMENTS: JSON.stringify(

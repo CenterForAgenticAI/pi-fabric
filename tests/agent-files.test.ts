@@ -60,6 +60,14 @@ const setup = (options: { trusted?: boolean } = {}): Setup => {
     undefined, {} as ProviderArgs[6], () => false, undefined, false,
     () => ({ aliases: { cheap: { targets: ["anthropic/executor"], thinking: "low" } } }),
   );
+  // The session's one skill, listed the way Pi's getCommands() lists it.
+  const skillDir = path.join(root, "skills", "writing");
+  fs.mkdirSync(skillDir, { recursive: true });
+  const skillFile = path.join(skillDir, "SKILL.md");
+  fs.writeFileSync(skillFile, "---\nname: writing\ndescription: Writing\n---\nWRITING SKILL BODY\n");
+  provider.sessionCommands = () => [
+    { name: "skill:writing", source: "skill", sourceInfo: { path: skillFile, source: "local", scope: "user", origin: "top-level" } },
+  ];
   const notices: string[] = [];
   const context = {
     cwd: projectRoot, signal: undefined, parentToolCallId: "outer", nestedToolCallId: "nested",
@@ -136,14 +144,17 @@ describe("named agent files", () => {
     expect(notices.join("\n")).toContain("ignored field \"color\"");
   });
 
-  it("loads a pi-agents shaped file; skills and delegate are warnings", async () => {
+  it("loads a pi-agents shaped file; its skills are preloaded and delegate is a warning", async () => {
     const { provider, userDir, context, notices } = setup();
     write(userDir, "planner.md", PLANNER);
     const result = await provider.invoke("run", { agent: "planner", task: "plan" }, context) as Echo;
-    expect(result).toMatchObject({ status: "completed", model: "anthropic/frontier", thinking: "high", tools: ["read", "grep"], systemPrompt: "Plan before you edit." });
+    expect(result).toMatchObject({ status: "completed", model: "anthropic/frontier", thinking: "high", tools: ["read", "grep"] });
+    expect(result.systemPrompt).toMatch(/^Plan before you edit\.\n\n/);
+    expect(result.systemPrompt).toContain("WRITING SKILL BODY");
     const [entry] = await provider.invoke("definitions", {}, context) as Array<{ warnings: string[] }>;
-    expect(entry!.warnings).toEqual([expect.stringContaining("\"skills\""), expect.stringContaining("\"delegate\"")]);
-    expect(notices.join("\n")).toMatch(/skills.*delegate/);
+    expect(entry!.warnings).toEqual([expect.stringContaining("\"delegate\"")]);
+    expect(notices.join("\n")).toContain("delegate");
+    expect(notices.join("\n")).not.toContain("\"skills\"");
   });
 
   it("starts a spawned agent from a file and reports the handle", async () => {
@@ -152,7 +163,8 @@ describe("named agent files", () => {
     const handle = await provider.invoke("spawn", { agent: "planner", task: "plan" }, context) as { id: string; model?: string };
     expect(handle.model).toBe("anthropic/frontier");
     const done = await manager.wait(handle.id) as Echo;
-    expect(done.systemPrompt).toBe("Plan before you edit.");
+    expect(done.systemPrompt).toMatch(/^Plan before you edit\.\n\n/);
+    expect(done.systemPrompt).toContain("<skill name=\"writing\"");
   });
 
   it("lets a project file shadow a user file and reports the shadowed path", async () => {
@@ -182,10 +194,14 @@ describe("named agent files", () => {
     const result = await provider.invoke("run", {
       agent: "planner", task: "plan", model: "anthropic/executor", thinking: "low", tools: ["bash"], systemPrompt: "Call prompt.", name: "mine",
     }, context) as Echo;
-    expect(result).toMatchObject({ model: "anthropic/executor", thinking: "low", tools: ["bash"], systemPrompt: "Call prompt.", name: "mine" });
+    expect(result).toMatchObject({ model: "anthropic/executor", thinking: "low", tools: ["bash"], name: "mine" });
+    // The call's prompt replaces the file body; the file's skills still apply because the call names none.
+    expect(result.systemPrompt).toMatch(/^Call prompt\.\n\n/);
+    expect(result.systemPrompt).not.toContain("Plan before you edit.");
     // A field the call leaves out still comes from the file.
     const partial = await provider.invoke("run", { agent: "planner", task: "plan", tools: [] }, context) as Echo;
-    expect(partial).toMatchObject({ model: "anthropic/frontier", thinking: "high", systemPrompt: "Plan before you edit.", tools: [] });
+    expect(partial).toMatchObject({ model: "anthropic/frontier", thinking: "high", tools: [] });
+    expect(partial.systemPrompt).toMatch(/^Plan before you edit\./);
   });
 
   it("sends a model from the file through alias resolution, with the alias thinking level", async () => {

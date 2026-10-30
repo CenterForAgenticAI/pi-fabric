@@ -123,6 +123,21 @@ const runProperties = {
     type: "string",
     description: "Optional extra system prompt body for this child run. Fabric places it ahead of any component guidance. Pi and Claude runners append the result with --append-system-prompt, and Veda receives it as a <system_instructions> block in its prompt. Useful for reliability-focused prompt rules on models with weak behavioral defaults.",
   },
+  skills: {
+    anyOf: [
+      { type: "boolean", const: false },
+      { type: "array", items: { type: "string", minLength: 1, maxLength: 128, pattern: "^[^/\\\\]+$" }, maxItems: 64 },
+      {
+        type: "object",
+        properties: {
+          preload: { type: "array", items: { type: "string", minLength: 1, maxLength: 128, pattern: "^[^/\\\\]+$" }, maxItems: 64 },
+          inherit: { type: "boolean" },
+        },
+        additionalProperties: false,
+      },
+    ],
+    description: "Pi runners only: the child's skills, by name, resolved against this session's skills. false: no skills. A list: those skills preloaded in full, plus this session's other skills. { preload, inherit: false }: only the preloaded skills. Omit to keep the child's own skill discovery. An unknown name fails before launch.",
+  },
   persistSession: {
     type: "boolean",
     description: "Claude runner only: persist the Claude Code transcript for hook-based observability. Defaults to false.",
