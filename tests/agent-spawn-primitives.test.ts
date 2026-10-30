@@ -502,6 +502,27 @@ describe("agent manager spawning primitives", () => {
     expect(git(repository, "worktree", "list", "--porcelain")).toBe(before);
   });
 
+  it("reports recovery coordinates when spawn rollback fails", async () => {
+    const repository = initRepository();
+    const { WorktreeManager } = await import("../src/agents/worktree-manager.js");
+    const spy = vi.spyOn(WorktreeManager.prototype, "cleanup").mockRejectedValueOnce(new Error("injected cleanup failure"));
+    try {
+      const { manager } = createManager(repository);
+      const error = await manager.spawn({ task: "never launched", transport: "process", worktree: true,
+        worktreeSetup: process.platform === "win32" ? "echo broken 1>&2 & exit 3" : "echo broken >&2; exit 3" }).catch((e) => e);
+      expect(error).toBeInstanceOf(AggregateError);
+      expect(error.message).toContain("Worktree setup command exited with 3");
+      expect(error.message).toContain("injected cleanup failure");
+      expect(error.message).toContain(repository);
+      const worktree = git(repository, "worktree", "list", "--porcelain").split("\n").filter((line) => line.startsWith("worktree "))[1]!.slice(9);
+      const branch = git(repository, "branch", "--list", "pi-fabric/*").trim().replace(/^\*?\+?\s*/, "");
+      expect(error.message).toContain(worktree);
+      expect(error.message).toContain(branch);
+      git(repository, "worktree", "remove", "--force", worktree);
+      git(repository, "branch", "-D", branch);
+    } finally { spy.mockRestore(); }
+  });
+
   it("parses the new worker arguments", () => {
     const options = parseWorkerOptions([
       "node", "worker.js", "--id", "w", "--name", "n", "--runner", "pi", "--task-file", "t",

@@ -100,6 +100,7 @@ import type {
   AgentUsage,
 } from "./types.js";
 import { WorktreeManager, type AgentWorktreeResult } from "./worktree-manager.js";
+import { worktreeRollbackError } from "./clone-first-worktree.js";
 import { writeForkSession, writeHandoffSession } from "./handoff.js";
 import {
   checkWritePolicyRequest,
@@ -1499,7 +1500,13 @@ export class AgentManager {
       return this.#handleInfo(managed, "running");
     } catch (error) {
       release();
-      if (worktree) await this.#worktrees.cleanup(id, true).catch(() => false);
+      if (worktree) {
+        const lease = this.#worktrees.get(id);
+        try { await this.#worktrees.cleanup(id, true); }
+        catch (cleanupError) {
+          throw worktreeRollbackError(lease?.gitRoot ?? selectedCwd, worktree, branch, error, cleanupError);
+        }
+      }
       throw error;
     }
   }

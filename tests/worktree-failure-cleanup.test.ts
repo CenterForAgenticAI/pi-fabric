@@ -92,6 +92,43 @@ describe("worktree failure cleanup", () => {
     expect(fs.existsSync(fabricWorktreePath(repository, ID))).toBe(false);
   });
 
+  it("reports both creation and rollback failures with recovery coordinates", async () => {
+    const repository = initRepository();
+    const dest = fabricWorktreePath(repository, ID);
+    hooks.failGit = (args) => args[0] === "reset" || (args[0] === "worktree" && args[1] === "remove");
+    const error = await new WorktreeManager().create(ID, repository, "reviewer").catch((e) => e);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error.message).toContain("stubbed failure: git reset");
+    expect(error.message).toContain("stubbed failure: git worktree remove");
+    expect(error.message).toContain(dest);
+    expect(error.message).toContain("pi-fabric/reviewer-bbbbbbbb");
+    expect(fs.existsSync(dest)).toBe(true);
+    hooks.failGit = undefined;
+    git(repository, "worktree", "remove", "--force", dest);
+    git(repository, "branch", "-D", "pi-fabric/reviewer-bbbbbbbb");
+  });
+
+  it("reports canonicalization and rollback failures before a lease exists", async () => {
+    const repository = initRepository();
+    const dest = fabricWorktreePath(repository, ID);
+    const original = fs.realpathSync;
+    const spy = vi.spyOn(fs, "realpathSync").mockImplementation(((p: fs.PathLike, ...args: unknown[]) => {
+      if (String(p) === dest) throw new Error("canonicalization failed");
+      return (original as (...args: any[]) => any)(p, ...args);
+    }) as typeof fs.realpathSync);
+    hooks.failGit = (args) => args[0] === "worktree" && args[1] === "remove";
+    try {
+      const error = await new WorktreeManager().create(ID, repository, "reviewer").catch((e) => e);
+      expect(error).toBeInstanceOf(AggregateError);
+      expect(error.message).toContain("canonicalization failed");
+      expect(error.message).toContain("stubbed failure: git worktree remove");
+      expect(error.message).toContain(dest);
+      expect(error.message).toContain("pi-fabric/reviewer-bbbbbbbb");
+    } finally { spy.mockRestore(); hooks.failGit = undefined; }
+    git(repository, "worktree", "remove", "--force", dest);
+    git(repository, "branch", "-D", "pi-fabric/reviewer-bbbbbbbb");
+  });
+
   it("rethrows a clone error that is not CowUnavailableError and removes the half-copied tree", async () => {
     const repository = initRepository();
     const dest = fabricWorktreePath(repository, ID);

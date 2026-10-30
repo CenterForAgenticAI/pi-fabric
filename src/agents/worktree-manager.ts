@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { addCloneFirstWorktree, removeWorktree } from "./clone-first-worktree.js";
+import { addCloneFirstWorktree, removeWorktree, worktreeRollbackError } from "./clone-first-worktree.js";
 import { executeFile } from "./transports/process-utils.js";
 import { fabricWorktreePath } from "./worktree-paths.js";
 
@@ -103,7 +103,8 @@ export class WorktreeManager {
     try {
       canonicalWorktreePath = fs.realpathSync(worktreePath);
     } catch (error) {
-      await removeWorktree(gitRoot, worktreePath, branch).catch(() => undefined);
+      try { await removeWorktree(gitRoot, worktreePath, branch); }
+      catch (cleanupError) { throw worktreeRollbackError(gitRoot, worktreePath, branch, error, cleanupError); }
       throw error;
     }
     const baseRef = await executeFile("git", ["rev-parse", "HEAD"], { cwd: worktreePath, timeoutMs: GIT_SUMMARY_TIMEOUT_MS })

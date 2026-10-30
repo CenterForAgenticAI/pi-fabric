@@ -18,6 +18,11 @@ export interface CloneFirstWorktreeResult {
   message: string;
 }
 
+export const worktreeRollbackError = (gitRoot: string, worktree: string, branch: string | undefined, error: unknown, cleanupError: unknown): Error => {
+  const detail = (value: unknown): string => value instanceof Error ? `${value.message}${(value as Error & { stderr?: string }).stderr ? `: ${(value as Error & { stderr?: string }).stderr}` : ""}` : String(value);
+  return new AggregateError([error, cleanupError], `Worktree operation failed: ${detail(error)}; rollback failed: ${detail(cleanupError)}. Manual cleanup required in repository ${JSON.stringify(gitRoot)}, worktree ${JSON.stringify(worktree)}${branch ? `, branch ${JSON.stringify(branch)}` : ""}.`);
+};
+
 export const addCloneFirstWorktree = async (
   options: CloneFirstWorktreeAdd,
 ): Promise<CloneFirstWorktreeResult> => {
@@ -47,8 +52,9 @@ export const addCloneFirstWorktree = async (
     return { cloned, message: added.stdout.trim() };
   } catch (error) {
     // `-B` may have reset a branch that existed before; only `-b` created it here.
-    await removeWorktree(options.gitRoot, dest, options.branch?.flag === "-b" ? options.branch.name : undefined)
-      .catch(() => undefined);
+    const branch = options.branch?.flag === "-b" ? options.branch.name : undefined;
+    try { await removeWorktree(options.gitRoot, dest, branch); }
+    catch (cleanupError) { throw worktreeRollbackError(options.gitRoot, dest, branch, error, cleanupError); }
     throw error;
   }
 };
