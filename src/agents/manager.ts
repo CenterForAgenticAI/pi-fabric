@@ -1035,7 +1035,8 @@ export class AgentManager {
       ? path.join(runDirectory, "images.json")
       : undefined;
     try {
-      fs.mkdirSync(runDirectory, { recursive: true });
+      // 0700: the pi-durable worker refuses a run directory that group or others can write.
+      fs.mkdirSync(runDirectory, { recursive: true, mode: 0o700 });
       fs.writeFileSync(taskFile, request.task, { encoding: "utf8", mode: 0o600 });
       if (imagesFile) {
         fs.writeFileSync(imagesFile, JSON.stringify(request.images), {
@@ -1093,8 +1094,10 @@ export class AgentManager {
         childIndex: this.#childIndex++,
         worker: true,
       };
+      // Only a pi-durable child gets the worker-role entry, written into the seed in the same write that creates it.
+      const seedOptions = runner === "pi-durable" ? { workerRole: true } : {};
       const sessionFile = request.forkSeed
-        ? writeForkSession(request.forkSeed, agentCwd, path.join(runDirectory, "fork-session"), request.thinkingTransfer)
+        ? writeForkSession(request.forkSeed, agentCwd, path.join(runDirectory, "fork-session"), request.thinkingTransfer, seedOptions)
         : request.sessionSeed
         ? writeHandoffSession(
             request.sessionSeed,
@@ -1103,6 +1106,7 @@ export class AgentManager {
             request.thinkingTransfer,
             request.handoffCompact,
             request.handoffCompact ? await this.#resolveHandoffCompactionBudget?.(model, agentCwd) : undefined,
+            seedOptions,
           )
         : request.sessionFile;
       const timeoutMs = effectiveAgentTimeoutMs(
