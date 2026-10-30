@@ -1195,7 +1195,14 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     // tree); full code mode adapts its loader to Fabric's nested pi.read path.
     const managedHost = state.managedHostOptions;
     const skillReader = managedHost ? managedHost.skillReader ?? null : undefined;
-    const systemPrompt = restoreSkillsForFullCodePrompt(event.systemPrompt, skills, effectiveFullCodeMode, skillReader);
+    // Pi 1.4+ builds the prompt from named sections and sends only changed
+    // sections on later turns. Fabric adds its own section there unless an
+    // earlier handler already forced a whole prompt, which makes Pi ignore
+    // sections. Older hosts have no sections and get the appended prompt.
+    const sections = event.systemPromptOptions.forceSystemPrompt === undefined
+      ? event.systemPromptOptions.sections
+      : undefined;
+    const systemPrompt = sections ? "" : restoreSkillsForFullCodePrompt(event.systemPrompt, skills, effectiveFullCodeMode, skillReader);
     // Pi expands the invoked skill into the user message, but wrappers may
     // delegate by name. Resolve only explicit invocation lines so full code
     // mode preserves Pi's progressive skill loading without exposing read.
@@ -1246,11 +1253,15 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     // persistent message, not appended to the system prompt. Keeping the
     // system prompt byte-identical across turns is what lets provider prefix
     // caches (e.g. DeepSeek) stay warm.
-    if (!skillReferenceGuidance) return {
-      systemPrompt: `${systemPrompt}\n\n${guidance}`,
-    };
+    if (sections) {
+      const catalog = restoreSkillsForFullCodePrompt("", skills, effectiveFullCodeMode, skillReader).trim();
+      if (catalog) sections.skills = catalog;
+      sections.fabric = guidance;
+    }
+    const forced = sections ? {} : { systemPrompt: `${systemPrompt}\n\n${guidance}` };
+    if (!skillReferenceGuidance) return sections ? undefined : forced;
     return {
-      systemPrompt: `${systemPrompt}\n\n${guidance}`,
+      ...forced,
       message: {
         customType: SKILL_REFERENCE_CUSTOM_TYPE,
         content: skillReferenceGuidance,
