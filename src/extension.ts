@@ -31,6 +31,7 @@ import { autoArmFabricPrewalk } from "./prewalk/arm.js";
 import {
   DEFAULT_FABRIC_CONFIG,
   effectiveToolCaptureConfig,
+  ineffectiveKeepVisible,
 } from "./config.js";
 import type { CompactionHandlers } from "./compaction/hook.js";
 import type { CompactionOwnerSlot } from "./compaction/claim-events.js";
@@ -1339,6 +1340,23 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     if (foregroundNoticeSession === sessionId) return;
     foregroundNoticeSession = sessionId;
     const notice = `Fabric foreground policy ${formatForeground(foreground)}`;
+    if (context.hasUI) context.ui.notify(notice, "warning");
+    else console.warn(`[pi-fabric] ${notice}`);
+  });
+
+  // Exclusive modes declare only fabric_exec, so a keepVisible entry for any
+  // other tool silently does nothing. Say so once per session and name the
+  // setting that does declare a tool beside fabric_exec.
+  let keepVisibleNoticeKey: string | undefined;
+  pi.on("before_agent_start", (_event, context) => {
+    if (!state.bootstrapped) return;
+    const ignored = ineffectiveKeepVisible(state.config);
+    if (ignored.length === 0) return;
+    const enforce = state.config.schema.mode === "enforce";
+    const key = `${context.sessionManager?.getSessionId?.() ?? ""}\0${ignored.join(",")}`;
+    if (keepVisibleNoticeKey === key) return;
+    keepVisibleNoticeKey = key;
+    const notice = `Fabric capture.keepVisible has no effect in ${enforce ? "Schema enforce" : "full code"} mode; ${ignored.join(", ")} stay hidden from the model${enforce ? "" : ". Use foreground.tools to declare a tool beside fabric_exec"}.`;
     if (context.hasUI) context.ui.notify(notice, "warning");
     else console.warn(`[pi-fabric] ${notice}`);
   });
