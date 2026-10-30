@@ -77,10 +77,30 @@ const cloneLevel = async (
   }
 };
 
+/**
+ * Copy `source` into `dest`, skipping `prefixes`. A destination inside the
+ * source (a worktree added under the repository) is skipped as well: the copy
+ * would otherwise list the new worktree and try to copy it into itself. Both
+ * paths are resolved first, so a Windows short name (`RUNNER~1`) still matches.
+ */
 export const cloneTree = async (
   source: string,
   dest: string,
   prefixes: readonly string[] = CLONE_SKIP_PREFIXES,
 ): Promise<void> => {
-  await cloneLevel(source, dest, "", prefixes);
+  await cloneLevel(source, dest, "", [...prefixes, ...destinationInside(source, dest)]);
+};
+
+const realOrResolved = (value: string): string => {
+  try {
+    return fs.realpathSync.native(value);
+  } catch {
+    return path.resolve(value);
+  }
+};
+
+const destinationInside = (source: string, dest: string): string[] => {
+  const rel = path.relative(realOrResolved(source), realOrResolved(dest));
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) return [];
+  return [posixRel(rel)];
 };
