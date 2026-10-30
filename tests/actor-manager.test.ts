@@ -1588,6 +1588,40 @@ describe("ActorManager", () => {
     expect(actors.status(actor.id)).toMatchObject({ status: "idle", name: "supervisor" });
   });
 
+  it("keeps a stopped actor when a same-name create request is invalid", async () => {
+    const { actors } = setup();
+    const stopped = await actors.create({
+      name: "planner",
+      instructions: "Plan the work.",
+      responseMode: "text",
+    });
+    await actors.stop(stopped.id);
+    const sessionDirectory = path.dirname(actors.status(stopped.id).sessionFile ?? "");
+
+    const invalidRequests = [
+      { instructions: "   " },
+      { instructions: "Plan again.", events: ["not_a_host_event"] },
+      { instructions: "Plan again.", validWhile: { version: 99, source: "true" } },
+      { instructions: "Plan again.", runner: "unknown-runner" },
+    ];
+    for (const invalid of invalidRequests) {
+      await expect(
+        actors.create({ name: "planner", responseMode: "text", ...invalid } as never),
+      ).rejects.toThrow();
+      expect(actors.status(stopped.id)).toMatchObject({ id: stopped.id, status: "stopped" });
+      expect(fs.existsSync(sessionDirectory)).toBe(true);
+    }
+
+    const replacement = await actors.create({
+      name: "planner",
+      instructions: "Plan again.",
+      responseMode: "text",
+    });
+    expect(replacement.id).not.toBe(stopped.id);
+    expect(actors.list().map((actor) => actor.id)).toEqual([replacement.id]);
+    expect(fs.existsSync(sessionDirectory)).toBe(false);
+  });
+
   it("haltAll skips idle and stopped actors and leaves them usable", async () => {
     const { actors } = setup();
     const idle = await actors.create({
