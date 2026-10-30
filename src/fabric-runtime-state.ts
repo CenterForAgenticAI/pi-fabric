@@ -145,6 +145,7 @@ import {
   type FabricProviderDiscovery,
 } from "./protocol.js";
 import { AgentManager } from "./agents/manager.js";
+import { absoluteExtensionPaths } from "./agents/required-extensions.js";
 import { AgentCompletionInbox } from "./agents/completion-inbox.js";
 import { PeerPresenceNotifier } from "./topology/peer-presence.js";
 import { recordedPeerLabel, SessionLabelPresenter } from "./topology/session-label.js";
@@ -799,10 +800,11 @@ export class FabricRuntimeState {
       }
     };
     const piModelState = (models = visiblePiModels()) => {
-      const available: FabricModelCandidate[] = models.map((model) => ({
+      const available: Array<FabricModelCandidate & { api?: string }> = models.map((model) => ({
         provider: String(model.provider),
         id: String(model.id),
         ...(typeof model.name === "string" ? { name: model.name } : {}),
+        ...(typeof model.api === "string" ? { api: model.api } : {}),
       }));
       const defaultModel = context.model
         ? `${context.model.provider}/${context.model.id}`
@@ -842,6 +844,11 @@ export class FabricRuntimeState {
         );
       }
       return { key: `${resolved.provider}/${resolved.id}`, model };
+    };
+    // Extensions this session loaded: the only ones agents requiredExtensions may forward.
+    const parentExtensions = (): string[] | undefined => {
+      const paths = this.capturedTools.runner?.getExtensionPaths();
+      return paths ? absoluteExtensionPaths(paths, context.cwd) : undefined;
     };
     const completionInbox = new AgentCompletionInbox(this.pi, context);
     this.#completionInbox = completionInbox;
@@ -898,6 +905,16 @@ export class FabricRuntimeState {
         const auth = await context.modelRegistry.getApiKeyAndHeaders(resolved.model);
         if (!auth.ok) throw new Error(auth.error);
         return resolved.key;
+      },
+      loadedExtensions: () => parentExtensions(),
+      piModelApi: (modelKey) => {
+        const separator = modelKey.indexOf("/");
+        if (separator <= 0) return undefined;
+        try {
+          return context.modelRegistry.find(modelKey.slice(0, separator), modelKey.slice(separator + 1))?.api;
+        } catch {
+          return undefined;
+        }
       },
       onLifecycle: (event) => {
         const lifecycle = this.#lifecycle;
@@ -1044,6 +1061,7 @@ export class FabricRuntimeState {
           onBackgroundComplete: (result, delivered) => completionInbox.enqueue(result, delivered),
           onResultConsumed: (id) => completionInbox.acknowledge(id),
           piModelState,
+          parentExtensions,
           ...(this.#paths ? { hostPath: this.#paths.residentHost } : {}),
         })
       : undefined;

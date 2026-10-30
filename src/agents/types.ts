@@ -84,6 +84,12 @@ export interface AgentRunRequest {
   recursiveToolAuthority?: "deny";
   timeoutMs?: number;
   extensions?: boolean;
+  /**
+   * With extensions: false, extensions the Pi child still loads: package names
+   * or exact paths of extensions this session itself loaded. See
+   * required-extensions.ts; the manager refuses anything else before launch.
+   */
+  requiredExtensions?: string[];
   recursive?: boolean;
   /** Leaf or recursive execution cwd; relative to the immediate caller, independent of project/mesh lineage. */
   cwd?: string;
@@ -279,6 +285,8 @@ export interface AgentWorkerOptions {
   mainAgentId?: string;
   fabricSessionId?: string;
   extensions: boolean;
+  /** Parent-verified absolute extension paths loaded with -e despite --no-extensions. */
+  requiredExtensions?: string[];
   tools: string[];
   grantedRisks: string[];
   maxTokens?: number;
