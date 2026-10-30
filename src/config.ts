@@ -288,6 +288,8 @@ interface FabricUiConfig {
   /** Lend the window title to the latest nested call while fabric_exec runs. */
   terminalTitle: boolean;
   updateDebounceMs: number;
+  /** Offer decisions shown at this terminal to registered question renderers; absent means off. */
+  questionRenderers?: boolean;
   /**
    * Raw `ui.sessionLabel`, passed through unchecked: sessionLabelSettings() in
    * topology/session-label-settings.ts checks it at first use, which keeps the
@@ -1375,6 +1377,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         DEFAULT_FABRIC_CONFIG.ui.toolDisplay,
       ),
       terminalTitle: booleanValue(ui.terminalTitle, DEFAULT_FABRIC_CONFIG.ui.terminalTitle),
+      ...(ui.questionRenderers === true ? { questionRenderers: true } : {}),
       // Renamed from ui.nestedToolDebounceMs (v3): the window coalesces every
       // live fabric_exec card update — nested calls, progress, agent previews.
       updateDebounceMs: boundedInteger(

@@ -6,7 +6,7 @@ Four sources raise decisions:
 
 - programs, through `decisions.raise`;
 - headless approvals, when `approvals.headless` is `"decision"`;
-- routed child dialogs, when `agents.childQuestions` is `"route"` and the parent session has no interactive UI or the child is a durable run;
+- routed child dialogs, when `agents.childQuestions` is `"route"` and the parent session has no interactive UI, the child is a durable run, or a [question renderer](#question-renderers) is active;
 - other extensions, through the [extension question events](#extension-questions).
 
 ## Record
@@ -160,9 +160,53 @@ Fabric copies only those question fields. The decision is always held by `"user"
 
 `source` names the asking extension, for example its package name. The record stores it as `raisedBy.participantId: "extension:<source>"` next to the session id, so a person can see who asked. It must match `[A-Za-z0-9@][A-Za-z0-9@._/-]{0,63}`; any other value is refused before a decision is raised. Without `source`, the session is the raiser.
 
+## Question renderers
+
+By default Fabric shows a routed child question and the decision picked in `/fabric decisions` with its own `ctx.ui` dialogs. An extension with a richer question interface can show them in its own interface. Fabric consults renderers only when `ui.questionRenderers` is `true`; any other value leaves both surfaces exactly as they are.
+
+```json
+{
+  "ui": {
+    "questionRenderers": true
+  }
+}
+```
+
+Register a renderer over `pi.events`. Registration is accepted whether or not the setting is on. A second registration under the same `name` replaces the first and keeps its place in registration order:
+
+```ts
+import { FABRIC_QUESTION_RENDERER_REGISTER_EVENT } from "pi-fabric/protocol";
+
+let unregister: (() => void) | undefined;
+pi.events.emit(FABRIC_QUESTION_RENDERER_REGISTER_EVENT, {
+  version: 1,
+  name: "my-question-ui",
+  render: async ({ surface, ui, decision, signal }) => {
+    const optionId = await showMyQuestionUi(ui, decision, signal);
+    return optionId
+      ? { status: "answered", decisionId: decision.id, answer: { optionId } }
+      : { status: "dismissed", decisionId: decision.id };
+  },
+  respond: (result) => { if (result.ok) unregister = result.unregister; },
+});
+```
+
+The renderer receives `surface` (`"child-question"` or `"decisions-command"`), the session `ui`, a private copy of the `decision` (`id`, `kind`, `title`, `body?`, `input`, `options?`, `holder`, `raisedBy`, `createdAt`, `deadline?`), and a `signal`. It returns one of:
+
+| Result | Effect |
+|---|---|
+| `{ status: "answered", decisionId, answer: { optionId?, text? } }` | Fabric records the answer. |
+| `{ status: "cancelled", decisionId }` | Fabric cancels the decision. |
+| `{ status: "dismissed", decisionId }` | The person closed the renderer without deciding. A child question is cancelled; a decision picked in `/fabric decisions` stays open. |
+| `undefined` | The renderer declines; Fabric asks the next renderer, then shows its own dialog. |
+
+Fabric asks renderers one at a time in registration order. It writes the result to the store itself, with `via: "tui"` and the OS user as `answeredBy`, and copies only `optionId` and `text`, so a renderer cannot change the holder, the raiser, the deadline, or who is recorded as answering. A result whose `decisionId` names another decision, a malformed result, an answer the store refuses (an unknown option, text over the limit), a throw, or a rejection falls back to Fabric's own dialog. `signal` aborts when the decision is answered, cancelled, or expires elsewhere, or when the asking child run settles; Fabric then uses what the record says.
+
+With an active renderer and a decision store, a routed child question that would use the parent's UI is recorded first as a root-held `kind: "question"` decision with the question's own deadline, so the renderer and Fabric's fallback dialog show the same record. `/fabric decisions` and `pi-fabric decisions answer` can answer it too; the first answer wins and the child gets what the record says. A `select` with more than 12 options keeps Fabric's direct dialog and is not recorded. A [held question](#holding-a-question-for-a-person) keeps the hold path and is not offered to renderers. Only the main session consults renderers; a child session's UI forwards to its parent.
+
 ## Human surfaces
 
-- `/fabric decisions [id]` lists open decisions, then answers the picked one through native dialogs (`select` for options, and `input` or `editor` for text). Both kinds offer a "Cancel this decision" entry. A text or editor decision first asks "Answer this question" or "Cancel this decision", so an empty answer and a cancel never look the same. Answers and cancels record `via: "tui"`.
+- `/fabric decisions [id]` lists open decisions, then answers the picked one through native dialogs (`select` for options, and `input` or `editor` for text). Both kinds offer a "Cancel this decision" entry. A text or editor decision first asks "Answer this question" or "Cancel this decision", so an empty answer and a cancel never look the same. Answers and cancels record `via: "tui"`. With an active [question renderer](#question-renderers), the picked decision goes to the renderer first.
 - `pi-fabric decisions list --root <meshRoot> [--status open|answered|expired|cancelled|all] [--holder h] [--limit n] [--json]` prints decisions from outside any Pi session. `--root` defaults to `$PI_FABRIC_MESH_ROOT`. The project mesh root is `.pi/fabric/mesh` unless `mesh.root` says otherwise.
 - `pi-fabric decisions answer --root <meshRoot> <id> (--option <id> | --text <t>) [--json]` answers one decision with `via: "cli"` and the OS user name as `answeredBy`. Exit code 1 reports a refused answer (not open, unknown option), and 2 reports a usage error.
 - `pi-fabric decisions cancel --root <meshRoot> <id> [--json]` cancels one open decision with `via: "cli"` and the OS user name as `answeredBy`. Use it to clear a decision whose asker has gone away, such as a `pi -p` run stopped with Ctrl+C. Cancelling a decision that is not open exits 1, like answering one twice.
@@ -175,6 +219,7 @@ Fabric copies only those question fields. The decision is always held by `"user"
 | `approvals.headlessTimeoutMs` | `300000` | headless approval deadline (1 s to 24 h) |
 | `approvals.policyHooks` | off | consult [extension action policy hooks](configuration.md#extension-action-policy-hooks); a `hold` uses the headless path above |
 | `agents.childQuestions` | `"cancel"` | `"route"` forwards child dialogs to the parent |
+| `ui.questionRenderers` | off | offer decisions shown at this terminal to [question renderers](#question-renderers) |
 | `agents.childQuestionTimeoutMs` | `600000` | default routed dialog deadline (1 s to 24 h) |
 | `agents.childQuestionTools` | `["ask"]` | tools a routed Pi child gets for asking; `[]` grants none |
 

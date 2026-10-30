@@ -84,8 +84,10 @@ import {
   FABRIC_PROGRAM_RUN_EVENT,
   FABRIC_PROVIDER_REGISTER_EVENT,
   FABRIC_PROVIDER_WITHDRAW_EVENT,
+  FABRIC_QUESTION_RENDERER_REGISTER_EVENT,
   FABRIC_TOOL_PLACEMENT_EVENT,
   readFabricActionPolicyRegistrationV1,
+  readFabricQuestionRendererRegistrationV1,
   FABRIC_HOST_POLICY_EVENT,
   readFabricHostPolicyRequestV1,
   readFabricProviderWithdrawalV1,
@@ -327,6 +329,24 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
       let unregister: () => void;
       try {
         unregister = state.actionPolicyHooks.register(registration.name, registration.hook);
+      } catch (error) {
+        registration.respond?.({ ok: false, error: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      registration.respond?.({ ok: true, unregister });
+    },
+  );
+
+  // Question renderers. Registration is always accepted; renderers are
+  // consulted only when ui.questionRenderers is true.
+  const unsubscribeQuestionRendererRegistration = pi.events.on(
+    FABRIC_QUESTION_RENDERER_REGISTER_EVENT,
+    (value: unknown) => {
+      const registration = readFabricQuestionRendererRegistrationV1(value);
+      if (!registration) throw new Error("Invalid Pi Fabric question renderer registration");
+      let unregister: () => void;
+      try {
+        unregister = state.questionRenderers.register(registration.name, registration.render);
       } catch (error) {
         registration.respond?.({ ok: false, error: error instanceof Error ? error.message : String(error) });
         return;
@@ -1309,6 +1329,8 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     unsubscribeProgramRun();
     unsubscribeActionPolicyRegistration();
     state.actionPolicyHooks.clear();
+    unsubscribeQuestionRendererRegistration();
+    state.questionRenderers.clear();
     programRunContext = undefined;
     pendingHandoffs.clear();
     directToolApproval.clear();

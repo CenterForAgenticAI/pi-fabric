@@ -63,6 +63,7 @@ import {
 } from "./core/action-registry.js";
 import { FabricSessionApprovals } from "./core/approval-controller.js";
 import type { FabricActionPolicyHooks } from "./core/action-policy-hooks.js";
+import type { FabricQuestionRenderers } from "./fabric-state.js";
 import {
   COMPACTION_SEED_DELIVERY,
   CompactController,
@@ -217,6 +218,7 @@ export interface FabricRuntimeStateOptions {
   prewalkDrift?: PrewalkDriftTracker;
   sessionApprovals?: FabricSessionApprovals;
   actionPolicyHooks?: FabricActionPolicyHooks;
+  questionRenderers?: FabricQuestionRenderers;
   thinking?: FabricThinkingController;
   paths?: FabricRuntimePaths;
   entryIdentity?: FabricLoadedFileIdentity;
@@ -231,6 +233,7 @@ export interface FabricRuntimeStateOptions {
 export class FabricRuntimeState {
   #registry: ActionRegistry | undefined;
   readonly #actionPolicyHooks: FabricActionPolicyHooks | undefined;
+  readonly #questionRenderers: FabricQuestionRenderers | undefined;
   #config: FabricConfig | undefined;
   #execution: FabricExecutionService | undefined;
   #repairs: RepairCompiler | undefined;
@@ -305,6 +308,7 @@ export class FabricRuntimeState {
     this.prewalkDrift = options.prewalkDrift ?? new PrewalkDriftTracker();
     this.sessionApprovals = options.sessionApprovals ?? new FabricSessionApprovals();
     this.#actionPolicyHooks = options.actionPolicyHooks;
+    this.#questionRenderers = options.questionRenderers;
     this.thinking = options.thinking ??
       new FabricThinkingController(pi, () => this.#config?.thinking?.bounds ?? {});
     this.#paths = options.paths;
@@ -908,8 +912,17 @@ export class FabricRuntimeState {
       },
       onBackgroundComplete: (result) => completionInbox.enqueue(result),
       onResultConsumed: (id) => completionInbox.acknowledge(id),
-      onChildQuestion: (request) =>
-        routeChildQuestion(request, { context, ...(this.#decisions ? { store: this.#decisions } : {}) }),
+      onChildQuestion: (request) => {
+        // A child session's UI forwards to its parent, so only the main session renders.
+        const renderers = identity.kind === "main"
+          ? this.#questionRenderers?.active(this.#config?.ui.questionRenderers)
+          : undefined;
+        return routeChildQuestion(request, {
+          context,
+          ...(this.#decisions ? { store: this.#decisions } : {}),
+          ...(renderers ? { renderers } : {}),
+        });
+      },
       resolveChildTraceContext: (launch) =>
         requestChildTraceContext((event, value) => this.pi.events?.emit(event, value), launch),
     });
