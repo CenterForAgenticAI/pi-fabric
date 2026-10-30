@@ -2114,7 +2114,12 @@ describe("Fabric dynamic UI", () => {
         "continue remotely",
         "steer",
       );
+      expect(dashboard.render(120).join("\n")).toContain(
+        "Remote participant actions: s steer over mesh · u queue follow-up over mesh · x stop",
+      );
       dashboard.handleInput("x");
+      expect(onAgentStop).not.toHaveBeenCalled();
+      expect(dashboard.render(120).join("\n")).toContain("x again to confirm stop");
       dashboard.handleInput("x");
       expect(onAgentStop).toHaveBeenCalledWith("remote-agent");
     } finally {
@@ -2174,6 +2179,9 @@ describe("Fabric dynamic UI", () => {
       dashboard.handleInput("?");
       const help = dashboard.render(100).join("\n");
       expect(help).toContain("Fabric dashboard help");
+      expect(dashboard.render(200).join("\n")).toContain(
+        "M reduced motion (pins the model on an editable actor row)",
+      );
       expect(help).not.toContain("s steer now");
       expect(help).not.toContain("m model");
       dashboard.handleInput("\x1b");
