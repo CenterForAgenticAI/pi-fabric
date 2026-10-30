@@ -96,6 +96,8 @@ interface FabricAgentRequest {
   instructions?: string;
   timeout_ms?: number;
   residency?: FabricParticipantResidency;
+  /** agents.spawn only: return a "queued" handle at once; the run starts when a concurrency slot frees. */
+  queue?: boolean;
   /** Opt in to session persistence for hook-based observability and external trace ingestion. */
   persistSession?: boolean;
 }

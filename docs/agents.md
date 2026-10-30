@@ -32,6 +32,17 @@ You can give `fabric_exec` optional `agentBudget` and `tokenBudget` limits. Conf
 
 `agents.wait`/`join`, terminal `agents.status`, and cleanup acknowledge the result and retract any pending notification, including completion that arrived before the wait. Running status and UI/list polling do not acknowledge results. Acknowledgment means the Fabric program received the result: return the relevant outcome to Main when it needs to reason about it. Prefer `wait` over a polling loop.
 
+### Queued spawns
+
+By default `agents.spawn` waits inside the call for a free `agents.maxConcurrent` slot. A program that spawns more children than the limit blocks there, and if its deadline passes first, the waiting spawns never launch and the program cannot return the ids of the runs that did.
+
+`agents.spawn({ ..., queue: true })` returns at once with `status: "queued"` and the run's `id`. The run starts when a slot frees, first come first served, even after the program that spawned it has ended. Its `timeoutMs` counts from its start, not from the spawn call. Meanwhile `agents.wait`, `agents.status`, and `agents.list` accept the id and report `queued`; `wait` resolves with the final result once the run starts and finishes. `agents.stop` on a queued run cancels it without launching and returns a `stopped` result. `agents.cleanup` removes a cancelled queued run; a queued run must be stopped first. `agents.steer`, `agents.followUp`, and `agents.log` need a started run and throw until then. If the launch fails after admission (an unavailable model, a worktree error), the run ends `failed` with that error and a detached run reports it like any other completion. Request validation errors still reject the `spawn` call itself. `queue` is not available with `residency: "durable"`. A [background program](background-tasks.md) (`fabric_exec` with `background: true`) is the other way to keep a long spawn loop from blocking Main, but each spawn in it still waits for a slot.
+
+```ts
+const handles = await Promise.all(tasks.map((task) => agents.spawn({ task, queue: true })));
+return handles.map((handle) => handle.id);
+```
+
 Durable spawns use the same inbox. Undelivered envelopes survive disconnects; receipts survive reconnects. Escape or an errored Main turn parks pending results until new input; Main does not restart immediately. Explicit lifecycle subscriptions, actor messages, and trajectory handoffs retain their separate delivery policies. A terminal run can still report incomplete work; Main must inspect its result.
 
 ### Stalled Pi error recovery

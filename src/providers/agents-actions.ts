@@ -167,7 +167,15 @@ const actorInvocationProperties = {
 
 const spawnSchema = {
   ...runSchema,
-  properties: { ...runProperties, residency: residencySchema },
+  properties: {
+    ...runProperties,
+    residency: residencySchema,
+    queue: {
+      type: "boolean",
+      description:
+        "Return a handle with status \"queued\" at once instead of waiting inside this call for a free agents.maxConcurrent slot. The run starts when a slot frees, even after this program ends; wait, status, list, and stop accept the id meanwhile, and stop cancels it without launching. Validation errors still reject the call. Omitted or false keeps the default: spawn waits for a slot.",
+    },
+  },
 };
 
 const handoffCompactionSchema = {

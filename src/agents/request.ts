@@ -79,6 +79,7 @@ export const normalizeAgentRunRequest = (
     ...(args.holdQuestions !== undefined && args.holdQuestions !== false
       ? { holdQuestions: args.holdQuestions as true }
       : {}),
+    ...(args.queue === true ? { queue: true as const } : {}),
     ...(typeof args.persona === "string" && args.persona.trim()
       ? { persona: args.persona.trim() }
       : {}),

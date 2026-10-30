@@ -74,6 +74,12 @@ export interface AgentRunRequest {
    * "route" and a runner that declares questions; the run's own timeoutMs still applies.
    */
   holdQuestions?: true;
+  /**
+   * agents.spawn only: return a "queued" handle at once instead of waiting
+   * inside the call for a free agents.maxConcurrent slot. The run starts when
+   * a slot frees; agents.stop before then cancels it without launching.
+   */
+  queue?: true;
   /** Veda persona name; only used when runner is "veda". */
   persona?: string;
   thinking?: FabricThinking;
