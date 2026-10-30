@@ -127,11 +127,14 @@ const OVERSIZED_EVENT_FILE = "oversized-event-prefix.txt";
 const DURABLE_KEY = /^(?:initial|[0-9a-f]{64})$/;
 const DURABLE_LEASE_FILES = new Set(["lease.sqlite", "lease.sqlite-journal"]);
 const DURABLE_STORE_FILE = /^(?:main|(?:doc|task)-(?:0|[1-9]\d*))\.jsonl(?:\.reclaim)?$/;
+/** src/durable/agent.ts fabricJournalPath: the first 32 hex digits of a sha256, as `.jsonl`. */
+const FABRIC_JOURNAL_FILE = /^[0-9a-f]{32}\.jsonl$/;
 const onlyOwnedFiles = (directory: string, allowed: (name: string) => boolean): boolean =>
   fs.readdirSync(directory).every((name) => allowed(name) && ownedStat(path.join(directory, name))?.isFile() === true);
 /**
  * The pi-durable runner's journal: `durable/<initial|sha256>/{lease.sqlite,store/*.jsonl}`,
- * exactly as src/durable/storage.ts creates it. The run's status and child liveness
+ * exactly as src/durable/storage.ts creates it, plus the fabric_exec crash journals in
+ * `fabric-journal/` (src/durable/worker-host.ts). The run's status and child liveness
  * still decide removal; this only stops Fabric's own journal from vetoing it.
  */
 const safeDurableTree = (directory: string): boolean => fs.readdirSync(directory).every((key) => {
@@ -140,6 +143,7 @@ const safeDurableTree = (directory: string): boolean => fs.readdirSync(directory
   return fs.readdirSync(conversation).every((name) => {
     const file = path.join(conversation, name);
     if (name === "store") return ownedStat(file)?.isDirectory() === true && onlyOwnedFiles(file, (child) => DURABLE_STORE_FILE.test(child));
+    if (name === "fabric-journal") return ownedStat(file)?.isDirectory() === true && onlyOwnedFiles(file, (child) => FABRIC_JOURNAL_FILE.test(child));
     return DURABLE_LEASE_FILES.has(name) && ownedStat(file)?.isFile() === true;
   });
 });
