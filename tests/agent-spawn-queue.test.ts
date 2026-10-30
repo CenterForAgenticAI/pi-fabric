@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentManager } from "../src/agents/manager.js";
+import { WorktreeManager } from "../src/agents/worktree-manager.js";
+import { ProcessTransport } from "../src/agents/transports/process-transport.js";
 import type { AgentRunResult } from "../src/agents/types.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import { AGENTS_ACTION_DESCRIPTORS } from "../src/providers/agents-actions.js";
@@ -131,6 +133,65 @@ describe("agents.spawn queue: true", () => {
     await expect(manager.cleanup(queued.id)).resolves.toEqual({ cleaned: true });
     const next = await manager.run({ task: "next", runner: "pi", extensions: false });
     expect(next.status).toBe("completed");
+  });
+
+  it.each(["create", "setup", "budget", "transport"] as const)("cancels during deferred %s and releases resources", async (phase) => {
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let finish!: () => void;
+    const deferred = new Promise<void>((resolve) => { finish = resolve; });
+    const pause = async () => { entered(); await deferred; };
+    const lease = { gitRoot: process.cwd(), path: process.cwd(), cwd: process.cwd(), branch: "test" };
+    vi.spyOn(WorktreeManager.prototype, "create").mockImplementation(async () => {
+      if (phase === "create") await pause();
+      return lease;
+    });
+    const setupWorktree = vi.spyOn(WorktreeManager.prototype, "setup").mockImplementation(async () => {
+      if (phase === "setup") await pause();
+    });
+    const cleanup = vi.spyOn(WorktreeManager.prototype, "cleanup").mockResolvedValue(true);
+    const available = vi.spyOn(ProcessTransport.prototype, "available").mockImplementation(async () => {
+      if (phase === "transport") await pause();
+      return true;
+    });
+    const launch = vi.spyOn(ProcessTransport.prototype, "launch");
+    const { manager } = setup({ resolveHandoffCompactionBudget: async () => { await pause(); return { contextWindow: 50_000, targetContextRatio: 0.5, reserveTokens: 5000, keepRecentTokens: 1000 }; } });
+    const queued = await manager.spawn({
+      task: "never runs", queue: true, extensions: false, worktree: true, worktreeSetup: "setup",
+      ...(phase === "budget" ? { sessionSeed: {} as never, handoffCompact: {} } : {}),
+    });
+    await started;
+    const stopping = manager.stop(queued.id);
+    finish();
+    expect(await stopping).toMatchObject({ status: "stopped" });
+    expect(await manager.wait(queued.id)).toMatchObject({ status: "stopped" });
+    expect(cleanup).toHaveBeenCalledWith(queued.id, true);
+    expect(launch).not.toHaveBeenCalled();
+    if (phase === "create") expect(setupWorktree).not.toHaveBeenCalled();
+    available.mockRestore();
+    const next = await manager.run({ task: "next", extensions: false });
+    expect(next.status).toBe("completed");
+  });
+
+  it("stops a transport acquired after queued cancellation", async () => {
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let finish!: () => void;
+    const deferred = new Promise<void>((resolve) => { finish = resolve; });
+    const stop = vi.fn(async () => {});
+    vi.spyOn(ProcessTransport.prototype, "launch").mockImplementation(async () => {
+      entered();
+      await deferred;
+      return { kind: "process", sessionId: "test", stop, isAlive: async () => false };
+    });
+    const { manager } = setup();
+    const queued = await manager.spawn({ task: "late transport", queue: true, extensions: false });
+    await started;
+    const stopping = manager.stop(queued.id);
+    finish();
+    expect(await stopping).toMatchObject({ status: "stopped" });
+    expect(stop).toHaveBeenCalledOnce();
+    expect(await manager.wait(queued.id)).toMatchObject({ status: "stopped" });
   });
 
   it("wait on a queued run resolves with the run's result once it starts and finishes", async () => {

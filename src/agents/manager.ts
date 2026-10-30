@@ -1188,7 +1188,9 @@ export class AgentManager {
     }
 
     try {
+      admissionSignal.throwIfAborted();
       if (worktree && worktreeSetup?.trim()) await this.#worktrees.setup(id, worktreeSetup);
+      admissionSignal.throwIfAborted();
       const writePolicy = capabilities.writePolicy
         ? resolveChildWritePolicy(request, this.#parentWritePolicy, agentCwd)
         : undefined;
@@ -1206,6 +1208,10 @@ export class AgentManager {
       };
       // Only a pi-durable child with agents.durableWorkerSession gets the worker-role entry, written into the seed in the same write that creates it.
       const seedOptions = durableSession ? { workerRole: true } : {};
+      const handoffBudget = request.sessionSeed && request.handoffCompact
+        ? await this.#resolveHandoffCompactionBudget?.(model, agentCwd)
+        : undefined;
+      admissionSignal.throwIfAborted();
       const sessionFile = request.forkSeed
         ? writeForkSession(request.forkSeed, agentCwd, path.join(runDirectory, "fork-session"), request.thinkingTransfer, seedOptions)
         : request.sessionSeed
@@ -1215,7 +1221,7 @@ export class AgentManager {
             path.join(runDirectory, "handoff-session"),
             request.thinkingTransfer,
             request.handoffCompact,
-            request.handoffCompact ? await this.#resolveHandoffCompactionBudget?.(model, agentCwd) : undefined,
+            handoffBudget,
             seedOptions,
           )
         : request.sessionFile;
@@ -1281,7 +1287,7 @@ export class AgentManager {
         return await this.#startHosted(hostedAdapter, launchContext, {
           request,
           release,
-          signal,
+          signal: callerSignal,
           timeoutMs,
           files: { statusFile, lifecycleFile, logFile },
           ...(clampedFrom ? { requestedThinking: clampedFrom } : {}),
@@ -1290,6 +1296,7 @@ export class AgentManager {
         });
       }
       const adapter = await this.#resolveTransport(request.transport ?? this.config.transport);
+      admissionSignal.throwIfAborted();
       const workerArguments = [
         "--id",
         id,
@@ -1428,6 +1435,7 @@ export class AgentManager {
         workerPath: runnerLaunch.workerPath,
         workerArguments: [...runnerLaunch.workerArguments],
       };
+      admissionSignal.throwIfAborted();
       if (this.#closing) throw new Error("Fabric agent manager is closing");
       const recoveryPolicy = this.config.durableWorkerRecovery === true &&
         residency === "durable" && runner === "pi-durable" &&
@@ -1435,7 +1443,7 @@ export class AgentManager {
         ? this.#workerRecoveryPolicy() : undefined;
       const transport = await this.#launchTransport(adapter, launch);
       const lifecycle = createAgentLifecycle<AgentRunResult>(release);
-      if (signal?.aborted || this.#closing) {
+      if (admissionSignal.aborted || this.#closing) {
         await transport.stop();
         if (!await transport.isAlive().catch(() => true)) this.#unregisteredTransports.delete(transport);
         throw new Error("Agent launch aborted");
@@ -1460,7 +1468,7 @@ export class AgentManager {
         launch,
         startupAttempts: 1,
         ...lifecycle,
-        abortSignal: signal,
+        abortSignal: callerSignal,
         abortHandler: undefined,
         ...(model ? { model } : {}),
         ...(request.modelMatch ? { modelMatch: request.modelMatch } : {}),
@@ -1489,9 +1497,9 @@ export class AgentManager {
         },
         usageEmitted: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
       };
-      if (signal) {
+      if (callerSignal) {
         managed.abortHandler = () => this.#handleCallerAbort(id);
-        signal.addEventListener("abort", managed.abortHandler, { once: true });
+        callerSignal.addEventListener("abort", managed.abortHandler, { once: true });
       }
       this.#runs.set(id, managed);
       this.#unregisteredTransports.delete(transport);
