@@ -129,6 +129,41 @@ const DURABLE_LEASE_FILES = new Set(["lease.sqlite", "lease.sqlite-journal"]);
 const DURABLE_STORE_FILE = /^(?:main|(?:doc|task)-(?:0|[1-9]\d*))\.jsonl(?:\.reclaim)?$/;
 const onlyOwnedFiles = (directory: string, allowed: (name: string) => boolean): boolean =>
   fs.readdirSync(directory).every((name) => allowed(name) && ownedStat(path.join(directory, name))?.isFile() === true);
+const DURABLE_SESSION_FILE = "session.jsonl";
+const DURABLE_SESSION_TEMP = /^tmp-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.jsonl$/;
+/** A file an extension keeps beside the session file, such as `session.jsonl.acp.json`. */
+const DURABLE_SESSION_SIDECAR = /^session\.jsonl\.[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/**
+ * A pi-durable worker's private session folder (src/durable/worker-role-seed.ts):
+ * only `session.jsonl` and the `tmp-<uuid v4>.jsonl` names the worker writes,
+ * each a regular file owned by this user. A file with two names is accepted only
+ * as the crash leftover between the worker's link and unlink: the folder holds
+ * exactly `session.jsonl` and one temp name sharing device and inode. A link that
+ * leaves the folder, an unknown name, a symlink or another owner keeps the run.
+ * A `session.jsonl.<suffix>` sidecar is accepted only as an owned regular file with one name.
+ */
+const safeDurableSessionFolder = (directory: string): boolean => {
+  const uid = process.getuid?.();
+  const stats = new Map<string, fs.Stats>();
+  for (const name of fs.readdirSync(directory)) {
+    if (DURABLE_SESSION_SIDECAR.test(name)) {
+      const sidecar = fs.lstatSync(path.join(directory, name));
+      if (!sidecar.isFile() || (uid !== undefined && sidecar.uid !== uid) || sidecar.nlink !== 1) return false;
+      continue;
+    }
+    if (name !== DURABLE_SESSION_FILE && !DURABLE_SESSION_TEMP.test(name)) return false;
+    const stat = fs.lstatSync(path.join(directory, name));
+    if (!stat.isFile() || (uid !== undefined && stat.uid !== uid) || stat.nlink > 2) return false;
+    stats.set(name, stat);
+  }
+  const linked = [...stats.entries()].filter(([, stat]) => stat.nlink !== 1);
+  if (linked.length === 0) return true;
+  const session = stats.get(DURABLE_SESSION_FILE);
+  const temporaries = [...stats.entries()].filter(([name]) => name !== DURABLE_SESSION_FILE);
+  const [temporary] = temporaries;
+  return stats.size === 2 && session !== undefined && temporaries.length === 1 && temporary !== undefined &&
+    session.nlink === 2 && temporary[1].nlink === 2 && session.dev === temporary[1].dev && session.ino === temporary[1].ino;
+};
 /**
  * The pi-durable runner's journal: `durable/<initial|sha256>/{lease.sqlite,store/*.jsonl}`,
  * exactly as src/durable/storage.ts creates it. The run's status and child liveness
@@ -193,6 +228,11 @@ const safeRunTree = (root: string, childrenStopped: boolean, owner?: RunRootOwne
       if (stat.isDirectory() && name === "handoff-session") {
         // This directory is exclusively populated by Fabric's session fork writer.
         if (fs.readdirSync(file).some((child) => !child.endsWith(".jsonl") || !ownedStat(path.join(file, child))?.isFile())) return false;
+        continue;
+      }
+      if (stat.isDirectory() && name === "durable-session") {
+        // The pi-durable worker's private Pi session file (src/worker.ts).
+        if (!safeDurableSessionFolder(file)) return false;
         continue;
       }
       if (stat.isDirectory() && name === "durable") {

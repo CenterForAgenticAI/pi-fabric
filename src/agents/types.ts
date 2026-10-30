@@ -289,6 +289,8 @@ export interface AgentWorkerOptions {
   thinkingBounds?: string;
   systemPrompt?: string;
   persistSession?: boolean;
+  /** pi-durable only (agents.durableWorkerSession): keep a session file in the run directory. */
+  durableSession?: boolean;
   modelAdmission?: "strict" | "permissive";
   /** "exact": the child is pinned to `model`; the worker forces strict admission and loads the pin guard. */
   modelMatch?: FabricModelMatch;
