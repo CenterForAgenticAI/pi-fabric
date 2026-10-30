@@ -470,19 +470,23 @@ export class AgentsProvider implements FabricProvider {
     modelMatch?: FabricModelMatch,
   ): string {
     let available: FabricModelCandidate[] = [];
+    let registryError: unknown;
     try {
       available = context.extensionContext.modelRegistry.getAvailable().map((candidate) => ({
         provider: String(candidate.provider),
         id: String(candidate.id),
         ...(typeof candidate.name === "string" ? { name: candidate.name } : {}),
       }));
-    } catch {
-      // The authoritative visible set is empty when registry discovery fails.
+    } catch (error) {
+      // The authoritative visible set is empty when registry discovery fails;
+      // the resolution error names the registry failure.
+      registryError = error;
     }
     const resolved = resolvePiModelSelector(model, {
       aliases: this.modelsConfig().aliases,
       available,
       lastUsed: loadModelUsage(),
+      ...(registryError === undefined ? {} : { registryError }),
     }, modelMatch);
     return `${resolved.provider}/${resolved.id}`;
   }
@@ -922,18 +926,16 @@ export class AgentsProvider implements FabricProvider {
             ...model,
           })));
         }
-        try {
-          const available = context.extensionContext.modelRegistry.getAvailable();
-          return matching(available.map((model) => ({
-            runner,
-            provider: String(model.provider),
-            id: String(model.id),
-            name: String(model.name ?? model.id),
-            key: `${model.provider}/${model.id}`,
-          })));
-        } catch {
-          return [];
-        }
+        // A registry failure rejects: an empty list would read as "no models".
+        const available = context.extensionContext.modelRegistry.getAvailable();
+        return matching(available.map((model) => ({
+          runner,
+          provider: String(model.provider),
+          id: String(model.id),
+          name: String(model.name ?? model.id),
+          key: `${model.provider}/${model.id}`,
+        })));
+
       }
       case "switchModel": {
         const query = typeof args.model === "string" ? args.model.trim() : "";
@@ -950,8 +952,11 @@ export class AgentsProvider implements FabricProvider {
             id: String(model.id),
             ...(typeof model.name === "string" ? { name: model.name } : {}),
           }));
-        } catch {
-          available = [];
+        } catch (error) {
+          throw new Error(
+            `agents.switchModel could not read the model registry: ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error },
+          );
         }
         if (available.length === 0) {
           throw new Error(

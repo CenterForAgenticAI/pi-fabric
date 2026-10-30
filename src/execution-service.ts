@@ -1175,7 +1175,8 @@ export class FabricExecutionService {
                   error,
                   executionOutcomeFromError(error, runtimeSignal),
                 );
-                return [];
+                // Surface the registry failure; an empty list reads as "no models".
+                throw error;
               }
             }
             case "fabric.$list":

@@ -791,13 +791,15 @@ export class FabricRuntimeState {
       ? { ...this.#config.agents, enabled: false }
       : this.#config.agents;
     const modelsConfig = this.#config.models;
-    const visiblePiModels = () => {
+    const readPiModels = () => {
       try {
-        return context.modelRegistry.getAvailable();
-      } catch {
-        return [];
+        return { models: context.modelRegistry.getAvailable() };
+      } catch (registryError) {
+        return { models: [], registryError };
       }
     };
+    // Status and residency sync stay fail-empty; resolution names the failure.
+    const visiblePiModels = () => readPiModels().models;
     const piModelState = (models = visiblePiModels()) => {
       const available: FabricModelCandidate[] = models.map((model) => ({
         provider: String(model.provider),
@@ -814,13 +816,14 @@ export class FabricRuntimeState {
       };
     };
     const resolveParticipantPiModel = (selector?: string, modelMatch?: FabricModelMatch) => {
-      const models = visiblePiModels();
+      const { models, registryError } = readPiModels();
       const state = piModelState(models);
       const query = selector?.trim() || state.defaultModel || "";
       const resolved = resolvePiModelSelector(query, {
         aliases: state.aliases,
         available: state.available,
         lastUsed: loadModelUsage(),
+        ...(registryError === undefined ? {} : { registryError }),
       }, modelMatch);
       // The resolver returns the registry's own spelling. Match it case-sensitively
       // first so entries that differ only by case cannot swap places: the model

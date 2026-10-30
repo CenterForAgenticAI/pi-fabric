@@ -153,6 +153,14 @@ describe("resolveAvailablePiModel", () => {
     })).toThrow('Use agents.models({ runner: "pi" })');
   });
 
+  it("names a model registry failure in the unavailable-model error", () => {
+    for (const selector of ["openai-codex/gpt-6-sol", "sol"]) {
+      expect(() => resolveAvailablePiModel(selector, {
+        aliases: {}, available: [], registryError: new Error("registry offline"),
+      })).toThrow(/not available to this Pi session[\s\S]*The model registry failed: registry offline/);
+    }
+  });
+
   it("keeps provider-qualified aliases authoritative", () => {
     expect(resolveAvailablePiModel("openai-codex/gpt-6-sol", {
       aliases: normalizeModelAliases({ "openai-codex/gpt-6-sol": "openai-codex/gpt-5.6-sol" }),

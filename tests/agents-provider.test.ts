@@ -3170,6 +3170,44 @@ describe("AgentsProvider switchModel", () => {
     ).rejects.toThrow(/requires a local Main session/);
   });
 
+  const failingRegistryContext = (): FabricInvocationContext => ({
+    ...context,
+    extensionContext: {
+      modelRegistry: {
+        getAvailable: () => {
+          throw new Error("models.json is not valid JSON");
+        },
+      },
+    } as unknown as ExtensionContext,
+  });
+
+  it("rejects agents.models with the registry error instead of an empty list", async () => {
+    const { provider } = setup();
+    await expect(
+      provider.invoke("models", { runner: "pi" }, failingRegistryContext()),
+    ).rejects.toThrow(/models\.json is not valid JSON/);
+  });
+
+  it("names the registry error when a run model cannot be resolved", async () => {
+    const { provider, agents } = setup();
+    const spawn = vi.spyOn(agents, "spawn");
+    await expect(
+      provider.invoke("run", { task: "do not launch", model: "google/gemini-2.5-flash" }, failingRegistryContext()),
+    ).rejects.toThrow(/not available to this Pi session[\s\S]*models\.json is not valid JSON/);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("names the registry error when switchModel cannot read the registry", async () => {
+    const switchModel = vi.fn(async () => ({ ok: true }));
+    const { provider } = setup([], [], undefined, {
+      switchModel: switchModel as FabricMainAgentTarget["switchModel"],
+    });
+    await expect(
+      provider.invoke("switchModel", { model: "google/gemini-2.5-flash" }, failingRegistryContext()),
+    ).rejects.toThrow(/models\.json is not valid JSON/);
+    expect(switchModel).not.toHaveBeenCalled();
+  });
+
   it("requires a non-empty model selector", async () => {
     const { provider } = setup([], [], undefined, {
       switchModel: vi.fn(async () => ({ ok: true })) as FabricMainAgentTarget["switchModel"],
