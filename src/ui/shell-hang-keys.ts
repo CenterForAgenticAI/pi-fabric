@@ -74,6 +74,7 @@ export function installFabricShellHangKeys(
         return { consume: true };
       }
       chordArmedAt = now;
+      if (shells > 0) context.ui.notify("Fabric: press Ctrl+B again to background the waiting shell", "info");
       return { consume: true };
     }
     chordArmedAt = 0;

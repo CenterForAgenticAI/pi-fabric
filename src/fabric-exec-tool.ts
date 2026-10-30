@@ -65,6 +65,7 @@ import {
   restoreFabricWritePreviews,
   restoreLegacyBashCommands,
   safeTerminalText,
+  shellBackgroundShortcut,
   singleCallProgressLine,
   type FabricAgentPreview,
   type FabricCallHeadlinePreview,
@@ -524,6 +525,9 @@ export const createFabricExecTool = (
                 ? theme.fg("error", "✗")
                 : theme.fg("dim", "›");
           let text = `${glyph} ${nestedCallTitle(audit, theme, context?.invalidate, corePreviewContext)}`;
+          if (shellBackgroundShortcut(audit)) {
+            text += nl + theme.fg("dim", "Ctrl+B twice · background waiting shell");
+          }
           const previewLines = renderAgentToolPreviewLines(audit, theme, {
             expanded,
             showTools: showAgentToolPreview,
