@@ -345,6 +345,39 @@ describe("question renderers for routed child questions", () => {
     expect(await store.list()).toEqual([]);
   });
 
+  it("uses direct UI for context a decision cannot represent losslessly", async () => {
+    const store = decisionStore();
+    const select = vi.fn(async (_title: string, options: string[]) => options[1]);
+    const confirm = vi.fn(async () => true);
+    const input = vi.fn(async () => "typed");
+    const editor = vi.fn(async () => "edited");
+    const context = { hasUI: true, ui: { select, confirm, input, editor } } as unknown as ExtensionContext;
+    const { renderers, seen } = withRenderer(() => { throw new Error("must not render"); });
+    const longOption = "x".repeat(201);
+    const longMessage = "m".repeat(4001);
+    const cases = [
+      { question: { ...pick, title: "t".repeat(200) }, result: { value: "Beta" } },
+      { question: { ...pick, message: longMessage }, result: { value: "Beta" } },
+      { question: { ...pick, options: ["Alpha", longOption] }, result: { value: longOption } },
+      { question: { ...pick, options: ["Alpha", ""] }, result: { value: "" } },
+      { question: { ...pick, options: ["Alpha", "  "] }, result: { value: "  " } },
+      { question: { method: "confirm", title: "Confirm", message: longMessage }, result: { confirmed: true } },
+      { question: { method: "input", title: "Input", placeholder: "hint" }, result: { value: "typed" } },
+      { question: { method: "editor", title: "Edit", prefill: "draft" }, result: { value: "edited" } },
+    ];
+    for (const item of cases) {
+      const routed = request(item.question);
+      expect(await routeChildQuestion(routed, { context, store, renderers })).toEqual(item.result);
+      expect(routed.onDecision).not.toHaveBeenCalled();
+    }
+    expect(confirm).toHaveBeenCalledWith("worker: Confirm", longMessage, expect.any(Object));
+    expect(input).toHaveBeenCalledWith("worker: Input", "hint", expect.any(Object));
+    expect(editor).toHaveBeenCalledWith("worker: Edit", "draft");
+    expect(select).toHaveBeenCalledWith("worker: Pick", ["Alpha", longOption], expect.any(Object));
+    expect(seen).toEqual([]);
+    expect(await store.list()).toEqual([]);
+  });
+
   it("cancels the record and the child's dialog when the store refuses the typed text", async () => {
     const store = decisionStore();
     const editor = vi.fn(async () => "x".repeat(4_001));

@@ -206,9 +206,16 @@ const childDecisionInput = (label: string, question: ChildQuestion, timeoutMs: n
   onExpire: "cancel",
 });
 
-/** A select with more options than a decision holds cannot be recorded whole. */
-const recordable = (question: ChildQuestion): boolean =>
-  question.method !== "select" || question.options!.length <= MAX_DECISION_OPTIONS;
+/** Only offer a child question to a renderer when its decision is lossless. */
+const recordable = (label: string, question: ChildQuestion): boolean => {
+  if (label.length > MAX_DECISION_TITLE_CHARS ||
+      (question.message !== undefined && (!question.message || question.message.length > MAX_DECISION_BODY_CHARS)) ||
+      question.placeholder !== undefined || question.prefill !== undefined) return false;
+  return question.method !== "select" || (
+    question.options!.length <= MAX_DECISION_OPTIONS &&
+    question.options!.every((option) => !!option.trim() && option.length <= MAX_DECISION_TITLE_CHARS)
+  );
+};
 
 /**
  * Show a recorded child question to the person at this terminal: through a
@@ -304,7 +311,7 @@ export const routeChildQuestion = async (
   const label = `${request.name}: ${question.title || "question"}`;
   const hold = request.hold === true;
   if (deps.context?.hasUI && (!hold || !deps.store)) {
-    if (!hold && deps.store && deps.renderers && recordable(question)) {
+    if (!hold && deps.store && deps.renderers && recordable(label, question)) {
       return askRecorded(request, { ui: deps.context.ui, store: deps.store, renderers: deps.renderers }, label, question);
     }
     return askViaUi(deps.context.ui, label, question, request.signal, hold);
