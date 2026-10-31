@@ -133,10 +133,6 @@ const MAIN_REVISION_EVENTS: ReadonlySet<FabricActorHostEvent> = new Set([
   "session_compact",
 ]);
 const ORPHAN_ADOPTION_RETRY_MS = 30_000;
-// Failed or contested writes must yield to the event loop and cannot be
-// retried on every ownership query or mesh poll.
-const ADOPTION_FAILURE_RETRY_MS = 100;
-const ADOPTION_FAILURE_RETRY_MAX_MS = 30_000;
 const RETENTION_SWEEP_INTERVAL_MS = 15 * 60 * 1_000;
 const RESIDENT_HOST_EVENT_TOPIC = "fabric.actor.host-event";
 const normalizeCapabilityRequirements = (
@@ -239,13 +235,10 @@ export class ActorManager {
   // Adoption compares against this snapshot so two racing adopters cannot
   // both move the same dead lineage: only the first fenced write succeeds.
   readonly #persistedRoots = new Map<string, string>();
-  // Serialize attempts, with per-row cooldown and shared outage pacing.
+  // One attempt at a time; failures wait for mesh reconciliation.
   readonly #adoptionAbort = new AbortController();
-  readonly #adoptionCooldown = new Map<string, { failures: number; until: number }>();
   #adoptionPending = false;
-  #adoptionRetry: NodeJS.Timeout | undefined;
-  #adoptionQueue: string[] = [];
-  #adoptionIndex = 0;
+  #adoptionDeferred = false;
   #lastAdoptionId: string | undefined;
   readonly #adoptionGraceMs: number;
   readonly #listeners = new Set<() => void>();
@@ -323,6 +316,7 @@ export class ActorManager {
     this.#retentionTimer.unref();
     this.#meshMonitor = new ActorMeshMonitor(mesh, meshConfig, {
       cursorPath: options.meshCursorPath,
+      onReconcile: () => { this.#adoptionDeferred = false; },
       beforePoll: () => {
         this.#syncActorsFromRegistry();
         this.#refreshOwnership();
@@ -1157,8 +1151,6 @@ export class ActorManager {
     if (this.#closing) return;
     this.#closing = true;
     this.#adoptionAbort.abort();
-    if (this.#adoptionRetry) clearTimeout(this.#adoptionRetry);
-    this.#adoptionRetry = undefined;
     this.#meshMonitor.close();
     if (this.#retentionTimer) clearInterval(this.#retentionTimer);
     this.#retentionTimer = undefined;
@@ -2194,11 +2186,10 @@ export class ActorManager {
       !this.#canManageActor ||
       this.#claimResidency === undefined ||
       this.#adoptionPending ||
-      this.#adoptionRetry !== undefined
+      this.#adoptionDeferred
     ) {
       return;
     }
-    if ((this.#adoptionCooldown.get(actor.id)?.until ?? 0) > Date.now()) return;
     if (actor.rootId === this.#rootId) return;
     // Only residency-matched rows: Main adopts "session" actors, the resident
     // host adopts "durable" actors.
@@ -2225,7 +2216,6 @@ export class ActorManager {
     this.#adoptionPending = true;
     this.#lastAdoptionId = actor.id;
     let adopted = false;
-    let failed = false;
     try {
       const expectedRootId = actor.rootId;
       adopted = await this.#registry.withLock(() => {
@@ -2246,18 +2236,18 @@ export class ActorManager {
         ) {
           return false;
         }
-        const candidate = { ...actor, rootId: this.#rootId, adoptedAt: Date.now(), updatedAt: Date.now() };
+        // Adopt the locked disk record, not a possibly stale local snapshot.
+        const candidate = { ...current, rootId: this.#rootId, adoptedAt: Date.now(), updatedAt: Date.now() };
         const preserved = entries.filter(
           (entry) => !isActorRegistryRecord(entry) || entry.id !== actor.id,
         );
-        this.#registry.write([...preserved, this.#serializedActor(candidate)]);
+        this.#registry.write([...preserved, candidate]);
         for (const record of records) {
           if (typeof record.rootId === "string") this.#persistedRoots.set(record.id, record.rootId);
         }
         actor.rootId = candidate.rootId;
         actor.adoptedAt = candidate.adoptedAt;
         actor.updatedAt = candidate.updatedAt;
-        this.#registryFingerprint = this.#registry.fingerprint();
         return true;
       }, this.#adoptionAbort.signal);
       if (this.#closing) return;
@@ -2276,63 +2266,34 @@ export class ActorManager {
         }
       }
     } catch {
-      // Lock timeout or I/O failure, not a normal fencing loss.
-      failed = true;
+      // Lock timeout or I/O failure; retry on the next reconciliation.
     } finally {
       this.#adoptionPending = false;
     }
     if (this.#closing) return;
     if (!adopted) {
-      const failures = failed ? (this.#adoptionCooldown.get(actor.id)?.failures ?? 0) + 1 : 0;
-      const base = Math.min(ADOPTION_FAILURE_RETRY_MAX_MS, ADOPTION_FAILURE_RETRY_MS * 2 ** Math.min(Math.max(0, failures - 1), 9));
-      const delay = Math.round(base * (0.5 + Math.random() * 0.5));
-      this.#adoptionCooldown.set(actor.id, { failures, until: Date.now() + delay });
-      // Pace all unsuccessful attempts, including repeated fencing losses.
-      // Only I/O failures increase this row’s exponential cooldown.
-      this.#armAdoptionScheduler(ADOPTION_FAILURE_RETRY_MS);
+      this.#adoptionDeferred = true;
     } else {
-      this.#adoptionCooldown.delete(actor.id);
-      // The locked write already updated this actor in place. Avoid a full
-      // ownership reload for every successful row in a large orphan batch.
-      this.#ownership.set(actor.id, this.#ownershipDecision(actor.id));
-      this.#scheduleAdoptions();
+      // Reload the adopted and other unowned rows before selecting another.
+      this.#actors.delete(actor.id);
+      this.#ownership.delete(actor.id);
+      this.#registryFingerprint = undefined;
+      this.#syncActorsFromRegistry();
+      this.#refreshOwnership();
     }
     this.#emitChange();
   }
 
-  #armAdoptionScheduler(delay: number): void {
-    if (this.#closing || this.#adoptionRetry) return;
-    this.#adoptionRetry = setTimeout(() => {
-      this.#adoptionRetry = undefined;
-      this.#scheduleAdoptions();
-    }, delay);
-    this.#adoptionRetry.unref();
-  }
-
   #scheduleAdoptions(): void {
-    if (this.#closing || this.#adoptionPending || this.#adoptionRetry || !this.#persistent || !this.#canManageActor || this.#claimResidency === undefined) return;
-    if (this.#adoptionIndex >= this.#adoptionQueue.length) {
-      const ids = [...this.#actors.keys()];
-      const start = (ids.indexOf(this.#lastAdoptionId ?? "") + 1) % (ids.length || 1);
-      this.#adoptionQueue = [...ids.slice(start), ...ids.slice(0, start)];
-      this.#adoptionIndex = 0;
-      for (const id of this.#adoptionCooldown.keys()) {
-        if (!this.#actors.has(id)) this.#adoptionCooldown.delete(id);
-      }
-    }
-    while (this.#adoptionIndex < this.#adoptionQueue.length) {
-      const id = this.#adoptionQueue[this.#adoptionIndex++]!;
+    if (this.#closing || this.#adoptionPending || this.#adoptionDeferred || !this.#persistent || !this.#canManageActor || this.#claimResidency === undefined) return;
+    const ids = [...this.#actors.keys()];
+    const start = (ids.indexOf(this.#lastAdoptionId ?? "") + 1) % (ids.length || 1);
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[(start + i) % ids.length]!;
       const actor = this.#actors.get(id);
       if (actor && !this.#ownership.get(id)) this.#maybeAdoptOrphan(actor);
       if (this.#adoptionPending) return;
     }
-    // Only wake for future cooldowns. Eligibility is rechecked at the next
-    // normal refresh if the row is otherwise fenced or its lineage is alive.
-    let next = Infinity;
-    for (const { until } of this.#adoptionCooldown.values()) {
-      if (until > Date.now()) next = Math.min(next, until);
-    }
-    if (next < Infinity) this.#armAdoptionScheduler(next - Date.now());
   }
 
   #refreshOwnership(): void {

@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GlobalActorRegistry } from "../src/actors/global-registry.js";
 import { ActorManager, ActorRegistryOwnershipError } from "../src/actors/manager.js";
+import { ActorMeshMonitor } from "../src/actors/mesh-monitor.js";
 import { ActorRegistryStore } from "../src/actors/registry-store.js";
 import type { FabricCapabilityRequirement } from "../src/components/types.js";
 import type { FabricCapabilityViewLease } from "../src/core/action-registry.js";
@@ -537,7 +538,7 @@ describe("ActorManager", () => {
       write.mockRestore();
     }
     rootAlive = false;
-    await waitFor(() => successor.owns(actor.id));
+    await waitFor(() => successor.owns(actor.id), 4_000);
     expect(successor.status(actor.id).rootId).toBe(successorIdentity.id);
   });
 
@@ -552,9 +553,9 @@ describe("ActorManager", () => {
       return originalWrite.call(this, rows);
     });
     vi.useFakeTimers();
-    const random = vi.spyOn(Math, "random").mockReturnValue(1);
+    const schedule = vi.spyOn(ActorMeshMonitor.prototype, "schedule");
     const successorIdentity = { ...state.identity, id: "session:retry", sessionId: "retry" };
-    const successor = new ActorManager("retry", successorIdentity, state.mesh, state.meshConfig, state.agents, () => {}, {
+    const successor = new ActorManager("retry", successorIdentity, state.mesh, { ...state.meshConfig, actorPollMs: 2_000 }, state.agents, () => {}, {
       actorRoot: path.join(state.root, "actors"), persistent: true, claimResidency: "session",
       rootId: successorIdentity.id, canManageActor: () => undefined, lineageAlive: () => false,
     });
@@ -565,18 +566,23 @@ describe("ActorManager", () => {
       expect(successor.owns(actor.id)).toBe(false);
       await vi.advanceTimersByTimeAsync(350);
       expect(heartbeat).toHaveBeenCalledOnce();
-      expect(write.mock.calls.length).toBeGreaterThanOrEqual(3);
-      expect(write.mock.calls.length).toBeLessThanOrEqual(4);
+      const monitor = schedule.mock.instances[0] as ActorMeshMonitor;
+      for (let i = 0; i < 100; i++) {
+        expect(successor.owns(actor.id)).toBe(false);
+        monitor.schedule();
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      expect(write).toHaveBeenCalledTimes(1);
       expect(successor.owns(actor.id)).toBe(false);
       expect(successor.status(actor.id).rootId).toBe(state.identity.id);
       expect(new ActorRegistryStore(path.join(state.root, "actors")).records().find((row) => row.id === actor.id)?.rootId).toBe(state.identity.id);
       failing = false;
-      await vi.advanceTimersByTimeAsync(400);
+      await vi.advanceTimersByTimeAsync(2_000);
       expect(successor.owns(actor.id)).toBe(true);
       expect(successor.status(actor.id).rootId).toBe(successorIdentity.id);
     } finally {
       vi.useRealTimers();
-      random.mockRestore();
+      schedule.mockRestore();
       write.mockRestore();
     }
   });
@@ -592,23 +598,21 @@ describe("ActorManager", () => {
       return originalWrite.call(this, rows);
     });
     vi.useFakeTimers();
-    const random = vi.spyOn(Math, "random").mockReturnValue(1);
     const identity = { ...state.identity, id: "session:fair", sessionId: "fair" };
-    const successor = new ActorManager("fair", identity, state.mesh, state.meshConfig, state.agents, () => {}, {
+    const successor = new ActorManager("fair", identity, state.mesh, { ...state.meshConfig, actorPollMs: 2_000 }, state.agents, () => {}, {
       actorRoot: path.join(state.root, "actors"), persistent: true, claimResidency: "session",
       rootId: identity.id, canManageActor: () => undefined, lineageAlive: () => false,
     });
     actorManagers.push(successor);
     try {
       expect(successor.owns(poison.id)).toBe(false);
-      await vi.advanceTimersByTimeAsync(150);
+      await vi.advanceTimersByTimeAsync(2_100);
       expect(write.mock.calls.length).toBeGreaterThanOrEqual(2);
       expect(successor.owns(healthy.id)).toBe(true);
       expect(successor.owns(poison.id)).toBe(false);
     } finally {
       await successor.close();
       vi.useRealTimers();
-      random.mockRestore();
       write.mockRestore();
     }
   });
@@ -628,9 +632,8 @@ describe("ActorManager", () => {
       return originalWrite.call(this, rows);
     });
     vi.useFakeTimers();
-    const random = vi.spyOn(Math, "random").mockReturnValue(1);
     const identity = { ...state.identity, id: "session:bulk", sessionId: "bulk" };
-    const successor = new ActorManager("bulk", identity, state.mesh, state.meshConfig, state.agents, () => {}, {
+    const successor = new ActorManager("bulk", identity, state.mesh, { ...state.meshConfig, actorPollMs: 2_000 }, state.agents, () => {}, {
       actorRoot: path.join(state.root, "actors"), persistent: true, claimResidency: "session",
       rootId: identity.id, canManageActor: () => undefined, lineageAlive: () => false,
     });
@@ -638,20 +641,99 @@ describe("ActorManager", () => {
     try {
       await vi.advanceTimersByTimeAsync(120_000);
       expect(write.mock.calls.length).toBeGreaterThanOrEqual(40);
-      expect(write.mock.calls.length).toBeLessThanOrEqual(1201);
+      expect(write.mock.calls.length).toBeLessThanOrEqual(61);
       expect(attempted.size).toBe(40);
       expect(actors.every((actor) => !successor.owns(actor.id))).toBe(true);
       const before = write.mock.calls.length;
       await vi.advanceTimersByTimeAsync(10_000);
-      expect(write.mock.calls.length - before).toBeLessThanOrEqual(100);
+      expect(write.mock.calls.length - before).toBeLessThanOrEqual(5);
       failing = false;
       await vi.advanceTimersByTimeAsync(30_000);
       expect(actors.every((actor) => successor.owns(actor.id))).toBe(true);
     } finally {
       await successor.close();
       vi.useRealTimers();
-      random.mockRestore();
       write.mockRestore();
+    }
+  });
+
+  it("reloads changed rows before the next adoption", async () => {
+    const state = setup(true);
+    const first = await state.actors.create({ name: "first-reload", instructions: "First." });
+    const second = await state.actors.create({ name: "second-reload", instructions: "Old." });
+    await state.actors.close();
+    const root = path.join(state.root, "actors");
+    const store = new ActorRegistryStore(root);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const written = new Promise<void>((resolve) => { locked = resolve; });
+    const original = ActorRegistryStore.prototype.withLock;
+    let firstLock = true;
+    const lock = vi.spyOn(ActorRegistryStore.prototype, "withLock").mockImplementation(async function (this: ActorRegistryStore, operation, signal) {
+      const result = await original.call(this, operation, signal);
+      if (signal && firstLock) { firstLock = false; locked(); await gate; }
+      return result;
+    });
+    const identity = { ...state.identity, id: "session:reload", sessionId: "reload" };
+    const successor = new ActorManager("reload", identity, state.mesh, state.meshConfig, state.agents, () => {}, {
+      actorRoot: root, persistent: true, claimResidency: "session", rootId: identity.id,
+      canManageActor: () => undefined, lineageAlive: () => false,
+    });
+    actorManagers.push(successor);
+    try {
+      successor.owns(first.id);
+      await written;
+      const rows = store.entries();
+      const row = rows.find((value) => typeof value === "object" && value !== null && "id" in value && value.id === second.id) as Record<string, unknown>;
+      row.instructions = "Latest from disk.";
+      store.write(rows);
+      release();
+      await waitFor(() => store.records().find((value) => value.id === second.id)?.rootId === identity.id);
+      expect(store.records().find((value) => value.id === second.id)?.instructions).toBe("Latest from disk.");
+    } finally {
+      release();
+      lock.mockRestore();
+    }
+  });
+
+  it("continues after a refresh while adoption is pending without another poll", async () => {
+    const state = setup(true);
+    const first = await state.actors.create({ name: "pending-first", instructions: "First." });
+    const second = await state.actors.create({ name: "pending-second", instructions: "Second." });
+    await state.actors.close();
+    const root = path.join(state.root, "actors");
+    const store = new ActorRegistryStore(root);
+    const rows = store.entries();
+    const secondRow = rows.find((row) => typeof row === "object" && row !== null && "id" in row && row.id === second.id)!;
+    store.write(rows.filter((row) => row !== secondRow));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let notify!: () => void;
+    const written = new Promise<void>((resolve) => { notify = resolve; });
+    const original = ActorRegistryStore.prototype.withLock;
+    let firstLock = true;
+    const lock = vi.spyOn(ActorRegistryStore.prototype, "withLock").mockImplementation(async function (this: ActorRegistryStore, operation, signal) {
+      const result = await original.call(this, operation, signal);
+      if (signal && firstLock) { firstLock = false; notify(); await gate; }
+      return result;
+    });
+    const identity = { ...state.identity, id: "session:wakeup", sessionId: "wakeup" };
+    const successor = new ActorManager("wakeup", identity, state.mesh, { ...state.meshConfig, actorPollMs: 60_000 }, state.agents, () => {}, {
+      actorRoot: root, persistent: true, claimResidency: "session", rootId: identity.id,
+      canManageActor: () => undefined, lineageAlive: () => false,
+    });
+    actorManagers.push(successor);
+    try {
+      successor.owns(first.id);
+      await written;
+      store.write([...store.entries(), secondRow]);
+      successor.list(); // Discover the new row while the first attempt is pending.
+      release();
+      await waitFor(() => store.records().find((row) => row.id === second.id)?.rootId === identity.id, 1_000);
+    } finally {
+      release();
+      lock.mockRestore();
     }
   });
 
@@ -805,7 +887,7 @@ describe("ActorManager", () => {
 
     // Adoption completes through the fenced registry write; ownership only
     // holds once the rebound rootId is persisted.
-    await waitFor(() => successor.owns(actor.id));
+    await waitFor(() => successor.owns(actor.id), 4_000);
     expect(successor.status(actor.id).rootId).toBe(successorIdentity.id);
     expect(successor.tell(actor.id, "run after orphan takeover")).toMatchObject({
       queued: true,
