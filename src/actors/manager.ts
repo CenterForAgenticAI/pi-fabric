@@ -489,6 +489,7 @@ export class ActorManager {
     const actor = this.#requireActor(id);
     this.#ceded.add(actor.id);
     this.#ownership.set(actor.id, false);
+    this.#registryFingerprint = undefined;
     actor.abortController?.abort();
     for (const item of actor.queue.splice(0)) {
       item.reject?.(
@@ -2323,6 +2324,9 @@ export class ActorManager {
       const next = this.#ownershipDecision(actor.id);
       if (previous && !next) {
         this.#ownership.set(actor.id, false);
+        // A sync may have accepted the current snapshot while cached ownership
+        // still protected this instance. Reconcile it again after fencing.
+        this.#registryFingerprint = undefined;
         actor.abortController?.abort();
         for (const item of actor.queue.splice(0)) {
           item.reject?.(

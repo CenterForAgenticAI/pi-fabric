@@ -785,6 +785,59 @@ describe("ActorManager", () => {
       expect(signal?.aborted).toBe(true);
     } finally { read.mockRestore(); }
   });
+  it.each([
+    { change: "rename", active: false },
+    { change: "delete", active: false },
+    { change: "rename", active: true },
+    { change: "delete", active: true },
+  ])("reconciles remote $change after ownership loss (active drain: $active)", async ({ change, active }) => {
+    let owned = true;
+    let signal: AbortSignal | undefined;
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const state = setup(true, () => owned, async (_requirements, runSignal) => {
+      signal = runSignal;
+      await gate;
+      throw new Error("finished");
+    });
+    const actor = await state.actors.create({ name: "before-loss", instructions: "Live.", requires: ["demo.echo"] });
+    if (active) {
+      state.actors.tell(actor.id, "run");
+      await waitFor(() => signal !== undefined);
+    }
+    const registryPath = path.join(state.root, "actors", "actors.json");
+    const registry = JSON.parse(fs.readFileSync(registryPath, "utf8")) as { actors: Array<{ id: string; name: string }> };
+    if (change === "rename") registry.actors.find((row) => row.id === actor.id)!.name = "after-loss";
+    else registry.actors = registry.actors.filter((row) => row.id !== actor.id);
+    fs.writeFileSync(registryPath, JSON.stringify(registry));
+    const originalRead = ActorRegistryStore.prototype.read;
+    let fail = false;
+    const read = vi.spyOn(ActorRegistryStore.prototype, "read").mockImplementation(function (this: ActorRegistryStore) {
+      if (fail) { fail = false; throw new Error("transient read"); }
+      return originalRead.call(this);
+    });
+    try {
+      owned = false;
+      // Sync accepts the changed fingerprint before refresh fences the old owner.
+      expect(state.actors.owns(actor.id)).toBe(false);
+      if (active) expect(signal?.aborted).toBe(true);
+      fail = true;
+      expect(state.actors.list().find((row) => row.id === actor.id)?.name).toBe("before-loss");
+      if (active) {
+        // Successful reads must not replace an actor whose drain is still live.
+        expect(state.actors.list().find((row) => row.id === actor.id)?.name).toBe("before-loss");
+        finish();
+      }
+      await waitFor(() => {
+        const row = state.actors.list().find((item) => item.id === actor.id);
+        return change === "rename" ? row?.name === "after-loss" : row === undefined;
+      });
+    } finally {
+      finish();
+      read.mockRestore();
+    }
+  });
+
   it("defers reacquisition until a lost actor's drain settles", async () => {
     const state = setup(true, undefined, async () => { throw new Error("creator must not run"); });
     const actor = await state.actors.create({ name: "loss-drain", instructions: "Live.", requires: ["demo.echo"] });
