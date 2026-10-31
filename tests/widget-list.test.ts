@@ -381,6 +381,42 @@ describe("Fabric agent list", () => {
     }
   });
 
+  it("preserves Main identity across narrow two-row viewports with overflow in both directions", () => {
+    const ansi = { ...theme, fg: (_color: string, text: string) => `\x1b[36m${text}\x1b[39m`, bold: (text: string) => `\x1b[1m${text}\x1b[22m` } as unknown as Theme;
+    const strip = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, "");
+    for (const colors of [theme, ansi]) for (const sessionLabel of [undefined, "PBO-21", "Release-candidate"]) {
+      const current = manyAgents(30);
+      if (sessionLabel !== undefined) current.sessionLabel = sessionLabel;
+      const opened: FabricWidgetRow[] = [];
+      const widget = new FabricWidget(colors, () => current, 6, () => 20, undefined, {
+        mainId: "main", availableRows: () => 3, open: row => opened.push(row), release: () => {}, requestRender: () => {},
+      });
+      widget.focused = true; widget.selectFirst();
+      for (let i = 0; i < 12; i++) widget.handleInput("\x1b[B");
+      for (let width = 20; width <= 30; width++) {
+        const screen = widget.render(width).map(strip);
+        expect(screen).toHaveLength(3);
+        expect(screen.every(line => visibleWidth(line) <= width)).toBe(true);
+        expect(screen[1]).toMatch(/^○ (Fabric|PBO-21|Relea)/);
+        expect(screen[2]).toMatch(/^● agent-11/);
+        if (sessionLabel !== "Release-candidate") {
+          expect(screen[1]).toContain(`○ ${sessionLabel ?? "Fabric"}`);
+          expect(screen[1]).toMatch(/↑ 11(?: more)? · ↓ 18(?: more)?$/);
+        } else if (width >= 24) {
+          expect(screen[1]).toContain("○ Release-candidate");
+          expect(screen[1]).toMatch(/↑ 11(?: more)?$/);
+        }
+        // Strip the count suffix; any hints that remain must be complete.
+        const header = screen[1]!.replace(/\s+↑ 11(?: more)?(?: · ↓ 18(?: more)?)?$/, "");
+        for (const hint of header.split(" · ").slice(1)) expect(["⏎ open", "↑↓ select", "esc back"]).toContain(hint);
+      }
+      widget.render(25);
+      expect(mouse(widget, "click", 2)).toEqual({ handled: true, render: true });
+      expect(opened.at(-1)?.id).toBe("agent-11");
+      expect(mouse(widget, "click", 0)).toBeUndefined();
+    }
+  });
+
   it("snapshots ANSI-colored viewport states including singular overflow", () => {
     const current = manyAgents(4);
     const ansi = { ...theme, fg: (_color: string, text: string) => `\x1b[36m${text}\x1b[39m`, bold: (text: string) => `\x1b[1m${text}\x1b[22m` } as unknown as Theme;

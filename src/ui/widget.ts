@@ -462,8 +462,17 @@ export class FabricWidget implements Component, Focusable {
     const above = start - 1;
     const upLabel = above > 0 ? `↑ ${above} more` : undefined;
     const downLabel = body < 3 && below > 0 ? `↓ ${below} more` : undefined;
-    const combined = upLabel && downLabel ? `${upLabel} · ${downLabel}` : undefined;
-    const label = combined && width >= visibleWidth(combined) + 3 ? combined : upLabel ?? downLabel;
+    let label = upLabel ?? downLabel;
+    if (upLabel && downLabel) {
+      // Prefer both directions, but never sacrifice the session identity just
+      // to spell out "more". If the full name cannot fit, retain a useful
+      // prefix before falling back to a single direction or no count at all.
+      const identityWidth = 2 + visibleWidth(safeText(snapshot.sessionLabel ?? "Fabric"));
+      const candidates = [`${upLabel} · ${downLabel}`, `↑ ${above} · ↓ ${below}`, upLabel, `↑ ${above}`];
+      const fits = (candidate: string, identity: number) => visibleWidth(candidate) + 1 + identity <= width;
+      label = candidates.find(candidate => fits(candidate, identityWidth))
+        ?? candidates.find(candidate => fits(candidate, Math.min(identityWidth, 8)));
+    }
     // Fit the header against the reserved space, so hints are dropped whole
     // in priority order rather than cut off when the label is appended.
     const headerWidth = label && width >= visibleWidth(label) + 2 ? width - visibleWidth(label) - 1 : width;
