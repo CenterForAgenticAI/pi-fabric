@@ -1874,6 +1874,13 @@ export class ActorManager {
     if (!this.#persistent || this.#closing || this.#reloadingOwnership) return;
     const fingerprint = this.#registry.fingerprint();
     if (!fingerprint || fingerprint === this.#registryFingerprint) return;
+    let parsed: unknown;
+    try {
+      parsed = this.#registry.read();
+      if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as { actors?: unknown }).actors)) return;
+    } catch {
+      return; // Keep both the current actors and the fingerprint retryable.
+    }
     this.#registryFingerprint = fingerprint;
     const ownsAny = [...this.#actors.keys()].some((id) => this.#ownershipDecision(id));
     if (!ownsAny) {
@@ -1881,7 +1888,7 @@ export class ActorManager {
       this.#actors.clear();
       this.#ownership.clear();
       this.#locallyCreated.clear();
-      this.#loadActors();
+      this.#loadActors(false, parsed);
       for (const actor of this.#actors.values()) {
         this.#ownership.set(actor.id, this.#ownershipDecision(actor.id));
       }
@@ -1898,7 +1905,7 @@ export class ActorManager {
       this.#ownership.delete(id);
       this.#locallyCreated.delete(id);
     }
-    this.#loadActors(true);
+    this.#loadActors(true, parsed);
     for (const actor of this.#actors.values()) {
       if (!owned.has(actor.id)) {
         this.#ownership.set(actor.id, this.#ownershipDecision(actor.id));
@@ -1906,23 +1913,26 @@ export class ActorManager {
     }
   }
 
-  #loadActors(onlyMissing = false): void {
+  #loadActors(onlyMissing = false, snapshot?: unknown, adoption?: { target: ManagedActor; commit: () => void }): boolean {
     let added = 0;
-    let parsed: unknown;
-    try {
-      parsed = this.#registry.read();
-    } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
-      return;
+    let parsed: unknown = snapshot;
+    if (snapshot === undefined) {
+      try {
+        parsed = this.#registry.read();
+      } catch {
+        return false;
+      }
     }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return false;
     const records = (parsed as { actors?: unknown }).actors;
-    if (!Array.isArray(records)) return;
-    for (const value of records) {
-      if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
-      const record = value as Partial<ManagedActor>;
-      if (typeof record.id === "string" && typeof record.rootId === "string") {
-        this.#persistedRoots.set(record.id, record.rootId);
+    if (!Array.isArray(records)) return false;
+    if (!adoption) {
+      for (const value of records) {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
+        const record = value as Partial<ManagedActor>;
+        if (typeof record.id === "string" && typeof record.rootId === "string") {
+          this.#persistedRoots.set(record.id, record.rootId);
+        }
       }
     }
     for (const value of records) {
@@ -2038,11 +2048,23 @@ export class ActorManager {
           }
         }
       }
+      if (adoption) {
+        if (actor.id !== adoption.target.id) continue;
+        // Commit only a valid, normalized row. No asynchronous work can see
+        // ownership until the existing instance has the locked disk state.
+        adoption.commit();
+        const target = adoption.target;
+        for (const key of ["kernel", "pythonRuntime", "runnerSessionId", "model", "thinking", "tools", "transport", "timeoutMs", "extensions", "capabilityDigest", "validWhile", "principalScope", "lastRunId"] as const) delete target[key];
+        Object.assign(target, actor);
+        this.#ownership.set(target.id, this.#ownershipDecision(target.id));
+        return true;
+      }
       this.#actors.set(actor.id, actor);
       added++;
       void this.#publishPresence(actor).catch(() => undefined);
     }
     if (added > 0) this.#emitChange();
+    return !adoption;
   }
 
   #resolvedModel(runner: FabricAgentRunner, model: string): string {
@@ -2241,13 +2263,14 @@ export class ActorManager {
         const preserved = entries.filter(
           (entry) => !isActorRegistryRecord(entry) || entry.id !== actor.id,
         );
-        this.#registry.write([...preserved, candidate]);
+        const hydrated = this.#loadActors(false, { actors: [candidate] }, {
+          target: actor,
+          commit: () => this.#registry.write([...preserved, candidate]),
+        });
+        if (!hydrated) return false;
         for (const record of records) {
           if (typeof record.rootId === "string") this.#persistedRoots.set(record.id, record.rootId);
         }
-        actor.rootId = candidate.rootId;
-        actor.adoptedAt = candidate.adoptedAt;
-        actor.updatedAt = candidate.updatedAt;
         return true;
       }, this.#adoptionAbort.signal);
       if (this.#closing) return;
@@ -2274,12 +2297,13 @@ export class ActorManager {
     if (!adopted) {
       this.#adoptionDeferred = true;
     } else {
-      // Reload the adopted and other unowned rows before selecting another.
-      this.#actors.delete(actor.id);
-      this.#ownership.delete(actor.id);
+      // Refresh other unowned rows without replacing the live adopted instance.
       this.#registryFingerprint = undefined;
       this.#syncActorsFromRegistry();
       this.#refreshOwnership();
+      if (this.#actors.get(actor.id) === actor && this.#canManageCached(actor.id)) {
+        void this.#publishPresence(actor).catch(() => undefined);
+      }
     }
     this.#emitChange();
   }

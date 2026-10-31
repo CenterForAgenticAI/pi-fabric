@@ -657,6 +657,95 @@ describe("ActorManager", () => {
     }
   });
 
+  it("keeps a microtask-started adopted actor and cancels its drain on close", async () => {
+    const state = setup(true, undefined, async () => { throw new Error("not used by creator"); });
+    const actor = await state.actors.create({ name: "adoption-live", instructions: "Old.", requires: ["demo.echo"] });
+    await state.actors.close();
+    const root = path.join(state.root, "actors");
+    const identity = { ...state.identity, id: "session:live", sessionId: "live" };
+    let runSignal: AbortSignal | undefined;
+    let successor!: ActorManager;
+    const original = ActorRegistryStore.prototype.withLock;
+    let injected = false;
+    const lock = vi.spyOn(ActorRegistryStore.prototype, "withLock").mockImplementation(async function (this: ActorRegistryStore, operation, signal) {
+      if (!signal || injected) return original.call(this, operation, signal);
+      injected = true;
+      const result = await original.call(this, () => {
+        const rows = this.entries();
+        const row = rows.find((value) => typeof value === "object" && value !== null && "id" in value && value.id === actor.id) as Record<string, unknown>;
+        row.instructions = "Latest locked instruction.";
+        row.model = "latest-model";
+        this.write(rows);
+        return operation();
+      }, signal);
+      successor.tell(actor.id, "start in the commit microtask");
+      return result;
+    });
+    successor = new ActorManager("live", identity, state.mesh, { ...state.meshConfig, actorPollMs: 60_000 }, state.agents, () => {}, {
+      actorRoot: root, persistent: true, claimResidency: "session", rootId: identity.id,
+      canManageActor: () => undefined, lineageAlive: () => false,
+      acquireCapabilityView: async (_requirements, signal) => {
+        runSignal = signal;
+        return await new Promise<FabricCapabilityViewLease>((_resolve, reject) => {
+          if (signal.aborted) reject(new Error("aborted"));
+          else signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      },
+    });
+    actorManagers.push(successor);
+    try {
+      successor.owns(actor.id);
+      await waitFor(() => runSignal !== undefined);
+      expect(successor.status(actor.id)).toMatchObject({ model: "latest-model" });
+      const row = new ActorRegistryStore(root).records().find((value) => value.id === actor.id);
+      expect(row?.instructions).toBe("Latest locked instruction.");
+      await successor.close();
+      expect(runSignal?.aborted).toBe(true);
+      const saved = new ActorRegistryStore(root).records().find((value) => value.id === actor.id);
+      expect(saved).toMatchObject({ instructions: "Latest locked instruction.", model: "latest-model" });
+    } finally {
+      lock.mockRestore();
+    }
+  });
+
+  it("retains adopted actors and retries a failed post-commit registry read", async () => {
+    const state = setup(true);
+    const actor = await state.actors.create({ name: "adoption-read", instructions: "Keep me." });
+    await state.actors.close();
+    const root = path.join(state.root, "actors");
+    const identity = { ...state.identity, id: "session:read", sessionId: "read" };
+    const originalLock = ActorRegistryStore.prototype.withLock;
+    const originalRead = ActorRegistryStore.prototype.read;
+    let failRead = false;
+    let failures = 0;
+    let failedCall = 0;
+    const read = vi.spyOn(ActorRegistryStore.prototype, "read").mockImplementation(function (this: ActorRegistryStore) {
+      if (failRead) { failRead = false; failures++; failedCall = read.mock.calls.length; throw new Error("transient read"); }
+      return originalRead.call(this);
+    });
+    const lock = vi.spyOn(ActorRegistryStore.prototype, "withLock").mockImplementation(async function (this: ActorRegistryStore, operation, signal) {
+      const result = await originalLock.call(this, operation, signal);
+      if (signal && result === true) failRead = true;
+      return result;
+    });
+    const successor = new ActorManager("read", identity, state.mesh, { ...state.meshConfig, actorPollMs: 60_000 }, state.agents, () => {}, {
+      actorRoot: root, persistent: true, claimResidency: "session", rootId: identity.id,
+      canManageActor: () => undefined, lineageAlive: () => false,
+    });
+    actorManagers.push(successor);
+    try {
+      successor.owns(actor.id);
+      await waitFor(() => failures === 1);
+      expect(successor.list()).toEqual(expect.arrayContaining([expect.objectContaining({ id: actor.id, rootId: identity.id })]));
+      await waitFor(() => read.mock.calls.length > failedCall);
+      expect(successor.status(actor.id)).toMatchObject({ rootId: identity.id });
+      expect(successor.owns(actor.id)).toBe(true);
+    } finally {
+      lock.mockRestore();
+      read.mockRestore();
+    }
+  });
+
   it("reloads changed rows before the next adoption", async () => {
     const state = setup(true);
     const first = await state.actors.create({ name: "first-reload", instructions: "First." });
