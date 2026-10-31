@@ -98,6 +98,10 @@ const RESOLVED_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const OPTION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 const DECISION_ID = /^dec_[A-Za-z0-9_-]{8,64}$/;
 const PARTICIPANT_ID = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$/;
+/** True for a string the store accepts as a participant id (holder suffix, identity). */
+export const isParticipantId = (value: unknown): value is string =>
+  typeof value === "string" && PARTICIPANT_ID.test(value);
+
 const KINDS = new Set(["approval", "question", "escalation"]);
 const INPUTS = new Set(["text", "confirm", "select", "editor"]);
 const STATUSES = new Set(["open", "answered", "expired", "cancelled"]);
