@@ -136,6 +136,7 @@ const ORPHAN_ADOPTION_RETRY_MS = 30_000;
 // Failed or contested writes must yield to the event loop and cannot be
 // retried on every ownership query or mesh poll.
 const ADOPTION_FAILURE_RETRY_MS = 100;
+const ADOPTION_FAILURE_RETRY_MAX_MS = 30_000;
 const RETENTION_SWEEP_INTERVAL_MS = 15 * 60 * 1_000;
 const RESIDENT_HOST_EVENT_TOPIC = "fabric.actor.host-event";
 const normalizeCapabilityRequirements = (
@@ -238,9 +239,12 @@ export class ActorManager {
   // Adoption compares against this snapshot so two racing adopters cannot
   // both move the same dead lineage: only the first fenced write succeeds.
   readonly #persistedRoots = new Map<string, string>();
-  // In-flight fenced adoption attempts, one per actor.
-  readonly #adoptionPending = new Set<string>();
-  readonly #adoptionRetries = new Map<string, NodeJS.Timeout>();
+  // One attempt and one backoff per manager, regardless of orphan count.
+  readonly #adoptionAbort = new AbortController();
+  #adoptionPending = false;
+  #adoptionRetry: NodeJS.Timeout | undefined;
+  #adoptionFailures = 0;
+  #lastAdoptionId: string | undefined;
   readonly #adoptionGraceMs: number;
   readonly #listeners = new Set<() => void>();
   #retentionTimer: NodeJS.Timeout | undefined;
@@ -1150,8 +1154,9 @@ export class ActorManager {
   async close(): Promise<void> {
     if (this.#closing) return;
     this.#closing = true;
-    for (const timer of this.#adoptionRetries.values()) clearTimeout(timer);
-    this.#adoptionRetries.clear();
+    this.#adoptionAbort.abort();
+    if (this.#adoptionRetry) clearTimeout(this.#adoptionRetry);
+    this.#adoptionRetry = undefined;
     this.#meshMonitor.close();
     if (this.#retentionTimer) clearInterval(this.#retentionTimer);
     this.#retentionTimer = undefined;
@@ -2186,8 +2191,8 @@ export class ActorManager {
       this.#closing ||
       !this.#canManageActor ||
       this.#claimResidency === undefined ||
-      this.#adoptionPending.has(actor.id) ||
-      this.#adoptionRetries.has(actor.id)
+      this.#adoptionPending ||
+      this.#adoptionRetry !== undefined
     ) {
       return;
     }
@@ -2213,8 +2218,9 @@ export class ActorManager {
   }
 
   async #confirmAdoption(actor: ManagedActor): Promise<void> {
-    if (this.#adoptionPending.has(actor.id)) return;
-    this.#adoptionPending.add(actor.id);
+    if (this.#adoptionPending) return;
+    this.#adoptionPending = true;
+    this.#lastAdoptionId = actor.id;
     let adopted = false;
     try {
       const expectedRootId = actor.rootId;
@@ -2249,7 +2255,7 @@ export class ActorManager {
         actor.updatedAt = candidate.updatedAt;
         this.#registryFingerprint = this.#registry.fingerprint();
         return true;
-      });
+      }, this.#adoptionAbort.signal);
       if (this.#closing) return;
       if (adopted) {
         this.#persistedRoots.set(actor.id, this.#rootId);
@@ -2268,18 +2274,21 @@ export class ActorManager {
     } catch {
       // Lock timeout or IO failure: state untouched; a later refresh retries.
     } finally {
-      this.#adoptionPending.delete(actor.id);
+      this.#adoptionPending = false;
     }
     if (this.#closing) return;
-    if (!adopted && this.#actors.get(actor.id) === actor) {
-      const timer = setTimeout(() => {
-        this.#adoptionRetries.delete(actor.id);
+    if (!adopted) {
+      const base = Math.min(ADOPTION_FAILURE_RETRY_MAX_MS, ADOPTION_FAILURE_RETRY_MS * 2 ** Math.min(this.#adoptionFailures++, 9));
+      const delay = Math.round(base * (0.5 + Math.random() * 0.5));
+      this.#adoptionRetry = setTimeout(() => {
+        this.#adoptionRetry = undefined;
         if (!this.#closing) this.#refreshOwnership();
-      }, ADOPTION_FAILURE_RETRY_MS);
-      timer.unref();
-      this.#adoptionRetries.set(actor.id, timer);
+      }, delay);
+      this.#adoptionRetry.unref();
+    } else {
+      this.#adoptionFailures = 0;
+      this.#refreshOwnership();
     }
-    this.#refreshOwnership();
     this.#emitChange();
   }
 
@@ -2303,7 +2312,16 @@ export class ActorManager {
       } else if (!previous && next) {
         acquired = true;
       }
-      if (!next) this.#maybeAdoptOrphan(actor);
+    }
+    // Rotate after each attempt so a persistently failing row cannot starve
+    // other orphans. Ownership refreshes during backoff never start attempts.
+    if (!this.#adoptionPending && !this.#adoptionRetry && !this.#closing) {
+      const actors = [...this.#actors.values()];
+      const start = (actors.findIndex((actor) => actor.id === this.#lastAdoptionId) + 1) % (actors.length || 1);
+      for (let i = 0; i < actors.length && !this.#adoptionPending; i++) {
+        const actor = actors[(start + i) % actors.length]!;
+        if (!this.#ownership.get(actor.id)) this.#maybeAdoptOrphan(actor);
+      }
     }
     if (!acquired || !this.#persistent || this.#closing) return;
     this.#reloadingOwnership = true;

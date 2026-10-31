@@ -552,6 +552,7 @@ describe("ActorManager", () => {
       return originalWrite.call(this, rows);
     });
     vi.useFakeTimers();
+    const random = vi.spyOn(Math, "random").mockReturnValue(1);
     const successorIdentity = { ...state.identity, id: "session:retry", sessionId: "retry" };
     const successor = new ActorManager("retry", successorIdentity, state.mesh, state.meshConfig, state.agents, () => {}, {
       actorRoot: path.join(state.root, "actors"), persistent: true, claimResidency: "session",
@@ -570,12 +571,97 @@ describe("ActorManager", () => {
       expect(successor.status(actor.id).rootId).toBe(state.identity.id);
       expect(new ActorRegistryStore(path.join(state.root, "actors")).records().find((row) => row.id === actor.id)?.rootId).toBe(state.identity.id);
       failing = false;
-      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(400);
       expect(successor.owns(actor.id)).toBe(true);
       expect(successor.status(actor.id).rootId).toBe(successorIdentity.id);
     } finally {
       vi.useRealTimers();
+      random.mockRestore();
       write.mockRestore();
+    }
+  });
+
+  it("bounds sustained retries across many orphans and eventually adopts all", async () => {
+    const state = setup(true);
+    const actors = [];
+    for (let i = 0; i < 40; i++) actors.push(await state.actors.create({ name: `orphan-${i}`, instructions: "Wait." }));
+    await state.actors.close();
+    const originalWrite = ActorRegistryStore.prototype.write;
+    let failing = true;
+    const attempted = new Set<string>();
+    const write = vi.spyOn(ActorRegistryStore.prototype, "write").mockImplementation(function (this: ActorRegistryStore, rows) {
+      const adopted = rows.find((row) => typeof row === "object" && row !== null && "rootId" in row && row.rootId === "session:bulk");
+      if (adopted && typeof adopted === "object" && "id" in adopted) attempted.add(String(adopted.id));
+      if (failing) throw new Error("persistent failure");
+      return originalWrite.call(this, rows);
+    });
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, "random").mockReturnValue(1);
+    const identity = { ...state.identity, id: "session:bulk", sessionId: "bulk" };
+    const successor = new ActorManager("bulk", identity, state.mesh, state.meshConfig, state.agents, () => {}, {
+      actorRoot: path.join(state.root, "actors"), persistent: true, claimResidency: "session",
+      rootId: identity.id, canManageActor: () => undefined, lineageAlive: () => false,
+    });
+    actorManagers.push(successor);
+    try {
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(write.mock.calls.length).toBeGreaterThanOrEqual(10);
+      expect(write.mock.calls.length).toBeLessThanOrEqual(14);
+      expect(attempted.size).toBeGreaterThanOrEqual(10);
+      expect(actors.every((actor) => !successor.owns(actor.id))).toBe(true);
+      const before = write.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(write.mock.calls.length - before).toBeLessThanOrEqual(1);
+      failing = false;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(actors.every((actor) => successor.owns(actor.id))).toBe(true);
+    } finally {
+      await successor.close();
+      vi.useRealTimers();
+      random.mockRestore();
+      write.mockRestore();
+    }
+  });
+
+  it("cancels a real adoption lock wait on close without cancelling other callers", async () => {
+    const state = setup(true);
+    const actor = await state.actors.create({ name: "locked-close", instructions: "Wait." });
+    await state.actors.close();
+    const actorRoot = path.join(state.root, "actors");
+    const lockPath = path.join(actorRoot, "actors.json.lock");
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(path.join(lockPath, "owner"), `held\n${process.pid}\n${Date.now()}\n`);
+    const originalLock = ActorRegistryStore.prototype.withLock;
+    let adoptionWait: Promise<unknown> | undefined;
+    const lock = vi.spyOn(ActorRegistryStore.prototype, "withLock").mockImplementation(function (this: ActorRegistryStore, operation, signal) {
+      const pending = originalLock.call(this, operation, signal);
+      if (signal) adoptionWait = pending.catch(() => "aborted");
+      return pending;
+    });
+    const identity = { ...state.identity, id: "session:locked", sessionId: "locked" };
+    const successor = new ActorManager("locked", identity, state.mesh, state.meshConfig, state.agents, () => {}, {
+      actorRoot, persistent: true, claimResidency: "session", rootId: identity.id,
+      canManageActor: () => undefined, lineageAlive: () => false,
+    });
+    actorManagers.push(successor);
+    try {
+      expect(successor.owns(actor.id)).toBe(false);
+      expect(adoptionWait).toBeDefined();
+      const otherOperation = vi.fn(() => "other acquired");
+      const other = new ActorRegistryStore(actorRoot).withLock(otherOperation);
+      await successor.close();
+      let timeout!: NodeJS.Timeout;
+      const result = await Promise.race([adoptionWait, new Promise((resolve) => { timeout = setTimeout(() => resolve("timeout"), 300); })]);
+      clearTimeout(timeout);
+      expect(result).toBe("aborted");
+      expect(otherOperation).not.toHaveBeenCalled();
+      expect(fs.existsSync(lockPath)).toBe(true);
+      expect(new ActorRegistryStore(actorRoot).records().find((row) => row.id === actor.id)?.rootId).toBe(state.identity.id);
+      fs.rmSync(lockPath, { recursive: true });
+      await expect(other).resolves.toBe("other acquired");
+    } finally {
+      fs.rmSync(lockPath, { recursive: true, force: true });
+      lock.mockRestore();
     }
   });
 
