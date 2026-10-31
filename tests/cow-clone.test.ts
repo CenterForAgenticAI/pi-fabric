@@ -56,4 +56,15 @@ describe("cloneTree error classification", () => {
     vi.spyOn(fs.promises, "cp").mockRejectedValue(failure);
     await expect(cloneTree(source, dest)).rejects.toBe(failure);
   });
+
+  it("does not copy a destination that lies inside the source into itself", async () => {
+    const { source } = sourceTree();
+    const dest = path.join(source, "linked-wt");
+    const copied: string[] = [];
+    vi.spyOn(fs.promises, "cp").mockImplementation(async (from) => {
+      copied.push(String(from));
+    });
+    await cloneTree(source, dest);
+    expect(copied).toEqual([path.join(await fs.promises.realpath(source), "file.txt")]);
+  });
 });
