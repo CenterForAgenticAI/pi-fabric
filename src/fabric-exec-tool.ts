@@ -21,6 +21,7 @@ import { fabricExecTitleHintCached } from "./ui/fabric-title-hint.js";
 import type { FabricTerminalTitle } from "./ui/terminal-title.js";
 import { Type } from "typebox";
 import {
+  createFabricPartialExecutionDetails,
   createFabricPersistedExecutionDetails,
   readFabricExecutionRenderDetails,
 } from "./audit/details.js";
@@ -64,6 +65,7 @@ import {
   restoreFabricWritePreviews,
   restoreLegacyBashCommands,
   safeTerminalText,
+  shellBackgroundShortcut,
   singleCallProgressLine,
   type FabricAgentPreview,
   type FabricCallHeadlinePreview,
@@ -125,13 +127,15 @@ const compactResultHeader = (
   theme: Theme,
   audits: FabricRenderAudit[],
   failed: boolean,
+  omittedCalls = 0,
+  omittedFailed = 0,
 ): string => {
-  const failedCalls = audits.filter((audit) => audit.success === false).length;
+  const failedCalls = audits.filter((audit) => audit.success === false).length + omittedFailed;
   const isFailed = failed || failedCalls > 0;
   return theme.fg(isFailed ? "error" : "success", `${isFailed ? "✗" : "✓"} Tools`) +
     theme.fg(
       "dim",
-      ` · ${countLabel(audits.length, "call")}${failedCalls > 0 ? ` · ${failedCalls} failed` : ""}`,
+      ` · ${countLabel(audits.length + omittedCalls, "call")}${failedCalls > 0 ? ` · ${failedCalls} failed` : ""}`,
     );
 };
 
@@ -508,13 +512,13 @@ export const createFabricExecTool = (
 
       if (isPartial) {
         const progress = details.progress;
-        if (audits.length === 0) {
+        if (audits.length === 0 && !details.omittedCalls) {
           const label = compact ? "Running…" : progress ?? "Running Fabric program…";
           return trackRows(
             new Text(theme.fg("warning", `◆ ${safeTerminalText(label)}`), 0, 0),
           );
         }
-        if (audits.length === 1) {
+        if (audits.length === 1 && !details.omittedCalls) {
           const audit = audits[0]!;
           const glyph =
             audit.success === undefined
@@ -523,6 +527,9 @@ export const createFabricExecTool = (
                 ? theme.fg("error", "✗")
                 : theme.fg("dim", "›");
           let text = `${glyph} ${nestedCallTitle(audit, theme, context?.invalidate, corePreviewContext)}`;
+          if (shellBackgroundShortcut(audit)) {
+            text += nl + theme.fg("dim", "Ctrl+B twice · background waiting shell");
+          }
           const previewLines = renderAgentToolPreviewLines(audit, theme, {
             expanded,
             showTools: showAgentToolPreview,
@@ -590,6 +597,7 @@ export const createFabricExecTool = (
               progress,
               expanded,
               preview,
+              omittedCalls: details.omittedCalls,
               core: corePreviewContext,
               showAgentToolPreview,
               spinner,
@@ -639,8 +647,9 @@ export const createFabricExecTool = (
         ];
       };
       const failed = details.success === false;
+      const omittedCalls = details.omittedCalls?.count ?? 0;
 
-      if (audits.length === 0) {
+      if (audits.length === 0 && omittedCalls === 0) {
         if (failed && details.error) {
           return trackRows(
             new Text(
@@ -675,7 +684,7 @@ export const createFabricExecTool = (
         );
       }
 
-      if (audits.length === 1) {
+      if (audits.length === 1 && omittedCalls === 0) {
         const audit = audits[0]!;
         let text = compact
           ? `${compactResultHeader(theme, audits, failed)}${nl}${nestedCallTitle(
@@ -746,16 +755,16 @@ export const createFabricExecTool = (
 
       const failedCalls = audits.filter(
         (audit) => audit.success === false,
-      ).length;
+      ).length + (details.omittedCalls?.failed ?? 0);
       const status = failed ? "failed" : "complete";
       const statusColor = failed ? "error" : "success";
       const metadata = [
-        countLabel(audits.length, "nested call"),
+        countLabel(audits.length + omittedCalls, "nested call"),
         failedCalls > 0 ? `${failedCalls} failed` : undefined,
         phases.length > 0 ? countLabel(phases.length, "phase") : undefined,
       ].filter((value): value is string => Boolean(value));
       let text = compact
-        ? compactResultHeader(theme, audits, failed)
+        ? compactResultHeader(theme, audits, failed, omittedCalls, details.omittedCalls?.failed ?? 0)
         : theme.fg(
             statusColor,
             `${failed ? "✗" : "✓"} Fabric ${status}`,
@@ -766,7 +775,7 @@ export const createFabricExecTool = (
 
       const callLimit = fabricMulticallCallLimit(expanded);
       const callsShown = audits.slice(0, callLimit);
-      const callsHidden = audits.length - callsShown.length;
+      const callsHidden = audits.length + omittedCalls - callsShown.length;
       let collapsedPreview:
         | { auditIndex: number; body: string; hidden: number }
         | undefined;
@@ -914,15 +923,11 @@ export const createFabricExecTool = (
         onPartial(snapshot) {
           program?.progress(snapshot.progress);
           // A detached program no longer owns its tool card.
-          if (program?.job) return;
-          onUpdate?.({
-            content: [{ type: "text", text: snapshot.progress ?? "" }],
-            details: {
-              progress: snapshot.progress,
-              audits: snapshot.audits,
-              phases: snapshot.phases,
-              ...(snapshot.deadlineAt !== undefined ? { deadlineAt: snapshot.deadlineAt } : {}),
-            },
+          if (program?.job || !onUpdate) return;
+          const details = createFabricPartialExecutionDetails(snapshot);
+          onUpdate({
+            content: [{ type: "text", text: details.progress ?? "" }],
+            details,
           });
         },
       });

@@ -51,23 +51,23 @@ describe("widget display-only completion retention", () => {
     expect(current.agents[0]!.logFile).toBe("/tmp/events.jsonl");
   });
 
-  it("retires rows gradually, fixes +N and running counts, and shrinks height without padding", () => {
+  it("retires rows gradually, updates overflow and running counts, and shrinks height without padding", () => {
     vi.useFakeTimers(); vi.setSystemTime(39_999);
     let current = snapshot();
     current.agents = [agent("older", 10_000), agent("newer", 15_000), { ...agent("live"), status: "running" }];
     const compact = new FabricWidget(theme, () => current, 3);
     const full = new FabricWidget(theme, () => current, 8);
-    expect(body(compact.render(160))[1]).toContain("+2");
+    expect(body(compact.render(160))[0]).toContain("↓ 2 more");
     expect(body(full.render(160))).toHaveLength(4);
     expect(body(full.render(160))[0]).toContain("1 running");
     vi.setSystemTime(40_000); current = { ...current, now: Date.now() };
-    expect(body(compact.render(160))[1]).toContain("+1");
+    expect(body(compact.render(160))[0]).toContain("↓ 1 more");
     expect(body(full.render(160))).toHaveLength(3);
     expect(body(full.render(160)).join("\n")).not.toContain("older");
     vi.setSystemTime(44_999); current = { ...current, now: Date.now() };
     expect(body(full.render(160)).join("\n")).toContain("newer");
     vi.setSystemTime(45_000); current = { ...current, now: Date.now() };
-    expect(body(compact.render(160))[1]).not.toContain("+");
+    expect(body(compact.render(160))[0]).not.toContain("more");
     expect(body(full.render(160))).toHaveLength(2);
     expect(body(full.render(160)).every(line => line.trim().length > 0)).toBe(true);
     expect(body(full.render(160))[0]).toContain("1 running");

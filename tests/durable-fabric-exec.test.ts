@@ -96,9 +96,10 @@ describe("built durable Fabric host", () => {
     expect(result.status, `${result.error}\n${result.stderr}\n${result.text}`).toBe("completed");
     // The allowed mutating tool works, so the denials below are the allowlist.
     expect(fs.readFileSync(path.join(cwd, "allowed-write.txt"), "utf8")).toBe("allowed");
-    // Neither excluded tool is even an action the child can name.
-    expect(result.text).toContain('bash: "Unknown Fabric action: pi.bash"');
-    expect(result.text).toContain('effect: "Unknown Fabric action: extensions.hold_effect"');
+    // Known but excluded tools fail at the child's authority boundary. The
+    // captured core-tool alias remains unavailable rather than bypassing it.
+    expect(result.text).toContain("bash: Pi tool bash is not permitted by this child's tool allowlist");
+    expect(result.text).toContain("effect: Extension tool hold_effect is not permitted by this child's tool allowlist");
     expect(result.text).toContain('capturedBash: "Unknown Fabric action: extensions.bash"');
     expect(fs.existsSync(path.join(cwd, "bash-marker.txt"))).toBe(false);
     expect(fs.existsSync(effectFile)).toBe(false);

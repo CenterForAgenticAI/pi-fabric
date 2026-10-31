@@ -12,8 +12,9 @@ import {
 } from "../core/atomic-write.js";
 import {
   normalizeModelAliases,
-  resolveAvailablePiModel,
+  resolvePiModelSelector,
   type FabricModelCandidate,
+  type FabricModelMatch,
 } from "../core/model-resolution.js";
 import { loadModelUsage } from "../core/model-usage.js";
 import {
@@ -215,7 +216,9 @@ class ResidentHost {
     this.#responsesPath = path.join(config.residencyRoot, "responses");
     this.#agentsPath = path.join(config.residencyRoot, "agents");
     this.#deliveryPrefix = residentDeliveryPrefix(config.rootId);
-    this.mesh = new MeshStore(config.meshRoot, config.mesh.maxEventBytes, config.mesh.maxReadEvents);
+    this.mesh = new MeshStore(config.meshRoot, config.mesh.maxEventBytes, config.mesh.maxReadEvents, {
+      durability: config.mesh.durability,
+    });
     this.control = new FabricControlPlane(this.mesh, this.identity, {
       enabled: true,
       hostId: this.hostId,
@@ -243,7 +246,7 @@ class ResidentHost {
       readJson<Partial<ResidentHostConfig>>(guidanceConfigPath) ?? config;
     const currentModelGuidance = () =>
       parseFabricOwnedModelGuidance(currentConfig().modelGuidance ?? config.modelGuidance);
-    const resolveResidentPiModel = (selector?: string): string => {
+    const resolveResidentPiModel = (selector?: string, modelMatch?: FabricModelMatch): string => {
       const state = currentConfig().piModels ?? config.piModels;
       const available: FabricModelCandidate[] = Array.isArray(state?.available)
         ? state.available.flatMap((candidate) =>
@@ -257,11 +260,11 @@ class ResidentHost {
           )
         : [];
       const query = selector?.trim() || state?.defaultModel?.trim() || "";
-      const resolved = resolveAvailablePiModel(query, {
+      const resolved = resolvePiModelSelector(query, {
         aliases: normalizeModelAliases(state?.aliases),
         available,
         lastUsed: loadModelUsage(),
-      });
+      }, modelMatch);
       return `${resolved.provider}/${resolved.id}`;
     };
     // agents.childQuestions "route": this host has no UI, so a durable child's
@@ -292,7 +295,7 @@ class ResidentHost {
       hostId: this.hostId,
       identityId: this.identity.id,
       retention: config.retention,
-      preparePiModel: async (model) => resolveResidentPiModel(model),
+      preparePiModel: async (model, options) => resolveResidentPiModel(model, options?.modelMatch),
       // Resolved against the parent's published set: this host loads no extensions.
       loadedExtensions: () => {
         const extensions = currentConfig().parentExtensions;
@@ -864,6 +867,8 @@ class ResidentHost {
     }
     for (const module of modules) await loadRunnerModule(module).catch(() => undefined);
     await this.agents.recoverHostedRuns().catch(() => []);
+    // Opted-in pi-durable worker runs (agents.durableWorkerRecovery at launch).
+    await this.agents.recoverWorkerRuns().catch(() => []);
   }
 
   #recoverInterruptedRequests(): void {

@@ -100,7 +100,8 @@ describe("fabric_exec background programs", () => {
     expect(onUpdate).toHaveBeenCalledTimes(1);
 
     h.pending.resolve(executionResult({ closed: 7 }));
-    await vi.waitFor(() => expect(h.jobs.get(job!.id)!.finished).toBe(true));
+    // finished is set before asynchronous log cleanup and event delivery.
+    await vi.waitFor(() => expect(h.events.some((event) => event.type === "finished")).toBe(true));
     const finished = h.events.find((event) => event.type === "finished");
     expect(finished?.output).toContain("run implement hbox-2");
     expect(finished?.output).toContain("closed");
@@ -114,7 +115,8 @@ describe("fabric_exec background programs", () => {
     const [job] = h.jobs.list();
     expect(textOf(result)).toContain(`started in the background as task ${job!.id}`);
     h.pending.resolve(executionResult(undefined, false));
-    await vi.waitFor(() => expect(h.jobs.get(job!.id)!.finished).toBe(true));
+    // finished is set before asynchronous log cleanup and event delivery.
+    await vi.waitFor(() => expect(h.events.some((event) => event.type === "finished")).toBe(true));
     expect(h.jobs.get(job!.id)!.info()).toMatchObject({ status: "failed", exitCode: 1 });
     expect(h.events.find((event) => event.type === "finished")?.output).toContain("bead 3 failed");
   });

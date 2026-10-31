@@ -325,3 +325,65 @@ describe("ActorRegistryStore read failures", () => {
     });
   });
 });
+
+describe("ActorRegistryStore short-lock leaks (#323)", () => {
+  const age = (target: string, ms: number): void => {
+    const past = new Date(Date.now() - ms);
+    fs.utimesSync(target, past, past);
+  };
+
+  it("partial owner: keeps a fresh lock with an empty owner file until the stale window passes", async () => {
+    const { store, lockPath } = setup();
+    fs.mkdirSync(lockPath, { recursive: true });
+    fs.writeFileSync(path.join(lockPath, "owner"), "");
+    vi.useFakeTimers();
+    const operation = vi.fn(() => "wrong");
+    const result = expect(store.withLock(operation)).rejects.toThrow(
+      "Timed out waiting for the Fabric actor registry lock",
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    await result;
+    vi.useRealTimers();
+    expect(operation).not.toHaveBeenCalled();
+    expect(fs.existsSync(lockPath)).toBe(true);
+
+    age(lockPath, 60_000);
+    await expect(store.withLock(() => "recovered")).resolves.toBe("recovered");
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("partial owner: publishes the owner file atomically, never empty at the lock path", async () => {
+    const { store, lockPath } = setup();
+    const ownerPath = path.join(lockPath, "owner");
+    const writeFileSync = fs.writeFileSync;
+    const targets: string[] = [];
+    vi.spyOn(fs, "writeFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, data: unknown, options?: unknown) => {
+      targets.push(String(file));
+      if (String(file).startsWith(`${ownerPath}.`)) expect(fs.existsSync(ownerPath)).toBe(false);
+      return writeFileSync(file, data as string, options as fs.WriteFileOptions);
+    }) as typeof fs.writeFileSync);
+    await store.withLock(() => undefined);
+    expect(targets).not.toContain(ownerPath);
+    expect(targets.some((target) => target.startsWith(`${ownerPath}.`))).toBe(true);
+  });
+
+  it("hold ceiling: reaps a live same-host owner's leaked lock and keeps a young one", async () => {
+    const leaked = setup();
+    fs.mkdirSync(leaked.lockPath, { recursive: true });
+    fs.writeFileSync(path.join(leaked.lockPath, "owner"), `leaked\n${process.pid}\n${Date.now() - 3_600_000}\n${encodeOwnerIdentityLine()}\n`);
+    await expect(leaked.store.withLock(() => "recovered")).resolves.toBe("recovered");
+    expect(fs.existsSync(leaked.lockPath)).toBe(false);
+
+    const young = setup();
+    const owner = `held\n${process.pid}\n${Date.now() - 5_000}\n${encodeOwnerIdentityLine()}\n`;
+    fs.mkdirSync(young.lockPath, { recursive: true });
+    fs.writeFileSync(path.join(young.lockPath, "owner"), owner);
+    vi.useFakeTimers();
+    const result = expect(young.store.withLock(() => "wrong")).rejects.toThrow(
+      "Timed out waiting for the Fabric actor registry lock",
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    await result;
+    expect(fs.readFileSync(path.join(young.lockPath, "owner"), "utf8")).toBe(owner);
+  });
+});

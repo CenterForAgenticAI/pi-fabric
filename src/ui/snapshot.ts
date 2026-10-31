@@ -130,7 +130,15 @@ export const createDashboardSnapshot = (
   const meshEntries = state.config.mesh.enabled ? state.mesh.list("", 200) : [];
   const shells = state.shellJobs?.list().filter(job => job.spilledAt !== undefined || job.monitor) ?? [];
   const sessionLabel = typeof state.sessionLabel === "function" ? state.sessionLabel() : undefined;
-  const inputs = { runs, agentRecords, actorRecords, participants, main, peers, shells,
+  const residentLogs: Record<string, string> = {};
+  if (typeof state.residentAgentForUi === "function") {
+    for (const participant of participants) {
+      if (participant.kind !== "agent" || participant.rootId !== main.id || participant.residency !== "durable") continue;
+      const record = state.residentAgentForUi(participant.id);
+      if (record && isRunRecord(record) && record.logFile) residentLogs[participant.id] = record.logFile;
+    }
+  }
+  const inputs = { runs, agentRecords, actorRecords, participants, residentLogs, main, peers, shells,
     globalActors, componentGraph, meshEntries, events, widgetDismissedAt: state.widgetDismissedAt, sessionLabel };
   const previous = cache?.get(inputs);
   if (previous) return previous;
@@ -280,6 +288,7 @@ export const createDashboardSnapshot = (
       cwd: participant.cwd ?? "",
       ...(participant.model ? { model: participant.model } : {}),
       ...(participant.thinking ? { thinking: participant.thinking } : {}),
+      ...(residentLogs[participant.id] ? { logFile: residentLogs[participant.id] } : {}),
       ...(participant.currentTool ? { currentTool: participant.currentTool } : {}),
       startedAt: participant.startedAt,
       updatedAt: participant.updatedAt,

@@ -40,6 +40,7 @@ export const COMPACTION_TARGET_RATIOS = Array.from(
 );
 
 export const ACTOR_SCOPES = ["project", "session"] as const;
+export const MESH_DURABILITIES = ["default", "fsync"] as const;
 export const DIFF_INTENSITIES = ["off", "subtle", "medium"] as const;
 export const WORD_EMPHASES = ["all", "smart", "off"] as const;
 export const TOOL_CALL_BACKGROUNDS = ["on", "border", "off"] as const;

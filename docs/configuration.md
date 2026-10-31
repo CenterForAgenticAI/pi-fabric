@@ -180,6 +180,8 @@ where absent values do not participate, and time spent inside a `humanWaitRefs` 
     "extensions": true,
     "defaultTools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
     "retainRuns": false,
+    "durableWorkerRecovery": false,
+    "durableWorkerSession": false,
     "notifyOnComplete": true,
     "budgetUsd": 0,
     "maxTokensPerChild": 0,
@@ -233,7 +235,11 @@ where absent values do not participate, and time spent inside a `humanWaitRefs` 
     "actorPollMs": 250,
     "actorQueueLimit": 32,
     "eventContextChars": 40000,
-    "peerNotices": true
+    "peerNotices": true,
+    "departedLimit": 32,
+    "departedRetentionMs": 604800000,
+
+    "durability": "default"
   },
   "memory": {
     "enabled": true,
@@ -326,7 +332,7 @@ Each in-place handoff captures Main's active model at the boundary and restores 
 
 ## Models
 
-`models.aliases` names model selectors for `agents.switchModel` and for Pi-runner `model` arguments on `agents.run`, `agents.spawn`, `agents.create`, and `agents.handoff` (see [Agents](agents.md#switching-mains-session-model)). Each alias is either one `provider/model` target, an ordered fallback chain, or an object `{"model": <target or chain>, "thinking": <level>}`. Resolution walks the chain and uses the first authenticated target. Alias names match case-insensitively and take priority over bare model ids and fuzzy matching. Aliases live in normal Fabric configuration, so a project `.pi/fabric.json` can extend the agent-level `fabric.json`; entries with malformed names or targets are ignored at load, and an unrecognized `thinking` level is dropped while the alias survives. An alias `thinking` level is the default effort for every run that selects it: an explicit `thinking` on the call or actor wins, and `agents.thinking` applies only when the alias sets none. `agents.switchModel` changes only the session model, so an alias thinking level does not apply there.
+`models.aliases` names model selectors for `agents.switchModel` and for Pi-runner `model` arguments on `agents.run`, `agents.spawn`, `agents.create`, and `agents.handoff` (see [Agents](agents.md#switching-mains-session-model)). Each alias is either one `provider/model` target, an ordered fallback chain, or an object `{"model": <target or chain>, "thinking": <level>}`. Resolution walks the chain and uses the first authenticated target. Alias names match case-insensitively and take priority over bare model ids and fuzzy matching. Aliases live in normal Fabric configuration, so a project `.pi/fabric.json` can extend the agent-level `fabric.json`; entries with malformed names or targets are ignored at load, and an unrecognized `thinking` level is dropped while the alias survives. An alias `thinking` level is the default effort for every run that selects it: an explicit `thinking` on the call or actor wins, and `agents.thinking` applies only when the alias sets none. `agents.switchModel` changes only the session model, so an alias thinking level does not apply there. A request with `modelMatch: "exact"` ignores aliases and their thinking levels (see [exact model match](agents.md#exact-model-match)).
 
 ```json
 {
@@ -481,13 +487,63 @@ A compatible exact-name core override is an additive extension of its existing `
 Fabric risk classes are `read`, `write`, `execute`, `network`, and `agent`. Approval policy values are `allow`, `ask`, `auto`, or `deny`. Policies cover actions invoked inside `fabric_exec` and top-level model-requested tools left on Pi's native path. Native calls keep Pi's original implementation, result shape, and renderer. Fabric adds only the supported interception hook that runs before execution. The native-path check starts with the session, before Fabric's runtime activates on first use, so the same direct call gets the same answer before and after the first `fabric_exec`. `/fabric settings` and `/fabric reload` are commands, not tool calls, so a restrictive policy can always be changed in-session.
 
 - Captured and directly registered tools default to the conservative `execute` risk because Pi tool definitions do not declare effects. Add exact tool-name overrides under `capture.risks`. Fovea's verified graph-navigation tools (`fovea_sketch`, `fovea_focus`, `fovea_dwell`, and `fovea_impact`) are read-only exceptions that default to `read`.
-- `capture.hideFromModel` and `capture.keepVisible` remain accepted legacy preferences, but cannot override exclusive full-code or Schema enforce mode. Native active tools stay registered/callable while their declarations are hidden.
+- `capture.hideFromModel` and `capture.keepVisible` remain accepted legacy preferences, but cannot override exclusive full-code or Schema enforce mode. Native active tools stay registered/callable while their declarations are hidden. When `keepVisible` names a tool other than `fabric_exec` (or a declared foreground tool) in one of those modes, Fabric shows one warning per session (or logs it without a UI). To declare a tool beside `fabric_exec` in full code mode, use [`foreground.tools`](#foreground-tools).
 - In orchestration-only mode, Pi's active set and each tool's native exposure govern model visibility.
 - Extension tool names appear in the prompt as a names-only roster; descriptions and schemas are resolved on demand via `tools.list` / `tools.search` / `tools.describe` before first use.
 - An `ask` policy emits a warning notification and opens an explicit **Allow once** / **Allow for this session** / **Deny** permission prompt. These options match Claude-style approval scopes. **Allow once** authorizes only the requested action. **Allow for this session** keeps that risk class authorized until the current Pi session ends. The TUI uses an inline wizard. RPC clients receive the equivalent `select` dialog.
 - While the prompt is open, the program deadline is paused (see [`executor.humanWaitRefs`](#executor-timeouts-and-ceilings)); the program resumes with the budget it had left. Cancellation still closes the prompt at once.
 - Fabric serializes concurrent requests so a one-time approval never silently widens to sibling calls. Session-wide grants apply to native calls and to `fabric_exec`. Escape, dismissal, unavailable interactive UI, and session restart all fail closed.
 - `approvals.headless` (default `"deny"`) chooses what an approval does without an interactive UI. `"decision"` raises a durable user-held approval decision for `fabric_exec` actions and waits up to `approvals.headlessTimeoutMs` (default `300000`, bounded to 1 s..24 h). Only an explicit approve answer from `/fabric decisions` or `pi-fabric decisions answer` runs the action once; deny, cancel, expiry, and abort deny it. Any other value keeps `"deny"`. See [durable decisions](decisions.md#headless-approvals).
+- `approvals.policyHooks` (default off) lets extensions take part in `fabric_exec` approvals. See [extension action policy hooks](#extension-action-policy-hooks).
+
+### Extension action policy hooks
+
+An extension can register a policy hook that Fabric consults at the approve stage of every `fabric_exec` action: `pi.*`, `extensions.*`, `mcp.*`, `agents.*` (including `agents.spawn` and `agents.create`), `mesh.*`, `memory.*`, `state.*`, `schema.*` and external providers. Fabric consults hooks only when `approvals.policyHooks` is `true`; any other value leaves approvals exactly as configured. Hooks do not see direct tool calls the model makes outside `fabric_exec`; Pi's own `tool_call` event already covers those.
+
+```json
+{
+  "approvals": {
+    "policyHooks": true
+  }
+}
+```
+
+Register a hook over `pi.events`. Registration is accepted whether or not the setting is on. A second registration under the same `name` replaces the first and keeps its place in registration order, so a reloaded extension does not stack copies:
+
+```ts
+import { FABRIC_ACTION_POLICY_REGISTER_EVENT } from "pi-fabric/protocol";
+
+let unregister: (() => void) | undefined;
+pi.events.emit(FABRIC_ACTION_POLICY_REGISTER_EVENT, {
+  version: 1,
+  name: "my-policy-engine",
+  hook: async ({ action, args, context, signal }) => {
+    if (action.ref.startsWith("mcp.crm.") && action.risk === "write" && outsideWorkingHours()) {
+      return { decision: "deny", reason: "CRM writes are closed outside working hours" };
+    }
+    if (action.ref === "agents.spawn" && args.runner === "claude") {
+      return { decision: "hold", reason: "Claude runners need a grant" };
+    }
+    return undefined; // no opinion
+  },
+  respond: (result) => { if (result.ok) unregister = result.unregister; },
+});
+```
+
+The hook receives private copies of the resolved action (`ref`, `provider`, `risk`, `effect`) and the validated arguments, a `context`, and an abort `signal`. In a `fabric_exec` program, `context` has `caller: "program"` and the outer `parentToolCallId`. In a Jev program launched from one, it has `caller: "jev"` and the `parentToolCallId` of the call that launched the program. Its answer combines with the configured policy as follows:
+
+| Hook answer | Effect |
+|---|---|
+| `{ decision: "deny", reason }` | Denies the call, like an `approvals.actions` deny. Nothing lifts it. |
+| `{ decision: "hold", reason }` | Asks a person even when the configuration or a session grant would allow the call: the permission prompt, or a [headless decision](decisions.md#headless-approvals) when `approvals.headless` is `"decision"`. Without either, the call fails closed. A configured deny still denies. |
+| `{ decision: "allow" }` | Settles an `ask` or `auto` prompt without asking. It never lifts an `approvals.actions` deny or a risk-class `deny`. |
+| `undefined` | No opinion; the configured policy decides. |
+
+Hooks run before the configured approvals, so they also see calls that `approvals.actions` or a risk-class `deny` will deny anyway. Do not read a hook call as proof that the action ran.
+
+With several hooks, deny beats hold, and hold beats allow; among equal answers, the first registered hook names the verdict. A hook that throws, answers anything else, or takes longer than 5 seconds counts as a deny that names the hook. The 5-second timeout is fixed and not configurable yet. Control characters in a reason are replaced with spaces, and a reason is cut at 500 characters. When a hook `allow` settles an `ask` or `auto` prompt, the run trace records a `fabric.approval.auto` entry with `decision: "allow"` and `policyHook` set to the hook's name; the auto classifier does not run. Cancelling the program aborts the hook's signal and cancels the call instead. While any hook is registered, Fabric treats every action as possibly interactive when it decides whether to arm a durable tool fence. `schema.commit` is approved as both `write` and `execute`, so hooks see it twice.
+
+Actions inside Jev programs pass through the same hooks. Jev programs do not raise headless decisions, so a `hold` there without an interactive UI fails closed. Hooks do not cover direct model tool calls (Pi's `tool_call` event already reaches those), component calls, actors, or agent admission that bypasses the action registry.
 
 ### Per-action approval overrides
 
@@ -580,7 +636,7 @@ Reader checkpoints are lossless live state: they are **never pressure-evicted**.
 
 ## Agents
 
-`agents.runner` selects the default harness: `"pi-durable"` (default, [isolated durable Pi host](durable-pi.md)), `"pi"` (legacy Pi CLI), `"claude"`, `"veda"`, or the id of a runner registered through `pi-fabric/runners` ([custom runners](agents.md#custom-runners)). A well-formed id that no extension registers is kept, and launches fail closed until the runner is registered. Before the first turn of each session, Fabric warns once when the configured runner is still unregistered, suggests a close built-in or registered id for likely typos, and lists the registered runners. Malformed ids fall back to `"pi-durable"`. Explicit existing runner settings are preserved. `agents.model` is the optional Pi `provider/id` override. `agents.claude.model` is the optional canonical Claude runtime key. `agents.claude.binary` defaults to `claude`. You can supply an absolute path or a wrapper. `PI_FABRIC_CLAUDE_BINARY` overrides it for the current process. `/fabric settings` enumerates Claude models from that binary in the background and stores the two runner defaults independently. `agents.modelAdmission` defaults to `strict`: a Pi child run fails when the model it reports after selection differs from the requested key. Set it to `permissive` when a virtual provider key (for example a `pi-multiprovider` entry) resolves to a concrete backend at stream time; Fabric then records the reported attribution and continues, including when a later assistant frame names that backend. Permissive admission still fails a child that reports no model or starts work before admission.
+`agents.runner` selects the default harness: `"pi-durable"` (default, [isolated durable Pi host](durable-pi.md)), `"pi"` (legacy Pi CLI), `"claude"`, `"veda"`, or the id of a runner registered through `pi-fabric/runners` ([custom runners](agents.md#custom-runners)). A well-formed id that no extension registers is kept, and launches fail closed until the runner is registered. Before the first turn of each session, Fabric warns once when the configured runner is still unregistered, suggests a close built-in or registered id for likely typos, and lists the registered runners. Malformed ids fall back to `"pi-durable"`. Explicit existing runner settings are preserved. `agents.model` is the optional Pi `provider/id` override. `agents.claude.model` is the optional canonical Claude runtime key. `agents.claude.binary` defaults to `claude`. You can supply an absolute path or a wrapper. `PI_FABRIC_CLAUDE_BINARY` overrides it for the current process. `/fabric settings` enumerates Claude models from that binary in the background and stores the two runner defaults independently. `agents.modelAdmission` defaults to `strict`: a Pi child run fails when the model it reports after selection differs from the requested key. Set it to `permissive` when a virtual provider key (for example a `pi-multiprovider` entry) resolves to a concrete backend at stream time; Fabric then records the reported attribution and continues, including when a later assistant frame names that backend. Permissive admission still fails a child that reports no model or starts work before admission. A request with `modelMatch: "exact"` ignores this setting and always uses strict admission; the worker also loads a guard that ends the child when the session's model changes or a conversation request is about to go out on another model. The guarantee excludes model calls that extension code makes itself, such as nested calls from tools and custom compaction with another model (see [exact model match](agents.md#exact-model-match)).
 
 The `veda` runner drives the [Veda CLI](https://github.com/kennyfrc/veda) as the child harness. `agents.veda.binary` defaults to `veda`. An absolute path or wrapper works, and `PI_FABRIC_VEDA_BINARY` overrides it for the current process. `agents.veda.backend` selects which backend Veda wraps: `agy` (Antigravity CLI, the default), `codex`, `claude-code`, `droid`, `pi`, or another backend registered by the installed Veda build. Fabric passes this value through unchanged and never hardcodes AGY. `agents.veda.model` is an optional backend-specific model or Veda alias. When you omit it, Veda selects its own backend default. `agents.veda.persona` picks the global Veda persona: `navigator-plan`, `navigator-chat` (default), `reviewer`, `worker`, or a custom persona under `~/.config/veda/personas/<name>/AGENTS.md`. Per-run selection overrides it through `agents.run({ persona })`. You can also edit the Veda backend, persona, and model in the Fabric settings panel under Agents. Each child runs one headless `veda --json` prompt with an isolated `fabric-<run-id>` session, so parallel children never share Veda selection or conversation state. Veda sessions lack persistence, and steering is unsupported. Veda children are **not** recursively Fabric-equipped (`recursive: true` is rejected), and they cannot back persistent actors.
 
@@ -599,6 +655,8 @@ Other agent settings:
 - `defaultTools`: the default tool allowlist for children.
 - `budgetUsd`: shared append-only cost ledger across a recursion tree (0 disables).
 - `maxTokensPerChild`: cumulative token bound per child (0 disables).
+- `durableWorkerRecovery` (default `false`): let a restarted resident host re-attach, or relaunch on its journal, an unfinished `pi-durable` run launched with `residency: "durable"` on the `process` transport. A run it cannot recover settles with `outcome: "indeterminate"`. See [durable-pi.md](durable-pi.md#opt-in-reattach-after-a-resident-host-restart).
+- `durableWorkerSession` (default `false`): give a `pi-durable` child without a seeded session a private Pi session file in its run directory, and put a worker-role entry at the root of its session (fork and handoff seeds too). A relaunch then keeps what extensions saved in the session. With it off, the child runs with `--no-session` as before. See [durable-pi.md](durable-pi.md#opt-in-a-session-file-for-pi-durable-workers).
 - `notifyOnComplete`: show concise detached `agents.spawn()` completion notices and batch unread results for Main at a safe tool-turn boundary (or wake idle Main). `wait`/`join` and terminal `status` retract pending notifications; running/UI status does not. Escape/error parks results until new input.
 - `sessionExport`: export each agent run's usage as an attributed pi-format session file (on by default).
 - `sessionExportDir`: override the export store root (default `~/.pi-fabric/agent`, with `PI_FABRIC_AGENT_DIR` taking precedence).
@@ -609,7 +667,7 @@ Other agent settings:
 
 ### Usage tracking with external tools
 
-Fabric children run with `--no-session`, so token trackers that scrape session files (tokscale, ccusage, …) cannot see subagent token usage or cost. With `sessionExport` enabled (the default), every child writes one usage-only session file (tokens and cost, never transcript content) to:
+Fabric children run with `--no-session` (a `pi-durable` child with `agents.durableWorkerSession` keeps its session file inside the run directory), so token trackers that scrape session files (tokscale, ccusage, …) cannot see subagent token usage or cost. With `sessionExport` enabled (the default), every child writes one usage-only session file (tokens and cost, never transcript content) to:
 
 ```text
 ~/.pi/agent/sessions/.fabric/<encoded-cwd>/<run>.jsonl
@@ -678,6 +736,7 @@ See the [TypeScript MCP reference](../skillsets/typescript/fabric-exec/reference
 - `ui.showAgentToolPreview` defaults to `true` and controls the child-agent and actor tool rows in both the parent `fabric_exec` card and the widget. Recursive agents render their full descendant tree, bounded by the preview depth/node budget. The version 2 config migration renamed this key from `ui.showNestedToolCalls`.
 - `ui.toolDisplay` is `"compact"` (default) or `"full"`. Compact elevates the declared display name and description and keeps bounded nested tool detail visible; full retains the outer Fabric program transcript. Pi's tool-expand keybinding (`ctrl+o` by default) expands a compact card to the full transcript and collapses it again. Invalid values fall back to `"compact"`. If configuration fails to load, rendering falls back to full so a degraded startup never hides the transcript. Change it under `/fabric settings` → **UI**; successful changes apply immediately to live and completed cards.
 - `ui.terminalTitle` defaults to `true`. The terminal window/tab title shows the declared `fabric_exec` display name (for example `record release evidence`) and nothing else; nested call detail stays in the transcript. The title holds until the next declared name, survives the program that set it, and is adopted again on resume, because Fabric records it as a session entry. Pi's `app - session - cwd` shape only shows before the first declared name in a session. A call without a declared name leaves the current title alone. Headless and RPC hosts never receive it, and it requires `ui.enabled`; turn it off under `/fabric settings` → **UI**.
+- `ui.questionRenderers` (default off) lets an extension show routed child questions and `/fabric decisions` in its own interface. Any value except `true` keeps Fabric's own dialogs. See [question renderers](decisions.md#question-renderers).
 - `ui.updateDebounceMs` defaults to `100`. It applies one execution-wide coalescing interval to every live `fabric_exec` card update: nested calls, progress text, and agent tool previews. Continuous streams emit at most once per interval, so a long call no longer postpones every render until completion. Set it to `0` to emit every update. Accepted values clamp to `0..2000`. The version 3 config migration renamed this key from `ui.nestedToolDebounceMs`.
 - `ui.sessionLabel` controls where a root Pi session shows its Fabric [peer label](agents.md#peer-labels-and-queue-gates), such as `FAB-3`. Child agents and actors never show one.
   - `footer` defaults to `true` and shows the label. In the TUI the label sits on the editor's top border and heads the Fabric widget (`● FAB-3`), and the footer stays empty. The footer shows `Fabric FAB-3` instead when `ui.widget` is `hidden` or `ui.enabled` is `false`, and RPC clients always receive it as the `fabric-label` status. `false` hides the label everywhere; the widget header then reads `Fabric`. Independently of this setting, a root session records its label once as a `pi-fabric-peer` session entry (`FABRIC_PEER_ENTRY_TYPE` in `pi-fabric/protocol`) holding `{ version: 1, sequence, participantId, label }`, which headless hosts read with Pi's RPC `get_entries`. A session takes its label at its first Fabric use, or at once when it resumes with a recorded one; see [peer labels](agents.md#peer-labels-and-queue-gates).
@@ -691,6 +750,10 @@ See the [interface reference](interface.md).
 ## Mesh
 
 Mesh data lives at `<project>/.pi/fabric/mesh` by default. Set `mesh.root` to a relative or absolute path to relocate durable topics, shared state, and actor sessions. Add `.pi/fabric/mesh/` to the project's ignore file unless you version the coordination log on purpose. Set `mesh.enabled` to `false` to disable both mesh actions and ambient actor restoration.
+
+Every Fabric session reads `PI_FABRIC_MESH_ROOT`. When the variable is set, the session uses that directory as its mesh root and ignores `mesh.root`. Give an absolute path: Fabric does not resolve the value against the project, so a relative path depends on the process working directory. Fabric sets the same variable for the agents and actors it launches, so they share their parent's root.
+
+Everything the mesh stores lives under that one directory: topics, shared state, the participant directory, decisions, grants, schedules, the project-scope actor registry (`<root>/actors`) and resident hosts (`<root>/residency/`, one directory per root session). Root sessions in different projects that point at the same directory therefore share one coordination plane. They also share one project-scope actor registry, so the ownership and adoption rules below apply across those projects, and a durable agent in one project is visible to `agents.status` in the others. Use `scope: "session"` for actors that must stay with the session that created them.
 
 `mesh.actorScope` is the default storage scope for `agents.create`; each actor can override it with `scope: "project"` or `scope: "session"`. Both scopes run concurrently:
 
@@ -712,6 +775,10 @@ call override → session binding → project default → Fabric default
 `mesh.eventContextChars` bounds the sanitized JSON context attached to each host-event activation. Over the limit, Fabric drops the oldest transcript lines first and keeps the digest. It shortens the digest, and marks it `truncated: true`, only when the digest alone exceeds the limit. Fabric extracts images first. It stores redacted image descriptors in the mailbox and registry, then sends the raw images to the actor out of band. The character limit never truncates image base64 because base64 is not part of that JSON context.
 
 `mesh.peerNotices` (default `true`) tells the model of a root session with a UI when another root Pi session joins or leaves the project. The notice is appended to the transcript and never changes the system prompt. See [peer presence notices](agents.md#peer-presence-notices).
+
+`mesh.departedLimit` (default `32`, range `0`–`1000`) caps the stopped-session tombstones a root writes when it closes cleanly; `0` writes none and prunes none, but `agents.departed()` still lists other sessions' departures, up to 32 by default. `mesh.departedRetentionMs` (default 7 days, range 1 minute–90 days) is how long stopped and lost roots stay in `agents.departed()`. A closing root prunes tombstones past either bound. Live discovery never reads tombstones. See [unified participants](agents.md#unified-participants-and-steering).
+
+`mesh.durability` is `"default"` or `"fsync"`. With `"default"`, mesh writes reach the operating system before a call returns, so they survive a crash of the Pi process but can be lost on a power failure or kernel panic. With `"fsync"`, every committed write (event appends, shared state, the sequence counter, schedules, grants, and event-log compaction) is passed to `fsync`, together with its directory entry. Store construction flushes the entire ancestor chain of the mesh root, even if another writer pre-created it; later writes flush only within that established root (and its parent entry). The root's parent namespace must not be renamed or replaced during the store lifetime. These barriers finish before `mesh.publish`, `mesh.put`, `mesh.delete`, a grant, or a revocation returns. A failed flush is reported (the write may already be visible); retries repeat the barriers and do not assume existing paths are already durable. Each write then waits for the disk, so busy topics pay a per-event cost. On macOS, `fsync` does not flush the drive's own cache (Node cannot issue `F_FULLFSYNC`), and Windows skips the directory flush. The resident host uses the same setting. The `pi-fabric mesh` and `pi-fabric decisions` commands do not read Fabric configuration, so their writes keep the default. A change applies to sessions started after it.
 
 Mesh topics, shared state, and the participant directory remain project-scoped. Every runtime publishes one short-lived host lease and records for the roots, agents, and actors it owns. `agents.members()` and `mesh.members()` read those records. `agents.main()` and `agents.peers()` project roots. When a lease expires, its records leave normal discovery together. `mesh.actorPollMs` controls fallback polling for actor events and owner-addressed commands when filesystem notifications are unavailable.
 

@@ -53,6 +53,7 @@ import {
   type FabricAutoApprovalAudit,
 } from "./core/approval-controller.js";
 import { FabricAutoApprovalClassifier } from "./core/auto-approval-classifier.js";
+import type { FabricActionPolicyHooks } from "./core/action-policy-hooks.js";
 import {
   codeUsesOrchestration,
   isBlockingOrchestrationRef,
@@ -314,6 +315,7 @@ export class FabricExecutionService {
   #capabilityView: FabricCommittedCapabilityView | undefined;
   #emitEvent: ((channel: string, data: unknown) => void) | undefined;
   #headlessApproval: FabricHeadlessApproval | undefined;
+  #actionPolicyHooks: FabricActionPolicyHooks | undefined;
   #participants: ProviderParticipantRegistry | undefined;
   readonly nativeCodemode: NativeCodemodeProvider;
   readonly #nestedRunners = new Map<string, FabricNestedProgramRunner>();
@@ -359,6 +361,11 @@ export class FabricExecutionService {
   /** No-UI approval fallback used when approvals.headless is "decision". */
   setHeadlessApproval(handler: FabricHeadlessApproval | undefined): void {
     this.#headlessApproval = handler;
+  }
+
+  /** Extension hooks consulted at the approve stage when approvals.policyHooks is true. */
+  setActionPolicyHooks(hooks: FabricActionPolicyHooks | undefined): void {
+    this.#actionPolicyHooks = hooks;
   }
 
   async execute(options: FabricExecutionOptions): Promise<FabricExecutionResult> {
@@ -531,6 +538,7 @@ export class FabricExecutionService {
         });
       }
     };
+    const policyHooks = this.#actionPolicyHooks;
     const approval = new ApprovalController(
       this.config.approvals,
       options.context,
@@ -539,7 +547,13 @@ export class FabricExecutionService {
       recordAutoDecision,
       this.brokeredNetwork,
       this.#headlessApproval
-        ? (action, reason) => this.#headlessApproval!(action, reason, options.signal)
+        ? (action, reason, signal) => this.#headlessApproval!(action, reason, signal ?? options.signal)
+        : undefined,
+      policyHooks && this.config.approvals.policyHooks === true
+        ? policyHooks.bind({
+            caller: "program",
+            ...(options.parentToolCallId ? { parentToolCallId: options.parentToolCallId } : {}),
+          }, () => options.signal)
         : undefined,
     );
     const audits: FabricCallAudit[] = [];
@@ -804,13 +818,14 @@ export class FabricExecutionService {
               },
             }
           : {}),
-        approve: async (action, preparedArgs) => {
+        approve: async (action, preparedArgs, signal = callContext.signal) => {
           if (action.ref === "schema.commit") {
-            await approval.approve({ ...action, risk: "write" }, preparedArgs, approvalWait);
-            await approval.approve({ ...action, risk: "execute" }, preparedArgs, approvalWait);
+            await approval.approve({ ...action, risk: "write" }, preparedArgs, approvalWait, signal);
+            await approval.approve({ ...action, risk: "execute" }, preparedArgs, approvalWait, signal);
           } else {
-            await approval.approve(action, preparedArgs, approvalWait);
+            await approval.approve(action, preparedArgs, approvalWait, signal);
           }
+          signal.throwIfAborted();
           // Approved: the effect is next. A resume never repeats a call after this.
           if (journal && callContext.journalSeq !== undefined && !fenceFreeAction(action) && !stagedActionRefs.has(action.ref)) {
             journal.intent(callContext.journalSeq, action.ref);
@@ -1160,7 +1175,8 @@ export class FabricExecutionService {
                   error,
                   executionOutcomeFromError(error, runtimeSignal),
                 );
-                return [];
+                // Surface the registry failure; an empty list reads as "no models".
+                throw error;
               }
             }
             case "fabric.$list":
@@ -1468,7 +1484,7 @@ export class FabricExecutionService {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.activity?.finish(options.parentToolCallId, false, message);
+      this.activity?.finish(options.parentToolCallId, false, message, options.signal?.aborted === true);
       itemTransitions.finish(false);
       if (options.signal?.aborted) {
         await this.#participants?.cancelInvocation(options.parentToolCallId).catch(() => undefined);
@@ -1497,7 +1513,12 @@ export class FabricExecutionService {
         .join("; ")}`;
       sandboxResult.error = sandboxResult.error ? `${sandboxResult.error}\n${summary}` : summary;
     }
-    this.activity?.finish(options.parentToolCallId, succeeded, sandboxResult.error);
+    this.activity?.finish(
+      options.parentToolCallId,
+      succeeded,
+      sandboxResult.error,
+      runOutcome === "aborted" || options.signal?.aborted === true,
+    );
     itemTransitions.finish(succeeded);
     // Logs, results, and error text reach the model, the event stream, and
     // persisted traces. Raw media must not: images are hoisted out of band and

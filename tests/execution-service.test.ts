@@ -375,6 +375,36 @@ return "complete outer result";
     expect(activity.get("reset-during-stream")).toBeUndefined();
   });
 
+  it("marks a run cancelled from the abort signal, not from its error text", async () => {
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.fullCodeMode = false;
+    const activity = new FabricActivityStore();
+    const service = new FabricExecutionService(new ActionRegistry(), config, activity);
+    const context = { cwd: process.cwd(), hasUI: false } as ExtensionContext;
+
+    const failed = await service.execute({
+      code: 'throw new Error("order was cancelled upstream");',
+      signal: undefined,
+      parentToolCallId: "error-mentions-cancel",
+      context,
+      onPartial() {},
+    });
+    expect(failed.success).toBe(false);
+    expect(activity.get("error-mentions-cancel")?.status).toBe("failed");
+
+    const controller = new AbortController();
+    const aborted = service.execute({
+      code: "await new Promise(() => {});",
+      signal: controller.signal,
+      parentToolCallId: "aborted-run",
+      context,
+      onPartial() {},
+    });
+    queueMicrotask(() => controller.abort());
+    await aborted.catch(() => undefined);
+    expect(activity.get("aborted-run")?.status).toBe("cancelled");
+  });
+
   it("throttles continuous nested progress without starving intermediate snapshots", async () => {
     const registry = new ActionRegistry();
     const descriptor = {

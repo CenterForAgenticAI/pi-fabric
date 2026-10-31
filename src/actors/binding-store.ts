@@ -3,11 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   writeJsonAtomic,
-  encodeOwnerIdentityLine,
-  lockOwnerLiveness,
-  lockOwnerProvablyDead,
-  reapLockByRenameClaim,
-  SHORT_LOCK_MAX_HOLD_MS,
+  formatShortLockOwner,
+  reapStaleShortLock,
+  releaseShortLock,
+  tryAcquireShortLock,
 } from "../core/atomic-write.js";
 import { isFabricThinking, type FabricThinking } from "../thinking.js";
 import { ActorStoreReadError, readStoreJson } from "./store-read.js";
@@ -234,7 +233,6 @@ export class ActorBindingStore {
   async #withLock<T>(operation: () => T): Promise<T> {
     if (!this.filePath) return operation();
     const lockPath = `${this.filePath}.lock`;
-    const ownerPath = path.join(lockPath, "owner");
     const deadline = Date.now() + BINDING_LOCK_TIMEOUT_MS;
     const token = randomUUID();
     const processAlive = (pid: number): boolean => {
@@ -247,63 +245,21 @@ export class ActorBindingStore {
       }
     };
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
-    while (true) {
-      try {
-        fs.mkdirSync(lockPath, { mode: 0o700 });
-        fs.writeFileSync(ownerPath, `${token}\n${process.pid}\n${Date.now()}\n${encodeOwnerIdentityLine()}\n`, {
-          encoding: "utf8",
-          mode: 0o600,
-        });
-        break;
-      } catch (error) {
-        if (errorCode(error) !== "EEXIST") throw error;
-        try {
-          const firstOwner = fs.readFileSync(ownerPath, "utf8");
-          const [, pidText, createdText, identityLine] = firstOwner.trim().split("\n");
-          const stale = Date.now() - Number(createdText) > BINDING_STALE_LOCK_MS;
-          // A fresh lock is reaped only when its local owner is provably dead.
-          const dead = stale
-            ? lockOwnerLiveness(Number(pidText), Number(createdText), identityLine, {
-              legacyAlive: processAlive,
-              maxHoldMs: Math.max(SHORT_LOCK_MAX_HOLD_MS, BINDING_STALE_LOCK_MS),
-            }) === "dead"
-            : lockOwnerProvablyDead(Number(pidText), identityLine);
-          if (dead) {
-            const secondOwner = fs.readFileSync(ownerPath, "utf8");
-            // Claim by rename so a lock a new owner took after this check survives.
-            if (
-              secondOwner === firstOwner &&
-              reapLockByRenameClaim(lockPath, (claimed) => {
-                try {
-                  return fs.readFileSync(path.join(claimed, "owner"), "utf8") === firstOwner;
-                } catch {
-                  return false;
-                }
-              })
-            ) {
-              continue;
-            }
-          }
-        } catch {
-          // Lock creation or stale recovery raced; retry until the deadline.
-        }
-        if (Date.now() >= deadline) {
-          throw new Error("Timed out waiting for the Fabric actor binding lock");
-        }
-        await delay(10);
+    while (!tryAcquireShortLock(lockPath, formatShortLockOwner(token))) {
+      // An ownerless or partial lock is judged by its age; a fresh one only
+      // when its local owner is provably dead; any past the hold ceiling has
+      // leaked. Removal is a rename claim, so a lock a new owner took survives.
+      if (reapStaleShortLock(lockPath, { staleMs: BINDING_STALE_LOCK_MS, legacyAlive: processAlive })) continue;
+      if (Date.now() >= deadline) {
+        throw new Error("Timed out waiting for the Fabric actor binding lock");
       }
+      await delay(10);
     }
     try {
       return operation();
     } finally {
-      try {
-        const owner = fs.readFileSync(ownerPath, "utf8");
-        if (owner.startsWith(`${token}\n`)) {
-          fs.rmSync(lockPath, { recursive: true, force: true });
-        }
-      } catch {
-        // A recovering process already removed this lock.
-      }
+      // Also takes the lock back from a reaper's claim path.
+      releaseShortLock(lockPath, token);
     }
   }
 }

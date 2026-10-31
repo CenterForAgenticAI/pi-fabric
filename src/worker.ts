@@ -5,8 +5,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { assertWorkerRuntime, writeWorkerStartupFailure } from "./worker/startup.js";
+import { MODEL_PIN_ENV, MODEL_PIN_EXIT_CODE, modelPinFailure, parseModelPinViolation } from "./agents/model-pin.js";
+import { createDurableSessionFile } from "./durable/worker-role-seed.js";
 import { explainMissingInstall } from "./worker/missing-install.js";
 import { normalizeRunDisplay } from "./run-display.js";
+import { nativeFabricExecExclusions } from "./core/child-tool-allowlist.js";
 
 import { StringDecoder } from "node:string_decoder";
 import type { ImageContent } from "@earendil-works/pi-ai";
@@ -144,6 +147,22 @@ const extractText = (message: Record<string, unknown>): string => {
     .join("");
 };
 
+// Names the tool calls of an assistant message that stopped to run tools.
+// Undefined when the message is a final answer (or an error/abort).
+const toolUseStop = (message: Record<string, unknown>): string | undefined => {
+  if (message.stopReason !== "toolUse") return undefined;
+  const names = Array.isArray(message.content)
+    ? message.content.flatMap((part) => {
+        if (typeof part !== "object" || part === null || Array.isArray(part)) return [];
+        const block = part as Record<string, unknown>;
+        return block.type === "toolCall" && typeof block.name === "string" && block.name.trim()
+          ? [block.name.trim().slice(0, 100)]
+          : [];
+      })
+    : [];
+  return names.length > 0 ? [...new Set(names)].slice(0, 8).join(", ") : "unknown";
+};
+
 const readImages = (filePath: string | undefined): ImageContent[] => {
   if (!filePath) return [];
   const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -209,6 +228,16 @@ const terminateChild = (child: ChildProcess, signal: NodeJS.Signals): void => {
 };
 
 
+
+/**
+ * A pi-durable child's journal restores messages only. Without a session file,
+ * a resumed child loses every entry extensions saved (custom entries, context
+ * edits, compaction). Keep a private file with the run so retention removes it
+ * with the run. The file is created complete (Pi header plus worker-role entry)
+ * and a relaunched attempt reopens it: never truncate.
+ */
+const durableSessionFile = (statusFile: string, cwd: string): string =>
+  createDurableSessionFile(path.dirname(statusFile), cwd);
 
 let crashContext: { statusFile: string; record: AgentRunRecord } | undefined;
 let runRecordHelpers: WorkerRunRecordModule | undefined;
@@ -322,7 +351,17 @@ const main = async (): Promise<void> => {
     ? fs.readFileSync(options.schemaFile, "utf8")
     : undefined;
   const piArguments = ["--mode", "rpc"];
-  if (options.sessionFile) piArguments.push("--session", options.sessionFile);
+  // The worker never edits a session file. With agents.durableWorkerSession
+  // (the manager passes --durable-session), a pi-durable child without a
+  // session file gets a new one that already carries the worker-role entry as
+  // its tree root (src/durable/worker-role-seed.ts); a fork or handoff seed
+  // already carries it (the manager asked the seed writer for it); a
+  // caller-supplied file is used as it is.
+  const piSessionFile = options.sessionFile ??
+    (options.runner === "pi-durable" && options.durableSession
+      ? durableSessionFile(options.statusFile, options.cwd)
+      : undefined);
+  if (piSessionFile) piArguments.push("--session", piSessionFile);
   else piArguments.push("--no-session");
   if (!options.extensions) {
     piArguments.push("--no-extensions");
@@ -345,8 +384,27 @@ const main = async (): Promise<void> => {
     const guard = import.meta.url.endsWith(".ts") ? "./agents/write-guard.ts" : "./agents/write-guard.js";
     piArguments.push("-e", fileURLToPath(new URL(guard, import.meta.url)));
   }
+  if (options.modelMatch === "exact") {
+    // Exact pins the run's own model. The guard ends the child when the session's
+    // model changes or a request is about to go out on another model; it loads even
+    // with --no-extensions. Model calls that extension code makes itself are not covered.
+    if (!isPi) throw new Error(`modelMatch "exact" requires the Pi runner, not ${options.runner}`);
+    if (!options.model || options.model.indexOf("/") < 1) throw new Error('modelMatch "exact" requires a provider/id model');
+    const guard = import.meta.url.endsWith(".ts") ? "./agents/model-pin-guard.ts" : "./agents/model-pin-guard.js";
+    piArguments.push("-e", fileURLToPath(new URL(guard, import.meta.url)));
+  }
   if (options.tools.length > 0) piArguments.push("--tools", options.tools.join(","));
   else piArguments.push("--no-tools"); // explicit empty allowlist => no tools, not Pi defaults
+  // A skills option replaces the child's own skill discovery with the files the
+  // parent resolved; an empty list leaves it with none.
+  if (options.skills) {
+    piArguments.push("--no-skills");
+    for (const skill of options.skills) piArguments.push("--skill", skill);
+  }
+  // Native wildcard/modifier expansion must not resurrect the recursive tool.
+  // Persisted worker argv re-applies this boundary on every replay/relaunch.
+  const excludedTools = nativeFabricExecExclusions(options.tools);
+  if (excludedTools.length) piArguments.push("--exclude-tools", excludedTools.join(","));
   if (options.model) piArguments.push("--model", options.model);
   if (thinking) piArguments.push("--thinking", thinking);
   if (options.systemPrompt) piArguments.push("--append-system-prompt", options.systemPrompt);
@@ -429,6 +487,9 @@ const main = async (): Promise<void> => {
       // allowlist, so both Pi and captured-tool providers enforce this
       // child-side allowlist before preparation, discovery, and invocation.
       PI_FABRIC_TOOL_ALLOWLIST: JSON.stringify(options.tools),
+      // The parent chose this child's skills: its Fabric adds no skills of its own.
+      // Cleared otherwise, so a grandchild without the option discovers normally.
+      PI_FABRIC_CHILD_SKILLS: options.skills ? "selected" : undefined,
       ...(options.actorId ? { PI_FABRIC_ACTOR_ID: options.actorId } : {}),
       ...(options.actorName ? { PI_FABRIC_ACTOR_NAME: options.actorName } : {}),
       PI_FABRIC_CAPABILITY_REQUIREMENTS: JSON.stringify(
@@ -450,6 +511,8 @@ const main = async (): Promise<void> => {
         ? { TRACEPARENT: options.traceContext.traceparent, TRACESTATE: options.traceContext.tracestate }
         : {}),
       ...(options.writePolicy ? { PI_FABRIC_WRITE_POLICY: options.writePolicy } : {}),
+      // Undefined drops an inherited pin: only an exact run's own child carries one.
+      [MODEL_PIN_ENV]: options.modelMatch === "exact" ? options.model : undefined,
       // Exactly the manager's derived scope; undefined drops an inherited value.
       PI_FABRIC_SCOPE: options.scope,
       PI_FABRIC_SCOPE_FILE: undefined,
@@ -473,6 +536,9 @@ const main = async (): Promise<void> => {
   let sawAgentError = false;
   let retryPending = false;
   let answerProjected = false;
+  // Set while the run's last assistant message stopped for tool calls; a later
+  // assistant message (the final answer) clears it.
+  let endedOnToolCall: string | undefined;
   let recordedResultPending = false;
   let recordedResultTimer: NodeJS.Timeout | undefined;
   const recordedResultId = `fabric-recorded-result:${options.id}`;
@@ -523,9 +589,22 @@ const main = async (): Promise<void> => {
     stallWatchdog.dispose();
     if (closeTimer || killTimer) return;
     // RPC EOF requests disposal, but a stuck extension can prevent process exit.
-    closeTimer = setTimeout(() => failStalledChild(
-      `${terminalError ?? "Child Pi settled"}; child did not exit after stdin closed for ${KILL_GRACE_MS}ms`,
-    ), KILL_GRACE_MS);
+    closeTimer = setTimeout(() => {
+      const answered = isPi && answerProjected && !sawAgentError && !endedOnToolCall && !terminalError;
+      if (!answered || terminalStatus) {
+        failStalledChild(
+          `${terminalError ?? "Child Pi settled"}; child did not exit after stdin closed for ${KILL_GRACE_MS}ms`,
+        );
+        return;
+      }
+      // The answer is already recorded; a slow exit does not undo it.
+      terminalStatus = "completed";
+      appendLog(`${JSON.stringify({
+        type: "fabric_exit_warning",
+        warning: `child did not exit after stdin closed for ${KILL_GRACE_MS}ms; terminated it after its final answer`,
+      })}\n`);
+      killChild();
+    }, KILL_GRACE_MS);
     closeTimer.unref();
   };
 
@@ -560,7 +639,8 @@ const main = async (): Promise<void> => {
       appendLog(`${JSON.stringify({ type: "fabric_model_error", requestedModel: options.model, model: record.model, error })}\n`);
       killChild();
     },
-  }, options.modelAdmission);
+  // Exact is always strict, whatever the caller or a stale launch passed.
+  }, options.modelMatch === "exact" ? "strict" : options.modelAdmission);
 
   // Attributed token telemetry. Every usage-bearing child event emits one
   // tokens.usage lifecycle entry identified by this run/actor/runner/depth.
@@ -1000,6 +1080,7 @@ const main = async (): Promise<void> => {
         sawAgentError = true;
         terminalError = assistantError(last);
       }
+      endedOnToolCall = toolUseStop(last);
       enforceTokenLimit();
       update();
       if (!terminalStatus) {
@@ -1114,6 +1195,7 @@ const main = async (): Promise<void> => {
       const messageRecord = message as Record<string, unknown>;
       if (messageRecord.role !== "assistant") return;
       const text = extractText(messageRecord);
+      endedOnToolCall = toolUseStop(messageRecord);
       if (text || messageRecord.stopReason === "error" || messageRecord.stopReason === "aborted") {
         answerProjected = true;
       }
@@ -1437,6 +1519,14 @@ const main = async (): Promise<void> => {
   if (claudeCloseTimer) clearTimeout(claudeCloseTimer);
   clearTimeout(timeout);
   recoveryWatchdog.dispose();
+  if (options.modelMatch === "exact" && exitCode === MODEL_PIN_EXIT_CODE && !terminalStatus) {
+    const violation = parseModelPinViolation(stderr);
+    if (violation) {
+      terminalStatus = "failed";
+      terminalError = modelPinFailure(violation);
+      appendLog(`${JSON.stringify({ type: "fabric_model_error", requestedModel: options.model, model: record.model, error: terminalError })}\n`);
+    }
+  }
   stallWatchdog.dispose();
   if (isPi && !modelControl.ready && !terminalStatus) {
     terminalStatus = "failed";
@@ -1542,6 +1632,12 @@ const main = async (): Promise<void> => {
         claudeSteering.length === 0 &&
         claudeFollowUps.length === 0) ||
       (options.runner === "veda" && vedaParsed !== undefined));
+  // A run that stopped after a tool batch (a tool returned terminate: true) has
+  // no final answer, so it must not read as a success.
+  if (isPi && childCompleted && !terminalStatus && endedOnToolCall) {
+    terminalStatus = "failed";
+    terminalError = `Pi ended the run after a tool call without a final answer (tool: ${endedOnToolCall})`;
+  }
   record.status = terminalStatus ?? (childCompleted ? "completed" : "failed");
   if (terminalError) record.error = terminalError;
   if (record.status === "failed" && !record.error) {

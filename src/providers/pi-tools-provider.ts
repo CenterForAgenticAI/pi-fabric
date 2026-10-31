@@ -448,6 +448,17 @@ export class PiToolsProvider implements FabricProvider {
     return record;
   }
 
+  /**
+   * Why a tool the parent has (built in or captured) is unavailable to this
+   * child, so the registry reports the allowlist instead of an unknown action.
+   */
+  notPermitted(name: string): string | undefined {
+    if (!this.#allowedTools || this.#allowedTools.has(name)) return undefined;
+    const known = (!this.#requireCapturedOverrides && this.#tools[name as PiCoreToolName] !== undefined)
+      || this.#catalog?.get(name) !== undefined;
+    return known ? `Pi tool ${name} is not permitted by this child's tool allowlist` : undefined;
+  }
+
   #assertAllowed(name: string): void {
     if (this.#requireCapturedOverrides && (!PI_CORE_TOOL_NAMES.includes(name as PiCoreToolName) || !this.#catalog?.get(name))) {
       throw new Error(`Managed Pi tool requires an authorized captured override: ${name}`);
@@ -591,6 +602,10 @@ export class PiToolsProvider implements FabricProvider {
       throw error;
     }
     void job.readPid();
+    if (!background && context.extensionContext.mode === "tui") {
+      context.attachPreview?.({ shellBackgroundShortcut: true });
+      context.update(`${name}: running`);
+    }
     let spilled = false;
     const outcome = await raceShellHang({
       hangMs: background || context.nativeToolResult ? 0 : this.#shellHangMs(),
@@ -917,6 +932,9 @@ export class PiToolsProvider implements FabricProvider {
         : undefined;
     context.attachPreview?.({
       result: boundedProgress,
+      ...(isPiShellToolName(name) && context.extensionContext.mode === "tui" &&
+        args.background !== true && args.monitor === undefined && args.durable !== true
+        ? { shellBackgroundShortcut: true } : {}),
       ...(bashCommand !== undefined ? { bashCommand } : {}),
     });
     context.update(`${name}: ${boundedProgress.slice(-500) || "running"}`);

@@ -1,3 +1,4 @@
+import type { FabricActionPolicyHookV1 } from "./core/action-policy-hooks.js";
 import type {
   BashOperations,
   BashToolOptions,
@@ -702,6 +703,45 @@ export const readFabricPeerAwaitSettleRequestV1 = (
   return value as FabricPeerAwaitSettleRequestV1;
 };
 
+/**
+ * Host-local registration of an extension action policy hook (issue #312).
+ * Fabric consults registered hooks at the fabric_exec approve stage only when
+ * `approvals.policyHooks` is true. Registering under an existing `name`
+ * replaces that hook. `respond`, when given, receives an `unregister`
+ * function that removes only this registration.
+ */
+export const FABRIC_ACTION_POLICY_REGISTER_EVENT = "pi-fabric:action-policy:register:v1";
+
+export interface FabricActionPolicyRegistrationV1 {
+  version: 1;
+  /** Must match `[A-Za-z0-9@][A-Za-z0-9@._/-]{0,63}`; shown in denial messages. */
+  name: string;
+  hook: FabricActionPolicyHookV1;
+  respond?: (result: { ok: true; unregister: () => void } | { ok: false; error: string }) => void;
+}
+
+export const readFabricActionPolicyRegistrationV1 = (
+  value: unknown,
+): FabricActionPolicyRegistrationV1 | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (
+    record.version !== 1 ||
+    typeof record.name !== "string" ||
+    typeof record.hook !== "function" ||
+    (record.respond !== undefined && typeof record.respond !== "function")
+  ) {
+    return undefined;
+  }
+  // Copy named fields: a later change to the caller's object changes nothing here.
+  return {
+    version: 1,
+    name: record.name,
+    hook: record.hook as FabricActionPolicyRegistrationV1["hook"],
+    ...(record.respond ? { respond: record.respond as NonNullable<FabricActionPolicyRegistrationV1["respond"]> } : {}),
+  };
+};
+
 export const FABRIC_DECISIONS_CAPABILITY_EVENT = "pi-fabric:decisions:capability:v1";
 export const FABRIC_DECISION_REQUEST_EVENT = "pi-fabric:decisions:request:v1";
 
@@ -818,6 +858,97 @@ export const readFabricDecisionRequestV1 = (
     return undefined;
   }
   return value as FabricDecisionRequestV1;
+};
+
+/**
+ * Host-local registration of a question renderer: an extension that shows
+ * Fabric's decisions to the person at this terminal in its own interface.
+ * Fabric offers a routed child question, and the decision picked in
+ * `/fabric decisions`, to registered renderers only when
+ * `ui.questionRenderers` is true. Registering under an existing `name`
+ * replaces that renderer in its original position. `respond`, when given,
+ * receives an `unregister` function that removes only this registration.
+ */
+export const FABRIC_QUESTION_RENDERER_REGISTER_EVENT = "pi-fabric:question-renderer:register:v1";
+
+/** Where Fabric is about to show a decision to the person at this terminal. */
+export type FabricQuestionRenderSurfaceV1 = "child-question" | "decisions-command";
+
+/** A copy of the stored decision. Changing it changes nothing in the store. */
+export interface FabricQuestionDecisionV1 {
+  id: string;
+  kind: "approval" | "question" | "escalation";
+  title: string;
+  body?: string;
+  input: FabricDecisionInputV1;
+  /** Present for `select` and `confirm`; an answer must use one of these ids. */
+  options?: Array<{ id: string; label: string }>;
+  holder: string;
+  raisedBy: { participantId: string; runId?: string; sessionId?: string };
+  createdAt: number;
+  /** Epoch ms after which the decision expires and `signal` aborts. */
+  deadline?: number;
+}
+
+export interface FabricQuestionRenderInputV1 {
+  version: 1;
+  surface: FabricQuestionRenderSurfaceV1;
+  ui: ExtensionContext["ui"];
+  decision: FabricQuestionDecisionV1;
+  /**
+   * Aborts when the decision is answered, cancelled, or expires elsewhere, or
+   * when the asking child run settles. Fabric then uses the stored record.
+   */
+  signal: AbortSignal;
+}
+
+/**
+ * What a renderer reports. `decisionId` must name the decision it was handed.
+ * `dismissed` means the person closed the renderer without deciding.
+ */
+export type FabricQuestionRenderResultV1 =
+  | { status: "answered"; decisionId: string; answer: { optionId?: string; text?: string } }
+  | { status: "cancelled"; decisionId: string }
+  | { status: "dismissed"; decisionId: string };
+
+/**
+ * Returns `undefined` to decline, so the next renderer or Fabric's own dialog
+ * shows the decision. A throw, a rejection, a malformed result, a result for
+ * another decision, or an answer the store refuses falls back to Fabric's own
+ * dialog. Fabric writes an accepted result to the store itself.
+ */
+export type FabricQuestionRendererV1 = (
+  input: FabricQuestionRenderInputV1,
+) => FabricQuestionRenderResultV1 | undefined | Promise<FabricQuestionRenderResultV1 | undefined>;
+
+export interface FabricQuestionRendererRegistrationV1 {
+  version: 1;
+  /** Must match `[A-Za-z0-9@][A-Za-z0-9@._/-]{0,63}`. */
+  name: string;
+  render: FabricQuestionRendererV1;
+  respond?: (result: { ok: true; unregister: () => void } | { ok: false; error: string }) => void;
+}
+
+export const readFabricQuestionRendererRegistrationV1 = (
+  value: unknown,
+): FabricQuestionRendererRegistrationV1 | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (
+    record.version !== 1 ||
+    typeof record.name !== "string" ||
+    typeof record.render !== "function" ||
+    (record.respond !== undefined && typeof record.respond !== "function")
+  ) {
+    return undefined;
+  }
+  // Copy named fields: a later change to the caller's object changes nothing here.
+  return {
+    version: 1,
+    name: record.name,
+    render: record.render as FabricQuestionRendererV1,
+    ...(record.respond ? { respond: record.respond as NonNullable<FabricQuestionRendererRegistrationV1["respond"]> } : {}),
+  };
 };
 
 /** Identifies host-side tool lifecycle events replayed for a nested Fabric call. */

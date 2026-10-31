@@ -8,6 +8,7 @@ import { build } from "esbuild";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { durableExtensionLoadError } from "../src/durable/extension-load-error.js";
 import { parseDurableWorkerOptions } from "../src/durable/worker-options.js";
+import { createDurableSessionFile } from "../src/durable/worker-role-seed.js";
 import { sweepFabricJournals } from "../src/durable/worker-host.js";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-durable-host-"));
@@ -23,14 +24,14 @@ beforeAll(async () => {
 }, 30000);
 afterAll(() => { for (const directory of [root, outside]) fs.rmSync(directory, { recursive: true, force: true }); });
 
-async function worker(name: string, extra: string[] = [], environment: NodeJS.ProcessEnv = {}, discover = false) {
+async function worker(name: string, extra: string[] = [], environment: NodeJS.ProcessEnv = {}, discover = false, session = true, sessionFile?: string) {
   const cwd = path.join(root, name); fs.mkdirSync(cwd, { recursive: true });
   const agentDir = path.join(cwd, "agent"); fs.mkdirSync(agentDir, { recursive: true });
   fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: environment.DURABLE_TEST_TRUST ?? "ask", compaction: { enabled: false }, retry: { enabled: false } }));
   const fixture = path.join(cwd, "fixture.txt"); if (!fs.existsSync(fixture)) fs.writeFileSync(fixture, "private fixture");
   const effect = path.join(cwd, "effect.txt");
   const child = spawn(process.execPath, [entry, "--mode", "rpc", "--durable-directory", path.join(cwd, "durable"), "--durable-run-id", name,
-    "--session", path.join(cwd, "session.jsonl"), ...(discover ? [] : ["--no-extensions"]), "-e", extension, "--model", "durable-offline/test", ...extra],
+    ...(session ? ["--session", sessionFile ?? path.join(cwd, "session.jsonl")] : ["--no-session"]), ...(discover ? [] : ["--no-extensions"]), "-e", extension, "--model", "durable-offline/test", ...extra],
     { cwd, env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, DURABLE_TEST_FAUX_MODULE: import.meta.resolve("@earendil-works/pi-ai/providers/faux"), DURABLE_TEST_FILE: fixture, DURABLE_TEST_EFFECT: effect, ...environment }, stdio: ["pipe", "pipe", "pipe"] }) as ChildProcessWithoutNullStreams;
   const messages: any[] = []; let pending = "", stderr = ""; const change = new Set<() => void>();
   child.stdout.on("data", chunk => {
@@ -74,7 +75,9 @@ const fabricWorker = (name: string, code: string) => {
   const agentDir = path.join(root, name, "agent"); fs.mkdirSync(agentDir, { recursive: true });
   fs.writeFileSync(path.join(agentDir, "fabric.json"), JSON.stringify({ fullCodeMode: true, mesh: { enabled: false }, mcp: { enabled: false } }));
   const inherited = Object.fromEntries(["PI_FABRIC_DEPTH", "PI_FABRIC_BUDGET", "PI_FABRIC_BUDGET_FILE", "PI_FABRIC_BUDGET_ID", "PI_FABRIC_WRITE_POLICY", "PI_FABRIC_TOOL_ALLOWLIST", "PI_FABRIC_SCOPE", "PI_FABRIC_LINEAGE", "PI_FABRIC_PARENT_RUN", "PI_FABRIC_ACTOR_ID"].map(key => [key, undefined]));
-  return worker(name, ["-e", path.resolve("dist/index.js")], { ...inherited, PI_OFFLINE: "1", DURABLE_TEST_FABRIC_CODE: code });
+  // Loading an extension is not authority to call it. These journal probes need
+  // an exact fabric_exec grant as well as the core tools their programs use.
+  return worker(name, ["--tools", "read,write,bash,fabric_exec", "-e", path.resolve("dist/index.js")], { ...inherited, PI_OFFLINE: "1", DURABLE_TEST_FABRIC_CODE: code });
 };
 const holdOnGate = (gate: string) => `let gate = await pi.read({ path: ${JSON.stringify(gate)} });\nif (gate.includes("hold")) await tools.progress({ message: "holding" });\nwhile (gate.includes("hold")) { await new Promise(resolve => setTimeout(resolve, 50)); gate = await pi.read({ path: ${JSON.stringify(gate)} }); }\nreturn gate.includes("open") ? "gate-open" : "gate-closed";`;
 
@@ -102,6 +105,7 @@ describe("durable native RPC worker", () => {
     const args = ["--durable-directory", "state", "--durable-run-id", "run", "--append-system-prompt", "instructions", "--append-system-prompt", "schema", "--tools", "read,bash"];
     expect(parseDurableWorkerOptions(args).appendSystemPrompt).toBe("instructions\n\nschema");
     expect(parseDurableWorkerOptions(args).tools).toEqual(["read", "bash"]);
+    expect(parseDurableWorkerOptions([...args, "--exclude-tools", "fabric_exec"]).excludeTools).toEqual(["fabric_exec"]);
     expect(() => parseDurableWorkerOptions([])).toThrow("require");
     expect(() => parseDurableWorkerOptions([...args, "--unsafe"])).toThrow("Unsupported");
     expect(() => parseDurableWorkerOptions([...args, "--model"])).toThrow("Missing");
@@ -133,6 +137,47 @@ describe("durable native RPC worker", () => {
       expect(reopened.messages.filter(event => event.type === "tool_execution_start")).toHaveLength(0);
     } finally { await reopened.stop(); }
   }, 40000);
+
+  it("retains native wildcard exclusion across new, switch and reopened durable sessions", async () => {
+    const name = "authority-replay";
+    const probeFile = path.join(root, name, "active.jsonl");
+    const args = ["--tools", "*", "--exclude-tools", "fabric_exec", "-e", path.resolve("tests/fixtures/authority-pi-extension.ts"), "--model", "authority-offline/test"];
+    const environment = { AUTHORITY_PROBE_FILE: probeFile };
+    const host = await worker(name, args, environment);
+    const command = async (id: string, args: Record<string, unknown>) => {
+      host.send({ ...args, id });
+      const response = await host.wait(event => event.type === "response" && event.id === id);
+      expect(response).toMatchObject({ success: true });
+      return response;
+    };
+    const prompt = async (id: string) => {
+      const start = host.messages.length;
+      host.send({ type: "prompt", id, message: "report" });
+      await host.wait(event => event.type === "agent_settled", start);
+    };
+    const snapshots = () => fs.readFileSync(probeFile, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
+    let beforeReopen = 0;
+    try {
+      await prompt("first");
+      const initial = await command("initial", { type: "get_state" });
+      const initialCount = snapshots().length;
+      await command("new", { type: "new_session" });
+      await prompt("second");
+      const newCount = snapshots().length;
+      expect(newCount).toBeGreaterThan(initialCount);
+      await command("switch", { type: "switch_session", sessionPath: initial.data.sessionFile });
+      beforeReopen = snapshots().length;
+      expect(beforeReopen).toBeGreaterThan(newCount);
+    } finally { await host.stop(); }
+    const reopened = await worker(name, args, environment);
+    try {
+      expect(snapshots().length).toBeGreaterThan(beforeReopen);
+      for (const tools of snapshots()) {
+        expect(tools).toContain("read");
+        expect(tools).not.toContain("fabric_exec");
+      }
+    } finally { await reopened.stop(); }
+  }, 30000);
 
   it("keeps native image input, model selection, and distinct later prompts", async () => {
     const host = await worker("images", ["--no-tools"]);
@@ -219,6 +264,57 @@ describe("durable native RPC worker", () => {
     } finally { await resumed.stop(); }
   }, 40000);
 
+  it("opens a freshly created durable-session file as a valid Pi session and appends to it after a relaunch", async () => {
+    const cwd = path.join(root, "role-seed"); const runDirectory = path.join(cwd, "run");
+    fs.mkdirSync(runDirectory, { recursive: true, mode: 0o700 });
+    const file = createDurableSessionFile(runDirectory, cwd); // header and worker-role entry arrive together
+    const lines = () => fs.readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    const policy = (entries: any[]) => entries.filter(entry => entry.type === "custom" && entry.customType === "context-aware.policy.v1");
+    const onDisk = lines();
+    expect(onDisk.map(entry => entry.type)).toEqual(["session", "custom"]);
+    expect(onDisk[1].parentId).toBe(null);
+    const first = await worker("role-seed", ["--no-tools"], {}, false, true, file);
+    try {
+      first.send({ type: "prompt", id: "role", message: "remember" });
+      await first.wait(event => event.type === "agent_settled");
+      first.send({ type: "get_state", id: "state" });
+      expect(await first.wait(event => event.id === "state")).toMatchObject({ success: true, data: { sessionFile: file } });
+    } finally { await first.stop(true); }
+    const afterTurn = lines();
+    expect(afterTurn.slice(0, 2)).toEqual(onDisk); // Pi kept the header and entry, and appended after them.
+    expect(afterTurn.filter(entry => entry.type === "session")).toHaveLength(1);
+    expect(afterTurn.some(entry => entry.type === "message" && entry.message.role === "assistant")).toBe(true);
+    expect(policy(afterTurn)).toHaveLength(1);
+    // Real Pi opened the file, appended its turn after the policy, and the policy is on the branch from the new leaf.
+    expect(afterTurn.slice(2).every(entry => entry.parentId !== null)).toBe(true);
+    expect(afterTurn[2].parentId).toBe(onDisk[1].id);
+    expect(fs.readFileSync(file, "utf8")).toBe(afterTurn.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+    const resumed = await worker("role-seed", ["--no-tools"], {}, false, true, file);
+    try {
+      resumed.send({ type: "get_state", id: "state" });
+      expect(await resumed.wait(event => event.id === "state")).toMatchObject({ success: true, data: { sessionFile: file } });
+    } finally { await resumed.stop(); }
+    expect(lines()).toEqual(afterTurn); // reopening neither truncates nor adds a second entry
+    expect(policy(lines())).toHaveLength(1);
+  }, 45000);
+
+  it.each([
+    { session: true, restored: "1" },
+    { session: false, restored: "0" },
+  ])("restores extension session entries after process death only from a session file: %o", async ({ session, restored }) => {
+    const name = session ? "entries-file" : "entries-memory";
+    const report = path.join(root, `${name}.txt`);
+    const counts = () => fs.existsSync(report) ? fs.readFileSync(report, "utf8").trim().split("\n") : [];
+    const first = await worker(name, ["--no-tools"], { DURABLE_TEST_ENTRIES: report }, false, session);
+    try {
+      first.send({ type: "prompt", id: "entries", message: "remember" });
+      await first.wait(event => event.type === "agent_settled");
+    } finally { await first.stop(true); }
+    const resumed = await worker(name, ["--no-tools"], { DURABLE_TEST_ENTRIES: report }, false, session);
+    try {
+      await expect.poll(counts, { timeout: 5000 }).toEqual(["0", restored]);
+    } finally { await resumed.stop(); }
+  }, 40000);
   // The pinned SDK's jiti aliases "typebox" (and "@sinclair/typebox") to one file and treats an
   // alias as a path prefix, so "typebox/type" reaches resolution as "<entry>/type".
   // Keep the extension outside `root` so only the SDK's alias, not an ancestor node_modules, can resolve typebox.

@@ -91,6 +91,9 @@ class CapturedToolScheduler {
   }
 }
 
+const notPermittedMessage = (name: string): string =>
+  `Extension tool ${name} is not permitted by this child's tool allowlist`;
+
 export class CapturedToolsProvider implements FabricProvider {
   readonly name = "extensions";
   readonly description =
@@ -155,9 +158,19 @@ export class CapturedToolsProvider implements FabricProvider {
     return context.nativeToolResult ? nativeToolResult(entry.definition, result, result.isError) : result;
   }
 
+  /**
+   * Why a captured tool the parent has is unavailable to this child, so the
+   * registry reports the allowlist instead of an unknown action.
+   */
+  notPermitted(name: string): string | undefined {
+    return this.#allowedTools && !this.#allowedTools.has(name) && this.catalog.get(name)
+      ? notPermittedMessage(name)
+      : undefined;
+  }
+
   #assertAllowed(name: string): void {
     if (this.#allowedTools && !this.#allowedTools.has(name)) {
-      throw new Error(`Extension tool ${name} is not permitted by this child's tool allowlist`);
+      throw new Error(notPermittedMessage(name));
     }
   }
 

@@ -226,7 +226,7 @@ export class DurableAgent extends Agent {
               context = { ...context, messages: [...context.messages, ...additions] };
             }
           }
-          await this.admission;
+          await this.admit(runtime.signal);
           await runtime.commit(async tx => {
             const ledger = await tx.doc(Ledger, runtime.conversationId);
             const queued = task.state.checkpoint.pending?.map(wire) ?? (task.state.checkpoint.skipSteering ? [] : ledger.steering.splice(0, this.steeringMode === "all" ? ledger.steering.length : 1));
@@ -250,9 +250,11 @@ export class DurableAgent extends Agent {
           await runtime.commit(async tx => {
             const ledger = await tx.doc(Ledger, runtime.conversationId);
             ledger.config = { model: wire(model), thinking };
-            // Executable functions are rebound from the public tool loadout on reopen.
-            // A hook-only anonymous implementation cannot be recovered safely.
-            if ((context.tools ?? []).some(tool => !this.state.tools.includes(tool))) throw new Error("Durable request tools must be registered in agent.state.tools");
+            // Tools run from the public loadout, rebound by name, so a loadout
+            // refresh that rebuilds same-name tool objects keeps the request valid.
+            // A hook-only tool whose name is not registered cannot be recovered.
+            const registered = new Set(this.state.tools.map(tool => tool.name));
+            if ((context.tools ?? []).some(tool => !registered.has(tool.name))) throw new Error("Durable request tools must be registered in agent.state.tools");
             ledger.context = { messages: context.messages.map(wire), tools: (context.tools ?? []).map(tool => tool.name) };
             return { status: "running", checkpoint: { phase: "model", messages: copy(messages), model: copy(model), thinking } };
           }, ctx);
@@ -338,7 +340,7 @@ export class DurableAgent extends Agent {
         },
         decide: async (task, runtime, ctx) => {
           await this.delivery;
-          await this.admission;
+          await this.admit(runtime.signal);
           const cp = task.state.checkpoint;
           await runtime.commit(async tx => {
             const ledger = await tx.doc(Ledger, runtime.conversationId);
@@ -523,6 +525,17 @@ export class DurableAgent extends Agent {
   }
   /** Resolves only after all controls accepted so far have committed. */
   awaitControls(): Promise<void> { return this.admission; }
+  /**
+   * A phase's wait for accepted controls. abort() chains the engine abort onto admission, and that abort joins the
+   * running invocation, so a phase that kept waiting on admission after its abort signal would wait on itself. The
+   * phase's next commit then rejects on the durable abort mark and the abort handler settles the task.
+   */
+  private admit(signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return Promise.resolve();
+    let onAbort!: () => void;
+    const aborted = new Promise<void>(resolve => { onAbort = resolve; signal.addEventListener("abort", onAbort, { once: true }); });
+    return Promise.race([this.admission, aborted]).finally(() => signal.removeEventListener("abort", onAbort));
+  }
   setRequestId(id: string): void { if (!id) throw new Error("requestId must not be empty"); this.requestId = id; }
   override subscribe(listener: Listener) { this.observers.add(listener); return () => { this.observers.delete(listener); }; }
   override get signal() { return this.controller?.signal; }
