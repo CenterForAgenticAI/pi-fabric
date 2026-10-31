@@ -581,6 +581,38 @@ describe("ActorManager", () => {
     }
   });
 
+  it("adopts a healthy orphan promptly despite a persistently failing row", async () => {
+    const state = setup(true);
+    const poison = await state.actors.create({ name: "poison", instructions: "Wait." });
+    const healthy = await state.actors.create({ name: "healthy", instructions: "Wait." });
+    await state.actors.close();
+    const originalWrite = ActorRegistryStore.prototype.write;
+    const write = vi.spyOn(ActorRegistryStore.prototype, "write").mockImplementation(function (this: ActorRegistryStore, rows) {
+      if (rows.some((row) => typeof row === "object" && row !== null && "id" in row && row.id === poison.id && "rootId" in row && row.rootId === "session:fair")) throw new Error("poison row");
+      return originalWrite.call(this, rows);
+    });
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, "random").mockReturnValue(1);
+    const identity = { ...state.identity, id: "session:fair", sessionId: "fair" };
+    const successor = new ActorManager("fair", identity, state.mesh, state.meshConfig, state.agents, () => {}, {
+      actorRoot: path.join(state.root, "actors"), persistent: true, claimResidency: "session",
+      rootId: identity.id, canManageActor: () => undefined, lineageAlive: () => false,
+    });
+    actorManagers.push(successor);
+    try {
+      expect(successor.owns(poison.id)).toBe(false);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(write.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(successor.owns(healthy.id)).toBe(true);
+      expect(successor.owns(poison.id)).toBe(false);
+    } finally {
+      await successor.close();
+      vi.useRealTimers();
+      random.mockRestore();
+      write.mockRestore();
+    }
+  });
+
   it("bounds sustained retries across many orphans and eventually adopts all", async () => {
     const state = setup(true);
     const actors = [];
@@ -605,13 +637,13 @@ describe("ActorManager", () => {
     actorManagers.push(successor);
     try {
       await vi.advanceTimersByTimeAsync(120_000);
-      expect(write.mock.calls.length).toBeGreaterThanOrEqual(10);
-      expect(write.mock.calls.length).toBeLessThanOrEqual(14);
-      expect(attempted.size).toBeGreaterThanOrEqual(10);
+      expect(write.mock.calls.length).toBeGreaterThanOrEqual(40);
+      expect(write.mock.calls.length).toBeLessThanOrEqual(1201);
+      expect(attempted.size).toBe(40);
       expect(actors.every((actor) => !successor.owns(actor.id))).toBe(true);
       const before = write.mock.calls.length;
       await vi.advanceTimersByTimeAsync(10_000);
-      expect(write.mock.calls.length - before).toBeLessThanOrEqual(1);
+      expect(write.mock.calls.length - before).toBeLessThanOrEqual(100);
       failing = false;
       await vi.advanceTimersByTimeAsync(30_000);
       expect(actors.every((actor) => successor.owns(actor.id))).toBe(true);

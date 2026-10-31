@@ -239,11 +239,13 @@ export class ActorManager {
   // Adoption compares against this snapshot so two racing adopters cannot
   // both move the same dead lineage: only the first fenced write succeeds.
   readonly #persistedRoots = new Map<string, string>();
-  // One attempt and one backoff per manager, regardless of orphan count.
+  // Serialize attempts, with per-row cooldown and shared outage pacing.
   readonly #adoptionAbort = new AbortController();
+  readonly #adoptionCooldown = new Map<string, { failures: number; until: number }>();
   #adoptionPending = false;
   #adoptionRetry: NodeJS.Timeout | undefined;
-  #adoptionFailures = 0;
+  #adoptionQueue: string[] = [];
+  #adoptionIndex = 0;
   #lastAdoptionId: string | undefined;
   readonly #adoptionGraceMs: number;
   readonly #listeners = new Set<() => void>();
@@ -2196,6 +2198,7 @@ export class ActorManager {
     ) {
       return;
     }
+    if ((this.#adoptionCooldown.get(actor.id)?.until ?? 0) > Date.now()) return;
     if (actor.rootId === this.#rootId) return;
     // Only residency-matched rows: Main adopts "session" actors, the resident
     // host adopts "durable" actors.
@@ -2222,6 +2225,7 @@ export class ActorManager {
     this.#adoptionPending = true;
     this.#lastAdoptionId = actor.id;
     let adopted = false;
+    let failed = false;
     try {
       const expectedRootId = actor.rootId;
       adopted = await this.#registry.withLock(() => {
@@ -2272,24 +2276,63 @@ export class ActorManager {
         }
       }
     } catch {
-      // Lock timeout or IO failure: state untouched; a later refresh retries.
+      // Lock timeout or I/O failure, not a normal fencing loss.
+      failed = true;
     } finally {
       this.#adoptionPending = false;
     }
     if (this.#closing) return;
     if (!adopted) {
-      const base = Math.min(ADOPTION_FAILURE_RETRY_MAX_MS, ADOPTION_FAILURE_RETRY_MS * 2 ** Math.min(this.#adoptionFailures++, 9));
+      const failures = failed ? (this.#adoptionCooldown.get(actor.id)?.failures ?? 0) + 1 : 0;
+      const base = Math.min(ADOPTION_FAILURE_RETRY_MAX_MS, ADOPTION_FAILURE_RETRY_MS * 2 ** Math.min(Math.max(0, failures - 1), 9));
       const delay = Math.round(base * (0.5 + Math.random() * 0.5));
-      this.#adoptionRetry = setTimeout(() => {
-        this.#adoptionRetry = undefined;
-        if (!this.#closing) this.#refreshOwnership();
-      }, delay);
-      this.#adoptionRetry.unref();
+      this.#adoptionCooldown.set(actor.id, { failures, until: Date.now() + delay });
+      // Pace all unsuccessful attempts, including repeated fencing losses.
+      // Only I/O failures increase this row’s exponential cooldown.
+      this.#armAdoptionScheduler(ADOPTION_FAILURE_RETRY_MS);
     } else {
-      this.#adoptionFailures = 0;
-      this.#refreshOwnership();
+      this.#adoptionCooldown.delete(actor.id);
+      // The locked write already updated this actor in place. Avoid a full
+      // ownership reload for every successful row in a large orphan batch.
+      this.#ownership.set(actor.id, this.#ownershipDecision(actor.id));
+      this.#scheduleAdoptions();
     }
     this.#emitChange();
+  }
+
+  #armAdoptionScheduler(delay: number): void {
+    if (this.#closing || this.#adoptionRetry) return;
+    this.#adoptionRetry = setTimeout(() => {
+      this.#adoptionRetry = undefined;
+      this.#scheduleAdoptions();
+    }, delay);
+    this.#adoptionRetry.unref();
+  }
+
+  #scheduleAdoptions(): void {
+    if (this.#closing || this.#adoptionPending || this.#adoptionRetry || !this.#persistent || !this.#canManageActor || this.#claimResidency === undefined) return;
+    if (this.#adoptionIndex >= this.#adoptionQueue.length) {
+      const ids = [...this.#actors.keys()];
+      const start = (ids.indexOf(this.#lastAdoptionId ?? "") + 1) % (ids.length || 1);
+      this.#adoptionQueue = [...ids.slice(start), ...ids.slice(0, start)];
+      this.#adoptionIndex = 0;
+      for (const id of this.#adoptionCooldown.keys()) {
+        if (!this.#actors.has(id)) this.#adoptionCooldown.delete(id);
+      }
+    }
+    while (this.#adoptionIndex < this.#adoptionQueue.length) {
+      const id = this.#adoptionQueue[this.#adoptionIndex++]!;
+      const actor = this.#actors.get(id);
+      if (actor && !this.#ownership.get(id)) this.#maybeAdoptOrphan(actor);
+      if (this.#adoptionPending) return;
+    }
+    // Only wake for future cooldowns. Eligibility is rechecked at the next
+    // normal refresh if the row is otherwise fenced or its lineage is alive.
+    let next = Infinity;
+    for (const { until } of this.#adoptionCooldown.values()) {
+      if (until > Date.now()) next = Math.min(next, until);
+    }
+    if (next < Infinity) this.#armAdoptionScheduler(next - Date.now());
   }
 
   #refreshOwnership(): void {
@@ -2313,16 +2356,7 @@ export class ActorManager {
         acquired = true;
       }
     }
-    // Rotate after each attempt so a persistently failing row cannot starve
-    // other orphans. Ownership refreshes during backoff never start attempts.
-    if (!this.#adoptionPending && !this.#adoptionRetry && !this.#closing) {
-      const actors = [...this.#actors.values()];
-      const start = (actors.findIndex((actor) => actor.id === this.#lastAdoptionId) + 1) % (actors.length || 1);
-      for (let i = 0; i < actors.length && !this.#adoptionPending; i++) {
-        const actor = actors[(start + i) % actors.length]!;
-        if (!this.#ownership.get(actor.id)) this.#maybeAdoptOrphan(actor);
-      }
-    }
+    this.#scheduleAdoptions();
     if (!acquired || !this.#persistent || this.#closing) return;
     this.#reloadingOwnership = true;
     try {
