@@ -133,6 +133,9 @@ const MAIN_REVISION_EVENTS: ReadonlySet<FabricActorHostEvent> = new Set([
   "session_compact",
 ]);
 const ORPHAN_ADOPTION_RETRY_MS = 30_000;
+// Failed or contested writes must yield to the event loop and cannot be
+// retried on every ownership query or mesh poll.
+const ADOPTION_FAILURE_RETRY_MS = 100;
 const RETENTION_SWEEP_INTERVAL_MS = 15 * 60 * 1_000;
 const RESIDENT_HOST_EVENT_TOPIC = "fabric.actor.host-event";
 const normalizeCapabilityRequirements = (
@@ -237,6 +240,7 @@ export class ActorManager {
   readonly #persistedRoots = new Map<string, string>();
   // In-flight fenced adoption attempts, one per actor.
   readonly #adoptionPending = new Set<string>();
+  readonly #adoptionRetries = new Map<string, NodeJS.Timeout>();
   readonly #adoptionGraceMs: number;
   readonly #listeners = new Set<() => void>();
   #retentionTimer: NodeJS.Timeout | undefined;
@@ -1146,6 +1150,8 @@ export class ActorManager {
   async close(): Promise<void> {
     if (this.#closing) return;
     this.#closing = true;
+    for (const timer of this.#adoptionRetries.values()) clearTimeout(timer);
+    this.#adoptionRetries.clear();
     this.#meshMonitor.close();
     if (this.#retentionTimer) clearInterval(this.#retentionTimer);
     this.#retentionTimer = undefined;
@@ -2180,7 +2186,8 @@ export class ActorManager {
       this.#closing ||
       !this.#canManageActor ||
       this.#claimResidency === undefined ||
-      this.#adoptionPending.has(actor.id)
+      this.#adoptionPending.has(actor.id) ||
+      this.#adoptionRetries.has(actor.id)
     ) {
       return;
     }
@@ -2208,9 +2215,11 @@ export class ActorManager {
   async #confirmAdoption(actor: ManagedActor): Promise<void> {
     if (this.#adoptionPending.has(actor.id)) return;
     this.#adoptionPending.add(actor.id);
+    let adopted = false;
     try {
       const expectedRootId = actor.rootId;
-      const adopted = await this.#registry.withLock(() => {
+      adopted = await this.#registry.withLock(() => {
+        if (this.#closing || this.#actors.get(actor.id) !== actor) return false;
         const entries = this.#registry.entries();
         const records = entries.filter(isActorRegistryRecord);
         const current = records.find((record) => record.id === actor.id);
@@ -2241,6 +2250,7 @@ export class ActorManager {
         this.#registryFingerprint = this.#registry.fingerprint();
         return true;
       });
+      if (this.#closing) return;
       if (adopted) {
         this.#persistedRoots.set(actor.id, this.#rootId);
       } else {
@@ -2259,6 +2269,15 @@ export class ActorManager {
       // Lock timeout or IO failure: state untouched; a later refresh retries.
     } finally {
       this.#adoptionPending.delete(actor.id);
+    }
+    if (this.#closing) return;
+    if (!adopted && this.#actors.get(actor.id) === actor) {
+      const timer = setTimeout(() => {
+        this.#adoptionRetries.delete(actor.id);
+        if (!this.#closing) this.#refreshOwnership();
+      }, ADOPTION_FAILURE_RETRY_MS);
+      timer.unref();
+      this.#adoptionRetries.set(actor.id, timer);
     }
     this.#refreshOwnership();
     this.#emitChange();

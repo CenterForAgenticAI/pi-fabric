@@ -541,6 +541,106 @@ describe("ActorManager", () => {
     expect(successor.status(actor.id).rootId).toBe(successorIdentity.id);
   });
 
+  it("defers repeated failed adoption writes, lets timers run, and recovers", async () => {
+    const state = setup(true);
+    const actor = await state.actors.create({ name: "retry-orphan", instructions: "Wait." });
+    await state.actors.close();
+    const originalWrite = ActorRegistryStore.prototype.write;
+    let failing = true;
+    const write = vi.spyOn(ActorRegistryStore.prototype, "write").mockImplementation(function (this: ActorRegistryStore, rows) {
+      if (failing) throw new Error("persistent failure");
+      return originalWrite.call(this, rows);
+    });
+    vi.useFakeTimers();
+    const successorIdentity = { ...state.identity, id: "session:retry", sessionId: "retry" };
+    const successor = new ActorManager("retry", successorIdentity, state.mesh, state.meshConfig, state.agents, () => {}, {
+      actorRoot: path.join(state.root, "actors"), persistent: true, claimResidency: "session",
+      rootId: successorIdentity.id, canManageActor: () => undefined, lineageAlive: () => false,
+    });
+    actorManagers.push(successor);
+    try {
+      const heartbeat = vi.fn();
+      setTimeout(heartbeat, 25);
+      expect(successor.owns(actor.id)).toBe(false);
+      await vi.advanceTimersByTimeAsync(350);
+      expect(heartbeat).toHaveBeenCalledOnce();
+      expect(write.mock.calls.length).toBeGreaterThanOrEqual(3);
+      expect(write.mock.calls.length).toBeLessThanOrEqual(4);
+      expect(successor.owns(actor.id)).toBe(false);
+      expect(successor.status(actor.id).rootId).toBe(state.identity.id);
+      expect(new ActorRegistryStore(path.join(state.root, "actors")).records().find((row) => row.id === actor.id)?.rootId).toBe(state.identity.id);
+      failing = false;
+      await vi.advanceTimersByTimeAsync(100);
+      expect(successor.owns(actor.id)).toBe(true);
+      expect(successor.status(actor.id).rootId).toBe(successorIdentity.id);
+    } finally {
+      vi.useRealTimers();
+      write.mockRestore();
+    }
+  });
+
+  it("cancels failed adoption retries on close", async () => {
+    const state = setup(true);
+    const actor = await state.actors.create({ name: "closed-retry", instructions: "Wait." });
+    await state.actors.close();
+    const write = vi.spyOn(ActorRegistryStore.prototype, "write").mockImplementation(() => { throw new Error("failure"); });
+    vi.useFakeTimers();
+    const successorIdentity = { ...state.identity, id: "session:closed", sessionId: "closed" };
+    const successor = new ActorManager("closed", successorIdentity, state.mesh, state.meshConfig, state.agents, () => {}, {
+      actorRoot: path.join(state.root, "actors"), persistent: true, claimResidency: "session",
+      rootId: successorIdentity.id, canManageActor: () => undefined, lineageAlive: () => false,
+    });
+    actorManagers.push(successor);
+    try {
+      expect(successor.owns(actor.id)).toBe(false);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(write).toHaveBeenCalledTimes(1);
+      await successor.close();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(successor.owns(actor.id)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      write.mockRestore();
+    }
+  });
+
+  it("does not adopt when close wins while the registry lock is pending", async () => {
+    const state = setup(true);
+    const actor = await state.actors.create({ name: "pending-close", instructions: "Wait." });
+    await state.actors.close();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let finished!: () => void;
+    const completed = new Promise<void>((resolve) => { finished = resolve; });
+    const originalLock = ActorRegistryStore.prototype.withLock;
+    const lock = vi.spyOn(ActorRegistryStore.prototype, "withLock").mockImplementation(async function (this: ActorRegistryStore, operation) {
+      await gate;
+      try { return await originalLock.call(this, operation); } finally { finished(); }
+    });
+    const write = vi.spyOn(ActorRegistryStore.prototype, "write");
+    const successorIdentity = { ...state.identity, id: "session:pending-close", sessionId: "pending-close" };
+    const successor = new ActorManager("pending-close", successorIdentity, state.mesh, state.meshConfig, state.agents, () => {}, {
+      actorRoot: path.join(state.root, "actors"), persistent: true, claimResidency: "session",
+      rootId: successorIdentity.id, canManageActor: () => undefined, lineageAlive: () => false,
+    });
+    actorManagers.push(successor);
+    try {
+      expect(successor.owns(actor.id)).toBe(false);
+      expect(lock).toHaveBeenCalledOnce();
+      await successor.close();
+      release();
+      await completed;
+      expect(write).not.toHaveBeenCalled();
+      expect(successor.owns(actor.id)).toBe(false);
+      expect(new ActorRegistryStore(path.join(state.root, "actors")).records().find((row) => row.id === actor.id)?.rootId).toBe(state.identity.id);
+    } finally {
+      release();
+      lock.mockRestore();
+      write.mockRestore();
+    }
+  });
+
   it("adopts orphaned project actors after the creating root is gone", async () => {
     const state = setup(true);
     const actor = await state.actors.create({
