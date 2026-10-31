@@ -8,7 +8,7 @@ import { renameAtomic } from "./core/atomic-write.js";
 import { approvalActionOverridesValue, type FabricActionApprovalMode } from "./core/approval-overrides.js";
 import { foregroundConfigValue, type FabricForegroundConfig } from "./core/foreground-tools.js";
 import { quarantineDamagedFile } from "./core/damaged-file.js";
-import { normalizeModelAliases, type FabricModelAliases } from "./core/model-resolution.js";
+import { normalizeModelAliases, type FabricModelAliases } from "./core/model-aliases.js";
 import { PI_CORE_TOOL_NAME_SET } from "./core/pi-tools.js";
 import { DEFAULT_SHELL_HANG_MS, SHELL_HANG_MAX_MS } from "./core/shell-limits.js";
 import {
@@ -225,6 +225,11 @@ export interface FabricAgentConfig {
    * worker runs after a restart, or relaunches them on their journal.
    */
   durableWorkerRecovery?: boolean;
+  /**
+   * Opt-in: a pi-durable worker keeps a private Pi session file in its run
+   * directory, with a worker-role entry, so a relaunch keeps extension state.
+   */
+  durableWorkerSession?: boolean;
   notifyOnComplete: boolean;
   budgetUsd: number;
   maxTokensPerChild: number;
@@ -283,6 +288,8 @@ interface FabricUiConfig {
   /** Lend the window title to the latest nested call while fabric_exec runs. */
   terminalTitle: boolean;
   updateDebounceMs: number;
+  /** Offer decisions shown at this terminal to registered question renderers; absent means off. */
+  questionRenderers?: boolean;
   /**
    * Raw `ui.sessionLabel`, passed through unchecked: sessionLabelSettings() in
    * topology/session-label-settings.ts checks it at first use, which keeps the
@@ -568,6 +575,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     defaultTools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
     retainRuns: false,
     durableWorkerRecovery: false,
+    durableWorkerSession: false,
     notifyOnComplete: true,
     budgetUsd: 0,
     maxTokensPerChild: 0,
@@ -1285,6 +1293,10 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         agents.durableWorkerRecovery,
         DEFAULT_FABRIC_CONFIG.agents.durableWorkerRecovery ?? false,
       ),
+      durableWorkerSession: booleanValue(
+        agents.durableWorkerSession,
+        DEFAULT_FABRIC_CONFIG.agents.durableWorkerSession ?? false,
+      ),
       notifyOnComplete: booleanValue(
         agents.notifyOnComplete,
         DEFAULT_FABRIC_CONFIG.agents.notifyOnComplete,
@@ -1365,6 +1377,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         DEFAULT_FABRIC_CONFIG.ui.toolDisplay,
       ),
       terminalTitle: booleanValue(ui.terminalTitle, DEFAULT_FABRIC_CONFIG.ui.terminalTitle),
+      ...(ui.questionRenderers === true ? { questionRenderers: true } : {}),
       // Renamed from ui.nestedToolDebounceMs (v3): the window coalesces every
       // live fabric_exec card update — nested calls, progress, agent previews.
       updateDebounceMs: boundedInteger(
@@ -1687,6 +1700,20 @@ export const effectiveToolCaptureConfig = (
           keepVisible: [...config.capture.keepVisible],
           risks: { ...config.capture.risks },
         };
+
+// Exclusive modes declare only fabric_exec (plus foreground tools in full code
+// mode), so any other keepVisible name has no effect there. Returns those names.
+export const ineffectiveKeepVisible = (
+  config: Pick<FabricConfig, "fullCodeMode" | "capture"> & Partial<Pick<FabricConfig, "schema">>,
+  resolvedForeground: readonly string[],
+): string[] => {
+  const enforce = config.schema?.mode === "enforce";
+  if (!enforce && !config.fullCodeMode) return [];
+  const foreground = enforce ? [] : resolvedForeground;
+  return config.capture.keepVisible.filter(
+    (name) => name !== "fabric_exec" && !foreground.includes(name),
+  );
+};
 
 interface FabricConfigFilePlan {
   path: string;

@@ -1,6 +1,7 @@
 // The registered kernels. Each module is proved, refused in every broken
 // variant, cross-checked against its builders, and compiled to
 // `src/verified/generated/<module>.js`.
+import { actorNameKernels, ACTOR_NAME_BUGS } from "./actor-name.js";
 import { authorityKernels, AUTHORITY_BUGS } from "./authority.js";
 import { compactionKernels, CUT_BUGS } from "./compaction.js";
 import { budgetKernels, BUDGET_BUGS } from "./budget.js";
@@ -34,5 +35,6 @@ export const modules: readonly KernelModule[] = [
   { stem: "authority", source: "proofs/authority.ts", kernels: authorityKernels as any, bugs: AUTHORITY_BUGS },
   { stem: "grants", source: "proofs/grants.ts", kernels: grantKernels as any, bugs: GRANT_BUGS },
   { stem: "speculation", source: "proofs/speculation.ts", kernels: speculationKernels as any, bugs: SPECULATION_BUGS },
+  { stem: "actor-name", source: "proofs/actor-name.ts", kernels: actorNameKernels as any, bugs: ACTOR_NAME_BUGS },
   { stem: "budget", source: "proofs/budget.ts", kernels: budgetKernels as any, bugs: BUDGET_BUGS },
 ];

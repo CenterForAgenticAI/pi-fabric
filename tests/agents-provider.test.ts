@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SessionManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ActorManager } from "../src/actors/manager.js";
 import type { FabricActorInfo, FabricActorRequest } from "../src/actors/types.js";
 import { GlobalActorRegistry } from "../src/actors/global-registry.js";
@@ -31,9 +31,19 @@ import { FabricControlPlane } from "../src/topology/control-plane.js";
 import { AgentsProvider, collectAgentToolPreviewNodes } from "../src/providers/agents-provider.js";
 import { ResidencyClient } from "../src/residency/client.js";
 import { RESIDENT_HOST_FORMAT, residentRoot } from "../src/residency/protocol.js";
+import { Value } from "typebox/value";
+import {
+  EXACT_MODEL_FORM_ERROR,
+  EXACT_MODEL_RUNNER_ERROR,
+  normalizeModelAliases,
+  resolvePiModelSelector,
+} from "../src/core/model-resolution.js";
 import { snapshotHandoffSession } from "../src/agents/handoff.js";
 import { AgentManager } from "../src/agents/manager.js";
 import type { AgentRunRecord } from "../src/agents/types.js";
+import { ActionRegistry } from "../src/core/action-registry.js";
+import { clearActiveCompiledSurface, setActiveCompiledSurface } from "../src/entropy/active.js";
+import { QuickJsRuntime } from "../src/runtime/quickjs-runtime.js";
 import { registerAgentRunner, type FabricHostedRunner, type FabricRunnerCapabilities } from "../src/runners.js";
 
 const roots: string[] = [];
@@ -85,6 +95,10 @@ const setup = (
     switchModel?: FabricMainAgentTarget["switchModel"];
     modelsConfig?: FabricModelsConfig;
     agentsConfig?: Partial<FabricAgentConfig>;
+    preparePiModel?: (
+      model: string | undefined,
+      options?: { modelMatch?: "exact" },
+    ) => Promise<string | void>;
   },
 ) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-agents-provider-"));
@@ -98,6 +112,7 @@ const setup = (
       claudeBinary: path.resolve("tests/fixtures/fake-claude.mjs"),
       vedaBinary: path.resolve("tests/fixtures/fake-veda.mjs"),
       runRoot: path.join(root, "runs"),
+      ...(options?.preparePiModel ? { preparePiModel: options.preparePiModel } : {}),
     },
   );
   agentManagers.push(agents);
@@ -1414,6 +1429,329 @@ describe("AgentsProvider runner support", () => {
   });
 });
 
+describe("AgentsProvider exact model lookup", () => {
+  const piKeys = visiblePiModels.map((model) => `${model.provider}/${model.id}`);
+
+  it("keeps the unfiltered Pi model list unchanged", async () => {
+    const { provider } = setup();
+    await expect(provider.invoke("models", { runner: "pi" }, context)).resolves.toEqual(
+      visiblePiModels.map((model) => ({
+        runner: "pi",
+        provider: model.provider,
+        id: model.id,
+        name: model.name ?? model.id,
+        key: `${model.provider}/${model.id}`,
+      })),
+    );
+    expect(piKeys).toContain("anthropic/executor");
+  });
+
+  it("returns only the Pi entry whose key equals the requested model", async () => {
+    const { provider } = setup();
+    await expect(
+      provider.invoke("models", { runner: "pi", model: "anthropic/executor" }, context),
+    ).resolves.toEqual([
+      { runner: "pi", provider: "anthropic", id: "executor", name: "Executor", key: "anthropic/executor" },
+    ]);
+  });
+
+  it.each([
+    ["a differently cased key", "Anthropic/Executor"],
+    ["an alias name", "budget"],
+    ["a near id", "anthropic/executr"],
+    ["a provider-only string", "anthropic"],
+    ["a bare id", "executor"],
+    ["an unknown key", "nobody/nothing"],
+    ["a whitespace-padded key", " anthropic/executor"],
+  ])("returns no Pi entries for %s", async (_label, model) => {
+    const { provider } = setup([], [], undefined, {
+      modelsConfig: { aliases: { budget: { targets: ["anthropic/executor"] } } },
+    });
+    await expect(provider.invoke("models", { runner: "pi", model }, context)).resolves.toEqual([]);
+  });
+
+  it("filters Claude runtime models by exact key", async () => {
+    const { provider } = setup();
+    const all = (await provider.invoke("models", { runner: "claude" }, context)) as Array<{ key: string }>;
+    const haiku = all.filter((model) => model.key === "claude/haiku");
+    expect(haiku).toHaveLength(1);
+    await expect(
+      provider.invoke("models", { runner: "claude", model: "claude/haiku" }, context),
+    ).resolves.toEqual(haiku);
+    await expect(
+      provider.invoke("models", { runner: "claude", model: "claude/Haiku" }, context),
+    ).resolves.toEqual([]);
+    await expect(
+      provider.invoke("models", { runner: "claude", model: "haiku" }, context),
+    ).resolves.toEqual([]);
+  });
+
+  it("filters a registered runner's model list by exact key", async () => {
+    const listed = [
+      { runner: "acme-lookup", provider: "acme", id: "large", name: "Acme Large", key: "acme/large" },
+      { runner: "acme-lookup", provider: "acme", id: "large-2", name: "Acme Large 2", key: "acme/large-2" },
+    ];
+    const unregister = registerAgentRunner({
+      kind: "worker",
+      id: "acme-lookup",
+      label: "Acme",
+      capabilities: {
+        recursiveFabric: false,
+        steer: false,
+        followUp: false,
+        persistentSessions: false,
+        kernels: false,
+        handoff: false,
+        modelDiscovery: true,
+        imageInput: false,
+        compaction: false,
+        questions: false,
+        sleep: false,
+        writePolicy: false,
+      },
+      models: () => listed,
+      launch: () => {
+        throw new Error("not launched");
+      },
+    });
+    try {
+      const { provider } = setup();
+      await expect(provider.invoke("models", { runner: "acme-lookup" }, context)).resolves.toEqual(listed);
+      await expect(
+        provider.invoke("models", { runner: "acme-lookup", model: "acme/large" }, context),
+      ).resolves.toEqual([listed[0]]);
+      await expect(
+        provider.invoke("models", { runner: "acme-lookup", model: "ACME/large" }, context),
+      ).resolves.toEqual([]);
+      await expect(
+        provider.invoke("models", { runner: "acme-lookup", model: "acme" }, context),
+      ).resolves.toEqual([]);
+    } finally {
+      unregister();
+    }
+  });
+
+  it("keeps Veda advisory-empty when a model is requested", async () => {
+    const { provider } = setup();
+    await expect(
+      provider.invoke("models", { runner: "veda", model: "anything/at-all" }, context),
+    ).resolves.toEqual([]);
+  });
+
+  it.each([
+    ["an empty string", ""],
+    ["a string over 256 characters", "a".repeat(257)],
+    ["a number", 42],
+    ["null", null],
+    ["an array", ["anthropic/executor"]],
+  ])("refuses %s as the model", async (_label, model) => {
+    const { provider } = setup();
+    await expect(provider.invoke("models", { runner: "pi", model }, context)).rejects.toThrow(
+      /agents\.models model must be a string of 1 to 256 characters/,
+    );
+  });
+
+  it("accepts a 256-character model and declares the bound in the schema", async () => {
+    const { provider } = setup();
+    await expect(
+      provider.invoke("models", { runner: "pi", model: "a".repeat(256) }, context),
+    ).resolves.toEqual([]);
+    const descriptor = await provider.describe("models", context);
+    const properties = (descriptor?.inputSchema as { properties: Record<string, unknown> }).properties;
+    expect(properties.model).toMatchObject({ type: "string", minLength: 1, maxLength: 256 });
+  });
+
+  // The guest route prepares arguments before validating them; these go through it.
+  const registryRoute = (provider: AgentsProvider, models: unknown[] = visiblePiModels) => {
+    const registry = new ActionRegistry();
+    registry.register(provider);
+    const approve = vi.fn(async () => {});
+    const routeContext = {
+      ...context,
+      extensionContext: { modelRegistry: { getAvailable: () => models } } as unknown as ExtensionContext,
+      approve,
+      audits: [],
+      maxResultChars: 100_000,
+    };
+    return {
+      registry,
+      routeContext,
+      approve,
+      invoke: (args: Record<string, unknown>) => registry.invoke("agents.models", args, routeContext),
+      close: () => registry.close(),
+    };
+  };
+
+  const acmeEntry = { runner: "acme-null", provider: "acme", id: "large", name: "Large", key: "acme/large" };
+  const registerAcme = (models: () => unknown[]) =>
+    registerAgentRunner({
+      kind: "worker",
+      id: "acme-null",
+      label: "Acme",
+      capabilities: {
+        recursiveFabric: false,
+        steer: false,
+        followUp: false,
+        persistentSessions: false,
+        kernels: false,
+        handoff: false,
+        modelDiscovery: true,
+        imageInput: false,
+        compaction: false,
+        questions: false,
+        sleep: false,
+        writePolicy: false,
+      },
+      models: models as never,
+      launch: () => {
+        throw new Error("not launched");
+      },
+    });
+
+  const refusedModel = /Invalid arguments for agents\.models: model must be a string of 1 to 256 characters/;
+  // Spellings the argument normalizers repair to model.
+  const modelSpellings = ["model", "Model", "MODEL", "m_o_d_e_l", "mo-del", " model "];
+  // One exact key per runner, and what looking it up returns.
+  const exactLookups: Record<string, { model: string; expected: unknown[] }> = {
+    pi: {
+      model: "anthropic/executor",
+      expected: [{ runner: "pi", provider: "anthropic", id: "executor", name: "Executor", key: "anthropic/executor" }],
+    },
+    "pi-durable": {
+      model: "anthropic/executor",
+      expected: [
+        { runner: "pi-durable", provider: "anthropic", id: "executor", name: "Executor", key: "anthropic/executor" },
+      ],
+    },
+    claude: { model: "claude/haiku", expected: [expect.objectContaining({ key: "claude/haiku" })] },
+    veda: { model: "anything/at-all", expected: [] },
+    "acme-null": { model: "acme/large", expected: [acmeEntry] },
+  };
+
+  // Compiled normalization is on by default (entropy.compile) and runs after
+  // provider preparation; the bare registry leaves it off.
+  describe.each([
+    ["the default runtime route (compiled normalization on)", true],
+    ["a bare registry (compiled normalization off)", false],
+  ])("on %s", (_label, compiled) => {
+    beforeEach(() => {
+      expect(DEFAULT_FABRIC_CONFIG.entropy.compile).toBe(true);
+      if (compiled) setActiveCompiledSurface(undefined, DEFAULT_FABRIC_CONFIG.entropy.compile);
+      else clearActiveCompiledSurface();
+    });
+    afterEach(() => clearActiveCompiledSurface());
+
+    it.each(Object.keys(exactLookups))(
+      "refuses a null model and its spellings before approval for the %s runner",
+      async (runner) => {
+        const discover = vi.fn(() => [acmeEntry]);
+        const unregister = registerAcme(discover);
+        const route = registryRoute(setup().provider);
+        try {
+          for (const spelling of modelSpellings) {
+            await expect(route.invoke({ runner, [spelling]: null })).rejects.toThrow(refusedModel);
+          }
+          // A null canonical model is not rescued by a valid spelling variant.
+          await expect(
+            route.invoke({ runner, model: null, Model: exactLookups[runner]!.model }),
+          ).rejects.toThrow(refusedModel);
+          expect(route.approve).not.toHaveBeenCalled();
+          expect(discover).not.toHaveBeenCalled();
+        } finally {
+          unregister();
+          await route.close();
+        }
+      },
+    );
+
+    it.each([
+      ["false", { model: false }],
+      ["zero", { model: 0 }],
+      ["a number", { model: 42 }],
+      ["an empty string", { model: "" }],
+      ["an empty string under a spelling variant", { Model: "" }],
+      ["a string over 256 characters", { model: "a".repeat(257) }],
+      ["an object", { model: {} }],
+      ["an object wrapping a key", { model: { value: "anthropic/executor" } }],
+      ["an array", { model: ["anthropic/executor"] }],
+      ["an empty array", { model: [] }],
+    ])("refuses %s as the model before approval", async (_label, modelArgs) => {
+      const route = registryRoute(setup().provider);
+      try {
+        await expect(route.invoke({ runner: "pi", ...modelArgs })).rejects.toThrow(refusedModel);
+        expect(route.approve).not.toHaveBeenCalled();
+      } finally {
+        await route.close();
+      }
+    });
+
+    it.each(Object.keys(exactLookups))(
+      "keeps listing without a model and lets a real model win over a null spelling for the %s runner",
+      async (runner) => {
+        const unregister = registerAcme(() => [acmeEntry]);
+        const route = registryRoute(setup().provider);
+        try {
+          const all = await route.invoke({ runner });
+          await expect(route.invoke({ runner, model: undefined })).resolves.toEqual(all);
+          const { model, expected } = exactLookups[runner]!;
+          await expect(route.invoke({ runner, model })).resolves.toEqual(expected);
+          await expect(route.invoke({ runner, model, Model: null })).resolves.toEqual(expected);
+          await expect(route.invoke({ runner, Model: model })).resolves.toEqual(expected);
+        } finally {
+          unregister();
+          await route.close();
+        }
+      },
+    );
+  });
+
+  it("refuses a null model from a QuickJS guest on the default runtime route", async () => {
+    setActiveCompiledSurface(undefined, DEFAULT_FABRIC_CONFIG.entropy.compile);
+    const route = registryRoute(setup().provider);
+    try {
+      const result = await new QuickJsRuntime().execute(
+        `let refused = "";
+         try { await agents.models({ runner: "pi", model: null }); } catch (error) { refused = String(error); }
+         const pinned = await agents.models({ runner: "pi", model: "anthropic/executor" });
+         return { refused, pinned };`,
+        (ref, args) => route.registry.invoke(ref, args as Record<string, unknown>, route.routeContext),
+        { timeoutMs: 5_000, memoryLimitBytes: 32 * 1024 * 1024 },
+      );
+      expect(result.terminationReason).toBe("completed");
+      expect(result.value).toEqual({
+        refused: expect.stringMatching(refusedModel),
+        pinned: [{ runner: "pi", provider: "anthropic", id: "executor", name: "Executor", key: "anthropic/executor" }],
+      });
+    } finally {
+      clearActiveCompiledSurface();
+      await route.close();
+    }
+  });
+
+  it("counts supplementary characters as one character each, like the schema", async () => {
+    const id256 = "😀".repeat(256 - "anthropic/".length);
+    const atBound = `anthropic/${id256}`;
+    const overBound = `${atBound}😀`;
+    expect([...atBound]).toHaveLength(256);
+    expect(atBound.length).toBeGreaterThan(256);
+    const unicodeModel = { provider: "anthropic", id: id256, name: "Unicode" };
+    const { provider } = setup();
+    const route = registryRoute(provider, [...visiblePiModels, unicodeModel]);
+    try {
+      await expect(route.invoke({ runner: "pi", model: atBound })).resolves.toEqual([
+        { runner: "pi", provider: "anthropic", id: id256, name: "Unicode", key: atBound },
+      ]);
+      await expect(route.invoke({ runner: "pi", model: overBound })).rejects.toThrow(refusedModel);
+      // The provider's own guard agrees with the schema on both sides of the bound.
+      await expect(provider.invoke("models", { runner: "pi", model: overBound }, context)).rejects.toThrow(
+        /agents\.models model must be a string of 1 to 256 characters/,
+      );
+    } finally {
+      await route.close();
+    }
+  });
+});
+
 describe("AgentsProvider shared actor definitions", () => {
   it("exposes the shared definition, mailbox, and logs while keeping mutation owner-gated", async () => {
     const members: FabricParticipantInfo[] = [];
@@ -2565,6 +2903,134 @@ describe("AgentsProvider switchModel", () => {
     },
   );
 
+  it.each(["run", "spawn"] as const)(
+    "starts the listed model for agents.%s with modelMatch exact, not an alias with the same name",
+    async (action) => {
+      const aliases = normalizeModelAliases({
+        "provider/model-a": { model: "provider/model-b", thinking: "high" },
+      });
+      const prepared: Array<[string | undefined, unknown]> = [];
+      const { provider, agents } = setup([], [], undefined, {
+        modelsConfig: { aliases },
+        agentsConfig: { thinking: "medium" },
+        // Mirrors the host's launch-boundary re-resolution of the already resolved key.
+        preparePiModel: async (model, options) => {
+          prepared.push([model, options]);
+          const resolved = resolvePiModelSelector(
+            model ?? "",
+            { aliases, available: visiblePiModels },
+            options?.modelMatch,
+          );
+          return `${resolved.provider}/${resolved.id}`;
+        },
+      });
+      const spawn = vi.spyOn(agents, "spawn");
+      const started = async (args: Record<string, unknown>) => {
+        const result = await provider.invoke(action, { task: `exact ${action}`, ...args }, context);
+        return action === "run"
+          ? (result as { model: string; thinking?: string })
+          : agents.wait((result as { id: string }).id);
+      };
+
+      // Control: without modelMatch the alias wins, with its thinking level.
+      await expect(started({ model: "provider/model-a" })).resolves.toMatchObject({
+        model: "provider/model-b",
+        thinking: "high",
+      });
+      expect(spawn).toHaveBeenLastCalledWith(
+        expect.objectContaining({ model: "provider/model-b", thinking: "high" }),
+        undefined,
+      );
+
+      await expect(started({ model: "provider/model-a", modelMatch: "exact" })).resolves.toMatchObject({
+        model: "provider/model-a",
+        thinking: "medium",
+      });
+      expect(spawn).toHaveBeenLastCalledWith(
+        expect.objectContaining({ model: "provider/model-a", modelMatch: "exact" }),
+        undefined,
+      );
+      expect(spawn.mock.calls.at(-1)?.[0]).not.toHaveProperty("thinking");
+      expect(prepared.at(-1)).toEqual(["provider/model-a", { modelMatch: "exact" }]);
+    },
+  );
+
+  it.each(["run", "spawn"] as const)(
+    "starts no child for agents.%s when the exact model is not listed",
+    async (action) => {
+      const { provider, agents } = setup();
+      const spawn = vi.spyOn(agents, "spawn");
+
+      await expect(
+        provider.invoke(action, { task: "do not launch", model: "provider/model-z", modelMatch: "exact" }, context),
+      ).rejects.toThrow(
+        'Model "provider/model-z" is not available to this Pi session. ' +
+          'Use agents.models({ runner: "pi" }) to list the models visible to this session.',
+      );
+      expect(spawn).not.toHaveBeenCalled();
+
+      // Control: the same selector without modelMatch resolves to the closest listed model.
+      await provider.invoke(action, { task: "closest", model: "provider/model-z" }, context);
+      expect(spawn).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    ["a bare selector", { model: "model-a" }, EXACT_MODEL_FORM_ERROR],
+    ["no model", {}, EXACT_MODEL_FORM_ERROR],
+    ["the Claude runner", { runner: "claude", model: "claude/sonnet" }, EXACT_MODEL_RUNNER_ERROR],
+    ["the Veda runner", { runner: "veda", model: "provider/model-a" }, EXACT_MODEL_RUNNER_ERROR],
+    ["an unknown mode", { model: "provider/model-a", modelMatch: "fuzzy" }, "Invalid Fabric agent modelMatch"],
+  ] as const)("refuses modelMatch exact with %s before any child starts", async (_label, args, message) => {
+    const { provider, agents } = setup();
+    const spawn = vi.spyOn(agents, "spawn");
+    for (const action of ["run", "spawn"] as const) {
+      await expect(
+        provider.invoke(action, { task: "do not launch", modelMatch: "exact", ...args }, context),
+      ).rejects.toThrow(message);
+    }
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("offers modelMatch only on run and spawn, restricted to exact", async () => {
+    const { provider } = setup();
+    for (const action of ["run", "spawn"]) {
+      const schema = (await provider.describe(action, context))?.inputSchema as {
+        properties: Record<string, unknown>;
+      };
+      expect(schema.properties.modelMatch).toMatchObject({ type: "string", enum: ["exact"] });
+      const description = (schema.properties.modelMatch as { description: string }).description;
+      expect(description).toMatch(/not a security guarantee or final-dispatch enforcement/);
+      expect(description).toMatch(/later hooks, unknown API payloads, providers and extension-made calls/i);
+      expect(description).toMatch(/only after a call/);
+      expect(description).toMatch(/Do not rely on it to prevent data disclosure/);
+      expect(Value.Check(schema, { task: "t", model: "provider/model-a", modelMatch: "exact" })).toBe(true);
+      expect(Value.Check(schema, { task: "t", model: "provider/model-a", modelMatch: "fuzzy" })).toBe(false);
+    }
+    // These actions would resolve the model with aliases, so their schemas must refuse the field.
+    for (const action of ["handoff", "create", "ask", "tell", "import"]) {
+      const schema = (await provider.describe(action, context))?.inputSchema as {
+        properties: Record<string, unknown>;
+      };
+      expect(schema.properties).not.toHaveProperty("modelMatch");
+    }
+    const handoff = (await provider.describe("handoff", context))?.inputSchema as Parameters<typeof Value.Check>[0];
+    expect(Value.Check(handoff, { model: "provider/model-a" })).toBe(true);
+    expect(Value.Check(handoff, { model: "provider/model-a", modelMatch: "exact" })).toBe(false);
+  });
+
+  it("prominently documents the exact-model contract before use", () => {
+    for (const file of ["docs/agents.md", "skillsets/typescript/fabric-exec/references/agents.md", "skillsets/python/fabric-exec/references/agents.md"]) {
+      const text = fs.readFileSync(file, "utf8");
+      const start = text.indexOf("modelMatch");
+      const warning = text.indexOf("not a security guarantee or final-dispatch enforcement", start);
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(warning).toBeGreaterThan(start);
+      expect(text.slice(warning, warning + 400)).toMatch(/later hooks, unknown API payloads, providers[, ]+and extension-made calls/i);
+      expect(text.slice(warning, warning + 400)).toMatch(/prevent data disclosure/);
+    }
+  });
+
   it("launches near-miss models canonically while isolating unrelated batch failures", async () => {
     const { provider, agents } = setup();
     const spawn = vi.spyOn(agents, "spawn");
@@ -2719,6 +3185,44 @@ describe("AgentsProvider switchModel", () => {
     await expect(
       provider.invoke("switchModel", { model: "google/gemini-2.5-flash" }, modelContext()),
     ).rejects.toThrow(/requires a local Main session/);
+  });
+
+  const failingRegistryContext = (): FabricInvocationContext => ({
+    ...context,
+    extensionContext: {
+      modelRegistry: {
+        getAvailable: () => {
+          throw new Error("models.json is not valid JSON");
+        },
+      },
+    } as unknown as ExtensionContext,
+  });
+
+  it("rejects agents.models with the registry error instead of an empty list", async () => {
+    const { provider } = setup();
+    await expect(
+      provider.invoke("models", { runner: "pi" }, failingRegistryContext()),
+    ).rejects.toThrow(/models\.json is not valid JSON/);
+  });
+
+  it("names the registry error when a run model cannot be resolved", async () => {
+    const { provider, agents } = setup();
+    const spawn = vi.spyOn(agents, "spawn");
+    await expect(
+      provider.invoke("run", { task: "do not launch", model: "google/gemini-2.5-flash" }, failingRegistryContext()),
+    ).rejects.toThrow(/not available to this Pi session[\s\S]*models\.json is not valid JSON/);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("names the registry error when switchModel cannot read the registry", async () => {
+    const switchModel = vi.fn(async () => ({ ok: true }));
+    const { provider } = setup([], [], undefined, {
+      switchModel: switchModel as FabricMainAgentTarget["switchModel"],
+    });
+    await expect(
+      provider.invoke("switchModel", { model: "google/gemini-2.5-flash" }, failingRegistryContext()),
+    ).rejects.toThrow(/models\.json is not valid JSON/);
+    expect(switchModel).not.toHaveBeenCalled();
   });
 
   it("requires a non-empty model selector", async () => {

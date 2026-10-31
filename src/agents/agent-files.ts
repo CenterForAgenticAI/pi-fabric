@@ -41,6 +41,8 @@ export interface AgentFileRequest {
   kernel?: "typescript" | "python" | "inherit";
   timeoutMs?: number;
   readOnly?: boolean;
+  /** Top-level `skills` and `context.skills`, resolved by name when the agent runs (see child-skills.ts). */
+  skills?: { preload: Array<{ name: string; required: boolean }>; inherit: boolean };
 }
 
 export interface AgentDefinition {
@@ -69,7 +71,7 @@ export class AgentFileError extends Error {}
 const MAX_AGENT_FILE_BYTES = 256 * 1024;
 const MAX_FILES_PER_FOLDER = 500;
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const TOP_LEVEL_FIELDS = new Set(["name", "description", "model", "tools", "thinking", "effort", "runtimes"]);
+const TOP_LEVEL_FIELDS = new Set(["name", "description", "model", "tools", "thinking", "effort", "skills", "context", "runtimes"]);
 const FABRIC_BLOCK_FIELDS = ["runner", "kernel", "model", "thinking", "tools", "timeoutMs", "readOnly"] as const;
 const KERNELS = ["typescript", "python", "inherit"] as const;
 /** Claude Code tool names (lower case) to the Pi tool that does the same job. */
@@ -155,6 +157,35 @@ export const parseAgentFile = (source: string, file: string, scope: AgentFileSco
     return typeof value === "string" && mapped.length === 0 ? undefined : mapped;
   };
 
+  const fieldWarnings: string[] = [];
+  const skillsOf = (value: unknown, where: string[]): Array<{ name: string; required: boolean }> | undefined => {
+    if (value === undefined || value === null) return undefined;
+    const at = lineOf(...where);
+    let entries: unknown[];
+    if (typeof value === "string") entries = value.split(",").map((entry) => entry.trim()).filter(Boolean);
+    else if (Array.isArray(value)) entries = value;
+    else return fail(where.join(".") + " must be a YAML list of skill names", at);
+    return entries.map((entry) => {
+      let name: unknown = entry;
+      let required = true;
+      if (isMapping(entry)) {
+        for (const key of Object.keys(entry)) {
+          if (key === "source" || key === "version") {
+            fieldWarnings.push("skills entry " + show(entry.name) + ": " + key + " is not supported; Fabric finds skills by name" + (at === undefined ? "" : " (line " + at + ")"));
+          } else if (key !== "name" && key !== "required") {
+            fail("unknown key " + show(key) + " in a skills entry; the keys are name, required, source, version", at);
+          }
+        }
+        if (entry.required !== undefined && typeof entry.required !== "boolean") fail("skills entry required must be true or false", at);
+        name = entry.name;
+        required = entry.required !== false;
+      }
+      if (typeof name !== "string" || !name.trim()) return fail(where.join(".") + " entries must be skill names", at);
+      if (/[\\/]/.test(name)) fail("skills entry " + show(name) + " is a path; give the skill's name", at);
+      return { name: name.trim(), required };
+    });
+  };
+
   if (typeof data.name !== "string" || !NAME_PATTERN.test(data.name)) {
     fail("name is required and must be 1 to 64 letters, digits, dots, underscores or hyphens, starting with a letter or digit", lineOf("name") ?? 2);
   }
@@ -174,6 +205,24 @@ export const parseAgentFile = (source: string, file: string, scope: AgentFileSco
   if (thinking) request.thinking = thinking;
   const tools = toolsOf(data.tools, ["tools"]);
   if (tools) request.tools = tools;
+
+  // skills are preloaded in full; context.skills says whether the parent's other skills stay visible.
+  const contextBlock = data.context;
+  if (contextBlock !== undefined && contextBlock !== null && !isMapping(contextBlock)) fail("context must be a mapping", lineOf("context"));
+  let inheritSkills: boolean | undefined;
+  if (isMapping(contextBlock)) {
+    for (const key of Object.keys(contextBlock)) {
+      if (key === "skills") continue;
+      const line = lineOf("context", key);
+      fieldWarnings.push("ignored field " + show("context." + key) + (line === undefined ? "" : " (line " + line + ")"));
+    }
+    if (contextBlock.skills !== undefined && contextBlock.skills !== null) {
+      if (typeof contextBlock.skills !== "boolean") fail("context.skills must be true or false", lineOf("context", "skills"));
+      inheritSkills = contextBlock.skills as boolean;
+    }
+  }
+  const skills = skillsOf(data.skills, ["skills"]);
+  if (skills !== undefined || inheritSkills !== undefined) request.skills = { preload: skills ?? [], inherit: inheritSkills ?? true };
 
   // Fabric-only settings. They use request field names and override the shared fields above.
   const runtimes = data.runtimes;
@@ -225,6 +274,7 @@ export const parseAgentFile = (source: string, file: string, scope: AgentFileSco
       const line = lineOf(key);
       return "ignored field " + show(key) + (line === undefined ? "" : " (line " + line + ")");
     });
+  warnings.push(...fieldWarnings);
   return { name, description: typeof data.description === "string" ? data.description : "", path: file, scope, request, warnings };
 };
 
@@ -342,7 +392,7 @@ export const resolveAgentFile = (name: string, roots: AgentFileRoots): AgentDefi
   );
 };
 
-const FILLABLE: ReadonlyArray<keyof AgentFileRequest> = ["systemPrompt", "model", "tools", "thinking", "runner", "kernel", "timeoutMs", "readOnly"];
+const FILLABLE: ReadonlyArray<keyof AgentFileRequest> = ["systemPrompt", "model", "tools", "thinking", "runner", "kernel", "timeoutMs", "readOnly", "skills"];
 
 /**
  * Fill the request from the file. A field the caller passed, even an empty one, is never replaced.
@@ -353,7 +403,7 @@ export const applyAgentDefinition = (args: Record<string, unknown>, definition: 
   if (merged.name === undefined) merged.name = definition.name;
   for (const key of FILLABLE) {
     const value = definition.request[key];
-    if (value !== undefined && merged[key] === undefined) merged[key] = Array.isArray(value) ? [...value] : value;
+    if (value !== undefined && merged[key] === undefined) merged[key] = typeof value === "object" ? structuredClone(value) : value;
   }
   return merged;
 };

@@ -355,9 +355,10 @@ export class FabricWidget implements Component, Focusable {
   #selectableRows(): FabricWidgetRow[] {
     const budget = this.#rowLimit();
     if (budget === 0) return [];
-    const { rows } = this.#content(this.snapshot(), Number.MAX_SAFE_INTEGER);
-    const limit = Math.max(1, budget - 1);
-    return this.focused && limit > 1 ? rows : rows.filter((row) => row.line < limit);
+    const { lines, rows } = this.#content(this.snapshot(), Number.MAX_SAFE_INTEGER);
+    const body = Math.max(1, budget - (budget >= 2 ? 1 : 0));
+    const visible = body >= 3 && lines.length > body ? body - 1 : body;
+    return this.focused && body > 1 ? rows : rows.filter((row) => row.line < visible);
   }
 
   #rowLimit(width = this.#lastWidth): number {
@@ -446,21 +447,45 @@ export class FabricWidget implements Component, Focusable {
     if (this.#hoveredId !== undefined && this.#hoveredId !== HEADER_ROW && !rows.some((row) => row.id === this.#hoveredId)) {
       this.#hoveredId = undefined;
     }
-    // Keep the header pinned while keyboard navigation brings any participant
-    // or task into view. The footer replaces the old full task-list overlay.
-    if (this.focused && body > 1) {
-      const selectedLine = rows.find(row => row.id === this.#selectedId)?.line ?? 0;
-      const start = Math.max(1, selectedLine - body + 2);
-      lines = [lines[0]!, ...lines.slice(start)];
-      rows = rows.filter(row => row.line === 0 || row.line >= start)
-        .map(row => ({ ...row, line: row.line === 0 ? 0 : row.line - start + 1 }));
+    // Pin Main and reserve a separate footer only when rows remain below.
+    // On tiny budgets the footer would hide the only participant, so the
+    // below count shares the header instead.
+    const selectedLine = this.focused && body > 1 ? rows.find(row => row.id === this.#selectedId)?.line ?? 0 : 0;
+    let capacity = body - 1;
+    let start = Math.max(1, selectedLine - capacity + 1);
+    let below = Math.max(0, lines.length - start - capacity);
+    if (below > 0 && body >= 3) {
+      capacity--;
+      start = Math.max(1, selectedLine - capacity + 1);
+      below = Math.max(0, lines.length - start - capacity);
     }
-    // Only rows in the viewport are pointer targets.
-    this.#rows = rows.filter((row) => row.line < body);
-    // Nothing to select, such as only idle actors: save the rows; any label is on the editor border.
+    const above = start - 1;
+    const upLabel = above > 0 ? `↑ ${above} more` : undefined;
+    const downLabel = body < 3 && below > 0 ? `↓ ${below} more` : undefined;
+    let label = upLabel ?? downLabel;
+    if (upLabel && downLabel) {
+      // Prefer both directions, but never sacrifice the session identity just
+      // to spell out "more". If the full name cannot fit, retain a useful
+      // prefix before falling back to a single direction or no count at all.
+      const identityWidth = 2 + visibleWidth(safeText(snapshot.sessionLabel ?? "Fabric"));
+      const candidates = [`${upLabel} · ${downLabel}`, `↑ ${above} · ↓ ${below}`, upLabel, `↑ ${above}`];
+      const fits = (candidate: string, identity: number) => visibleWidth(candidate) + 1 + identity <= width;
+      label = candidates.find(candidate => fits(candidate, identityWidth))
+        ?? candidates.find(candidate => fits(candidate, Math.min(identityWidth, 8)));
+    }
+    // Fit the header against the reserved space, so hints are dropped whole
+    // in priority order rather than cut off when the label is appended.
+    const headerWidth = label && width >= visibleWidth(label) + 2 ? width - visibleWidth(label) - 1 : width;
+    const header = headerWidth === width ? lines[0] ?? "" : this.#content(snapshot, width, headerWidth).lines[0] ?? "";
+    const boundedHeader = label ? this.#withRightLabel(header, label, width) : truncateToWidth(header, width);
+    const visibleLines = [boundedHeader, ...lines.slice(start, start + capacity).map(line => truncateToWidth(line, width))];
+    if (below > 0 && body >= 3) visibleLines.push(truncateToWidth(this.theme.fg("dim", `↓ ${below} more`), width));
+    // Only participant rows, never the overflow footer, are pointer targets.
+    this.#rows = rows.filter(row => row.line === 0 || (row.line >= start && row.line < start + capacity))
+      .map(row => ({ ...row, line: row.line === 0 ? 0 : row.line - start + 1 }));
     if (rows.length === 0 && this.interaction?.collapseIdle?.()) return [];
     this.#spacerRows = spacer;
-    return [...(spacer ? [""] : []), ...this.#boundContent(lines, width, body)];
+    return [...(spacer ? [""] : []), ...visibleLines];
   }
 
   /** Key hints for the header, most important first; the line fitter drops them from the end. */
@@ -470,13 +495,13 @@ export class FabricWidget implements Component, Focusable {
     return hasRows ? [FABRIC_WIDGET_FOCUS_HINT] : [];
   }
 
-  #content(snapshot: FabricDashboardSnapshot, width: number): { lines: string[]; rows: Array<FabricWidgetRow & { line: number }> } {
+  #content(snapshot: FabricDashboardSnapshot, width: number, headerWidth = width): { lines: string[]; rows: Array<FabricWidgetRow & { line: number }> } {
     const rows: Array<FabricWidgetRow & { line: number }> = [];
-    const lines = this.#buildContent(snapshot, rows, width);
+    const lines = this.#buildContent(snapshot, rows, width, headerWidth);
     return { lines, rows };
   }
 
-  #buildContent(snapshot: FabricDashboardSnapshot, rows: Array<FabricWidgetRow & { line: number }>, width: number): string[] {
+  #buildContent(snapshot: FabricDashboardSnapshot, rows: Array<FabricWidgetRow & { line: number }>, width: number, headerWidth: number): string[] {
     const candidateRun = snapshot.runs[0];
     const candidateFinishedAt = candidateRun?.finishedAt ?? candidateRun?.updatedAt ?? 0;
     const run =
@@ -559,7 +584,7 @@ export class FabricWidget implements Component, Focusable {
     const hasRows = participants.length > 0 || listedShells.length > 0 || this.interaction?.mainId !== undefined;
     lines.push(fitLine(
       this.theme,
-      width,
+      headerWidth,
       `${colorStatus(this.theme, headerStatus, circle(marked === headerId))} ${this.theme.fg("accent", this.theme.bold(label))}`,
       run?.name ? { text: safeText(run.name), gap: " ", color: "muted" } : undefined,
       parts,
@@ -618,14 +643,11 @@ export class FabricWidget implements Component, Focusable {
     return lines;
   }
 
-  #boundContent(content: string[], width: number, limit: number): string[] {
-    const bounded = content.slice(0, limit);
-    if (content.length > bounded.length && bounded.length > 0) {
-      const marker = this.theme.fg("dim", `+${content.length - bounded.length}`);
-      const available = Math.max(0, width - visibleWidth(marker) - 1);
-      const last = truncateToWidth(bounded[bounded.length - 1] ?? "", available, "");
-      bounded[bounded.length - 1] = `${last} ${marker}`;
-    }
-    return bounded.map((line) => truncateToWidth(line, width));
+  #withRightLabel(line: string, label: string, width: number): string {
+    const labelWidth = visibleWidth(label);
+    // Preserve the row marker when the terminal is too narrow for both.
+    if (width < labelWidth + 2) return truncateToWidth(line, width);
+    const left = truncateToWidth(line, width - labelWidth - 1, "");
+    return `${left}${" ".repeat(width - visibleWidth(left) - labelWidth)}${this.theme.fg("dim", label)}`;
   }
 }

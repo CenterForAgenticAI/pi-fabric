@@ -127,13 +127,15 @@ const compactResultHeader = (
   theme: Theme,
   audits: FabricRenderAudit[],
   failed: boolean,
+  omittedCalls = 0,
+  omittedFailed = 0,
 ): string => {
-  const failedCalls = audits.filter((audit) => audit.success === false).length;
+  const failedCalls = audits.filter((audit) => audit.success === false).length + omittedFailed;
   const isFailed = failed || failedCalls > 0;
   return theme.fg(isFailed ? "error" : "success", `${isFailed ? "✗" : "✓"} Tools`) +
     theme.fg(
       "dim",
-      ` · ${countLabel(audits.length, "call")}${failedCalls > 0 ? ` · ${failedCalls} failed` : ""}`,
+      ` · ${countLabel(audits.length + omittedCalls, "call")}${failedCalls > 0 ? ` · ${failedCalls} failed` : ""}`,
     );
 };
 
@@ -645,8 +647,9 @@ export const createFabricExecTool = (
         ];
       };
       const failed = details.success === false;
+      const omittedCalls = details.omittedCalls?.count ?? 0;
 
-      if (audits.length === 0) {
+      if (audits.length === 0 && omittedCalls === 0) {
         if (failed && details.error) {
           return trackRows(
             new Text(
@@ -681,7 +684,7 @@ export const createFabricExecTool = (
         );
       }
 
-      if (audits.length === 1) {
+      if (audits.length === 1 && omittedCalls === 0) {
         const audit = audits[0]!;
         let text = compact
           ? `${compactResultHeader(theme, audits, failed)}${nl}${nestedCallTitle(
@@ -752,16 +755,16 @@ export const createFabricExecTool = (
 
       const failedCalls = audits.filter(
         (audit) => audit.success === false,
-      ).length;
+      ).length + (details.omittedCalls?.failed ?? 0);
       const status = failed ? "failed" : "complete";
       const statusColor = failed ? "error" : "success";
       const metadata = [
-        countLabel(audits.length, "nested call"),
+        countLabel(audits.length + omittedCalls, "nested call"),
         failedCalls > 0 ? `${failedCalls} failed` : undefined,
         phases.length > 0 ? countLabel(phases.length, "phase") : undefined,
       ].filter((value): value is string => Boolean(value));
       let text = compact
-        ? compactResultHeader(theme, audits, failed)
+        ? compactResultHeader(theme, audits, failed, omittedCalls, details.omittedCalls?.failed ?? 0)
         : theme.fg(
             statusColor,
             `${failed ? "✗" : "✓"} Fabric ${status}`,
@@ -772,7 +775,7 @@ export const createFabricExecTool = (
 
       const callLimit = fabricMulticallCallLimit(expanded);
       const callsShown = audits.slice(0, callLimit);
-      const callsHidden = audits.length - callsShown.length;
+      const callsHidden = audits.length + omittedCalls - callsShown.length;
       let collapsedPreview:
         | { auditIndex: number; body: string; hidden: number }
         | undefined;

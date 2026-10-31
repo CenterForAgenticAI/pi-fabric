@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { constrainChildToolSelection, readChildToolAllowlist } from "../core/child-tool-allowlist.js";
+import { assertExactModelRequest, type FabricModelMatch } from "../core/model-resolution.js";
 import { writeJsonAtomic } from "../core/atomic-write.js";
 import {
   DEFAULT_FABRIC_CONFIG,
@@ -44,6 +45,7 @@ import {
   readHostedRunState,
   type HostedRunHooks,
 } from "./hosted-run.js";
+import { isModelPinFailure } from "./model-pin.js";
 import { resolvePiBinary } from "./pi-binary.js";
 import {
   inheritedSessionPinsFromEnv,
@@ -98,6 +100,7 @@ import type {
   AgentUsage,
 } from "./types.js";
 import { WorktreeManager, type AgentWorktreeResult } from "./worktree-manager.js";
+import { worktreeRollbackError } from "./clone-first-worktree.js";
 import { writeForkSession, writeHandoffSession } from "./handoff.js";
 import {
   checkWritePolicyRequest,
@@ -247,6 +250,8 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
   // timed_out verdict if the run deadline lands mid-retry.
   lastRetriedTransportFailure?: AgentRunResult;
   model?: string;
+  /** Kept so a startup retry or resume re-prepares the model with the mode it was launched under. */
+  modelMatch?: FabricModelMatch;
   /** holdQuestions: routed questions without their own deadline are held for a person. */
   holdQuestions?: true;
   thinking?: AgentRunRequest["thinking"];
@@ -282,6 +287,59 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
 }
 
 const terminalStatuses = terminalAgentStatuses;
+
+/** What spawn({ queue: true }) knows about a run before it is admitted. */
+interface QueuedSnapshot {
+  name: string;
+  task: string;
+  runner: FabricAgentRunner;
+  kernel?: FabricKernel;
+  transport: AgentHandleInfo["transport"];
+  cwd: string;
+  model?: string;
+}
+
+type QueuedOutcome = { launched: true } | { result: AgentRunResult };
+
+interface QueuedRun extends QueuedSnapshot {
+  id: string;
+  queuedAt: number;
+  control: AbortController;
+  outcome: Promise<QueuedOutcome>;
+  settle(outcome: QueuedOutcome): void;
+  /** Set when the run ended before it started: stopped, closed, or a failed launch. */
+  result?: AgentRunResult;
+  background: boolean;
+  completionNotified?: boolean;
+  stopRequested: boolean;
+}
+
+const queuedResult = (
+  entry: QueuedRun,
+  status: "failed" | "stopped",
+  error: string,
+): AgentRunResult => {
+  const now = Date.now();
+  return {
+    id: entry.id,
+    name: entry.name,
+    task: entry.task,
+    status,
+    runner: entry.runner,
+    ...(entry.kernel ? { kernel: entry.kernel } : {}),
+    transport: entry.transport,
+    cwd: entry.cwd,
+    ...(entry.model ? { model: entry.model } : {}),
+    startedAt: entry.queuedAt,
+    updatedAt: now,
+    finishedAt: now,
+    turns: 0,
+    toolCalls: 0,
+    text: "",
+    error,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+  };
+};
 
 const fileSize = (filePath: string): number => {
   try {
@@ -573,7 +631,7 @@ export class AgentManager {
     | ((request: AgentChildQuestionRequest) => Promise<AgentChildQuestionResponse>)
     | undefined;
   readonly #preparePiModel:
-    | ((model: string | undefined) => Promise<string | void>)
+    | ((model: string | undefined, options?: { modelMatch?: FabricModelMatch }) => Promise<string | void>)
     | undefined;
   readonly #resolveHandoffCompactionBudget:
     | ((model: string | undefined, cwd: string) => Promise<FabricCompactionBudget>)
@@ -606,6 +664,8 @@ export class AgentManager {
   #closePromise: Promise<void> | undefined;
   readonly #closeAbort = new AbortController();
   readonly #spawns = new Set<Promise<AgentHandleInfo>>();
+  /** spawn({ queue: true }) runs that hold an id but no slot yet, or that ended before they started. */
+  readonly #queued = new Map<string, QueuedRun>();
   readonly #unregisteredTransports = new Set<AgentTransportHandle>();
   readonly #launches = new Set<Promise<AgentTransportHandle>>();
 
@@ -634,7 +694,7 @@ export class AgentManager {
       onLifecycle?: (event: FabricLifecyclePublishRequest) => void;
       /** agents.childQuestions "route": answer a child dialog via parent UI or a decision. */
       onChildQuestion?: (request: AgentChildQuestionRequest) => Promise<AgentChildQuestionResponse>;
-      preparePiModel?: (model: string | undefined) => Promise<string | void>;
+      preparePiModel?: (model: string | undefined, options?: { modelMatch?: FabricModelMatch }) => Promise<string | void>;
       resolveHandoffCompactionBudget?: (model: string | undefined, cwd: string) => Promise<FabricCompactionBudget>;
       resolveParticipantGuidance?: AgentParticipantGuidanceResolver;
       resolveInheritedSessionPins?: () => InheritedSessionPin[] | undefined;
@@ -714,12 +774,14 @@ export class AgentManager {
     }
   }
 
-  async #prepareModel(model: string | undefined): Promise<string | undefined> {
+  async #prepareModel(model: string | undefined, modelMatch?: FabricModelMatch): Promise<string | undefined> {
     if (!this.#preparePiModel) return model;
-    const key = model?.trim() || "<session-default>";
+    // Exact and default resolution of one selector can differ, so they never share an in-flight preparation.
+    const key = `${modelMatch ?? ""}|${model?.trim() || "<session-default>"}`;
     const existing = this.#piModelPreparations.get(key);
     if (existing) return existing;
-    const preparation = this.#preparePiModel(model).then((prepared) => {
+    // Without a mode the callback sees exactly the one argument it always has.
+    const preparation = (modelMatch ? this.#preparePiModel(model, { modelMatch }) : this.#preparePiModel(model)).then((prepared) => {
       if (typeof prepared !== "string") return model;
       return prepared.trim() || model;
     });
@@ -813,6 +875,7 @@ export class AgentManager {
 
   spawn(request: AgentRunRequest, signal?: AbortSignal): Promise<AgentHandleInfo> {
     if (this.#closing) return Promise.reject(new Error("Fabric agent manager is closing"));
+    if (request.queue === true) return this.#spawnQueued(request);
     const pending = this.#spawn(request, signal);
     this.#spawns.add(pending);
     void pending.then(() => this.#spawns.delete(pending), () => this.#spawns.delete(pending));
@@ -838,7 +901,81 @@ export class AgentManager {
     return childThinkingBounds(this.#thinkingBounds?.() ?? {}, requested);
   }
 
-  async #spawn(request: AgentRunRequest, signal?: AbortSignal): Promise<AgentHandleInfo> {
+  /**
+   * Validate now, return a queued handle, and launch when a slot frees. The
+   * caller's signal is not used: a queued run outlives the program that
+   * spawned it, like a detached running one. agents.stop cancels it.
+   */
+  #spawnQueued(request: AgentRunRequest): Promise<AgentHandleInfo> {
+    if (request.residency === "durable") {
+      return Promise.reject(new Error('queue: true is not supported with residency: "durable"'));
+    }
+    const id = randomUUID().replaceAll("-", "");
+    const control = new AbortController();
+    return new Promise((resolve, reject) => {
+      let entry: QueuedRun | undefined;
+      const launch = this.#spawn(request, undefined, {
+        id,
+        signal: control.signal,
+        onQueued: (snapshot) => {
+          let settle!: (outcome: QueuedOutcome) => void;
+          const outcome = new Promise<QueuedOutcome>((done) => { settle = done; });
+          entry = { ...snapshot, id, queuedAt: Date.now(), control, outcome, settle, background: false, stopRequested: false };
+          this.#queued.set(id, entry);
+          this.#invalidateUiList();
+          resolve(this.#queuedHandle(entry));
+        },
+      });
+      this.#spawns.add(launch);
+      void launch.then(() => this.#spawns.delete(launch), () => this.#spawns.delete(launch));
+      launch.then(
+        () => {
+          if (!entry) return;
+          this.#queued.delete(id);
+          const managed = this.#runs.get(id);
+          if (managed && entry.background) this.#detach(managed, "queued run started detached");
+          entry.settle({ launched: true });
+          this.#invalidateUiList();
+        },
+        (error: unknown) => {
+          if (!entry) {
+            reject(error);
+            return;
+          }
+          const stopped = entry.stopRequested || this.#closing;
+          const message = entry.stopRequested
+            ? "Agent stopped before it started"
+            : this.#closing
+              ? "Fabric agent manager is closing"
+              : error instanceof Error ? error.message : String(error);
+          const result = queuedResult(entry, stopped ? "stopped" : "failed", message);
+          entry.result = result;
+          entry.settle({ result });
+          this.#invalidateUiList();
+          this.#notifyBackgroundComplete(entry, result);
+        },
+      );
+    });
+  }
+
+  #queuedHandle(entry: QueuedRun): AgentHandleInfo {
+    return {
+      id: entry.id,
+      name: entry.name,
+      status: "queued",
+      runner: entry.runner,
+      ...(entry.kernel ? { kernel: entry.kernel } : {}),
+      transport: entry.transport,
+      cwd: entry.cwd,
+      ...(entry.model ? { model: entry.model } : {}),
+    };
+  }
+
+  async #spawn(
+    request: AgentRunRequest,
+    signal?: AbortSignal,
+    queued?: { id: string; signal: AbortSignal; onQueued(snapshot: QueuedSnapshot): void },
+  ): Promise<AgentHandleInfo> {
     if (!this.config.enabled) throw new Error("Agents are disabled in Fabric configuration");
     if (this.#currentDepth >= this.config.maxDepth) {
       throw new Error(`Fabric agent depth limit reached (${this.config.maxDepth})`);
@@ -857,11 +994,15 @@ export class AgentManager {
       throw new Error(`Invalid Fabric agent residency: ${String(request.residency)}`);
     }
     const runner = request.runner ?? this.config.runner;
+    assertExactModelRequest({ modelMatch: request.modelMatch, runner, model: request.model });
     const runnerAdapter = requireAgentRunner(runner);
     const capabilities = runnerAdapter.capabilities;
     const hostedAdapter = runnerAdapter.kind === "hosted" ? runnerAdapter : undefined;
     if (request.persona && runner !== "veda") {
       throw new Error(`The persona option is only supported by the Veda runner, not ${runner}`);
+    }
+    if (request.childSkills && runner !== "pi" && runner !== "pi-durable") {
+      throw new Error(`The skills option is supported only by the Pi runners, not ${runner}`);
     }
     if (request.persistSession === true && runner !== "claude") {
       throw new Error("persistSession is only supported by the Claude runner");
@@ -954,27 +1095,46 @@ export class AgentManager {
       }
       if (model && runnerAdapter.normalizeModel) model = await runnerAdapter.normalizeModel(model);
     }
-    if (this.#budget) {
+    const checkBudget = () => {
+      if (!this.#budget) return;
       const spent = readBudgetLedger(this.#budget.file).cost;
       if (!budgetAdmits(spent, this.#budget.budget)) {
         throw new Error(
           `Fabric recursion budget exceeded: spent $${spent.toFixed(6)} of $${this.#budget.budget.toFixed(6)}. Increase agents.budgetUsd or simplify the task.`,
         );
       }
-    }
-    const admissionSignal = signal ? AbortSignal.any([signal, this.#closeAbort.signal]) : this.#closeAbort.signal;
+    };
+    checkBudget();
+    const callerSignal = queued?.signal ?? signal;
+    const admissionSignal = callerSignal ? AbortSignal.any([callerSignal, this.#closeAbort.signal]) : this.#closeAbort.signal;
+    queued?.onQueued({
+      name: runName(request),
+      task: request.task,
+      runner,
+      ...(kernel ? { kernel } : {}),
+      transport: hostedAdapter ? "hosted" : request.transport ?? this.config.transport,
+      cwd: selectedCwd,
+      ...(model ? { model } : {}),
+    });
     const release = await this.#semaphore.acquire("native", admissionSignal);
     try {
-      if (runner === "pi" || runner === "pi-durable") model = await this.#prepareModel(model);
+      if (runner === "pi" || runner === "pi-durable") model = await this.#prepareModel(model, request.modelMatch);
+      // Admission may have succeeded before stop cancelled a queued run while
+      // model preparation was pending. Do not create files or launch a child.
+      queued?.signal.throwIfAborted();
       if (this.#closing) throw new Error("Fabric agent manager is closing");
+      // Spend may have landed while waiting for a slot or model preparation.
+      checkBudget();
       this.#semaphore.admit(this.#currentDepth + 1);
     } catch (error) {
       release();
       throw error;
     }
-    const id = randomUUID().replaceAll("-", "");
+    const id = queued?.id ?? randomUUID().replaceAll("-", "");
     const name = runName(request);
     const runDirectory = path.join(this.#runRoot, id);
+    // Opt-in (agents.durableWorkerSession): a pi-durable child keeps a session file with a worker-role entry.
+    const durableSession = runner === "pi-durable" && this.config.durableWorkerSession === true;
     const taskFile = path.join(runDirectory, "task.txt");
     const statusFile = path.join(runDirectory, "status.json");
     const lifecycleFile = path.join(runDirectory, "lifecycle.jsonl");
@@ -985,7 +1145,8 @@ export class AgentManager {
       ? path.join(runDirectory, "images.json")
       : undefined;
     try {
-      fs.mkdirSync(runDirectory, { recursive: true });
+      // With a durable session, 0700: the pi-durable worker refuses a run directory that group or others can write.
+      fs.mkdirSync(runDirectory, durableSession ? { recursive: true, mode: 0o700 } : { recursive: true });
       fs.writeFileSync(taskFile, request.task, { encoding: "utf8", mode: 0o600 });
       if (imagesFile) {
         fs.writeFileSync(imagesFile, JSON.stringify(request.images), {
@@ -1027,7 +1188,9 @@ export class AgentManager {
     }
 
     try {
+      admissionSignal.throwIfAborted();
       if (worktree && worktreeSetup?.trim()) await this.#worktrees.setup(id, worktreeSetup);
+      admissionSignal.throwIfAborted();
       const writePolicy = capabilities.writePolicy
         ? resolveChildWritePolicy(request, this.#parentWritePolicy, agentCwd)
         : undefined;
@@ -1043,8 +1206,14 @@ export class AgentManager {
         childIndex: this.#childIndex++,
         worker: true,
       };
+      // Only a pi-durable child with agents.durableWorkerSession gets the worker-role entry, written into the seed in the same write that creates it.
+      const seedOptions = durableSession ? { workerRole: true } : {};
+      const handoffBudget = request.sessionSeed && request.handoffCompact
+        ? await this.#resolveHandoffCompactionBudget?.(model, agentCwd)
+        : undefined;
+      admissionSignal.throwIfAborted();
       const sessionFile = request.forkSeed
-        ? writeForkSession(request.forkSeed, agentCwd, path.join(runDirectory, "fork-session"), request.thinkingTransfer)
+        ? writeForkSession(request.forkSeed, agentCwd, path.join(runDirectory, "fork-session"), request.thinkingTransfer, seedOptions)
         : request.sessionSeed
         ? writeHandoffSession(
             request.sessionSeed,
@@ -1052,7 +1221,8 @@ export class AgentManager {
             path.join(runDirectory, "handoff-session"),
             request.thinkingTransfer,
             request.handoffCompact,
-            request.handoffCompact ? await this.#resolveHandoffCompactionBudget?.(model, agentCwd) : undefined,
+            handoffBudget,
+            seedOptions,
           )
         : request.sessionFile;
       const timeoutMs = effectiveAgentTimeoutMs(
@@ -1080,7 +1250,7 @@ export class AgentManager {
       const componentGuidance = recursive
         ? undefined
         : this.#resolveParticipantGuidance?.({ ...(model ? { model } : {}), runner })?.trim();
-      const systemPrompt = [request.systemPrompt?.trim(), componentGuidance]
+      const systemPrompt = [request.systemPrompt?.trim(), request.childSkills?.preload, componentGuidance]
         .filter((section): section is string => Boolean(section))
         .join("\n\n") || undefined;
       const sessionExportDir = resolveSessionExportDir(this.config);
@@ -1117,7 +1287,7 @@ export class AgentManager {
         return await this.#startHosted(hostedAdapter, launchContext, {
           request,
           release,
-          signal,
+          signal: callerSignal,
           timeoutMs,
           files: { statusFile, lifecycleFile, logFile },
           ...(clampedFrom ? { requestedThinking: clampedFrom } : {}),
@@ -1126,6 +1296,7 @@ export class AgentManager {
         });
       }
       const adapter = await this.#resolveTransport(request.transport ?? this.config.transport);
+      admissionSignal.throwIfAborted();
       const workerArguments = [
         "--id",
         id,
@@ -1182,10 +1353,14 @@ export class AgentManager {
         ...(thinking ? ["--thinking", thinking] : []),
         ...(serializedThinkingBounds ? ["--thinking-bounds", serializedThinkingBounds] : []),
         ...(systemPrompt ? ["--system-prompt", systemPrompt] : []),
+        ...(request.childSkills ? ["--skills", JSON.stringify(request.childSkills.catalog)] : []),
         "--persist-session",
         String(request.persistSession === true),
+        ...(durableSession ? ["--durable-session", "true"] : []),
         "--model-admission",
-        this.config.modelAdmission ?? "strict",
+        // An exact request is always strict: permissive admission accepts another model.
+        request.modelMatch === "exact" ? "strict" : this.config.modelAdmission ?? "strict",
+        ...(request.modelMatch === "exact" ? ["--model-match", "exact"] : []),
         ...(sessionFile ? ["--session-file", sessionFile] : []),
         ...(sessionExportFile ? ["--session-export-file", sessionExportFile] : []),
         ...(inheritedSessionPins && inheritedSessionPins.length > 0
@@ -1260,6 +1435,7 @@ export class AgentManager {
         workerPath: runnerLaunch.workerPath,
         workerArguments: [...runnerLaunch.workerArguments],
       };
+      admissionSignal.throwIfAborted();
       if (this.#closing) throw new Error("Fabric agent manager is closing");
       const recoveryPolicy = this.config.durableWorkerRecovery === true &&
         residency === "durable" && runner === "pi-durable" &&
@@ -1267,7 +1443,7 @@ export class AgentManager {
         ? this.#workerRecoveryPolicy() : undefined;
       const transport = await this.#launchTransport(adapter, launch);
       const lifecycle = createAgentLifecycle<AgentRunResult>(release);
-      if (signal?.aborted || this.#closing) {
+      if (admissionSignal.aborted || this.#closing) {
         await transport.stop();
         if (!await transport.isAlive().catch(() => true)) this.#unregisteredTransports.delete(transport);
         throw new Error("Agent launch aborted");
@@ -1292,9 +1468,10 @@ export class AgentManager {
         launch,
         startupAttempts: 1,
         ...lifecycle,
-        abortSignal: signal,
+        abortSignal: callerSignal,
         abortHandler: undefined,
         ...(model ? { model } : {}),
+        ...(request.modelMatch ? { modelMatch: request.modelMatch } : {}),
         ...(request.holdQuestions === true ? { holdQuestions: true as const } : {}),
         ...(thinking ? { thinking } : {}),
         ...(clampedFrom ? { requestedThinking: clampedFrom } : {}),
@@ -1320,9 +1497,9 @@ export class AgentManager {
         },
         usageEmitted: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
       };
-      if (signal) {
+      if (callerSignal) {
         managed.abortHandler = () => this.#handleCallerAbort(id);
-        signal.addEventListener("abort", managed.abortHandler, { once: true });
+        callerSignal.addEventListener("abort", managed.abortHandler, { once: true });
       }
       this.#runs.set(id, managed);
       this.#unregisteredTransports.delete(transport);
@@ -1335,7 +1512,13 @@ export class AgentManager {
       return this.#handleInfo(managed, "running");
     } catch (error) {
       release();
-      if (worktree) await this.#worktrees.cleanup(id, true).catch(() => false);
+      if (worktree) {
+        const lease = this.#worktrees.get(id);
+        try { await this.#worktrees.cleanup(id, true); }
+        catch (cleanupError) {
+          throw worktreeRollbackError(lease?.gitRoot ?? selectedCwd, worktree, branch, error, cleanupError);
+        }
+      }
       throw error;
     }
   }
@@ -1801,6 +1984,15 @@ export class AgentManager {
   }
 
   async wait(id: string): Promise<AgentRunResult> {
+    const queued = this.#queued.get(id);
+    if (queued) {
+      queued.background = false;
+      const outcome = await queued.outcome;
+      if ("result" in outcome) {
+        this.#onResultConsumed?.(id);
+        return structuredClone(outcome.result);
+      }
+    }
     const managed = this.#requireRun(id);
     managed.background = false;
     if (!managed.settled) {
@@ -1818,11 +2010,20 @@ export class AgentManager {
   }
 
   markForeground(id: string): void {
-    this.#requireRun(id).background = false;
+    const queued = this.#runs.has(id) ? undefined : this.#queued.get(id);
+    if (queued) queued.background = false;
+    else this.#requireRun(id).background = false;
     this.#onResultConsumed?.(id);
   }
 
   detachSignal(id: string): void {
+    const queued = this.#queued.get(id);
+    if (queued) {
+      // A queued run never held the caller's signal; it only reports in the background.
+      queued.background = true;
+      if (queued.result) this.#notifyBackgroundComplete(queued, queued.result);
+      return;
+    }
     this.#detach(this.#requireRun(id), "caller detached; the run continues");
   }
 
@@ -1897,6 +2098,8 @@ export class AgentManager {
   }
 
   status(id: string): AgentRunRecord | AgentHandleInfo {
+    const queued = this.#runs.has(id) ? undefined : this.#queued.get(id);
+    if (queued) return queued.result ? structuredClone(queued.result) : this.#queuedHandle(queued);
     const managed = this.#requireRun(id);
     const record = this.#readManagedRecord(managed);
     if (!record) return this.#handleInfo(managed, "running");
@@ -1911,18 +2114,23 @@ export class AgentManager {
   }
 
   list(): Array<AgentRunRecord | AgentHandleInfo> {
-    return [...this.#runs.keys()].map((id) => this.status(id));
+    return [...new Set([...this.#runs.keys(), ...this.#queued.keys()])].map((id) => this.status(id));
   }
 
   /** Unsettled runs, each with the title of a child question it waits on. */
   activity(): AgentActivity[] {
-    return [...this.#runs.values()]
-      .filter((managed) => !managed.settled)
-      .map((managed) => ({
-        id: managed.id,
-        name: managed.actorName ?? managed.name,
-        ...(managed.openQuestions?.length ? { question: managed.openQuestions.at(-1)!.title } : {}),
-      }));
+    return [
+      ...[...this.#runs.values()]
+        .filter((managed) => !managed.settled)
+        .map((managed) => ({
+          id: managed.id,
+          name: managed.actorName ?? managed.name,
+          ...(managed.openQuestions?.length ? { question: managed.openQuestions.at(-1)!.title } : {}),
+        })),
+      ...[...this.#queued.values()]
+        .filter((queued) => !queued.result && !this.#runs.has(queued.id))
+        .map((queued) => ({ id: queued.id, name: queued.name })),
+    ];
   }
 
   listForUi(): Array<AgentRunRecord | AgentHandleInfo> {
@@ -1951,6 +2159,11 @@ export class AgentManager {
           compactUiRecord(this.#withTransportMetadata(record, managed)),
         );
       });
+    for (const queued of this.#queued.values()) {
+      if (!this.#runs.has(queued.id)) {
+        value.push(queued.result ? compactUiRecord(structuredClone(queued.result)) : this.#queuedHandle(queued));
+      }
+    }
     this.#uiListCache = { revision: this.#uiListRevision, value };
     return value;
   }
@@ -1974,6 +2187,16 @@ export class AgentManager {
   }
 
   async stop(id: string): Promise<AgentRunResult> {
+    const queued = this.#runs.has(id) ? undefined : this.#queued.get(id);
+    if (queued) {
+      // Cancel the admission wait; nothing was launched, so nothing else is stopped.
+      queued.background = false;
+      queued.stopRequested = true;
+      queued.control.abort();
+      const outcome = await queued.outcome;
+      if ("result" in outcome) return structuredClone(outcome.result);
+      // Admitted while the stop was in flight: stop the run it became.
+    }
     const managed = this.#requireRun(id);
     // A requested stop is terminal: record the intent before any transport work
     // so recovery never restarts a run the operator, a tool, or shutdown ended.
@@ -2006,6 +2229,14 @@ export class AgentManager {
   }
 
   async cleanup(id: string, deleteBranch = false): Promise<{ cleaned: boolean }> {
+    const queued = this.#runs.has(id) ? undefined : this.#queued.get(id);
+    if (queued) {
+      if (!queued.result) throw new Error("Cannot clean up a queued agent; stop it first");
+      this.#onResultConsumed?.(id);
+      this.#queued.delete(id);
+      this.#invalidateUiList();
+      return { cleaned: true };
+    }
     const managed = this.#requireRun(id);
     if (!managed.settled) throw new Error("Cannot clean up a running agent");
     this.markForeground(id);
@@ -2261,6 +2492,10 @@ export class AgentManager {
   ): Promise<boolean> {
     if (
       managed.hosted ||
+      // Decided first, from the exit status and the fixed prefix: no text
+      // classifier below may see a pin error, because a model id can spell
+      // "missing credentials".
+      (managed.modelMatch === "exact" && isModelPinFailure(record)) ||
       // A custom worker that already made progress is never re-run blind.
       (!BUILT_IN_RUNNER_IDS.has(managed.runner) && this.#observedWork(managed)) ||
       managed.startupAttempts >= AGENT_STARTUP_MAX_ATTEMPTS ||
@@ -2308,6 +2543,7 @@ export class AgentManager {
       // Fabric never re-prompts a hosted run, and only its own worker
       // understands the continuation task and --carry-over prefix.
       managed.hosted ||
+      (managed.modelMatch === "exact" && isModelPinFailure(record)) ||
       !BUILT_IN_RUNNER_IDS.has(managed.runner) ||
       managed.settled ||
       this.#closing ||
@@ -2348,7 +2584,7 @@ export class AgentManager {
   ): Promise<boolean> {
     try {
       if (managed.runner === "pi" || managed.runner === "pi-durable") {
-        const model = await this.#prepareModel(managed.model);
+        const model = await this.#prepareModel(managed.model, managed.modelMatch);
         const modelIndex = managed.launch.workerArguments.indexOf("--model");
         if (model) {
           if (modelIndex >= 0) managed.launch.workerArguments[modelIndex + 1] = model;
@@ -2639,7 +2875,7 @@ export class AgentManager {
     this.#notifyBackgroundComplete(managed, result);
   }
 
-  #notifyBackgroundComplete(managed: ManagedAgent, result: AgentRunResult): void {
+  #notifyBackgroundComplete(managed: Pick<ManagedAgent, "background" | "completionNotified">, result: AgentRunResult): void {
     if (
       managed.background &&
       !managed.completionNotified &&
@@ -2955,6 +3191,9 @@ export class AgentManager {
 
   #requireRun(id: string): ManagedAgent {
     const managed = this.#runs.get(id);
+    if (!managed && this.#queued.has(id)) {
+      throw new Error(`Fabric agent ${id} is queued and has not started`);
+    }
     if (!managed) throw new Error(`Unknown Fabric agent: ${id}`);
     return managed;
   }

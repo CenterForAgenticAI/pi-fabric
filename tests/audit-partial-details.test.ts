@@ -19,6 +19,13 @@ describe("partial execution envelope budget", () => {
     expect(details.deadlineAt).toBe(1_800_000_000_000);
   });
 
+  it("counts failures among omitted partial audits", () => {
+    const details = createFabricPartialExecutionDetails({
+      audits: Array.from({ length: 100 }, (_, index) => ({ ref: `call-${index}`, success: index !== 50 })), phases: [],
+    });
+    expect(details.omittedCalls).toEqual({ count: 40, done: 40, failed: 1 });
+  });
+
   it("budgets escaped phases after audits and both copies of progress", () => {
     const details = createFabricPartialExecutionDetails({
       audits: Array.from({ length: 100 }, (_, index) => ({

@@ -21,6 +21,8 @@ export interface FabricPersistedExecutionDetailsV1 {
   outputFormat?: "yaml" | "json";
   outputFormatStartLine?: number;
   outputFormatLines?: number;
+  /** Audits the size bound dropped; the resumed card still counts them. */
+  omittedCalls?: FabricOmittedCalls;
 }
 
 /**
@@ -79,6 +81,8 @@ export interface FabricOmittedCalls {
   count: number;
   /** How many of the omitted calls had finished. */
   done: number;
+  /** How many omitted calls failed (absent in older records). */
+  failed?: number;
 }
 
 const serializedBytes = (value: unknown): number =>
@@ -147,7 +151,14 @@ export const createFabricPersistedExecutionDetails = (input: {
     serializedBytes(details) > FABRIC_EXECUTION_DETAILS_MAX_BYTES &&
     details.audits.length > 0
   ) {
-    details.audits.pop();
+    const dropped = details.audits.pop()!;
+    const omitted = details.omittedCalls ?? { count: 0, done: 0 };
+    details.omittedCalls = {
+      count: omitted.count + 1,
+      done: omitted.done + (dropped.success !== undefined ? 1 : 0),
+      ...((omitted.failed ?? 0) + (dropped.success === false ? 1 : 0) > 0
+        ? { failed: (omitted.failed ?? 0) + (dropped.success === false ? 1 : 0) } : {}),
+    };
   }
   // Assessment rows are optional observability: they yield before the trace,
   // and their totals survive.
@@ -273,10 +284,11 @@ export const readFabricExecutionRenderDetails = (
 
 const omittedCalls = (value: unknown): { omittedCalls: FabricOmittedCalls } | undefined => {
   if (!isRecord(value)) return undefined;
-  const { count, done } = value;
+  const { count, done, failed } = value;
   if (typeof count !== "number" || !Number.isInteger(count) || count <= 0) return undefined;
   const finished = typeof done === "number" && Number.isInteger(done) ? Math.min(Math.max(0, done), count) : 0;
-  return { omittedCalls: { count, done: finished } };
+  const failures = typeof failed === "number" && Number.isInteger(failed) ? Math.min(Math.max(0, failed), finished) : 0;
+  return { omittedCalls: { count, done: finished, ...(failures > 0 ? { failed: failures } : {}) } };
 };
 
 /** Byte budget for the call audits in one fabric_exec progress update. */
@@ -364,8 +376,12 @@ export const createFabricPartialExecutionDetails = (input: {
   }
   const audits = [...kept.keys()].sort((left, right) => left - right).map((index) => kept.get(index)!);
   let omittedDone = 0;
+  let omittedFailed = 0;
   for (let index = 0; index < total; index++) {
-    if (!kept.has(index) && input.audits[index]!.success !== undefined) omittedDone++;
+    if (!kept.has(index)) {
+      if (input.audits[index]!.success !== undefined) omittedDone++;
+      if (input.audits[index]!.success === false) omittedFailed++;
+    }
   }
   const omitted = total - audits.length;
   const progress = input.progress === undefined || input.progress.length <= PARTIAL_PROGRESS_CHARS
@@ -376,7 +392,7 @@ export const createFabricPartialExecutionDetails = (input: {
     ...(input.deadlineAt !== undefined ? { deadlineAt: input.deadlineAt } : {}),
     phases: [],
     audits,
-    ...(omitted > 0 ? { omittedCalls: { count: omitted, done: omittedDone } } : {}),
+    ...(omitted > 0 ? { omittedCalls: { count: omitted, done: omittedDone, ...(omittedFailed > 0 ? { failed: omittedFailed } : {}) } } : {}),
   };
   // Audits take at most 128 KiB, and each copy of the 8,001-code-unit
   // progress string takes at most six bytes per code unit in JSON. This

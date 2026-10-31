@@ -31,6 +31,7 @@ import { autoArmFabricPrewalk } from "./prewalk/arm.js";
 import {
   DEFAULT_FABRIC_CONFIG,
   effectiveToolCaptureConfig,
+  ineffectiveKeepVisible,
 } from "./config.js";
 import type { CompactionHandlers } from "./compaction/hook.js";
 import type { CompactionOwnerSlot } from "./compaction/claim-events.js";
@@ -83,8 +84,10 @@ import {
   FABRIC_PROGRAM_RUN_EVENT,
   FABRIC_PROVIDER_REGISTER_EVENT,
   FABRIC_PROVIDER_WITHDRAW_EVENT,
+  FABRIC_QUESTION_RENDERER_REGISTER_EVENT,
   FABRIC_TOOL_PLACEMENT_EVENT,
   readFabricActionPolicyRegistrationV1,
+  readFabricQuestionRendererRegistrationV1,
   FABRIC_HOST_POLICY_EVENT,
   readFabricHostPolicyRequestV1,
   readFabricProviderWithdrawalV1,
@@ -334,6 +337,24 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     },
   );
 
+  // Question renderers. Registration is always accepted; renderers are
+  // consulted only when ui.questionRenderers is true.
+  const unsubscribeQuestionRendererRegistration = pi.events.on(
+    FABRIC_QUESTION_RENDERER_REGISTER_EVENT,
+    (value: unknown) => {
+      const registration = readFabricQuestionRendererRegistrationV1(value);
+      if (!registration) throw new Error("Invalid Pi Fabric question renderer registration");
+      let unregister: () => void;
+      try {
+        unregister = state.questionRenderers.register(registration.name, registration.render);
+      } catch (error) {
+        registration.respond?.({ ok: false, error: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      registration.respond?.({ ok: true, unregister });
+    },
+  );
+
   // Synchronous reachability answer so extensions stop guessing whether the
   // model or a fabric_exec program can reach a tool this turn.
   const programReachable = (registered: ReadonlySet<string>): ((name: string) => boolean) => {
@@ -421,7 +442,9 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
 
   pi.on("resources_discover", async (_event, context) => {
     if (!state.bootstrapped) await state.bootstrap(context);
-    return { skillPaths: state.managedHostOptions ? [] : fabricSkillPaths(FABRIC_SKILLS_DIR, state.config.executor.kernel) };
+    // A child whose parent chose its skills (agents.run skills) gets exactly those.
+    if (state.managedHostOptions || process.env.PI_FABRIC_CHILD_SKILLS === "selected") return { skillPaths: [] };
+    return { skillPaths: fabricSkillPaths(FABRIC_SKILLS_DIR, state.config.executor.kernel) };
   });
 
   // The window title is the declared milestone, not nested call detail: it
@@ -1174,7 +1197,14 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     // tree); full code mode adapts its loader to Fabric's nested pi.read path.
     const managedHost = state.managedHostOptions;
     const skillReader = managedHost ? managedHost.skillReader ?? null : undefined;
-    const systemPrompt = restoreSkillsForFullCodePrompt(event.systemPrompt, skills, effectiveFullCodeMode, skillReader);
+    // Pi 1.4+ builds the prompt from named sections and sends only changed
+    // sections on later turns. Fabric adds its own section there unless an
+    // earlier handler already forced a whole prompt, which makes Pi ignore
+    // sections. Older hosts have no sections and get the appended prompt.
+    const sections = event.systemPromptOptions.forceSystemPrompt === undefined
+      ? event.systemPromptOptions.sections
+      : undefined;
+    const systemPrompt = sections ? "" : restoreSkillsForFullCodePrompt(event.systemPrompt, skills, effectiveFullCodeMode, skillReader);
     // Pi expands the invoked skill into the user message, but wrappers may
     // delegate by name. Resolve only explicit invocation lines so full code
     // mode preserves Pi's progressive skill loading without exposing read.
@@ -1225,11 +1255,15 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     // persistent message, not appended to the system prompt. Keeping the
     // system prompt byte-identical across turns is what lets provider prefix
     // caches (e.g. DeepSeek) stay warm.
-    if (!skillReferenceGuidance) return {
-      systemPrompt: `${systemPrompt}\n\n${guidance}`,
-    };
+    if (sections) {
+      const catalog = restoreSkillsForFullCodePrompt("", skills, effectiveFullCodeMode, skillReader).trim();
+      if (catalog) sections.skills = catalog;
+      sections.fabric = guidance;
+    }
+    const forced = sections ? {} : { systemPrompt: `${systemPrompt}\n\n${guidance}` };
+    if (!skillReferenceGuidance) return sections ? undefined : forced;
     return {
-      systemPrompt: `${systemPrompt}\n\n${guidance}`,
+      ...forced,
       message: {
         customType: SKILL_REFERENCE_CUSTOM_TYPE,
         content: skillReferenceGuidance,
@@ -1308,6 +1342,8 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     unsubscribeProgramRun();
     unsubscribeActionPolicyRegistration();
     state.actionPolicyHooks.clear();
+    unsubscribeQuestionRendererRegistration();
+    state.questionRenderers.clear();
     programRunContext = undefined;
     pendingHandoffs.clear();
     directToolApproval.clear();
@@ -1339,6 +1375,23 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     if (foregroundNoticeSession === sessionId) return;
     foregroundNoticeSession = sessionId;
     const notice = `Fabric foreground policy ${formatForeground(foreground)}`;
+    if (context.hasUI) context.ui.notify(notice, "warning");
+    else console.warn(`[pi-fabric] ${notice}`);
+  });
+
+  // Exclusive modes declare only fabric_exec, so a keepVisible entry for any
+  // other tool silently does nothing. Say so once per session and name the
+  // setting that does declare a tool beside fabric_exec.
+  let keepVisibleNoticeKey: string | undefined;
+  pi.on("before_agent_start", (_event, context) => {
+    if (!state.bootstrapped) return;
+    const ignored = ineffectiveKeepVisible(state.config, state.foregroundTools().tools);
+    if (ignored.length === 0) return;
+    const enforce = state.config.schema.mode === "enforce";
+    const key = `${context.sessionManager?.getSessionId?.() ?? ""}\0${ignored.join(",")}`;
+    if (keepVisibleNoticeKey === key) return;
+    keepVisibleNoticeKey = key;
+    const notice = `Fabric capture.keepVisible has no effect in ${enforce ? "Schema enforce" : "full code"} mode; ${ignored.join(", ")} stay hidden from the model${enforce ? "" : ". Use foreground.tools to declare a tool beside fabric_exec"}.`;
     if (context.hasUI) context.ui.notify(notice, "warning");
     else console.warn(`[pi-fabric] ${notice}`);
   });

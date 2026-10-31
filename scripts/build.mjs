@@ -20,6 +20,9 @@ const primaryEntryPoints = [
   "src/runners.ts",
   // Opt-in durable Pi adapter; never reachable from the extension entry.
   "src/durable.ts",
+  // Public `pi-fabric/durable-host`: embeds a durable AgentSession in a host process.
+  // Imports the Pi SDK by name (the host's peer); never reachable from the extension entry.
+  "src/durable-host.ts",
   // fabric_exec as a pi-durable registry extension for hosts without Pi.
   "src/durable-extension.ts",
   // Build-time helper for Worker hosts; not imported by the durable-extension entry.
@@ -85,6 +88,8 @@ const lazyEntryPoints = [
   "src/agents/veda-cli.ts",
   // Named agent files and the YAML parser they load; first use of agent: or agents.definitions().
   "src/agents/agent-files.ts",
+  // Child skills option; loaded when agents.run or agents.spawn first names skills.
+  "src/agents/child-skills.ts",
   // Also loaded by the worker as a Pi extension (-e) for confined children.
   "src/agents/write-guard.ts",
   // Also loaded by the worker (-e) so extensions: false children keep
@@ -92,6 +97,8 @@ const lazyEntryPoints = [
   "src/agents/provider-bridge.ts",
   // The running Pi CLI's own SDK entry, for the bridge and the conversation UI.
   "src/core/host-sdk.ts",
+  // Loaded by the worker as a Pi extension (-e) for exact-model children.
+  "src/agents/model-pin-guard.ts",
   "src/fabric-runtime-state.ts",
   "src/components/configuration.ts",
   "src/providers/jev-provider.ts",

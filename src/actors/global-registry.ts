@@ -148,8 +148,9 @@ export class GlobalActorRegistry {
       if (!overwrite) {
         throw new Error(`A global actor named ${validated.name} already exists (${existing.id})`);
       }
+      // Store the new template whole. Spreading the old one would keep fields the
+      // new one omits (a kernel next to a non-Pi runner), which load rejects.
       const updated: GlobalActorDefinition = {
-        ...existing,
         ...validated,
         id: existing.id,
         createdAt: existing.createdAt,
@@ -204,6 +205,11 @@ export class GlobalActorRegistry {
         ? { extensions: patch.extensions }
         : typeof existing.extensions === "boolean"
           ? { extensions: existing.extensions }
+          : {}),
+      ...(patch.requires !== undefined
+        ? { requires: patch.requires }
+        : existing.requires
+          ? { requires: existing.requires }
           : {}),
       ...(patch.validWhile !== undefined
         ? { validWhile: patch.validWhile }
@@ -266,6 +272,7 @@ export class GlobalActorRegistry {
       ...(def.transport ? { transport: def.transport } : {}),
       ...(def.timeoutMs ? { timeoutMs: def.timeoutMs } : {}),
       ...(typeof def.extensions === "boolean" ? { extensions: def.extensions } : {}),
+      ...(def.requires ? { requires: clone(def.requires) } : {}),
       ...(def.validWhile ? { validWhile: clone(def.validWhile) } : {}),
     };
     return request;
