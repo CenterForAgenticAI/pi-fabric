@@ -10,7 +10,6 @@ export interface ActorDirectoryRoots {
 export class ActorDirectory extends ActorManager {
   readonly #secondary: ActorManager;
   readonly #defaultScope: FabricActorStorageScope;
-  #directoryCreateTail: Promise<void> = Promise.resolve();
 
   constructor(
     base: ConstructorParameters<typeof ActorManager>,
@@ -69,13 +68,6 @@ export class ActorDirectory extends ActorManager {
 
   override retryCapabilityWaiters(): void { super.retryCapabilityWaiters(); this.#secondary.retryCapabilityWaiters(); }
   override async create(request: FabricActorRequest, options: { asRegistryOwner?: boolean } = {}): Promise<FabricActorInfo> {
-    const previous = this.#directoryCreateTail;
-    let release!: () => void;
-    this.#directoryCreateTail = new Promise<void>((resolve) => { release = resolve; });
-    await previous;
-    try { return await this.#createInScope(request, options); } finally { release(); }
-  }
-  async #createInScope(request: FabricActorRequest, options: { asRegistryOwner?: boolean }): Promise<FabricActorInfo> {
     const scope = request.scope ?? this.#defaultScope;
     if (scope !== "project" && scope !== "session") {
       throw new Error(`Invalid Fabric actor storage scope: ${String(scope)}`);
@@ -84,9 +76,7 @@ export class ActorDirectory extends ActorManager {
     const sameName = this.list().filter((actor) => actor.name === name);
     const existing = sameName.find((actor) => actor.status !== "stopped");
     if (existing) throw new Error(`A Fabric actor named ${name} is already active (${existing.id})`);
-    if (sameName.some((actor) => actor.scope !== scope)) {
-      throw new Error(`Cannot replace actor ${name} across storage scopes; remove it explicitly first`);
-    }
+    for (const actor of sameName) await this.remove(actor.id);
     return scope === this.#defaultScope
       ? super.create(request, options)
       : this.#secondary.create(request, options);

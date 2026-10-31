@@ -250,11 +250,6 @@ export class ActorManager {
   #mainIdle = true;
   #reloadingOwnership = false;
   #registryFingerprint: string | undefined;
-  #createTail: Promise<void> = Promise.resolve();
-  readonly #writerToken = randomUUID();
-  // Only a manager that loaded an unclaimed record may claim it. A former
-  // writer must not treat its own later relinquishment as permission to write.
-  readonly #claimable = new Set<string>();
 
   constructor(
     readonly sessionId: string,
@@ -354,19 +349,6 @@ export class ActorManager {
     request: FabricActorRequest,
     { asRegistryOwner = false }: { asRegistryOwner?: boolean } = {},
   ): Promise<FabricActorInfo> {
-    const previous = this.#createTail;
-    let release!: () => void;
-    this.#createTail = new Promise<void>((resolve) => { release = resolve; });
-    await previous;
-    try {
-      return await this.#create(request, asRegistryOwner);
-    } finally {
-      release();
-    }
-  }
-
-  async #create(request: FabricActorRequest, asRegistryOwner: boolean): Promise<FabricActorInfo> {
-    this.#syncActorsFromRegistry();
     this.#refreshOwnership();
     const registryOwnerCreate = asRegistryOwner && request.residency === "durable";
     if (
@@ -455,54 +437,19 @@ export class ActorManager {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
-    // The locked swap below additionally requires this manager’s writer token.
-    if (sameName && !this.#canManage(sameName.id)) {
-      throw new ActorRegistryOwnershipError();
-    }
-    if (sameName?.drain) await sameName.drain.catch(() => undefined);
+    // Stage the new directory before removing a stopped namesake. In particular,
+    // a failed mkdir must not destroy the old actor or its session.
     fs.mkdirSync(actorDirectory, { recursive: true, mode: 0o700 });
     try {
-      if (this.#persistent) {
-        await this.#registry.withLock(() => {
-          const entries = this.#registry.entries();
-          const namesakes = entries.filter((entry) => typeof entry === "object" && entry !== null && "name" in entry && entry.name === name);
-          if (sameName) {
-            if (this.#actors.get(sameName.id) !== sameName || sameName.status !== "stopped" || !this.#canManage(sameName.id) ||
-                namesakes.length !== 1 || !isActorRegistryRecord(namesakes[0]) || namesakes[0].id !== sameName.id ||
-                namesakes[0].rootId !== this.#persistedRoots.get(sameName.id) || namesakes[0].writerToken !== this.#writerToken || namesakes[0].status !== "stopped") {
-              throw new ActorRegistryOwnershipError();
-            }
-          } else if (namesakes.length) {
-            throw new Error(`A Fabric actor named ${name} already exists in the registry`);
-          }
-          this.#registry.write([...entries.filter((entry) => !sameName || !isActorRegistryRecord(entry) || entry.id !== sameName.id), this.#serializedActor(actor)]);
-          this.#persistedRoots.set(id, actor.rootId);
-          if (sameName) this.#persistedRoots.delete(sameName.id);
-          this.#registryFingerprint = this.#registry.fingerprint();
-        });
-      } else if (sameName && (this.#actors.get(sameName.id) !== sameName || sameName.status !== "stopped" || !this.#canManage(sameName.id))) {
-        throw new ActorRegistryOwnershipError();
-      }
+      if (sameName?.status === "stopped") await this.remove(sameName.id);
     } catch (error) {
-      try { fs.rmSync(actorDirectory, { recursive: true, force: true }); } catch { /* preserve original failure */ }
+      fs.rmSync(actorDirectory, { recursive: true, force: true });
       throw error;
-    }
-    if (sameName) {
-      this.#actors.delete(sameName.id);
-      this.#locallyCreated.delete(sameName.id);
-      this.#ownership.delete(sameName.id);
     }
     this.#actors.set(id, actor);
     this.#locallyCreated.add(id);
     this.#ownership.set(id, true);
-    this.#emitChange();
-    if (sameName) {
-      await this.#bindings.delete(sameName.id).catch(() => undefined);
-      try { fs.rmSync(path.dirname(sameName.sessionFile), { recursive: true, force: true }); } catch { /* committed; cleanup is best effort */ }
-      await this.mesh.delete({ key: this.#presenceKey(sameName.id) }).catch(() => undefined);
-      if (sameName.lastRunId) await this.agents.cleanup(sameName.lastRunId).catch(() => undefined);
-    }
-    await this.mesh.put({ key: this.#presenceKey(id), value: this.#publicInfo(actor), identity: this.identity }).catch(() => undefined);
+    await this.#publishPresence(actor);
     await this.mesh
       .publish({
         topic: "fabric.actor.lifecycle",
@@ -541,8 +488,6 @@ export class ActorManager {
     }
     if (actor.status !== "stopped") actor.status = "idle";
     actor.updatedAt = Date.now();
-    await actor.drain?.catch(() => undefined);
-    await this.#releaseWriters(new Set([actor.id]));
     this.#emitChange();
     return this.#publicInfo(actor);
   }
@@ -550,9 +495,6 @@ export class ActorManager {
   reclaim(id: string): FabricActorInfo {
     const actor = this.#requireActor(id);
     this.#ceded.delete(actor.id);
-    // Reclaim is an explicit rollback of cede; the locked save may only
-    // claim the record if no successor has taken its token in the meantime.
-    this.#claimable.add(actor.id);
     this.#locallyCreated.add(actor.id);
     this.#ownership.set(actor.id, true);
     this.#emitChange();
@@ -1180,34 +1122,15 @@ export class ActorManager {
   }
 
   async remove(id: string): Promise<{ removed: boolean }> {
-    const previous = this.#createTail;
-    let release!: () => void;
-    this.#createTail = new Promise<void>((resolve) => { release = resolve; });
-    await previous;
-    try { return await this.#remove(id); } finally { release(); }
-  }
-
-  async #remove(id: string): Promise<{ removed: boolean }> {
     const actor = this.#requireOwnedActor(id);
     await this.stop(id);
     await actor.drain?.catch(() => undefined);
     const retainedRunId = actor.lastRunId;
-    if (this.#persistent) {
-      await this.#registry.withLock(() => {
-        const entries = this.#registry.entries();
-        const matches = entries.filter((entry) => isActorRegistryRecord(entry) && entry.id === actor.id);
-        if (matches.length !== 1 || !isActorRegistryRecord(matches[0]) || matches[0].writerToken !== this.#writerToken || matches[0].rootId !== actor.rootId) throw new ActorRegistryOwnershipError();
-        this.#registry.write(entries.filter((entry) => !isActorRegistryRecord(entry) || entry.id !== actor.id));
-        this.#persistedRoots.delete(actor.id);
-        this.#registryFingerprint = this.#registry.fingerprint();
-      });
-    }
+    await this.#bindings.delete(actor.id);
     this.#actors.delete(actor.id);
-    this.#locallyCreated.delete(actor.id);
-    this.#ownership.delete(actor.id);
     this.#emitChange();
-    await this.#bindings.delete(actor.id).catch(() => undefined);
-    try { fs.rmSync(path.dirname(actor.sessionFile), { recursive: true, force: true }); } catch { /* committed; cleanup is best effort */ }
+    fs.rmSync(path.dirname(actor.sessionFile), { recursive: true, force: true });
+    await this.#saveActors(new Set([actor.id]));
     await this.mesh.delete({ key: this.#presenceKey(actor.id) }).catch(() => ({ deleted: false }));
     if (retainedRunId) await this.agents.cleanup(retainedRunId).catch(() => ({ cleaned: false }));
     return { removed: true };
@@ -1240,10 +1163,7 @@ export class ActorManager {
         if (actor.status !== "stopped") actor.status = "idle";
         actor.updatedAt = Date.now();
       }
-      if (owned.length > 0) {
-        await this.#saveActors();
-        await this.#releaseWriters(new Set(owned.map((actor) => actor.id)));
-      }
+      if (owned.length > 0) await this.#saveActors();
       return;
     }
     await Promise.allSettled([...this.#actors.keys()].map((id) => this.stop(id)));
@@ -1836,10 +1756,6 @@ export class ActorManager {
     if (!this.#canManage(actor.id)) return;
     this.#emitChange();
     await this.#saveActors();
-    if (this.#persistent) {
-      const record = this.#registry.records().find((entry) => entry.id === actor.id);
-      if (!record || record.writerToken !== this.#writerToken) throw new ActorRegistryOwnershipError();
-    }
     await this.mesh
       .put({
         key: this.#presenceKey(actor.id),
@@ -1880,7 +1796,6 @@ export class ActorManager {
       id: actor.id,
       name: actor.name,
       rootId: actor.rootId,
-      writerToken: this.#writerToken,
       ...(actor.adoptedAt !== undefined ? { adoptedAt: actor.adoptedAt } : {}),
       instructions: actor.instructions,
       status: actor.status,
@@ -1913,51 +1828,24 @@ export class ActorManager {
     };
   }
 
-  async #releaseWriters(ids: ReadonlySet<string>): Promise<void> {
-    if (!this.#persistent || !this.meshConfig.enabled || ids.size === 0) return;
-    await this.#registry.withLock(() => {
-      const entries = this.#registry.entries();
-      let changed = false;
-      const released = entries.map((entry) => {
-        if (!isActorRegistryRecord(entry) || !ids.has(entry.id) || entry.writerToken !== this.#writerToken) return entry;
-        const { writerToken: _token, ...rest } = entry;
-        changed = true;
-        return rest;
-      });
-      if (changed) this.#registry.write(released);
-      for (const id of ids) this.#claimable.delete(id);
-      this.#registryFingerprint = this.#registry.fingerprint();
-    });
-  }
-
   async #saveActors(removedIds: ReadonlySet<string> = new Set()): Promise<void> {
     if (!this.#persistent || !this.meshConfig.enabled) return;
     await this.#registry.withLock(() => {
-      const entries = this.#registry.entries();
-      const current = new Map(entries.filter(isActorRegistryRecord).map((record) => [record.id, record]));
-      // Never recreate a record removed by another manager or overwrite a
-      // lineage transferred since our last fenced observation.
-      const owned = [...this.#actors.values()].filter((actor) => {
-        const record = current.get(actor.id);
-        if (!record || (record.writerToken !== undefined && record.writerToken !== this.#writerToken)) this.#claimable.delete(actor.id);
-        return this.#ownershipDecision(actor.id) && record !== undefined &&
-          record.rootId === this.#persistedRoots.get(actor.id) &&
-          (record.writerToken === this.#writerToken || (record.writerToken === undefined && this.#claimable.has(actor.id)));
-      });
-      const safeRemoved = [...removedIds].filter((id) => current.get(id)?.rootId === this.#persistedRoots.get(id) && this.#persistedRoots.has(id) && current.get(id)?.writerToken === this.#writerToken);
-      const replaced = new Set([...safeRemoved, ...owned.map((actor) => actor.id)]);
+      const owned = [...this.#actors.values()].filter((actor) =>
+        this.#ownershipDecision(actor.id),
+      );
+      const replaced = new Set([...removedIds, ...owned.map((actor) => actor.id)]);
       // entries() throws on any failure but a missing file, so a failed read
       // never rewrites the registry with only this host's actors. Entries
       // that fail validation are kept as written.
-      const preserved = entries.filter((entry) => !isActorRegistryRecord(entry) || !replaced.has(entry.id));
+      const preserved = this.#registry
+        .entries()
+        .filter((entry) => !isActorRegistryRecord(entry) || !replaced.has(entry.id));
       const actors = [...preserved, ...owned.map((actor) => this.#serializedActor(actor))];
       this.#registry.write(actors);
       this.#registryFingerprint = this.#registry.fingerprint();
       for (const id of removedIds) this.#persistedRoots.delete(id);
-      for (const actor of owned) {
-        this.#persistedRoots.set(actor.id, actor.rootId);
-        this.#claimable.delete(actor.id);
-      }
+      for (const actor of owned) this.#persistedRoots.set(actor.id, actor.rootId);
       for (const record of preserved) {
         if (isActorRegistryRecord(record) && typeof record.rootId === "string") {
           this.#persistedRoots.set(record.id, record.rootId);
@@ -2139,7 +2027,6 @@ export class ActorManager {
         }
       }
       this.#actors.set(actor.id, actor);
-      if ((value as Record<string, unknown>).writerToken === undefined) this.#claimable.add(actor.id);
       added++;
       void this.#publishPresence(actor).catch(() => undefined);
     }
@@ -2336,15 +2223,13 @@ export class ActorManager {
         for (const record of records) {
           if (typeof record.rootId === "string") this.#persistedRoots.set(record.id, record.rootId);
         }
-        const adoptedActor = { ...actor, rootId: this.#rootId, adoptedAt: Date.now(), updatedAt: Date.now() };
+        actor.rootId = this.#rootId;
+        actor.adoptedAt = Date.now();
+        actor.updatedAt = Date.now();
         const preserved = entries.filter(
           (entry) => !isActorRegistryRecord(entry) || entry.id !== actor.id,
         );
-        this.#registry.write([...preserved, this.#serializedActor(adoptedActor)]);
-        actor.rootId = adoptedActor.rootId;
-        actor.adoptedAt = adoptedActor.adoptedAt;
-        actor.updatedAt = adoptedActor.updatedAt;
-        this.#claimable.delete(actor.id);
+        this.#registry.write([...preserved, this.#serializedActor(actor)]);
         this.#registryFingerprint = this.#registry.fingerprint();
         return true;
       });

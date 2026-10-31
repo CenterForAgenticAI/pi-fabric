@@ -4,7 +4,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GlobalActorRegistry } from "../src/actors/global-registry.js";
 import { ActorManager, ActorRegistryOwnershipError } from "../src/actors/manager.js";
-import { ActorRegistryStore } from "../src/actors/registry-store.js";
 import type { FabricCapabilityRequirement } from "../src/components/types.js";
 import type { FabricCapabilityViewLease } from "../src/core/action-registry.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
@@ -571,22 +570,6 @@ describe("ActorManager", () => {
     expect(typeof saved?.adoptedAt).toBe("number");
   });
 
-  it("fences a former writer after orphan adoption and persists adopter updates", async () => {
-    const state = setup(true);
-    const actor = await state.actors.create({ name: "adopt-fence", instructions: "original" });
-    const identity: MeshIdentity = { id: "session:adopter", name: "main", kind: "main", sessionId: "adopter" };
-    const adopter = new ActorManager("adopter", identity, state.mesh, state.meshConfig, state.agents, () => {}, {
-      actorRoot: path.join(state.root, "actors"), persistent: true, claimResidency: "session",
-      rootId: identity.id, canManageActor: () => undefined, lineageAlive: () => false,
-    });
-    actorManagers.push(adopter);
-    await waitFor(() => adopter.owns(actor.id));
-    await adopter.setTools(actor.id, ["grep"]);
-    await expect(state.actors.setTools(actor.id, ["stale"])).rejects.toThrow(ActorRegistryOwnershipError);
-    await state.actors.close();
-    const rows = JSON.parse(fs.readFileSync(path.join(state.root, "actors", "actors.json"), "utf8")).actors;
-    expect(rows.find((row: { id: string }) => row.id === actor.id)).toMatchObject({ rootId: identity.id, tools: ["grep"] });
-  });
   it("still refuses takeover while another host live-owns the actor", async () => {
     const state = setup(true);
     const actor = await state.actors.create({
@@ -1496,8 +1479,6 @@ describe("ActorManager", () => {
 
     await restored.setTools(actor.id, []);
     expect(restored.status(actor.id).tools).toEqual([]);
-    const rows = JSON.parse(fs.readFileSync(path.join(setupState.root, "actors", "actors.json"), "utf8")).actors;
-    expect(rows.find((row: { id: string }) => row.id === actor.id).tools).toEqual([]);
   });
 
   it("setThinking updates and clears an actor's thinking and it takes effect on the next run", async () => {
@@ -1660,82 +1641,23 @@ describe("ActorManager", () => {
     expect(fs.readdirSync(actorRoot)).toEqual(before);
   });
 
-  it("preserves the stopped namesake if the registry swap fails", async () => {
-    const { actors, root } = setup(true);
+  it("cleans the staged directory if removing the stopped namesake fails", async () => {
+    const { actors, root } = setup();
     const stopped = await actors.create({ name: "planner", instructions: "Plan." });
     await actors.stop(stopped.id);
     const sessionFile = actors.status(stopped.id).sessionFile!;
     fs.writeFileSync(sessionFile, "old session contents\n");
     const actorRoot = path.join(root, "actors");
     const before = fs.readdirSync(actorRoot);
-    const registryBefore = fs.readFileSync(path.join(actorRoot, "actors.json"), "utf8");
-    const write = vi.spyOn(ActorRegistryStore.prototype, "write").mockImplementationOnce(() => { throw new Error("injected registry failure"); });
+    const remove = vi.spyOn(actors, "remove").mockRejectedValueOnce(new Error("injected removal failure"));
     try {
-      await expect(actors.create({ name: "planner", instructions: "Replace." })).rejects.toThrow("injected registry failure");
+      await expect(actors.create({ name: "planner", instructions: "Replace." })).rejects.toThrow("injected removal failure");
     } finally {
-      write.mockRestore();
+      remove.mockRestore();
     }
-    expect(fs.readFileSync(path.join(actorRoot, "actors.json"), "utf8")).toBe(registryBefore);
     expect(actors.status(stopped.id)).toMatchObject({ status: "stopped" });
     expect(fs.readFileSync(sessionFile, "utf8")).toBe("old session contents\n");
     expect(fs.readdirSync(actorRoot)).toEqual(before);
-  });
-
-  it.each(["remove", "replace"] as const)("fences a ceded writer after the successor can %s", async (operation) => {
-    const state = setup(true);
-    const original = await state.actors.create({ name: "handoff", instructions: "original" });
-    await state.actors.stop(original.id);
-    await state.actors.cede(original.id);
-    const successor = new ActorManager("test", state.identity, state.mesh, state.meshConfig, state.agents, () => {}, { actorRoot: path.join(state.root, "actors"), persistent: true });
-    actorManagers.push(successor);
-    await successor.setTools(original.id, ["grep"]);
-    let replacementId: string | undefined;
-    if (operation === "remove") await successor.remove(original.id);
-    else replacementId = (await successor.create({ name: "handoff", instructions: "replacement" })).id;
-    state.actors.reclaim(original.id);
-    await expect(state.actors.setTools(original.id, ["stale"])).rejects.toThrow();
-    await state.actors.close();
-    const rows = JSON.parse(fs.readFileSync(path.join(state.root, "actors", "actors.json"), "utf8")).actors;
-    expect(rows.map((row: { id: string }) => row.id)).toEqual(replacementId ? [replacementId] : []);
-  });
-
-  it("reclaims an unclaimed cede and persists subsequent changes", async () => {
-    const { actors, root } = setup(true);
-    const actor = await actors.create({ name: "rollback", instructions: "original" });
-    await actors.cede(actor.id);
-    actors.reclaim(actor.id);
-    await actors.setTools(actor.id, ["read"]);
-    const rows = JSON.parse(fs.readFileSync(path.join(root, "actors", "actors.json"), "utf8")).actors;
-    expect(rows.find((row: { id: string }) => row.id === actor.id).tools).toEqual(["read"]);
-  });
-  it("serializes concurrent creates and stopped replacements", async () => {
-    const { actors } = setup(true);
-    const first = await Promise.allSettled([actors.create({ name: "planner", instructions: "one" }), actors.create({ name: "planner", instructions: "two" })]);
-    expect(first.filter((r) => r.status === "fulfilled")).toHaveLength(1);
-    const original = actors.list()[0]!;
-    await actors.stop(original.id);
-    const second = await Promise.allSettled([actors.create({ name: "planner", instructions: "three" }), actors.create({ name: "planner", instructions: "four" })]);
-    expect(second.filter((r) => r.status === "fulfilled")).toHaveLength(1);
-    expect(actors.list()).toHaveLength(1);
-    expect(actors.list()[0]!.id).not.toBe(original.id);
-  });
-
-  it("fences cross-manager creates and stale registry writers", async () => {
-    const state = setup(true);
-    const other = new ActorManager("test", state.identity, state.mesh, state.meshConfig, state.agents, () => {}, { actorRoot: path.join(state.root, "actors"), persistent: true });
-    actorManagers.push(other);
-    const results = await Promise.allSettled([state.actors.create({ name: "planner", instructions: "one" }), other.create({ name: "planner", instructions: "two" })]);
-    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
-    const winner = results[0]!.status === "fulfilled" ? state.actors : other;
-    const stale = winner === state.actors ? other : state.actors;
-    const original = winner.list()[0]!;
-    await winner.stop(original.id);
-    stale.list();
-    await expect(stale.create({ name: "planner", instructions: "unsafe" })).rejects.toThrow();
-    const replacement = await winner.create({ name: "planner", instructions: "replacement" });
-    await stale.close();
-    const records = JSON.parse(fs.readFileSync(path.join(state.root, "actors", "actors.json"), "utf8")).actors;
-    expect(records.map((record: { id: string }) => record.id)).toEqual([replacement.id]);
   });
 
   it("haltAll skips idle and stopped actors and leaves them usable", async () => {
