@@ -485,7 +485,7 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
   {
     name: "create",
     description:
-      'Create a persistent actor with independently selected session or project storage. Use scope "global" to save a reusable project-independent template instead of a live actor.',
+      'Create a persistent actor with independently selected session or project storage. A stopped live actor with the same name must be explicitly removed first. Use scope "global" to save a reusable project-independent template instead of a live actor.',
     inputSchema: {
       type: "object",
       properties: {

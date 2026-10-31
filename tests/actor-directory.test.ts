@@ -93,6 +93,29 @@ describe("ActorDirectory", () => {
     }
   });
 
+  it.each(["project", "session"] as const)("refuses stopped names in both scopes when the old actor is %s", async (oldScope) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-actor-directory-"));
+    roots.push(root);
+    const { directory } = open(root, "alpha");
+    const stopped = await directory.create({ scope: oldScope, name: "planner", instructions: "Plan." });
+    await directory.stop(stopped.id);
+    const sessionFile = directory.status(stopped.id).sessionFile!;
+    fs.writeFileSync(sessionFile, "old session\n");
+    const remove = vi.spyOn(directory, "remove");
+    try {
+      for (const scope of ["project", "session"] as const) {
+        for (const instructions of ["", "Replace."]) {
+          await expect(directory.create({ scope, name: "planner", instructions })).rejects.toThrow(/remove it explicitly/);
+        }
+      }
+      expect(remove).not.toHaveBeenCalled();
+      expect(directory.status(stopped.id).status).toBe("stopped");
+      expect(fs.readFileSync(sessionFile, "utf8")).toBe("old session\n");
+    } finally { remove.mockRestore(); }
+    await directory.remove(stopped.id);
+    expect((await directory.create({ scope: oldScope, name: "planner", instructions: "New." })).id).not.toBe(stopped.id);
+  });
+
   it("runs project and session actor registries concurrently", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-actor-directory-"));
     roots.push(root);

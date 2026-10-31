@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import type { FabricActorInfo, FabricActorRequest, FabricActorStorageScope } from "./types.js";
 import { ActorManager } from "./manager.js";
+import { actorNameDecision } from "./name-policy.js";
 
 export interface ActorDirectoryRoots {
   project: string;
@@ -75,8 +76,9 @@ export class ActorDirectory extends ActorManager {
     const name = request.name.trim();
     const sameName = this.list().filter((actor) => actor.name === name);
     const existing = sameName.find((actor) => actor.status !== "stopped");
-    if (existing) throw new Error(`A Fabric actor named ${name} is already active (${existing.id})`);
-    for (const actor of sameName) await this.remove(actor.id);
+    const decision = actorNameDecision(Boolean(existing), sameName.some((actor) => actor.status === "stopped"));
+    if (decision === "active") throw new Error(`A Fabric actor named ${name} is already active (${existing!.id})`);
+    if (decision === "stopped") throw new Error(`A stopped Fabric actor named ${name} already exists (${sameName[0]!.id}); remove it explicitly before creating another`);
     return scope === this.#defaultScope
       ? super.create(request, options)
       : this.#secondary.create(request, options);

@@ -770,6 +770,8 @@ A project-scoped actor stores one definition for the project. Select storage per
 - **Session binding.** A mode-`0600` file stores only `model` and `thinking` for one Pi session ID. It survives a resume of that session and does not rewrite `actors.json`.
 - **Runtime.** One owner keeps the stable actor identity, serial mailbox, and runner session. Other sessions send direct work to that owner.
 
+Creation rejects names already present in the visible project or session scope, including stopped actors. Creating a stopped actor's namesake is refused rather than replacing it automatically. To reuse the name, explicitly remove the stopped actor first with `agents.remove({ id })`; removal deletes its retained actor session and history. This is a compatibility change from automatic replacement. The refusal does not provide distributed ownership or execution fencing between independent hosts.
+
 Fabric resolves each activation in this order:
 
 ```text

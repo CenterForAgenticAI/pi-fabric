@@ -39,6 +39,7 @@ import type {
 } from "./types.js";
 import { isFabricThinking, type FabricThinking } from "../thinking.js";
 import { resolveActorDeliveryPolicy } from "./delivery-policy.js";
+import { actorNameDecision } from "./name-policy.js";
 import { evaluateActorValidWhile, validateActorValidWhile } from "./predicate.js";
 import { ActorBindingStore } from "./binding-store.js";
 import { ActorRegistryStore, isActorRegistryRecord } from "./registry-store.js";
@@ -362,10 +363,11 @@ export class ActorManager {
     if (!this.meshConfig.enabled) throw new Error("Fabric mesh and actors are disabled");
     const name = request.name.trim();
     if (!ACTOR_NAME_PATTERN.test(name)) throw new Error(`Invalid Fabric actor name: ${name}`);
-    const sameName = [...this.#actors.values()].find((actor) => actor.name === name);
-    if (sameName && sameName.status !== "stopped") {
-      throw new Error(`A Fabric actor named ${name} is already active (${sameName.id})`);
-    }
+    const namesakes = [...this.#actors.values()].filter((actor) => actor.name === name);
+    const active = namesakes.find((actor) => actor.status !== "stopped");
+    const decision = actorNameDecision(Boolean(active), namesakes.some((actor) => actor.status === "stopped"));
+    if (decision === "active") throw new Error(`A Fabric actor named ${name} is already active (${active!.id})`);
+    if (decision === "stopped") throw new Error(`A stopped Fabric actor named ${name} already exists (${namesakes[0]!.id}); remove it explicitly before creating another`);
     if (!request.instructions.trim()) throw new Error("Actor instructions must not be empty");
     if (Buffer.byteLength(request.instructions, "utf8") > this.meshConfig.maxEventBytes) {
       throw new Error(`Actor instructions exceed ${this.meshConfig.maxEventBytes} bytes`);
@@ -437,15 +439,7 @@ export class ActorManager {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
-    // Stage the new directory before removing a stopped namesake. In particular,
-    // a failed mkdir must not destroy the old actor or its session.
     fs.mkdirSync(actorDirectory, { recursive: true, mode: 0o700 });
-    try {
-      if (sameName?.status === "stopped") await this.remove(sameName.id);
-    } catch (error) {
-      fs.rmSync(actorDirectory, { recursive: true, force: true });
-      throw error;
-    }
     this.#actors.set(id, actor);
     this.#locallyCreated.add(id);
     this.#ownership.set(id, true);

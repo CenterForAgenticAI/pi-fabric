@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GlobalActorRegistry } from "../src/actors/global-registry.js";
 import { ActorManager, ActorRegistryOwnershipError } from "../src/actors/manager.js";
+import { ActorRegistryStore } from "../src/actors/registry-store.js";
 import type { FabricCapabilityRequirement } from "../src/components/types.js";
 import type { FabricCapabilityViewLease } from "../src/core/action-registry.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
@@ -1588,76 +1589,56 @@ describe("ActorManager", () => {
     expect(actors.status(actor.id)).toMatchObject({ status: "idle", name: "supervisor" });
   });
 
-  it("keeps a stopped actor when a same-name create request is invalid", async () => {
-    const { actors } = setup();
-    const stopped = await actors.create({
-      name: "planner",
-      instructions: "Plan the work.",
-      responseMode: "text",
-    });
-    await actors.stop(stopped.id);
-    const sessionDirectory = path.dirname(actors.status(stopped.id).sessionFile ?? "");
-
-    const invalidRequests = [
-      { instructions: "   " },
-      { instructions: "Plan again.", events: ["not_a_host_event"] },
-      { instructions: "Plan again.", validWhile: { version: 99, source: "true" } },
-      { instructions: "Plan again.", runner: "unknown-runner" },
-    ];
-    for (const invalid of invalidRequests) {
-      await expect(
-        actors.create({ name: "planner", responseMode: "text", ...invalid } as never),
-      ).rejects.toThrow();
-      expect(actors.status(stopped.id)).toMatchObject({ id: stopped.id, status: "stopped" });
-      expect(fs.existsSync(sessionDirectory)).toBe(true);
-    }
-
-    const replacement = await actors.create({
-      name: "planner",
-      instructions: "Plan again.",
-      responseMode: "text",
-    });
-    expect(replacement.id).not.toBe(stopped.id);
-    expect(actors.list().map((actor) => actor.id)).toEqual([replacement.id]);
-    expect(fs.existsSync(sessionDirectory)).toBe(false);
-  });
-
-  it("preserves a stopped actor and its session when replacement staging fails", async () => {
+  it("refuses stopped-name creation before validation or persistence and permits explicit removal", async () => {
     const { actors, root } = setup(true);
     const stopped = await actors.create({ name: "planner", instructions: "Plan." });
     await actors.stop(stopped.id);
     const sessionFile = actors.status(stopped.id).sessionFile!;
     fs.writeFileSync(sessionFile, "old session contents\n");
-    const actorRoot = path.join(root, "actors");
-    const before = fs.readdirSync(actorRoot);
-    const mkdir = vi.spyOn(fs, "mkdirSync").mockImplementationOnce(() => { throw new Error("injected mkdir failure"); });
+    const registry = path.join(root, "actors", "actors.json");
+    const before = fs.readFileSync(registry, "utf8");
+    const remove = vi.spyOn(actors, "remove");
+    const mkdir = vi.spyOn(fs, "mkdirSync").mockImplementation(() => { throw new Error("injected persistence failure"); });
     try {
-      await expect(actors.create({ name: "planner", instructions: "Replace." })).rejects.toThrow("injected mkdir failure");
+      for (const instructions of ["", "Replace."]) {
+        await expect(actors.create({ name: "planner", instructions })).rejects.toThrow(/remove it explicitly/);
+      }
+      const simultaneous = await Promise.allSettled([
+        actors.create({ name: "planner", instructions: "First." }),
+        actors.create({ name: "planner", instructions: "Second." }),
+      ]);
+      expect(simultaneous.every((result) => result.status === "rejected")).toBe(true);
+      expect(remove).not.toHaveBeenCalled();
+      expect(mkdir).not.toHaveBeenCalled();
+      expect(actors.status(stopped.id)).toMatchObject({ id: stopped.id, status: "stopped" });
+      expect(fs.readFileSync(sessionFile, "utf8")).toBe("old session contents\n");
+      expect(fs.readFileSync(registry, "utf8")).toBe(before);
     } finally {
       mkdir.mockRestore();
+      remove.mockRestore();
     }
-    expect(actors.list()).toMatchObject([{ id: stopped.id, status: "stopped" }]);
-    expect(fs.readFileSync(sessionFile, "utf8")).toBe("old session contents\n");
-    expect(fs.readdirSync(actorRoot)).toEqual(before);
+    await actors.remove(stopped.id);
+    expect(fs.existsSync(sessionFile)).toBe(false);
+    const replacement = await actors.create({ name: "planner", instructions: "New." });
+    expect(replacement.id).not.toBe(stopped.id);
   });
 
-  it("cleans the staged directory if removing the stopped namesake fails", async () => {
-    const { actors, root } = setup();
+  it("keeps a stopped actor when another creation's registry write fails", async () => {
+    const { actors, root } = setup(true);
     const stopped = await actors.create({ name: "planner", instructions: "Plan." });
     await actors.stop(stopped.id);
     const sessionFile = actors.status(stopped.id).sessionFile!;
-    fs.writeFileSync(sessionFile, "old session contents\n");
-    const actorRoot = path.join(root, "actors");
-    const before = fs.readdirSync(actorRoot);
-    const remove = vi.spyOn(actors, "remove").mockRejectedValueOnce(new Error("injected removal failure"));
+    fs.writeFileSync(sessionFile, "old session\n");
+    const registry = path.join(root, "actors", "actors.json");
+    const before = fs.readFileSync(registry, "utf8");
+    const write = vi.spyOn(ActorRegistryStore.prototype, "write").mockImplementation(() => { throw new Error("injected registry failure"); });
     try {
-      await expect(actors.create({ name: "planner", instructions: "Replace." })).rejects.toThrow("injected removal failure");
-    } finally {
-      remove.mockRestore();
-    }
-    expect(actors.status(stopped.id)).toMatchObject({ status: "stopped" });
-    expect(fs.readFileSync(sessionFile, "utf8")).toBe("old session contents\n");
-    expect(fs.readdirSync(actorRoot)).toEqual(before);
+      await expect(actors.create({ name: "other", instructions: "Work." })).rejects.toThrow("injected registry failure");
+      expect(write).toHaveBeenCalled();
+      expect(actors.status(stopped.id).status).toBe("stopped");
+      expect(fs.readFileSync(sessionFile, "utf8")).toBe("old session\n");
+      expect(fs.readFileSync(registry, "utf8")).toBe(before);
+    } finally { write.mockRestore(); }
   });
 
   it("haltAll skips idle and stopped actors and leaves them usable", async () => {
