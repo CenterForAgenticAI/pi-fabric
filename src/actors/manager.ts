@@ -1168,8 +1168,9 @@ export class ActorManager {
           );
         }
       }
+      // Lost actors can still be unwinding after their abort.
       await Promise.allSettled(
-        owned.map((actor) => actor.drain ?? Promise.resolve()),
+        [...this.#actors.values()].map((actor) => actor.drain ?? Promise.resolve()),
       );
       for (const actor of owned) {
         if (actor.status !== "stopped") actor.status = "idle";
@@ -1295,7 +1296,11 @@ export class ActorManager {
     const drain = this.#drain(actor);
     actor.drain = drain;
     const release = (): void => {
-      if (actor.drain === drain) delete actor.drain;
+      if (actor.drain === drain) {
+        delete actor.drain;
+        // A lost instance retained during reconciliation can now be refreshed.
+        if (!this.#ownership.get(actor.id)) this.#registryFingerprint = undefined;
+      }
     };
     drain.then(release, release);
   }
@@ -1882,21 +1887,11 @@ export class ActorManager {
       return; // Keep both the current actors and the fingerprint retryable.
     }
     this.#registryFingerprint = fingerprint;
-    const ownsAny = [...this.#actors.keys()].some((id) => this.#ownershipDecision(id));
-    if (!ownsAny) {
-      for (const actor of this.#actors.values()) actor.abortController?.abort();
-      this.#actors.clear();
-      this.#ownership.clear();
-      this.#locallyCreated.clear();
-      this.#loadActors(false, parsed);
-      for (const actor of this.#actors.values()) {
-        this.#ownership.set(actor.id, this.#ownershipDecision(actor.id));
-      }
-      return;
-    }
     const owned = new Set<string>();
     for (const [id, actor] of this.#actors) {
-      if (this.#ownershipDecision(id)) {
+      // A lost actor must remain reachable until refresh aborts it and its
+      // drain settles. Never replace a still-live instance during a sync.
+      if (this.#ownershipDecision(id) || this.#ownership.get(id) || actor.drain) {
         owned.add(id);
         continue;
       }
@@ -2212,7 +2207,7 @@ export class ActorManager {
     ) {
       return;
     }
-    if (actor.rootId === this.#rootId) return;
+    if (actor.rootId === this.#rootId || actor.drain) return;
     // Only residency-matched rows: Main adopts "session" actors, the resident
     // host adopts "durable" actors.
     if (actor.residency !== this.#claimResidency) return;
@@ -2241,7 +2236,7 @@ export class ActorManager {
     try {
       const expectedRootId = actor.rootId;
       adopted = await this.#registry.withLock(() => {
-        if (this.#closing || this.#actors.get(actor.id) !== actor) return false;
+        if (this.#closing || this.#actors.get(actor.id) !== actor || actor.drain) return false;
         const entries = this.#registry.entries();
         const records = entries.filter(isActorRegistryRecord);
         const current = records.find((record) => record.id === actor.id);
@@ -2322,12 +2317,12 @@ export class ActorManager {
 
   #refreshOwnership(): void {
     if (!this.#canManageActor || this.#reloadingOwnership) return;
-    let acquired = false;
+    const acquired: ManagedActor[] = [];
     for (const actor of this.#actors.values()) {
       const previous = this.#ownership.get(actor.id) ?? false;
       const next = this.#ownershipDecision(actor.id);
-      this.#ownership.set(actor.id, next);
       if (previous && !next) {
+        this.#ownership.set(actor.id, false);
         actor.abortController?.abort();
         for (const item of actor.queue.splice(0)) {
           item.reject?.(
@@ -2338,20 +2333,32 @@ export class ActorManager {
         }
         if (actor.status !== "stopped") actor.status = "idle";
       } else if (!previous && next) {
-        acquired = true;
+        acquired.push(actor);
       }
     }
     this.#scheduleAdoptions();
-    if (!acquired || !this.#persistent || this.#closing) return;
+    if (acquired.length === 0 || this.#closing) return;
+    if (!this.#persistent) {
+      for (const actor of acquired) this.#ownership.set(actor.id, true);
+      return;
+    }
+    // Read and validate before touching any instance or ownership cache. A
+    // failed read leaves false-to-true transitions retryable on the next call.
+    let snapshot: unknown;
+    try {
+      snapshot = this.#registry.read();
+      if (typeof snapshot !== "object" || snapshot === null || Array.isArray(snapshot) ||
+          !Array.isArray((snapshot as { actors?: unknown }).actors)) return;
+    } catch {
+      return;
+    }
     this.#reloadingOwnership = true;
     try {
-      for (const actor of this.#actors.values()) actor.abortController?.abort();
-      this.#actors.clear();
-      this.#ownership.clear();
-      this.#locallyCreated.clear();
-      this.#loadActors();
-      for (const actor of this.#actors.values()) {
-        this.#ownership.set(actor.id, this.#ownershipDecision(actor.id));
+      for (const actor of acquired) {
+        // A previous owner may still be unwinding. Do not hydrate or run it
+        // again until its drain has settled.
+        if (actor.drain) continue;
+        this.#loadActors(false, snapshot, { target: actor, commit: () => {} });
       }
     } finally {
       this.#reloadingOwnership = false;

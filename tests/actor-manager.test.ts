@@ -708,6 +708,112 @@ describe("ActorManager", () => {
     }
   });
 
+  it("preserves an adopted drain when another actor becomes owned and waits for shutdown", async () => {
+    const state = setup(true, undefined, async () => { throw new Error("creator must not run"); });
+    const first = await state.actors.create({ name: "acquire-live", instructions: "Live.", requires: ["demo.echo"] });
+    const second = await state.actors.create({ name: "acquire-next", instructions: "Next." });
+    await state.actors.close();
+    const identity = { ...state.identity, id: "session:acquire", sessionId: "acquire" };
+    let secondOwned = false;
+    let signal: AbortSignal | undefined;
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const successor = new ActorManager("acquire", identity, state.mesh, { ...state.meshConfig, actorPollMs: 60_000 }, state.agents, () => {}, {
+      actorRoot: path.join(state.root, "actors"), persistent: true, claimResidency: "session", rootId: identity.id,
+      canManageActor: (id) => id === second.id ? secondOwned : undefined, lineageAlive: () => false,
+      acquireCapabilityView: async (_requirements, runSignal) => {
+        signal = runSignal;
+        await gate;
+        throw new Error("finished");
+      },
+    });
+    actorManagers.push(successor);
+    try {
+      successor.owns(first.id);
+      await waitFor(() => successor.owns(first.id));
+      successor.tell(first.id, "run");
+      await waitFor(() => signal !== undefined);
+      secondOwned = true;
+      expect(successor.owns(second.id)).toBe(true);
+      expect(signal?.aborted).toBe(false);
+      let closed = false;
+      const closing = successor.close().then(() => { closed = true; });
+      expect(signal?.aborted).toBe(true);
+      await Promise.resolve();
+      expect(closed).toBe(false);
+      finish();
+      await closing;
+      expect(closed).toBe(true);
+    } finally { finish(); }
+  });
+
+  it("keeps a live actor and retries a failed acquisition registry read", async () => {
+    const state = setup(true, undefined, async () => { throw new Error("creator must not run"); });
+    const first = await state.actors.create({ name: "read-live", instructions: "Live.", requires: ["demo.echo"] });
+    const second = await state.actors.create({ name: "read-next", instructions: "Next." });
+    await state.actors.close();
+    let secondOwned = false;
+    let signal: AbortSignal | undefined;
+    const successor = new ActorManager("read-acquire", state.identity, state.mesh, { ...state.meshConfig, actorPollMs: 60_000 }, state.agents, () => {}, {
+      actorRoot: path.join(state.root, "actors"), persistent: true,
+      canManageActor: (id) => id === first.id || secondOwned,
+      acquireCapabilityView: async (_requirements, runSignal) => {
+        signal = runSignal;
+        return await new Promise<FabricCapabilityViewLease>((_resolve, reject) => {
+          runSignal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      },
+    });
+    actorManagers.push(successor);
+    const originalRead = ActorRegistryStore.prototype.read;
+    let fail = false;
+    const read = vi.spyOn(ActorRegistryStore.prototype, "read").mockImplementation(function (this: ActorRegistryStore) {
+      if (fail) { fail = false; throw new Error("transient read"); }
+      return originalRead.call(this);
+    });
+    try {
+      successor.tell(first.id, "run");
+      await waitFor(() => signal !== undefined);
+      secondOwned = true;
+      fail = true;
+      expect(successor.owns(second.id)).toBe(false);
+      expect(signal?.aborted).toBe(false);
+      expect(successor.status(first.id)).toMatchObject({ id: first.id, status: "running" });
+      expect(successor.owns(second.id)).toBe(true);
+      expect(signal?.aborted).toBe(false);
+      await successor.close();
+      expect(signal?.aborted).toBe(true);
+    } finally { read.mockRestore(); }
+  });
+  it("defers reacquisition until a lost actor's drain settles", async () => {
+    const state = setup(true, undefined, async () => { throw new Error("creator must not run"); });
+    const actor = await state.actors.create({ name: "loss-drain", instructions: "Live.", requires: ["demo.echo"] });
+    await state.actors.close();
+    let owned = true;
+    let signal: AbortSignal | undefined;
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const successor = new ActorManager("loss", state.identity, state.mesh, { ...state.meshConfig, actorPollMs: 60_000 }, state.agents, () => {}, {
+      actorRoot: path.join(state.root, "actors"), persistent: true, canManageActor: () => owned,
+      acquireCapabilityView: async (_requirements, runSignal) => {
+        signal = runSignal;
+        await gate;
+        throw new Error("finished");
+      },
+    });
+    actorManagers.push(successor);
+    try {
+      successor.tell(actor.id, "run");
+      await waitFor(() => signal !== undefined);
+      owned = false;
+      expect(successor.owns(actor.id)).toBe(false);
+      expect(signal?.aborted).toBe(true);
+      owned = true;
+      expect(successor.owns(actor.id)).toBe(false);
+      finish();
+      await waitFor(() => successor.owns(actor.id));
+    } finally { finish(); }
+  });
   it("retains adopted actors and retries a failed post-commit registry read", async () => {
     const state = setup(true);
     const actor = await state.actors.create({ name: "adoption-read", instructions: "Keep me." });
