@@ -2,13 +2,18 @@
 import { bool, fun } from "gdp-wired";
 import type { Kernel } from "./kernel.js";
 
-type ActorNameBug = "stopped overrides active";
+type ActorNameBug = "stopped overrides active" | "admit stopped-only" | "refuse absent";
 const decision = (bug?: ActorNameBug) => fun("actor name decision")
   .inputs({ hasActive: bool, hasStopped: bool })
   .returns(({ hasActive, hasStopped }) => ({
     active: bug === "stopped overrides active" ? hasActive.and(hasStopped.not()) : hasActive,
-    stopped: bug === "stopped overrides active" ? hasStopped : hasActive.not().and(hasStopped),
-    available: hasActive.not().and(hasStopped.not()),
+    stopped: bug === "stopped overrides active" ? hasStopped
+      : bug === "admit stopped-only" ? hasActive.and(hasActive.not())
+      : bug === "refuse absent" ? hasActive.not()
+      : hasActive.not().and(hasStopped),
+    available: bug === "admit stopped-only" ? hasActive.not()
+      : bug === "refuse absent" ? hasActive.and(hasActive.not())
+      : hasActive.not().and(hasStopped.not()),
   }));
 
 export const actorNameKernels = (bug?: ActorNameBug): Kernel[] => {
@@ -19,4 +24,4 @@ export const actorNameKernels = (bug?: ActorNameBug): Kernel[] => {
     f.law("neither exists means available", ({ hasActive, hasStopped }) => hasActive.not().and(hasStopped.not()), (o) => o.available.and(o.active.not(), o.stopped.not())),
   ] }];
 };
-export const ACTOR_NAME_BUGS: ActorNameBug[] = ["stopped overrides active"];
+export const ACTOR_NAME_BUGS: ActorNameBug[] = ["stopped overrides active", "admit stopped-only", "refuse absent"];

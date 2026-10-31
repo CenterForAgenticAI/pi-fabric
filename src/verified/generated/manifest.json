@@ -14,7 +14,7 @@
     "proofs/grants.ts": "c71c1e8b327034dbf710d1f8839f0bd036783dedd22470a9c069029f3ea0ba38",
     "proofs/speculation.ts": "dc1f1b59f2e5414a439e7e62c897bd238b3470c7e608a9228fcf9e3b18dc9477",
     "proofs/budget.ts": "a6aa3ce2aaffe80d411f8addb6953cbee82c522743a7934dca12e823cf8e3f13",
-    "proofs/actor-name.ts": "92d5dc119e65f0073020ddaa1aee370ab6f94f8bb74ebcb25c23f9c3374fcba8",
+    "proofs/actor-name.ts": "777738fad15d31e9367d4290f6f4f8f3178a41adbedc4c889222ba317552d358",
     "scripts/verified-kernels.ts": "e6a6718990d1ab7c75020f0d6b62040df265610f20e0a1b6e61f6a8b3e71360d",
     "scripts/verified-kernel-pool.ts": "7869f607e4ff87ac219fe2b14df06887fbc56a43c783118e64387f477e5ead42",
     "scripts/verified-kernel-worker.ts": "d9a9a4a6e80d92f515ee4f8018193418d6937255688cf2f7e52953813bc65a4f"
