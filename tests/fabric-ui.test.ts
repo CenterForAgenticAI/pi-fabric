@@ -815,10 +815,10 @@ describe("Fabric dynamic UI", () => {
       { ...current.agents[0]!, id: "agent-one", name: "a very long active agent name", status: "running" },
       { ...current.agents[0]!, id: "agent-two", name: "second", status: "running" },
     ];
-    // Three rows: the spacer, the header, and one agent row with the marker.
+    // Three rows: the spacer, the header with the overflow count, and one agent.
     const lines = new FabricWidget(theme, () => current, 3).render(24);
     expect(lines).toHaveLength(3);
-    expect(lines[2]).toContain("+1");
+    expect(lines[1]).toContain("↓ 1 more");
     expect(lines.every((line) => visibleWidth(line) <= 24)).toBe(true);
   });
 
