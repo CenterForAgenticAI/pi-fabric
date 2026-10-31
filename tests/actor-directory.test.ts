@@ -93,6 +93,20 @@ describe("ActorDirectory", () => {
     }
   });
 
+  it("refuses cross-scope replacement without deleting the stopped actor", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-actor-directory-"));
+    roots.push(root);
+    const { directory } = open(root, "alpha");
+    const actor = await directory.create({ name: "planner", scope: "project", instructions: "old" });
+    await directory.stop(actor.id);
+    const file = directory.status(actor.id).sessionFile!;
+    fs.writeFileSync(file, "keep");
+    await expect(directory.create({ name: "planner", scope: "session", instructions: "" })).rejects.toThrow();
+    await expect(directory.create({ name: "planner", scope: "session", instructions: "new" })).rejects.toThrow(/across storage scopes/);
+    expect(directory.status(actor.id).status).toBe("stopped");
+    expect(fs.readFileSync(file, "utf8")).toBe("keep");
+  });
+
   it("runs project and session actor registries concurrently", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-actor-directory-"));
     roots.push(root);
