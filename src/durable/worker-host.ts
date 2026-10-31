@@ -128,6 +128,8 @@ export async function createDurableWorkerRuntime(options: DurableWorkerOptions):
       resourceLoaderOptions: {
         additionalExtensionPaths: options.extensions,
         noExtensions: options.noExtensions,
+        noSkills: options.noSkills,
+        additionalSkillPaths: options.skills,
         appendSystemPrompt: options.appendSystemPrompt ? [options.appendSystemPrompt] : [],
         extensionFactories: [
           { name: "codemode", factory: createCodemodeExtension(), builtin: true, replaceable: true },

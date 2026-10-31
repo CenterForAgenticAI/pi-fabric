@@ -20,7 +20,7 @@ import {
   type FabricSchemaMode,
 } from "./config.js";
 import { FabricSessionApprovals } from "./core/approval-controller.js";
-import { FabricActionPolicyHooks } from "./core/action-policy-hooks.js";
+import { ACTION_POLICY_HOOK_NAME_PATTERN, FabricActionPolicyHooks } from "./core/action-policy-hooks.js";
 import { readChildToolAllowlist } from "./core/child-tool-allowlist.js";
 import { NO_FOREGROUND, resolveForegroundTools, type FabricForegroundResolution } from "./core/foreground-tools.js";
 import { PrewalkController } from "./prewalk/controller.js";
@@ -47,6 +47,7 @@ import type {
   FabricActionDescriptor,
   FabricComponentDefinition,
   FabricProvider,
+  FabricQuestionRendererV1,
 } from "./protocol.js";
 import type { FabricRuntimeState } from "./fabric-runtime-state.js";
 import type { DecisionStore } from "./decisions/store.js";
@@ -95,6 +96,8 @@ export class FabricState {
   readonly sessionApprovals = new FabricSessionApprovals();
   /** Extension hooks registered over pi.events; consulted only when approvals.policyHooks is true. */
   readonly actionPolicyHooks = new FabricActionPolicyHooks();
+  /** Question renderers registered over pi.events; consulted only when ui.questionRenderers is true. */
+  readonly questionRenderers = new FabricQuestionRenderers();
   /** Foreground `fabric_exec` programs the Ctrl+B chord can move to the background. */
   readonly programTasks = new FabricProgramTasks();
   // agent_end must revert an override even before activation; the controller
@@ -576,6 +579,7 @@ export class FabricState {
         prewalkDrift: this.prewalkDrift,
         sessionApprovals: this.sessionApprovals,
         actionPolicyHooks: this.actionPolicyHooks,
+        questionRenderers: this.questionRenderers,
         thinking: await this.thinking.load(),
         ...(this.#options.paths ? { paths: this.#options.paths } : {}),
         ...(this.#entryIdentity ? { entryIdentity: this.#entryIdentity } : {}),
@@ -594,6 +598,50 @@ export class FabricState {
     const runtime = this.#current();
     if (!runtime?.initialized) throw new Error("Pi Fabric has not activated");
     return runtime;
+  }
+}
+
+/**
+ * Question renderers registered over pi.events
+ * (`pi-fabric:question-renderer:register:v1`). Registration is always
+ * accepted; Fabric consults renderers only when `ui.questionRenderers` is true.
+ */
+export class FabricQuestionRenderers {
+  readonly #renderers = new Map<string, { render: FabricQuestionRendererV1 }>();
+
+  get size(): number {
+    return this.#renderers.size;
+  }
+
+  /**
+   * Register `render` under `name`; the same name replaces an earlier
+   * renderer in its original position, so a reloaded extension does not stack
+   * copies. The returned function removes only this registration.
+   */
+  register(name: string, render: FabricQuestionRendererV1): () => void {
+    if (!ACTION_POLICY_HOOK_NAME_PATTERN.test(name)) {
+      throw new Error("Question renderer name must match [A-Za-z0-9@][A-Za-z0-9@._/-]{0,63}");
+    }
+    if (typeof render !== "function") throw new Error("Question renderer must be a function");
+    const registration = { render };
+    this.#renderers.set(name, registration);
+    return () => {
+      if (this.#renderers.get(name) === registration) this.#renderers.delete(name);
+    };
+  }
+
+  clear(): void {
+    this.#renderers.clear();
+  }
+
+  /** A snapshot in registration order. */
+  list(): Array<{ name: string; render: FabricQuestionRendererV1 }> {
+    return [...this.#renderers].map(([name, { render }]) => ({ name, render }));
+  }
+
+  /** This registry when `ui.questionRenderers` is true and a renderer is registered; otherwise undefined. */
+  active(enabled: boolean | undefined): FabricQuestionRenderers | undefined {
+    return enabled === true && this.size > 0 ? this : undefined;
   }
 }
 

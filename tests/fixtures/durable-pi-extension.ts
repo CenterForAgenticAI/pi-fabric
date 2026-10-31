@@ -37,9 +37,20 @@ export default async function (pi: ExtensionAPI) {
   if (process.env.DURABLE_TEST_HANDLE_INPUT) pi.on("input", () => ({ action: "handled" }));
   pi.registerTool({ name: "hold_effect", label: "Hold effect", description: "Offline crash-safety fixture", parameters: Type.Object({}),
     async execute(_id, _args, signal) {
+      // With DURABLE_TEST_ENTRIES, record this extension's own session entry before the effect is visible.
+      if (process.env.DURABLE_TEST_ENTRIES) pi.appendEntry("durable-test.turn", { turn: true });
       fs.appendFileSync(process.env.DURABLE_TEST_EFFECT!, "effect\n");
       await new Promise<void>((resolve) => { if (signal?.aborted) resolve(); else signal?.addEventListener("abort", () => resolve(), { once: true }); });
       return { content: [{ type: "text", text: "stopped" }], details: {} };
     },
   });
+  // Opt-in: count this extension's own session entries at startup and add one per turn.
+  const report = process.env.DURABLE_TEST_ENTRIES;
+  if (report) {
+    pi.on("session_start", (_event, ctx) => {
+      const entries = ctx.sessionManager.getEntries().filter(entry => entry.type === "custom" && entry.customType === "durable-test.turn");
+      fs.appendFileSync(report, `${entries.length}\n`);
+    });
+    pi.on("turn_end", () => { pi.appendEntry("durable-test.turn", { turn: true }); });
+  }
 }

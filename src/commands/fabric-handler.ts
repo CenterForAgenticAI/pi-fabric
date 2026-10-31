@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { FabricActorHostEvent } from "../actors/types.js";
+import type { FabricActorHostEvent, FabricActorInfo } from "../actors/types.js";
 import type { FabricState } from "../fabric-state.js";
 import { resolveAgentDir } from "../core/agent-dir.js";
 import { saveFabricConfig } from "../config.js";
@@ -177,6 +177,36 @@ const formatRepairStatus = (status: RepairStatus): string => {
   ].join("\n");
 };
 
+type ActorTarget =
+  | { actor: FabricActorInfo; ambiguous?: undefined }
+  | { actor?: undefined; ambiguous: FabricActorInfo[] }
+  | { actor?: undefined; ambiguous?: undefined };
+
+/**
+ * Resolves the actor a slash command names: an exact id, then an exact name,
+ * then an id prefix that only one actor has. A name or prefix shared by
+ * several actors is ambiguous, so a command never acts on the first one in
+ * list order.
+ */
+function resolveActorTarget(actors: FabricActorInfo[], key: string): ActorTarget {
+  const byId = actors.find((candidate) => candidate.id === key);
+  if (byId) return { actor: byId };
+  const byName = actors.filter((candidate) => candidate.name === key);
+  if (byName.length === 1) return { actor: byName[0]! };
+  if (byName.length > 1) return { ambiguous: byName };
+  const byPrefix = actors.filter((candidate) => candidate.id.startsWith(key));
+  if (byPrefix.length === 1) return { actor: byPrefix[0]! };
+  if (byPrefix.length > 1) return { ambiguous: byPrefix };
+  return {};
+}
+
+function ambiguousActorMessage(key: string, candidates: FabricActorInfo[]): string {
+  const listed = candidates
+    .map((candidate) => `${candidate.id.slice(0, 8)} (${candidate.name})`)
+    .join(", ");
+  return `Ambiguous Fabric actor: ${key} matches ${listed}; use a longer id`;
+}
+
 export async function runFabricCommand(
   pi: ExtensionAPI,
   deps: FabricCommandDeps,
@@ -336,7 +366,8 @@ export async function runFabricCommand(
   }
   if (command === "decisions") {
     const { openFabricDecisions } = await import("../decisions/command.js");
-    await openFabricDecisions(state.mesh, context, argumentsList[0]);
+    const renderers = state.questionRenderers.active(state.config.ui.questionRenderers);
+    await openFabricDecisions(state.mesh, context, argumentsList[0], renderers);
     return;
   }
   if (command === "programs" || command === "run") {
@@ -502,13 +533,16 @@ export async function runFabricCommand(
       return;
     }
     try {
+      const target = resolveActorTarget(state.actors.list(), id);
+      if (target.ambiguous) {
+        context.ui.notify(ambiguousActorMessage(id, target.ambiguous), "error");
+        return;
+      }
+      const actor = target.actor;
       const dest = path.resolve(
         destArg || path.join("fabric-logs", `export-${Date.now()}`),
       );
       fs.mkdirSync(dest, { recursive: true });
-      const actor = state.actors
-        .list()
-        .find((candidate) => candidate.id.startsWith(id) || candidate.name === id);
       let label: string;
       let copied: string[] = [];
       if (actor) {
@@ -581,9 +615,12 @@ export async function runFabricCommand(
       context.ui.notify("Usage: /fabric stop <id>", "warning");
       return;
     }
-    const actor = state.actors
-      .list()
-      .find((candidate) => candidate.id.startsWith(id) || candidate.name === id);
+    const target = resolveActorTarget(state.actors.list(), id);
+    if (target.ambiguous) {
+      context.ui.notify(ambiguousActorMessage(id, target.ambiguous), "error");
+      return;
+    }
+    const actor = target.actor;
     if (actor) {
       await state.actors.stop(actor.id);
       context.ui.notify(`Stopped Fabric actor ${actor.id.slice(0, 8)}`, "info");
@@ -604,9 +641,12 @@ export async function runFabricCommand(
       context.ui.notify("Usage: /fabric remove <id>", "warning");
       return;
     }
-    const actor = state.actors
-      .list()
-      .find((candidate) => candidate.id.startsWith(id) || candidate.name === id);
+    const target = resolveActorTarget(state.actors.list(), id);
+    if (target.ambiguous) {
+      context.ui.notify(ambiguousActorMessage(id, target.ambiguous), "error");
+      return;
+    }
+    const actor = target.actor;
     if (actor) {
       await state.actors.remove(actor.id);
       context.ui.notify(`Removed Fabric actor ${actor.id.slice(0, 8)} (${actor.name})`, "info");
@@ -676,9 +716,12 @@ export async function runFabricCommand(
       return;
     }
     try {
-      const actor = state.actors
-        .list()
-        .find((candidate) => candidate.id.startsWith(id) || candidate.name === id);
+      const target = resolveActorTarget(state.actors.list(), id);
+      if (target.ambiguous) {
+        context.ui.notify(ambiguousActorMessage(id, target.ambiguous), "error");
+        return;
+      }
+      const actor = target.actor;
       if (!actor) {
         context.ui.notify(`Unknown Fabric actor: ${id}`, "error");
         return;

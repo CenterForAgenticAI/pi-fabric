@@ -1175,7 +1175,8 @@ export class FabricExecutionService {
                   error,
                   executionOutcomeFromError(error, runtimeSignal),
                 );
-                return [];
+                // Surface the registry failure; an empty list reads as "no models".
+                throw error;
               }
             }
             case "fabric.$list":
@@ -1483,7 +1484,7 @@ export class FabricExecutionService {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.activity?.finish(options.parentToolCallId, false, message);
+      this.activity?.finish(options.parentToolCallId, false, message, options.signal?.aborted === true);
       itemTransitions.finish(false);
       if (options.signal?.aborted) {
         await this.#participants?.cancelInvocation(options.parentToolCallId).catch(() => undefined);
@@ -1512,7 +1513,12 @@ export class FabricExecutionService {
         .join("; ")}`;
       sandboxResult.error = sandboxResult.error ? `${sandboxResult.error}\n${summary}` : summary;
     }
-    this.activity?.finish(options.parentToolCallId, succeeded, sandboxResult.error);
+    this.activity?.finish(
+      options.parentToolCallId,
+      succeeded,
+      sandboxResult.error,
+      runOutcome === "aborted" || options.signal?.aborted === true,
+    );
     itemTransitions.finish(succeeded);
     // Logs, results, and error text reach the model, the event stream, and
     // persisted traces. Raw media must not: images are hoisted out of band and

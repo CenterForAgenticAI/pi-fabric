@@ -151,6 +151,17 @@ switch (behavior) {
   case "reject":
     emit({ type: "response", command: "prompt", success: false, error: "provider rejected the prompt" });
     process.exit(1);
+  case "answer-then-linger":
+  case "tool-use-then-linger":
+    // Settle the turn, then stay alive after stdin closes, like an extension
+    // that leaves a referenced timer running. Only SIGTERM/SIGKILL ends it.
+    emit({ type: "fake_child_pid", pid: process.pid });
+    emit({ type: "message_end", message: behavior === "answer-then-linger"
+      ? { role: "assistant", content: "final answer", stopReason: "stop" }
+      : { role: "assistant", content: [{ type: "toolCall", name: "read" }], stopReason: "toolUse" } });
+    emit({ type: "agent_settled" });
+    setInterval(() => {}, 60_000);
+    break;
   case "hang":
     // Never exit and never settle; the worker timeout should fire.
     setInterval(() => {}, 60_000);

@@ -72,7 +72,7 @@ beforeAll(() => {
   `);
 });
 
-function setup(inherited = false, entry = workerPath, durableWorkerRecovery = false) {
+function setup(inherited = false, entry = workerPath, durableWorkerRecovery = false, durableWorkerSession = false) {
   const cwd = path.join(root, `case-${++sequence}`);
   const agentDir = path.join(cwd, "agent");
   fs.mkdirSync(agentDir, { recursive: true });
@@ -89,7 +89,7 @@ function setup(inherited = false, entry = workerPath, durableWorkerRecovery = fa
   fs.writeFileSync(path.join(cwd, "fixture.txt"), "private fixture");
   const manager = new AgentManager(cwd, {
     ...DEFAULT_FABRIC_CONFIG.agents, runner: "pi-durable", transport: "process", extensions: true,
-    timeoutMs: 20000, maxConcurrent: 1, durableWorkerRecovery,
+    timeoutMs: 20000, maxConcurrent: 1, durableWorkerRecovery, durableWorkerSession,
   }, { workerPath: entry, runRoot: path.join(cwd, "runs"), fullCodeMode: false,
     // Must never fall back to the native CLI, even on startup/replay failures.
     piBinary: path.join(cwd, "forbidden-native-fallback"),
@@ -173,6 +173,36 @@ describe("AgentManager real durable parent worker", () => {
     expect(fs.readFileSync(effect, "utf8")).toBe("effect\n");
     expect(readWorkerRecovery(directory)).toBeUndefined();
   }, 30000);
+
+  // A relaunch reopens the journal, which restores messages only. What an extension saved in its
+  // session survives only if the worker had a session file in the run directory (agents.durableWorkerSession).
+  it.runIf(process.platform !== "win32")("keeps an extension's session entry when recovery relaunches a dead worker in the same run directory", async () => {
+    const { manager, cwd } = setup(false, workerPath, true, true);
+    const effect = path.join(cwd, "effects"); vi.stubEnv("DURABLE_TEST_EFFECT", effect);
+    const report = path.join(cwd, "entries.txt"); vi.stubEnv("DURABLE_TEST_ENTRIES", report);
+    const counts = () => fs.existsSync(report) ? fs.readFileSync(report, "utf8").trim().split("\n") : [];
+    const handle = await manager.spawn({ task: "hold effect", tools: ["hold_effect"], residency: "durable" });
+    const directory = manager.runDirectory(handle.id)!;
+    await expect.poll(() => fs.existsSync(effect), { timeout: 15000 }).toBe(true);
+    const recovery = readWorkerRecovery(directory);
+    if (!recovery) throw new Error("POSIX durable worker did not publish its recovery marker");
+    await manager.close();
+    process.kill(-recovery.pid, "SIGTERM");
+    await expect.poll(() => { try { process.kill(recovery.pid, 0); return false; } catch { return true; } }, { timeout: 15000 }).toBe(true);
+    expect(counts()).toEqual(["0"]);
+    const second = new AgentManager(cwd, manager.config, {
+      workerPath, runRoot: path.join(cwd, "runs"), fullCodeMode: false,
+      piBinary: path.join(cwd, "forbidden-native-fallback"),
+    }); managers.push(second);
+    expect(await second.recoverWorkerRuns()).toEqual([handle.id]);
+    const result = await second.wait(handle.id);
+    expect(result.status, result.error).toBe("completed");
+    // The relaunched child started with the entry the first attempt wrote.
+    expect(counts()).toEqual(["0", "1"]);
+    const session = fs.readFileSync(path.join(directory, "durable-session", "session.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(session.filter(entry => entry.type === "session")).toHaveLength(1);
+    expect(session.filter(entry => entry.customType === "context-aware.policy.v1")).toHaveLength(1);
+  }, 45000);
 
   it("refuses a forged recovery launch after an operator stop, including on Windows", async () => {
     const { manager, cwd } = setup(false, workerPath, true);

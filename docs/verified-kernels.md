@@ -34,6 +34,7 @@ a set of small policy kernels, **not a proof of every subsystem invariant**.
 | State and Schema | `policy.ts`: `headReadable`, `certificateAccepted`, `consume` | `state/store.ts`, `schema/controller.ts` | `head_sound`, `pending_without_marker_hidden`, `committed_head_visible`, `pending_head_visible`, `certificate_sound`, `certificate_complete`, `consume_once`, `consume_retires` |
 | External mesh grants | `grants.ts`: `meshGrantTake` | `verified/grants.ts`, `mesh/grants.ts` | Exact scoped admission, expiry/refusal precedence, exact decrement, refusal preservation and kind/topic forwarding |
 | Speculation bookkeeping | `speculation.ts`: `speculationAdmission`, `speculationCheck`, `speculationAccounting`; `policy.ts`: `consume` | `verified/speculation.ts`, `speculation/store.ts` | Exact admission caps, checkpoint refusal precedence, one-use entry reservation, exact event counters and epoch successor |
+| Actor name decision | `actor-name.ts`: `actorName` | `actors/name-policy.ts`, `actors/manager.ts`, `actors/directory.ts` | Active dominates stopped, stopped is refused absent active, neither is available; host snapshot only, not a reservation |
 | Agent budget admission | `budget.ts`: `budgetAdmission` | `verified/budget.ts`, `agents/manager.ts` | Strict threshold safety/completeness, equality refusal, invalid observations refused |
 | Effect diagnostics | `policy.ts`: `unknownConflict`, `knownConflict` | `components/effect-policy.ts` | `unknown_conflict_exact`, `unknown_conflict_symmetric`, `known_conflict_exact` |
 

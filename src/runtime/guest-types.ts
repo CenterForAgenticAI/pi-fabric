@@ -64,6 +64,8 @@ interface FabricAgentRequest {
   runner?: FabricAgentRunner;
   transport?: FabricTransport;
   model?: string;
+  /** Pi only. "exact": select a visible provider/id without aliases or fuzzy matching; strict admission and a partial guard are not final-dispatch enforcement. Later hooks, unknown APIs, providers or extension calls can route data elsewhere. */
+  modelMatch?: "exact";
   holdQuestions?: true;
   persona?: string;
   thinking?: FabricThinking;
@@ -90,10 +92,14 @@ interface FabricAgentRequest {
   schema?: Record<string, unknown>;
   /** Appended to the child's system prompt (Veda receives it as a <system_instructions> block); blank is ignored and durable spawn refuses it. */
   systemPrompt?: string;
+  /** Pi only. Skills by name from this session: false = none; a list = preload those plus this session's others; inherit: false = only the preloaded ones. */
+  skills?: false | string[] | { preload?: string[]; inherit?: boolean };
   prompt?: string;
   instructions?: string;
   timeout_ms?: number;
   residency?: FabricParticipantResidency;
+  /** agents.spawn only: return a "queued" handle at once; the run starts when a concurrency slot frees. */
+  queue?: boolean;
   /** Opt in to session persistence for hook-based observability and external trace ingestion. */
   persistSession?: boolean;
 }
@@ -803,7 +809,8 @@ interface FabricAgentsApi {
   }): Promise<FabricLifecycleSubscription>;
   subscriptions(args?: { from?: string; to?: string }): Promise<FabricLifecycleSubscription[]>;
   unsubscribe(args: FabricAgentTargetArgs): Promise<{ removed: boolean }>;
-  models(args?: { runner?: FabricAgentRunner; refresh?: boolean }): Promise<FabricModelInfo[]>;
+  /** With model, only entries whose key equals it exactly (no aliases or fuzzy matching); unknown keys give []. */
+  models(args?: { runner?: FabricAgentRunner; refresh?: boolean; model?: string }): Promise<FabricModelInfo[]>;
   stop(args: FabricAgentTargetArgs): Promise<FabricAgentResult | FabricActorInfo | FabricRemoteControlResult>;
   cleanup(args: FabricAgentTargetArgs & { deleteBranch?: boolean; delete_branch?: boolean }): Promise<{ cleaned: boolean }>;
   /** Park an idle hosted run of this session; the runner must declare the sleep capability. */

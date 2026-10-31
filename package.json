@@ -1,6 +1,6 @@
 {
   "name": "pi-fabric",
-  "version": "0.130.1",
+  "version": "0.131.0",
   "description": "A programmable tool and agent runtime for Pi",
   "type": "module",
   "main": "./dist/index.js",
@@ -28,6 +28,10 @@
     "./durable": {
       "types": "./dist/durable.d.ts",
       "import": "./dist/durable.js"
+    },
+    "./durable-host": {
+      "types": "./dist/durable-host.d.ts",
+      "import": "./dist/durable-host.js"
     },
     "./durable-extension": {
       "types": "./dist/durable-extension.d.ts",

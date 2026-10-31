@@ -487,4 +487,26 @@ describe("DurableAgent", () => {
     expect(agent.state.messages.some(m => m.role === "toolResult")).toBe(true);
     expect(agent.state.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "aborted" });
   });
+
+  it("settles abort() and close() while a turn is still preparing", async () => {
+    const { agent, faux } = setup(new MemoryStorage(), [tool(async () => ({ content: [], details: {} }))]);
+    faux.setResponses([fauxAssistantMessage(fauxToolCall("effect", {}), { stopReason: "toolUse" }), fauxAssistantMessage("never")]);
+    const preparing = deferred(); const release = deferred(); let turns = 0;
+    // The second turn's prepare phase commits turn_start itself and then waits for its delivery, so stalling that
+    // delivery holds the run invocation before its admission wait while abort lands.
+    agent.subscribe(async event => { if (event.type === "turn_start" && ++turns === 2) { preparing.resolve(); await release.promise; } });
+    const run = agent.prompt("go").catch(() => {});
+    await preparing.promise;
+    agent.abort();
+    const closing = agent.close();
+    release.resolve();
+    // The engine abort joins the running invocation; close() waits on the abort. Neither may wait on the other.
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("abort/close deadlocked: close() did not settle within 2s")), 2_000); });
+    try {
+      await Promise.race([Promise.all([closing, run, agent.waitForIdle()]), timeout]);
+    } finally { clearTimeout(timer); }
+    expect(agent.state.isStreaming).toBe(false);
+    expect(agent.state.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "aborted" });
+  });
 });

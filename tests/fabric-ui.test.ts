@@ -815,10 +815,10 @@ describe("Fabric dynamic UI", () => {
       { ...current.agents[0]!, id: "agent-one", name: "a very long active agent name", status: "running" },
       { ...current.agents[0]!, id: "agent-two", name: "second", status: "running" },
     ];
-    // Three rows: the spacer, the header, and one agent row with the marker.
+    // Three rows: the spacer, the header with the overflow count, and one agent.
     const lines = new FabricWidget(theme, () => current, 3).render(24);
     expect(lines).toHaveLength(3);
-    expect(lines[2]).toContain("+1");
+    expect(lines[1]).toContain("↓ 1 more");
     expect(lines.every((line) => visibleWidth(line) <= 24)).toBe(true);
   });
 
@@ -2114,7 +2114,12 @@ describe("Fabric dynamic UI", () => {
         "continue remotely",
         "steer",
       );
+      expect(dashboard.render(120).join("\n")).toContain(
+        "Remote participant actions: s steer over mesh · u queue follow-up over mesh · x stop",
+      );
       dashboard.handleInput("x");
+      expect(onAgentStop).not.toHaveBeenCalled();
+      expect(dashboard.render(120).join("\n")).toContain("x again to confirm stop");
       dashboard.handleInput("x");
       expect(onAgentStop).toHaveBeenCalledWith("remote-agent");
     } finally {
@@ -2174,6 +2179,9 @@ describe("Fabric dynamic UI", () => {
       dashboard.handleInput("?");
       const help = dashboard.render(100).join("\n");
       expect(help).toContain("Fabric dashboard help");
+      expect(dashboard.render(200).join("\n")).toContain(
+        "M reduced motion (pins the model on an editable actor row)",
+      );
       expect(help).not.toContain("s steer now");
       expect(help).not.toContain("m model");
       dashboard.handleInput("\x1b");

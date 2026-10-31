@@ -294,6 +294,7 @@ if (task.includes("HANG")) {
     ...(args.has("model") ? { model: args.get("model") } : {}),
     ...(args.has("thinking") ? { thinking: args.get("thinking") } : {}),
     ...(args.has("system-prompt") ? { systemPrompt: args.get("system-prompt") } : {}),
+    ...(args.has("skills") ? { skills: JSON.parse(args.get("skills")) } : {}),
   };
   fs.mkdirSync(path.dirname(statusFile), { recursive: true });
   if (lifecycleFile) {

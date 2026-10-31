@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   writeJsonAtomic,
   formatShortLockOwner,
@@ -12,9 +13,6 @@ import { ActorStoreReadError, readStoreJson } from "./store-read.js";
 
 const ACTOR_REGISTRY_LOCK_TIMEOUT_MS = 5_000;
 const ACTOR_REGISTRY_STALE_LOCK_MS = 30_000;
-
-const delay = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
 
 export type ActorRegistryRecord = Record<string, unknown> & { id: string };
 
@@ -55,7 +53,7 @@ export class ActorRegistryStore {
   }
 
   /** The callback must be synchronous: release precedes promise assimilation. */
-  async withLock<T>(operation: () => T): Promise<T> {
+  async withLock<T>(operation: () => T, signal?: AbortSignal): Promise<T> {
     const lockPath = `${this.#registryPath}.lock`;
     const deadline = Date.now() + ACTOR_REGISTRY_LOCK_TIMEOUT_MS;
     const token = randomUUID();
@@ -69,6 +67,7 @@ export class ActorRegistryStore {
       }
     };
     fs.mkdirSync(this.#actorRoot, { recursive: true, mode: 0o700 });
+    signal?.throwIfAborted();
     while (!tryAcquireShortLock(lockPath, formatShortLockOwner(token))) {
       // An ownerless or partial lock is judged by its age; a fresh one only
       // when its local owner is provably dead; any past the hold ceiling has
@@ -77,9 +76,11 @@ export class ActorRegistryStore {
       if (Date.now() >= deadline) {
         throw new Error("Timed out waiting for the Fabric actor registry lock");
       }
-      await delay(10);
+      await delay(10, undefined, { signal });
+      signal?.throwIfAborted();
     }
     try {
+      signal?.throwIfAborted();
       return operation();
     } finally {
       // Also takes the lock back from a reaper's claim path.

@@ -32,13 +32,24 @@ You can give `fabric_exec` optional `agentBudget` and `tokenBudget` limits. Conf
 
 `agents.wait`/`join`, terminal `agents.status`, and cleanup acknowledge the result and retract any pending notification, including completion that arrived before the wait. Running status and UI/list polling do not acknowledge results. Acknowledgment means the Fabric program received the result: return the relevant outcome to Main when it needs to reason about it. Prefer `wait` over a polling loop.
 
+### Queued spawns
+
+By default `agents.spawn` waits inside the call for a free `agents.maxConcurrent` slot. A program that spawns more children than the limit blocks there, and if its deadline passes first, the waiting spawns never launch and the program cannot return the ids of the runs that did.
+
+`agents.spawn({ ..., queue: true })` returns at once with `status: "queued"` and the run's `id`. The run starts when a slot frees, first come first served, even after the program that spawned it has ended. Its `timeoutMs` counts from its start, not from the spawn call. Meanwhile `agents.wait`, `agents.status`, and `agents.list` accept the id and report `queued`; `wait` resolves with the final result once the run starts and finishes. `agents.stop` on a queued run cancels it without launching and returns a `stopped` result. `agents.cleanup` removes a cancelled queued run; a queued run must be stopped first. `agents.steer`, `agents.followUp`, and `agents.log` need a started run and throw until then. If the launch fails after admission (an unavailable model, a worktree error), the run ends `failed` with that error and a detached run reports it like any other completion. Request validation errors still reject the `spawn` call itself. `queue` is not available with `residency: "durable"`. A [background program](background-tasks.md) (`fabric_exec` with `background: true`) is the other way to keep a long spawn loop from blocking Main, but each spawn in it still waits for a slot.
+
+```ts
+const handles = await Promise.all(tasks.map((task) => agents.spawn({ task, queue: true })));
+return handles.map((handle) => handle.id);
+```
+
 Durable spawns use the same inbox. Undelivered envelopes survive disconnects; receipts survive reconnects. Escape or an errored Main turn parks pending results until new input; Main does not restart immediately. Explicit lifecycle subscriptions, actor messages, and trajectory handoffs retain their separate delivery policies. A terminal run can still report incomplete work; Main must inspect its result.
 
 ### Stalled Pi error recovery
 
 After a failed or aborted assistant response (including `Error: Terminated`), Fabric allows Pi's own retries to recover. If no recovery output arrives for 60 seconds, the worker fails the run with the original error and terminates the child, escalating from SIGTERM to SIGKILL after another 5 seconds. Repeated retry announcements, errors, or lifecycle events do not extend this deadline. Nonempty text/thinking/tool-call deltas refresh it; a successful assistant response clears it. Healthy inference and tool execution are not subject to this recovery timer, and the overall run deadline still applies.
 
-Fabric handles exhausted retries explicitly without waiting forever on an earlier `willRetry` flag. Child shutdown after RPC stdin closes is also bounded: 5 seconds for graceful exit, then SIGTERM and a further 5 seconds before SIGKILL. These failures settle `agents.wait`/`join` and notify detached callers normally; they do not automatically replay potentially side-effecting work. Already-running workers must be stopped and respawned to use the fix.
+Fabric handles exhausted retries explicitly without waiting forever on an earlier `willRetry` flag. Child shutdown after RPC stdin closes is also bounded: 5 seconds for graceful exit, then SIGTERM and a further 5 seconds before SIGKILL. When the child already gave its final answer, a slow exit does not fail the run: it stays `completed` with that answer, and the run log records a `fabric_exit_warning` event. Without a final answer (an error, or a last message that stopped on a tool call), the run fails. These failures settle `agents.wait`/`join` and notify detached callers normally; they do not automatically replay potentially side-effecting work. Already-running workers must be stopped and respawned to use the fix.
 
 ### Stalled Pi stream
 
@@ -64,7 +75,36 @@ The 4,194,304-character guard still applies to other event data, including a sin
 
 Use `agents.models({ runner: "pi" })` and copy the returned `key` verbatim, or use an explicitly configured `models.aliases` name. Reuse the `model` returned by a successful spawn. Do not reconstruct it from an agent's display name. For example, an agent named “Sol” need not share the version number of one named “Astra”. Prior success with one key does not validate a different key.
 
-`provider/model` selectors prefer an exact visible match. A near-miss ID resolves to the closest available model on the **same provider**, using Fabric's existing similarity ranking; ties prefer recent usage, then canonical key order. For example, `openai-codex/gpt-6-sol` resolves to `openai-codex/gpt-5.6-sol` when that is the closest visible model. The returned handle's `model` and the worker's `requestedModel` contain the canonical selection. Unknown providers and names without sufficient resemblance still fail before launch. Model IDs containing `/` stay provider-scoped. Configured aliases keep their ordered, exact-target fallback chains.
+To check one known key without reading the whole list, pass it as `model`: `agents.models({ runner: "pi", model: "provider/id" })` returns only the entries whose `key` equals that string exactly and case-sensitively, so a missing model gives `[]`. This lookup does not resolve aliases or near matches, and it filters the Claude, Veda, and registered-runner lists the same way.
+
+`provider/model` selectors prefer an exact visible match. A near-miss ID resolves to the closest available model on the **same provider**, using Fabric's existing similarity ranking; ties prefer recent usage, then canonical key order. For example, `openai-codex/gpt-6-sol` resolves to `openai-codex/gpt-5.6-sol` when that is the closest visible model. The returned handle's `model` and the worker's `requestedModel` contain the canonical selection. Unknown providers and names without sufficient resemblance still fail before launch. Model IDs containing `/` stay provider-scoped. Configured aliases keep their ordered, exact-target fallback chains. To turn the alias and near-miss steps off, see [exact model match](#exact-model-match).
+
+### Exact model match
+
+Set `modelMatch: "exact"` on `agents.run` or `agents.spawn` to select a named model without fallback. **This is not a security guarantee or final-dispatch enforcement.** Later hooks, unknown API payloads, providers, and extension-made calls can route data elsewhere; attribution may detect drift only after a call. Do not rely on this mode to prevent data disclosure. `model` is then required and must be a `provider/id` that `agents.models({ runner: "pi" })` lists. Fabric skips the `models.aliases` step (an alias named like the model is ignored), the closest-match step, and the fuzzy step, and it applies no alias `thinking` level. Matching ignores case, as it does for other exact lookups, and the handle reports the registry's own spelling. When two registry entries differ only by case, the identical spelling wins, and Fabric authenticates that same entry. Without `modelMatch`, resolution is unchanged.
+
+Fabric refuses these requests before any child starts:
+
+- `model` is missing or not in `provider/id` form: `modelMatch "exact" requires model in provider/id form, as listed by agents.models({ runner: "pi" }).`
+- The model is not in the visible registry: the usual `Model "<selector>" is not available to this Pi session.` error, which names `agents.models({ runner: "pi" })`.
+- The runner is not `pi` or `pi-durable`: `modelMatch "exact" is supported only by the pi and pi-durable runners.` Claude, Veda, and registered runners forward `model` to a backend that can apply its own aliases, so Fabric cannot promise that model and refuses the request.
+- The value is not `"exact"`: the input schema rejects it, and a direct request fails with `Invalid Fabric agent modelMatch`.
+
+The mode holds on every launch path, including a retry or resume of the same run and `residency: "durable"`, where the resident host resolves the model again with the same mode. It is not accepted by `agents.handoff`, `agents.create`, actor activations, or the hosted `AgentService`; their schemas reject it.
+
+What `modelMatch: "exact"` does (subject to the limitations above):
+
+1. **Fabric picks the listed `provider/id` and nothing else.** There is no alias, closest-match or fuzzy step, and no `thinking` level comes from an alias. A model that `agents.models({ runner: "pi" })` does not list is refused before any child starts.
+2. **Admission is strict.** An exact request always uses strict model admission, whatever `agents.modelAdmission` says. This covers the first launch, a startup retry, a resume, and the resident host. Permissive admission accepts a child that reports a different model after selection, and an exact run never does.
+3. **The guard checks observable model changes and requests.** When it detects a different session model or a known payload model mismatch, it stops the child at that check and the run fails with `Fabric exact model pin violated: only <pin> may run, but <actual> was about to run. The provider call was stopped before any request was sent.` The worker loads the `model-pin-guard` Pi extension into the child with `-e`, the same way it loads the write guard, and it loads even with `extensions: false`. The guard knows the pinned `provider/id` and checks three things:
+   - **Model switches.** On the `model_select` event, any model other than the pin ends the run. This detects emitted switches and stops the child, including when Pi's own compaction or branch summaries use the changed session model; independent calls and provider routing remain outside the guard. Pi emits `model_select` only when the model changes. The launch with `--model <pin>`, Fabric's startup `set_model` to the same pin, and a different default model in settings never reach the guard as a switch.
+   - **The current model before each request.** The `context`, `context_with_system` and `before_provider_request` events must show the pin as Pi's current model.
+   - **The outgoing payload.** In `before_provider_request`, the guard compares the model id inside the payload with the registry `id` of the pin, which is the value Pi sends. It does this only for APIs whose payload shape carries the model id in a known field: `model` for `openai-completions`, `openai-responses`, `openai-codex-responses`, `anthropic-messages`, `mistral-conversations`, `google-generative-ai`, `google-vertex` and `pi-messages`, and `modelId` for `bedrock-converse-stream`. It skips Azure OpenAI Responses, whose payload names a deployment, virtual models, APIs that extensions register, and any payload without a string in that field. A rewrite made by a handler that is loaded before the guard is caught. A rewrite made by a handler that runs after the guard is not.
+
+   On a detected violation the guard writes one `[pi-fabric] model-pin-violation` line to stderr and ends the child process with status 71 at that check. The error's pre-send wording refers to the intercepted request, not to prior calls or undetected rerouting. Pi ignores an exception thrown by an extension handler. `ctx.abort()` also stopped the call in Pi 1.0.4 probes, because credential lookup ahead of the provider honours the aborted signal, but the run would then fail as a plain abort with no fixed reason. Ending the process depends on neither behaviour. A pin failure is final: Fabric neither retries nor resumes it, whatever words the model ids contain.
+4. **The guard is not final-dispatch enforcement.** A guard inside the child process cannot stop extension code in that process from calling another model. This covers nested model calls from tools, custom compaction that summarizes with another model, a provider that an extension re-registers under the pinned name so that it forwards to another model, and a payload rewrite by a handler that runs after the guard. The strict attribution check on assistant messages stays as a second line of defence: it fails the run afterwards where a reply names another model, after the call has been made.
+
+A project extension that emits a detected model switch at `before_agent_start`, between turns, inside a tool, or inside a `context` handler causes the guard to end the run; this does not rule out other calls or later rerouting. This also holds at `session_start`: an extension that switches the model there and relied on Fabric to switch it back now fails an exact run, because the guard cannot tell that switch from one that is followed by a summary on the other model. Run such an extension with a default request, or set `extensions: false` for the exact run.
 
 For independent launches, await `Promise.allSettled` and inspect every result. An uncaught `Promise.all` rejection ends the Fabric program and can abort sibling calls still in flight; it does not prove every requested model was unavailable. Already completed calls are not rolled back, so retain successful handles and retry only failed launches.
 
@@ -78,6 +118,21 @@ return results.map(result => result.status === "fulfilled"
 ### Child system prompt
 
 `systemPrompt` on `agents.run` or `agents.spawn` adds text to the child's system prompt. Fabric joins it ahead of any [component model guidance](components.md), and Pi and Claude children append the result to their system prompt with `--append-system-prompt`. A Veda child receives it as a `<system_instructions>` block in its prompt. A blank value is ignored, and durable `agents.spawn` refuses it.
+
+### Child skills
+
+`skills` on `agents.run` or `agents.spawn` chooses the child's Pi skills by name. Fabric looks up each name among the skills this session has loaded, as Pi lists them in its `skill:` commands. A child never gets a skill this session does not have, and a path in place of a name is refused.
+
+| Value | The child gets |
+| --- | --- |
+| omitted | Pi's own skill discovery, as before. |
+| `false` | No skills. |
+| `["writing", "review"]` | Those skills preloaded in full, plus this session's other skills in its skill list. |
+| `{ preload: ["writing"], inherit: false }` | Only the preloaded skills. |
+
+A preloaded skill is placed in the child's system prompt in full, in the `<skill>` block Pi uses for `/skill:name`, after any `systemPrompt` and ahead of component model guidance. Fabric starts the child with `--no-skills` and one `--skill` for each skill it may still list, so it does not run its own discovery. Fabric's bundled skills come from the parent's list too; a child with `skills: false` has none of them.
+
+An unknown name fails before any child starts. The error lists this session's skill names and suggests the closest one. A listed skill whose file cannot be read also fails. Only the `pi` and `pi-durable` runners accept `skills`; Claude and Veda children refuse it before launch, including `skills: false`. `extensions: false` children accept it, because Pi loads skills without extensions. Durable `agents.spawn` refuses it, like `systemPrompt`.
 
 ### Named agent files
 
@@ -123,9 +178,11 @@ A project file shadows a user file with the same `name`. Fabric reads the projec
 | `model` | `model` | Resolved like a call's `model`, so `models.aliases` names and their thinking levels apply. `inherit` or no value sets nothing. |
 | `tools` | `tools` | A YAML list or a comma-separated string. Claude Code names map to Pi names without regard to case: `Read` to `read`, `Grep` to `grep`, `Glob` to `find`, `LS` to `ls`, `Bash` to `bash`, `Edit`, `MultiEdit` to `edit`, `Write` to `write`. Other names stay as written. No value means the default allowlist. |
 | `thinking` or `effort` | `thinking` | One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Writing both is an error. |
+| `skills` | `skills` | Skill names to preload (see [Child skills](#child-skills)), as a YAML list or a comma-separated string. An entry can also be `{ name, required }`; a missing skill with `required: false` is skipped with a warning. `source` and `version` load with a warning and are not used. A path is an error. An empty list preloads nothing. |
+| `context.skills` | `skills.inherit` | `true` (the default) keeps this session's other skills in the child's skill list; `false` leaves only the preloaded ones. Other `context` keys are ignored with a warning. |
 | `runtimes.fabric` | request fields | Fabric-only settings under their request field names: `runner`, `kernel`, `model`, `thinking`, `tools`, `timeoutMs`, `readOnly`. They win over the shared fields above. An unknown key is an error. |
 
-Any other top-level field, such as `color`, `skills`, `delegate` or `permissionMode`, is ignored. Fabric reports each one as a warning in `agents.definitions()` and in the run's progress notice. It never fails the run, so a file written for another tool keeps loading. Pi agent profiles accept only seven keys, so a file in `.pi/agents` that you share with that tool must keep to them. Put Fabric-only settings under `runtimes.fabric` only in a folder that tool does not read.
+Any other top-level field, such as `color`, `delegate` or `permissionMode`, is ignored. Fabric reports each one as a warning in `agents.definitions()` and in the run's progress notice. It never fails the run, so a file written for another tool keeps loading. Pi agent profiles accept only seven keys, so a file in `.pi/agents` that you share with that tool must keep to them. Put Fabric-only settings under `runtimes.fabric` only in a folder that tool does not read.
 
 **Override rule.** Fabric fills a request field from the file only when the call leaves it out. A field passed on the call, including an empty list, always wins. `agents.spawn` with `residency: "durable"` refuses a file that has a body, because a durable spawn does not accept `systemPrompt`.
 
@@ -133,7 +190,7 @@ Any other top-level field, such as `color`, `skills`, `delegate` or `permissionM
 
 **Listing.** `agents.definitions()` returns `{ name, description, path, scope, shadows?, warnings, error? }[]` with `scope` set to `"user"` or `"project"`. `shadows` is the path of the user file a project file replaces. A file that cannot be read appears with an `error`. The call reads the folders each time and starts no child.
 
-Fabric does not read actor templates from files (they stay in `global-actors.json`), does not look in `.claude/agents`, and does not preload skills. Fabric loads the file reader and its YAML parser on first use, so a session that never names an agent does not pay for them.
+Fabric does not read actor templates from files (they stay in `global-actors.json`), and does not look in `.claude/agents`. Fabric loads the file reader and its YAML parser on first use, so a session that never names an agent does not pay for them.
 
 ### Requested models are authoritative
 
@@ -145,7 +202,7 @@ Startup waits for a correlated RPC readiness response. Startup, model admission,
 
 Selectors with no available match, rejected/malformed RPC responses, or a remaining model mismatch fail the run without sending its task. A startup or admission stall exhausts the overall deadline with `timed_out`, also without sending the task. Queued controls wait for admission too. After parent-side selector resolution, the worker must use that canonical model: it does not substitute an MRU model or fall back during admission. Standalone `AgentManager` callers can also supply a unique exact bare model ID; ambiguous IDs must be provider-qualified.
 
-`requestedModel` preserves launch intent in run records; `model` follows verified child state and actual assistant attribution. The manager and participant UI preserve that observed value; the launch label cannot overwrite it. If assistant attribution drifts after admission, Fabric terminates the child and reports both requested and observed models in the failure. This verifies Pi's local provider/model identity, not a remote provider's internal routing.
+`requestedModel` in run records is the model Fabric selected at launch, after alias and near-miss resolution, not the caller's selector (with `modelMatch: "exact"` the two name the same model); `model` follows verified child state and actual assistant attribution. The manager and participant UI preserve that observed value; the launch label cannot overwrite it. If assistant attribution drifts after admission, Fabric terminates the child and reports both requested and observed models in the failure. This verifies Pi's local provider/model identity, not a remote provider's internal routing.
 
 Existing workers are not retroactively changed by rebuilding or reloading the parent. Stop and respawn affected workers to apply model admission.
 
@@ -712,6 +769,8 @@ A project-scoped actor stores one definition for the project. Select storage per
 - **Project definition.** The shared registry stores the actor ID, instructions, runner, subscriptions, tools, and project model and thinking defaults.
 - **Session binding.** A mode-`0600` file stores only `model` and `thinking` for one Pi session ID. It survives a resume of that session and does not rewrite `actors.json`.
 - **Runtime.** One owner keeps the stable actor identity, serial mailbox, and runner session. Other sessions send direct work to that owner.
+
+Creation rejects names already present in the visible project or session scope, including stopped actors. Creating a stopped actor's namesake is refused; automatic replacement is disabled. To reuse the name, explicitly remove the stopped actor first with `agents.remove({ id })`; removal deletes its retained actor session and history. This is a compatibility change from automatic replacement. The refusal does not provide distributed ownership or execution fencing between independent hosts.
 
 Fabric resolves each activation in this order:
 

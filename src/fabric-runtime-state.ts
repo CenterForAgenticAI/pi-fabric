@@ -4,8 +4,9 @@ import { resolveAgentDir } from "./core/agent-dir.js";
 import { loadHostSdk } from "./core/host-sdk.js";
 import { requestChildTraceContext } from "./agents/trace-context-request.js";
 import {
-  resolveAvailablePiModel,
+  resolvePiModelSelector,
   type FabricModelCandidate,
+  type FabricModelMatch,
 } from "./core/model-resolution.js";
 import { loadModelUsage } from "./core/model-usage.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -62,6 +63,7 @@ import {
 } from "./core/action-registry.js";
 import { FabricSessionApprovals } from "./core/approval-controller.js";
 import type { FabricActionPolicyHooks } from "./core/action-policy-hooks.js";
+import type { FabricQuestionRenderers } from "./fabric-state.js";
 import {
   COMPACTION_SEED_DELIVERY,
   CompactController,
@@ -216,6 +218,7 @@ export interface FabricRuntimeStateOptions {
   prewalkDrift?: PrewalkDriftTracker;
   sessionApprovals?: FabricSessionApprovals;
   actionPolicyHooks?: FabricActionPolicyHooks;
+  questionRenderers?: FabricQuestionRenderers;
   thinking?: FabricThinkingController;
   paths?: FabricRuntimePaths;
   entryIdentity?: FabricLoadedFileIdentity;
@@ -230,6 +233,7 @@ export interface FabricRuntimeStateOptions {
 export class FabricRuntimeState {
   #registry: ActionRegistry | undefined;
   readonly #actionPolicyHooks: FabricActionPolicyHooks | undefined;
+  readonly #questionRenderers: FabricQuestionRenderers | undefined;
   #config: FabricConfig | undefined;
   #execution: FabricExecutionService | undefined;
   #repairs: RepairCompiler | undefined;
@@ -304,6 +308,7 @@ export class FabricRuntimeState {
     this.prewalkDrift = options.prewalkDrift ?? new PrewalkDriftTracker();
     this.sessionApprovals = options.sessionApprovals ?? new FabricSessionApprovals();
     this.#actionPolicyHooks = options.actionPolicyHooks;
+    this.#questionRenderers = options.questionRenderers;
     this.thinking = options.thinking ??
       new FabricThinkingController(pi, () => this.#config?.thinking?.bounds ?? {});
     this.#paths = options.paths;
@@ -790,13 +795,15 @@ export class FabricRuntimeState {
       ? { ...this.#config.agents, enabled: false }
       : this.#config.agents;
     const modelsConfig = this.#config.models;
-    const visiblePiModels = () => {
+    const readPiModels = () => {
       try {
-        return context.modelRegistry.getAvailable();
-      } catch {
-        return [];
+        return { models: context.modelRegistry.getAvailable() };
+      } catch (registryError) {
+        return { models: [], registryError };
       }
     };
+    // Status and residency sync stay fail-empty; resolution names the failure.
+    const visiblePiModels = () => readPiModels().models;
     const piModelState = (models = visiblePiModels()) => {
       const available: FabricModelCandidate[] = models.map((model) => ({
         provider: String(model.provider),
@@ -812,20 +819,29 @@ export class FabricRuntimeState {
         ...(defaultModel ? { defaultModel } : {}),
       };
     };
-    const resolveParticipantPiModel = (selector?: string) => {
-      const models = visiblePiModels();
+    const resolveParticipantPiModel = (selector?: string, modelMatch?: FabricModelMatch) => {
+      const { models, registryError } = readPiModels();
       const state = piModelState(models);
       const query = selector?.trim() || state.defaultModel || "";
-      const resolved = resolveAvailablePiModel(query, {
+      const resolved = resolvePiModelSelector(query, {
         aliases: state.aliases,
         available: state.available,
         lastUsed: loadModelUsage(),
-      });
+        ...(registryError === undefined ? {} : { registryError }),
+      }, modelMatch);
+      // The resolver returns the registry's own spelling. Match it case-sensitively
+      // first so entries that differ only by case cannot swap places: the model
+      // authenticated must be the entry the resolver chose, not an earlier twin.
+      // An exact request never falls back to the case-insensitive lookup.
       const model = models.find(
-        (candidate) =>
-          String(candidate.provider).toLowerCase() === resolved.provider.toLowerCase() &&
-          String(candidate.id).toLowerCase() === resolved.id.toLowerCase(),
-      );
+        (candidate) => String(candidate.provider) === resolved.provider && String(candidate.id) === resolved.id,
+      ) ?? (modelMatch === "exact"
+        ? undefined
+        : models.find(
+            (candidate) =>
+              String(candidate.provider).toLowerCase() === resolved.provider.toLowerCase() &&
+              String(candidate.id).toLowerCase() === resolved.id.toLowerCase(),
+          ));
       if (!model) {
         throw new Error(
           `Model ${JSON.stringify(query)} is not available to this Pi session. ` +
@@ -884,8 +900,8 @@ export class FabricRuntimeState {
           keepRecentTokens: settings.keepRecentTokens,
         };
       },
-      preparePiModel: async (modelKey) => {
-        const resolved = resolveParticipantPiModel(modelKey);
+      preparePiModel: async (modelKey, options) => {
+        const resolved = resolveParticipantPiModel(modelKey, options?.modelMatch);
         const auth = await context.modelRegistry.getApiKeyAndHeaders(resolved.model);
         if (!auth.ok) throw new Error(auth.error);
         return resolved.key;
@@ -896,8 +912,17 @@ export class FabricRuntimeState {
       },
       onBackgroundComplete: (result) => completionInbox.enqueue(result),
       onResultConsumed: (id) => completionInbox.acknowledge(id),
-      onChildQuestion: (request) =>
-        routeChildQuestion(request, { context, ...(this.#decisions ? { store: this.#decisions } : {}) }),
+      onChildQuestion: (request) => {
+        // A child session's UI forwards to its parent, so only the main session renders.
+        const renderers = identity.kind === "main"
+          ? this.#questionRenderers?.active(this.#config?.ui.questionRenderers)
+          : undefined;
+        return routeChildQuestion(request, {
+          context,
+          ...(this.#decisions ? { store: this.#decisions } : {}),
+          ...(renderers ? { renderers } : {}),
+        });
+      },
       resolveChildTraceContext: (launch) =>
         requestChildTraceContext((event, value) => this.pi.events?.emit(event, value), launch),
     });
@@ -1095,6 +1120,7 @@ export class FabricRuntimeState {
       () => this.#config?.models ?? DEFAULT_FABRIC_CONFIG.models,
     );
     agentsProvider.providerParticipants = providerParticipants;
+    agentsProvider.sessionCommands = () => this.pi.getCommands();
     this.#agentsProvider = agentsProvider;
     this.#control.start((command, from, signal) =>
       agentsProvider.acceptControl(command, from, signal));
@@ -1321,7 +1347,6 @@ export class FabricRuntimeState {
     if (!this.#config || !this.#cwd) return;
     next.schema.mode = this.#config.schema.mode;
     this.#speculation?.reset();
-    const previousComponents = structuredClone(this.#config.components);
     deepAssign(this.#config as unknown as Record<string, unknown>, next as unknown as Record<string, unknown>);
     this.#configureSpeculation();
     void this.#sessionLabel?.sync();
@@ -1335,7 +1360,10 @@ export class FabricRuntimeState {
       if (context.hasUI) context.ui.setStatus("fabric-prewalk", undefined);
     }
     void (this.#componentControl?.reconcile(next.components) ?? this.#componentLoader?.reconcile(next.components))?.catch((error) => {
-      if (this.#config) this.#config.components = previousComponents;
+      // Restore what the loader still runs. A snapshot taken at call time would
+      // hold an earlier reload's entries when that reload is refused as well.
+      const active = this.#componentLoader?.entries();
+      if (this.#config && active) this.#config.components = active;
       const detail = error instanceof Error ? error.message : String(error);
       if (context.hasUI) context.ui.notify(`Pi Fabric component reload failed: ${detail}`, "error");
     });

@@ -937,6 +937,13 @@ export interface FabricMulticallPartialInput {
   omittedCalls?: { count: number; done: number } | undefined;
 }
 
+export const shellBackgroundShortcut = (audit: FabricRenderAudit): boolean => {
+  const preview = audit.preview;
+  return audit.success === undefined && (audit.tool === "bash" || audit.tool === "powershell") &&
+    typeof preview === "object" && preview !== null &&
+    (preview as Record<string, unknown>).shellBackgroundShortcut === true;
+};
+
 export const singleCallProgressLine = (
   progress: string | undefined,
   previewLines: string[],
@@ -968,6 +975,9 @@ export const renderFabricMulticallPartial = (
   if (progress) header += theme.fg("dim", ` · ${progress}`);
 
   const rows = [header];
+  if (input.audits.some(shellBackgroundShortcut)) {
+    rows.push(theme.fg("dim", "Ctrl+B twice · background waiting shell"));
+  }
   const wrapLineIndexes = input.expanded ? new Set<number>() : undefined;
   if (input.phases.length > 0) {
     rows.push(theme.fg("dim", input.phases.map((phase) => `◆ ${phase}`).join("  ")));

@@ -48,6 +48,11 @@ describe("Fabric configuration", () => {
       expect(normalizeFabricConfig({ executor: { maxCpuSliceMs: value } }).executor.maxCpuSliceMs).toBe(expected);
     }
   });
+  it("keeps agents.durableWorkerSession off unless it is set to true", () => {
+    expect(normalizeFabricConfig({}).agents.durableWorkerSession).toBe(false);
+    expect(normalizeFabricConfig({ agents: { durableWorkerSession: true } }).agents.durableWorkerSession).toBe(true);
+    expect(normalizeFabricConfig({ agents: { durableWorkerSession: "yes" } }).agents.durableWorkerSession).toBe(false);
+  });
   it("normalizes models.aliases into fallback chains", () => {
     expect(DEFAULT_FABRIC_CONFIG.models.aliases).toEqual({});
     expect(normalizeFabricConfig({}).models.aliases).toEqual({});

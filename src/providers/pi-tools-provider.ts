@@ -602,6 +602,10 @@ export class PiToolsProvider implements FabricProvider {
       throw error;
     }
     void job.readPid();
+    if (!background && context.extensionContext.mode === "tui") {
+      context.attachPreview?.({ shellBackgroundShortcut: true });
+      context.update(`${name}: running`);
+    }
     let spilled = false;
     const outcome = await raceShellHang({
       hangMs: background || context.nativeToolResult ? 0 : this.#shellHangMs(),
@@ -928,6 +932,9 @@ export class PiToolsProvider implements FabricProvider {
         : undefined;
     context.attachPreview?.({
       result: boundedProgress,
+      ...(isPiShellToolName(name) && context.extensionContext.mode === "tui" &&
+        args.background !== true && args.monitor === undefined && args.durable !== true
+        ? { shellBackgroundShortcut: true } : {}),
       ...(bashCommand !== undefined ? { bashCommand } : {}),
     });
     context.update(`${name}: ${boundedProgress.slice(-500) || "running"}`);
