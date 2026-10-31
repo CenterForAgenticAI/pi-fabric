@@ -1589,6 +1589,13 @@ describe("ActorManager", () => {
     expect(actors.status(actor.id)).toMatchObject({ status: "idle", name: "supervisor" });
   });
 
+  it("refuses an active namesake before validating the replacement", async () => {
+    const { actors } = setup();
+    const active = await actors.create({ name: "planner", instructions: "Plan." });
+    await expect(actors.create({ name: "planner", instructions: "" }))
+      .rejects.toThrow(`already active (${active.id})`);
+  });
+
   it("refuses stopped-name creation before validation or persistence and permits explicit removal", async () => {
     const { actors, root } = setup(true);
     const stopped = await actors.create({ name: "planner", instructions: "Plan." });

@@ -116,6 +116,19 @@ describe("ActorDirectory", () => {
     expect((await directory.create({ scope: oldScope, name: "planner", instructions: "New." })).id).not.toBe(stopped.id);
   });
 
+  it("prefers an active namesake over a stopped namesake across scopes", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-actor-directory-"));
+    roots.push(root);
+    const { directory } = open(root, "alpha");
+    const active = await directory.create({ scope: "project", name: "planner", instructions: "Plan." });
+    const stopped = { ...active, id: "old-stopped", status: "stopped" as const, scope: "session" as const };
+    const list = vi.spyOn(directory, "list").mockReturnValue([stopped, active]);
+    try {
+      await expect(directory.create({ scope: "session", name: "planner", instructions: "Replace." }))
+        .rejects.toThrow(`already active (${active.id})`);
+    } finally { list.mockRestore(); }
+  });
+
   it("runs project and session actor registries concurrently", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-actor-directory-"));
     roots.push(root);
