@@ -304,7 +304,7 @@ describe("Fabric agent list", () => {
     const { widget } = setup({ current: manyAgents(30), terminalRows: 40 });
     const collapsed = widget.render(100);
     expect(collapsed).toHaveLength(6);
-    expect(collapsed.at(-1)).toMatch(/\+\d+$/);
+    expect(collapsed.at(-1)).toBe("↓ 27 more");
     widget.focused = true;
     widget.selectFirst();
     const focused = widget.render(100);
@@ -312,6 +312,54 @@ describe("Fabric agent list", () => {
     for (const width of [20, 40, 100]) {
       expect(widget.render(width).every((line) => visibleWidth(line) <= width)).toBe(true);
     }
+  });
+
+  it("renders directional overflow and keeps the footer non-interactive", () => {
+    const { widget, opened } = setup({ current: manyAgents(6), terminalRows: 10, interaction: { mainId: "main", hints: false } });
+    const initial = widget.render(40);
+    expect(initial[1]).toMatch(/^● Fabric/);
+    expect(initial[2]).toMatch(/^○ agent-0/);
+    expect(initial[3]).toMatch(/^○ agent-1/);
+    expect(initial[4]).toBe("↓ 4 more");
+    expect(mouse(widget, "click", 4)).toBeUndefined();
+    widget.focused = true; widget.selectFirst();
+    for (let i = 0; i < 3; i++) widget.handleInput("\x1b[B");
+    const middle = widget.render(40);
+    expect(middle[1]).toMatch(/↑ 1 more$/);
+    expect(middle[2]).toMatch(/^○ agent-1/);
+    expect(middle[3]).toMatch(/^● agent-2/);
+    expect(middle[4]).toBe("↓ 3 more");
+    mouse(widget, "move", 2);
+    expect(widget.render(40)[2]).toMatch(/^● agent-1/);
+    expect(mouse(widget, "click", 2)).toEqual({ handled: true, render: true });
+    expect(opened.at(-1)?.id).toBe("agent-1");
+    for (let i = 0; i < 10; i++) widget.handleInput("\x1b[B");
+    const end = widget.render(40);
+    expect(end[1]).toMatch(/↑ 3 more$/);
+    expect(end.at(-1)).toMatch(/^● agent-5/);
+    expect(end.join("\n")).not.toContain("↓ ");
+    for (const width of [1, 2, 8, 12, 40]) {
+      expect(widget.render(width).every(line => visibleWidth(line) <= width)).toBe(true);
+    }
+    const all = setup({ current: manyAgents(2), maxRows: 6, interaction: { hints: false } }).widget.render(40);
+    expect(all.join("\n")).not.toMatch(/[↑↓] \d+ more/);
+  });
+
+  it("snapshots ANSI-colored viewport states including singular overflow", () => {
+    const current = manyAgents(4);
+    const ansi = { ...theme, fg: (_color: string, text: string) => `\x1b[36m${text}\x1b[39m`, bold: (text: string) => `\x1b[1m${text}\x1b[22m` } as unknown as Theme;
+    const widget = new FabricWidget(ansi, () => current, 5, () => 10, undefined, { mainId: "main", hints: false, release: () => {}, requestRender: () => {} });
+    const screen = (width: number) => widget.render(width).map(line => line.replace(/\x1b\[[0-9;]*m/g, "").replace(/ · .*/, "").replace(/  thinking.*/, "").trimEnd());
+    expect(screen(40)).toEqual(["", "● Fabric", "○ agent-0", "○ agent-1", "↓ 2 more"]);
+    widget.focused = true; widget.selectFirst();
+    for (let i = 0; i < 3; i++) widget.handleInput("\x1b[B");
+    const middle = widget.render(40);
+    expect(middle[1]).toMatch(/↑ 1 more\x1b\[39m$/);
+    expect(screen(40).slice(2)).toEqual(["○ agent-1", "● agent-2", "↓ 1 more"]);
+    widget.handleInput("\x1b[B");
+    expect(widget.render(40)[1]).toMatch(/↑ 1 more\x1b\[39m$/);
+    expect(screen(40).slice(2)).toEqual(["○ agent-1", "○ agent-2", "● agent-3"]);
+    for (const width of [1, 4, 8, 12, 40]) expect(widget.render(width).every(line => visibleWidth(line) <= width)).toBe(true);
   });
 
   it("scrolls to overflow tasks and maps clicks only to their visible rows", () => {
@@ -356,7 +404,7 @@ describe("Fabric agent list", () => {
     const lines = widget.render(100);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(/^● Fabric /);
-    expect(lines[0]).toMatch(/\+2$/);
+    expect(lines[0]).toMatch(/↓ 2 more$/);
     // Clicks map to rows without the spacer offset.
     expect(mouse(widget, "click", 0)).toBeUndefined();
     expect(opened).toEqual([]);

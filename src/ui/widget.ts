@@ -355,9 +355,10 @@ export class FabricWidget implements Component, Focusable {
   #selectableRows(): FabricWidgetRow[] {
     const budget = this.#rowLimit();
     if (budget === 0) return [];
-    const { rows } = this.#content(this.snapshot(), Number.MAX_SAFE_INTEGER);
-    const limit = Math.max(1, budget - 1);
-    return this.focused && limit > 1 ? rows : rows.filter((row) => row.line < limit);
+    const { lines, rows } = this.#content(this.snapshot(), Number.MAX_SAFE_INTEGER);
+    const body = Math.max(1, budget - (budget >= 2 ? 1 : 0));
+    const visible = body >= 3 && lines.length > body ? body - 1 : body;
+    return this.focused && body > 1 ? rows : rows.filter((row) => row.line < visible);
   }
 
   #rowLimit(width = this.#lastWidth): number {
@@ -446,21 +447,30 @@ export class FabricWidget implements Component, Focusable {
     if (this.#hoveredId !== undefined && this.#hoveredId !== HEADER_ROW && !rows.some((row) => row.id === this.#hoveredId)) {
       this.#hoveredId = undefined;
     }
-    // Keep the header pinned while keyboard navigation brings any participant
-    // or task into view. The footer replaces the old full task-list overlay.
-    if (this.focused && body > 1) {
-      const selectedLine = rows.find(row => row.id === this.#selectedId)?.line ?? 0;
-      const start = Math.max(1, selectedLine - body + 2);
-      lines = [lines[0]!, ...lines.slice(start)];
-      rows = rows.filter(row => row.line === 0 || row.line >= start)
-        .map(row => ({ ...row, line: row.line === 0 ? 0 : row.line - start + 1 }));
+    // Pin Main and reserve a separate footer only when rows remain below.
+    // On tiny budgets the footer would hide the only participant, so the
+    // below count shares the header instead.
+    const selectedLine = this.focused && body > 1 ? rows.find(row => row.id === this.#selectedId)?.line ?? 0 : 0;
+    let capacity = body - 1;
+    let start = Math.max(1, selectedLine - capacity + 1);
+    let below = Math.max(0, lines.length - start - capacity);
+    if (below > 0 && body >= 3) {
+      capacity--;
+      start = Math.max(1, selectedLine - capacity + 1);
+      below = Math.max(0, lines.length - start - capacity);
     }
-    // Only rows in the viewport are pointer targets.
-    this.#rows = rows.filter((row) => row.line < body);
-    // Nothing to select, such as only idle actors: save the rows; any label is on the editor border.
+    const above = start - 1;
+    const header = lines[0] ?? "";
+    const label = above > 0 ? `↑ ${above} more` : body < 3 && below > 0 ? `↓ ${below} more` : undefined;
+    const boundedHeader = label ? this.#withRightLabel(header, label, width) : truncateToWidth(header, width);
+    const visibleLines = [boundedHeader, ...lines.slice(start, start + capacity).map(line => truncateToWidth(line, width))];
+    if (below > 0 && body >= 3) visibleLines.push(truncateToWidth(this.theme.fg("dim", `↓ ${below} more`), width));
+    // Only participant rows, never the overflow footer, are pointer targets.
+    this.#rows = rows.filter(row => row.line === 0 || (row.line >= start && row.line < start + capacity))
+      .map(row => ({ ...row, line: row.line === 0 ? 0 : row.line - start + 1 }));
     if (rows.length === 0 && this.interaction?.collapseIdle?.()) return [];
     this.#spacerRows = spacer;
-    return [...(spacer ? [""] : []), ...this.#boundContent(lines, width, body)];
+    return [...(spacer ? [""] : []), ...visibleLines];
   }
 
   /** Key hints for the header, most important first; the line fitter drops them from the end. */
@@ -618,14 +628,11 @@ export class FabricWidget implements Component, Focusable {
     return lines;
   }
 
-  #boundContent(content: string[], width: number, limit: number): string[] {
-    const bounded = content.slice(0, limit);
-    if (content.length > bounded.length && bounded.length > 0) {
-      const marker = this.theme.fg("dim", `+${content.length - bounded.length}`);
-      const available = Math.max(0, width - visibleWidth(marker) - 1);
-      const last = truncateToWidth(bounded[bounded.length - 1] ?? "", available, "");
-      bounded[bounded.length - 1] = `${last} ${marker}`;
-    }
-    return bounded.map((line) => truncateToWidth(line, width));
+  #withRightLabel(line: string, label: string, width: number): string {
+    const labelWidth = visibleWidth(label);
+    // Preserve the row marker when the terminal is too narrow for both.
+    if (width < labelWidth + 2) return truncateToWidth(line, width);
+    const left = truncateToWidth(line, width - labelWidth - 1, "");
+    return `${left}${" ".repeat(width - visibleWidth(left) - labelWidth)}${this.theme.fg("dim", label)}`;
   }
 }
