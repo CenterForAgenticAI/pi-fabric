@@ -364,6 +364,14 @@ interface FabricRepairsConfig {
   enabled: boolean;
 }
 
+interface FabricDecisionsConfig {
+  /**
+   * Sources (extension names) whose decision requests may name a supervisor
+   * participant to hold the decision before the user. Default none.
+   */
+  supervisorSources: string[];
+}
+
 interface FabricEntropyConfig {
   compile: boolean;
 }
@@ -475,6 +483,7 @@ export interface FabricConfig {
   jev: FabricJevConfig;
   entropy: FabricEntropyConfig;
   repairs: FabricRepairsConfig;
+  decisions: FabricDecisionsConfig;
   trace: FabricTraceConfig;
   schema: FabricSchemaConfig;
   speculation: FabricSpeculationConfig;
@@ -674,6 +683,9 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
   repairs: {
     enabled: true,
   },
+  decisions: {
+    supervisorSources: [],
+  },
   trace: {
     assessment: false,
   },
@@ -822,6 +834,14 @@ const humanWaitRefsValue = (value: unknown): string[] =>
         .map((ref) => ref.trim())
         .filter((ref) => ref.length > 0 && ref.length <= 512))].slice(0, 256)
     : [...DEFAULT_FABRIC_CONFIG.executor.humanWaitRefs];
+
+const supervisorSourcesValue = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? [...new Set(value
+        .filter((source): source is string => typeof source === "string")
+        .map((source) => source.trim())
+        .filter((source) => source.length > 0 && source.length <= 64))].slice(0, 64)
+    : [...DEFAULT_FABRIC_CONFIG.decisions.supervisorSources];
 
 const objectValue = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
@@ -972,6 +992,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   const memorySources = memorySourcesValue(memory.sources);
   const entropy = objectValue(input.entropy);
   const repairs = objectValue(input.repairs);
+  const decisions = objectValue(input.decisions);
   const trace = objectValue(input.trace);
   const modelsSection = objectValue(input.models);
   const schema = objectValue(input.schema);
@@ -1598,6 +1619,9 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
     },
     repairs: {
       enabled: booleanValue(repairs.enabled, DEFAULT_FABRIC_CONFIG.repairs.enabled),
+    },
+    decisions: {
+      supervisorSources: supervisorSourcesValue(decisions.supervisorSources),
     },
     trace: {
       assessment: booleanValue(trace.assessment, DEFAULT_FABRIC_CONFIG.trace.assessment),

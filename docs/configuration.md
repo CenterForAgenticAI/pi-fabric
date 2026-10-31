@@ -838,6 +838,18 @@ The deterministic, LLM-free compaction engine is on by default. It keeps Pi's bo
 
 `trace.assessment` (default `false`) adds a redacted `FabricAssessmentTraceV1` beside each `fabric_exec` execution trace: per-operation durations, model/Jev/classifier attribution, and token usage and cost where an operation reports them, plus program totals. It never stores arguments, results, code, or error prose, and the deterministic trace is unchanged. See [assessment projection](audit-trace.md#assessment-projection).
 
+## Decisions
+
+`decisions.supervisorSources` (default `[]`) lists the `source` names of extensions whose [decision requests](decisions.md#extension-questions) may name a `supervisor` participant that holds the question before the user. A source not in the list always gets the `user` holder. Entries are trimmed, deduplicated, and at most 64 characters; any other value keeps the default. See [naming a supervisor](decisions.md#naming-a-supervisor-opt-in).
+
+```json
+{
+  "decisions": {
+    "supervisorSources": ["@acme/ask-tool"]
+  }
+}
+```
+
 ## Catalog repairs
 
 Silent invocation repairs are on by default. `repairs.enabled` controls the catalog-scoped table at `~/.pi/agent/fabric/repairs/current.json`. Inspect it with `/fabric repairs`. See [catalog repairs](repairs.md).
