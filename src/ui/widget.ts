@@ -460,8 +460,14 @@ export class FabricWidget implements Component, Focusable {
       below = Math.max(0, lines.length - start - capacity);
     }
     const above = start - 1;
-    const header = lines[0] ?? "";
-    const label = above > 0 ? `↑ ${above} more` : body < 3 && below > 0 ? `↓ ${below} more` : undefined;
+    const upLabel = above > 0 ? `↑ ${above} more` : undefined;
+    const downLabel = body < 3 && below > 0 ? `↓ ${below} more` : undefined;
+    const combined = upLabel && downLabel ? `${upLabel} · ${downLabel}` : undefined;
+    const label = combined && width >= visibleWidth(combined) + 3 ? combined : upLabel ?? downLabel;
+    // Fit the header against the reserved space, so hints are dropped whole
+    // in priority order rather than cut off when the label is appended.
+    const headerWidth = label && width >= visibleWidth(label) + 2 ? width - visibleWidth(label) - 1 : width;
+    const header = headerWidth === width ? lines[0] ?? "" : this.#content(snapshot, width, headerWidth).lines[0] ?? "";
     const boundedHeader = label ? this.#withRightLabel(header, label, width) : truncateToWidth(header, width);
     const visibleLines = [boundedHeader, ...lines.slice(start, start + capacity).map(line => truncateToWidth(line, width))];
     if (below > 0 && body >= 3) visibleLines.push(truncateToWidth(this.theme.fg("dim", `↓ ${below} more`), width));
@@ -480,13 +486,13 @@ export class FabricWidget implements Component, Focusable {
     return hasRows ? [FABRIC_WIDGET_FOCUS_HINT] : [];
   }
 
-  #content(snapshot: FabricDashboardSnapshot, width: number): { lines: string[]; rows: Array<FabricWidgetRow & { line: number }> } {
+  #content(snapshot: FabricDashboardSnapshot, width: number, headerWidth = width): { lines: string[]; rows: Array<FabricWidgetRow & { line: number }> } {
     const rows: Array<FabricWidgetRow & { line: number }> = [];
-    const lines = this.#buildContent(snapshot, rows, width);
+    const lines = this.#buildContent(snapshot, rows, width, headerWidth);
     return { lines, rows };
   }
 
-  #buildContent(snapshot: FabricDashboardSnapshot, rows: Array<FabricWidgetRow & { line: number }>, width: number): string[] {
+  #buildContent(snapshot: FabricDashboardSnapshot, rows: Array<FabricWidgetRow & { line: number }>, width: number, headerWidth: number): string[] {
     const candidateRun = snapshot.runs[0];
     const candidateFinishedAt = candidateRun?.finishedAt ?? candidateRun?.updatedAt ?? 0;
     const run =
@@ -569,7 +575,7 @@ export class FabricWidget implements Component, Focusable {
     const hasRows = participants.length > 0 || listedShells.length > 0 || this.interaction?.mainId !== undefined;
     lines.push(fitLine(
       this.theme,
-      width,
+      headerWidth,
       `${colorStatus(this.theme, headerStatus, circle(marked === headerId))} ${this.theme.fg("accent", this.theme.bold(label))}`,
       run?.name ? { text: safeText(run.name), gap: " ", color: "muted" } : undefined,
       parts,

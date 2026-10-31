@@ -345,6 +345,42 @@ describe("Fabric agent list", () => {
     expect(all.join("\n")).not.toMatch(/[↑↓] \d+ more/);
   });
 
+  it("fits whole hints beside overflow labels and preserves the short viewport target", () => {
+    const ansi = { ...theme, fg: (_color: string, text: string) => `\x1b[36m${text}\x1b[39m`, bold: (text: string) => `\x1b[1m${text}\x1b[22m` } as unknown as Theme;
+    const strip = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, "");
+    for (const colors of [theme, ansi]) for (const rows of [3, 5]) {
+      const current = manyAgents(6);
+      const opened: FabricWidgetRow[] = [];
+      const widget = new FabricWidget(colors, () => current, 6, () => 20, undefined, {
+        mainId: "main", availableRows: () => rows, open: row => opened.push(row), release: () => {}, requestRender: () => {},
+      });
+      widget.focused = true; widget.selectFirst();
+      for (let i = 0; i < 3; i++) widget.handleInput("\x1b[B");
+      for (const width of [25, 35, 45]) {
+        const screen = widget.render(width).map(strip);
+        expect(screen.every(line => visibleWidth(line) <= width)).toBe(true);
+        expect(screen[1]).toContain("↑ ");
+        if (rows === 3) {
+          expect(screen).toHaveLength(3);
+          expect(screen[1]).toContain("↓ ");
+          expect(screen[2]).toMatch(/^● agent-2/);
+        } else expect(screen.at(-1)).toMatch(/^↓ \d+ more$/);
+        const beforeLabel = screen[1]!.split("↑ ")[0]!;
+        const hints = beforeLabel.split(" · ").slice(1).map(s => s.trim()).filter(Boolean);
+        const expected = rows === 3 ? (width === 45 ? ["⏎ open"] : [])
+          : width === 45 ? ["⏎ open", "↑↓ select"] : width === 35 ? ["⏎ open"] : [];
+        expect(hints).toEqual(expected);
+      }
+      widget.render(45);
+      mouse(widget, "move", 2);
+      expect(strip(widget.render(45)[2]!)).toMatch(/^● agent-/);
+      expect(mouse(widget, "click", 2)).toEqual({ handled: true, render: true });
+      expect(opened.at(-1)?.id).toBe(rows === 3 ? "agent-2" : "agent-1");
+      if (rows === 5) expect(mouse(widget, "click", 4)).toBeUndefined();
+      for (const width of [1, 2, 8, 12]) expect(widget.render(width).every(line => visibleWidth(line) <= width)).toBe(true);
+    }
+  });
+
   it("snapshots ANSI-colored viewport states including singular overflow", () => {
     const current = manyAgents(4);
     const ansi = { ...theme, fg: (_color: string, text: string) => `\x1b[36m${text}\x1b[39m`, bold: (text: string) => `\x1b[1m${text}\x1b[22m` } as unknown as Theme;
