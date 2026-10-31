@@ -758,6 +758,8 @@ export type FabricDecisionsCapabilityResultV1 =
       maxTextChars: number;
       minTimeoutMs: number;
       maxTimeoutMs: number;
+      /** True when the request `source` is in `decisions.supervisorSources`, so `supervisor` is honoured. */
+      supervisor: boolean;
     }
   | { ok: true; available: false; reason: string }
   | { ok: false; error: string };
@@ -769,11 +771,19 @@ export type FabricDecisionsCapabilityResultV1 =
 export interface FabricDecisionsCapabilityRequestV1 {
   version: 1;
   context: ExtensionContext;
+  /**
+   * The asking extension, as in `FabricDecisionRequestV1.source`. Lets Fabric
+   * report whether that source may name a supervisor holder.
+   */
+  source?: string;
   claim: () => boolean;
   respond: (result: FabricDecisionsCapabilityResultV1) => void;
 }
 
-/** One question for a person. Fabric always holds it for `"user"` and never applies a default. */
+/**
+ * One question for a person. Fabric holds it for `"user"` and never applies a
+ * default; a trusted source may first name a supervisor (see `supervisor`).
+ */
 export interface FabricDecisionQuestionV1 {
   title: string;
   body?: string;
@@ -813,6 +823,15 @@ export interface FabricDecisionRequestV1 {
    * `[A-Za-z0-9@][A-Za-z0-9@._/-]{0,63}`; omit it to record the session.
    */
   source?: string;
+  /**
+   * A Fabric participant id such as `session:<piSessionId>` that holds the
+   * decision first. Honoured only when `source` is listed in the host's
+   * `decisions.supervisorSources`; otherwise it is ignored and the user holds
+   * the decision. `question.timeoutMs` is how long the supervisor holds it.
+   * The chain is `[supervisor:<id>, "user"]`, never `root`, and the supervisor
+   * cannot be `user`, `root`, an `extension:` id, or the raising session.
+   */
+  supervisor?: string;
   /** Called once the decision is stored, before waiting starts. */
   onRaised?: (id: string) => void;
   claim: () => boolean;
@@ -829,7 +848,8 @@ export const readFabricDecisionsCapabilityRequestV1 = (
     typeof record.context !== "object" ||
     record.context === null ||
     typeof record.claim !== "function" ||
-    typeof record.respond !== "function"
+    typeof record.respond !== "function" ||
+    (record.source !== undefined && typeof record.source !== "string")
   ) {
     return undefined;
   }
@@ -853,6 +873,7 @@ export const readFabricDecisionRequestV1 = (
     typeof record.respond !== "function" ||
     (signal !== undefined && (typeof signal !== "object" || signal === null || typeof signal.aborted !== "boolean")) ||
     (record.source !== undefined && typeof record.source !== "string") ||
+    (record.supervisor !== undefined && typeof record.supervisor !== "string") ||
     (record.onRaised !== undefined && typeof record.onRaised !== "function")
   ) {
     return undefined;
