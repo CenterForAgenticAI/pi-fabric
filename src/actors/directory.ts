@@ -11,6 +11,7 @@ export interface ActorDirectoryRoots {
 export class ActorDirectory extends ActorManager {
   readonly #secondary: ActorManager;
   readonly #defaultScope: FabricActorStorageScope;
+  #directoryCreateTail: Promise<void> = Promise.resolve();
 
   constructor(
     base: ConstructorParameters<typeof ActorManager>,
@@ -69,6 +70,19 @@ export class ActorDirectory extends ActorManager {
 
   override retryCapabilityWaiters(): void { super.retryCapabilityWaiters(); this.#secondary.retryCapabilityWaiters(); }
   override async create(request: FabricActorRequest, options: { asRegistryOwner?: boolean } = {}): Promise<FabricActorInfo> {
+    // Separate from each manager's create queue: super.create must not reacquire
+    // the directory lock. This only serializes callers of this instance.
+    const previous = this.#directoryCreateTail;
+    let release!: () => void;
+    this.#directoryCreateTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await this.#createInScope(request, options);
+    } finally {
+      release();
+    }
+  }
+  async #createInScope(request: FabricActorRequest, options: { asRegistryOwner?: boolean }): Promise<FabricActorInfo> {
     const scope = request.scope ?? this.#defaultScope;
     if (scope !== "project" && scope !== "session") {
       throw new Error(`Invalid Fabric actor storage scope: ${String(scope)}`);

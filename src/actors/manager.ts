@@ -251,6 +251,7 @@ export class ActorManager {
   #mainIdle = true;
   #reloadingOwnership = false;
   #registryFingerprint: string | undefined;
+  #createTail: Promise<void> = Promise.resolve();
 
   constructor(
     readonly sessionId: string,
@@ -350,6 +351,18 @@ export class ActorManager {
     request: FabricActorRequest,
     { asRegistryOwner = false }: { asRegistryOwner?: boolean } = {},
   ): Promise<FabricActorInfo> {
+    const previous = this.#createTail;
+    let release!: () => void;
+    this.#createTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await this.#createActor(request, asRegistryOwner);
+    } finally {
+      release();
+    }
+  }
+
+  async #createActor(request: FabricActorRequest, asRegistryOwner: boolean): Promise<FabricActorInfo> {
     this.#refreshOwnership();
     const registryOwnerCreate = asRegistryOwner && request.residency === "durable";
     if (
@@ -2214,16 +2227,17 @@ export class ActorManager {
         ) {
           return false;
         }
-        for (const record of records) {
-          if (typeof record.rootId === "string") this.#persistedRoots.set(record.id, record.rootId);
-        }
-        actor.rootId = this.#rootId;
-        actor.adoptedAt = Date.now();
-        actor.updatedAt = Date.now();
+        const candidate = { ...actor, rootId: this.#rootId, adoptedAt: Date.now(), updatedAt: Date.now() };
         const preserved = entries.filter(
           (entry) => !isActorRegistryRecord(entry) || entry.id !== actor.id,
         );
-        this.#registry.write([...preserved, this.#serializedActor(actor)]);
+        this.#registry.write([...preserved, this.#serializedActor(candidate)]);
+        for (const record of records) {
+          if (typeof record.rootId === "string") this.#persistedRoots.set(record.id, record.rootId);
+        }
+        actor.rootId = candidate.rootId;
+        actor.adoptedAt = candidate.adoptedAt;
+        actor.updatedAt = candidate.updatedAt;
         this.#registryFingerprint = this.#registry.fingerprint();
         return true;
       });

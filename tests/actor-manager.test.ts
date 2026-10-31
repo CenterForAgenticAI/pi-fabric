@@ -88,6 +88,18 @@ afterEach(async () => {
 });
 
 describe("ActorManager", () => {
+  it("serializes concurrent creates and releases the queue after a rejection", async () => {
+    const { actors } = setup();
+    const results = await Promise.allSettled([
+      actors.create({ name: "same", instructions: "First." }),
+      actors.create({ name: "same", instructions: "Second." }),
+    ]);
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected"]);
+    expect((results[1] as PromiseRejectedResult).reason.message).toMatch(/already active/);
+    expect(actors.list().filter((actor) => actor.name === "same")).toHaveLength(1);
+    await expect(actors.create({ name: "next", instructions: "Next." })).resolves.toMatchObject({ name: "next" });
+  });
+
   it("uses event monitoring where supported and polling fallback on Windows", async () => {
     const { mesh } = setup();
     const tail = vi.spyOn(mesh, "tail");
@@ -498,6 +510,35 @@ describe("ActorManager", () => {
 
     expect(other.status(actor.id).rootId).toBe(state.identity.id);
     expect(other.owns(actor.id)).toBe(false);
+  });
+
+  it("does not acquire an orphan when its registry write fails, and retries later", async () => {
+    const state = setup(true);
+    const actor = await state.actors.create({ name: "failed-adoption", instructions: "Wait." });
+    await state.actors.close();
+    let rootAlive = false;
+    const write = vi.spyOn(ActorRegistryStore.prototype, "write").mockImplementation(() => {
+      rootAlive = true; // Prevent immediate retries until the failed state is inspected.
+      throw new Error("injected registry failure");
+    });
+    const successorIdentity = { ...state.identity, id: "session:successor", sessionId: "successor" };
+    const successor = new ActorManager("successor", successorIdentity, state.mesh, state.meshConfig, state.agents, () => {}, {
+      actorRoot: path.join(state.root, "actors"), persistent: true, claimResidency: "session",
+      rootId: successorIdentity.id, canManageActor: () => undefined, lineageAlive: () => rootAlive,
+    });
+    actorManagers.push(successor);
+    try {
+      await waitFor(() => write.mock.calls.length > 0);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(successor.owns(actor.id)).toBe(false);
+      expect(successor.status(actor.id).rootId).toBe(state.identity.id);
+      expect(new ActorRegistryStore(path.join(state.root, "actors")).records().find((row) => row.id === actor.id)?.rootId).toBe(state.identity.id);
+    } finally {
+      write.mockRestore();
+    }
+    rootAlive = false;
+    await waitFor(() => successor.owns(actor.id));
+    expect(successor.status(actor.id).rootId).toBe(successorIdentity.id);
   });
 
   it("adopts orphaned project actors after the creating root is gone", async () => {

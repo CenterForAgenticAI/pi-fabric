@@ -57,6 +57,23 @@ afterEach(async () => {
 });
 
 describe("ActorDirectory", () => {
+  it.each([["project", "session"], ["session", "project"], ["project", "project"], ["session", "session"]] as const)(
+    "serializes concurrent %s and %s creates with the same free name",
+    async (first, second) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-actor-directory-"));
+      roots.push(root);
+      const { directory } = open(root, "alpha");
+      const results = await Promise.allSettled([
+        directory.create({ scope: first, name: "same", instructions: "First." }),
+        directory.create({ scope: second, name: "same", instructions: "Second." }),
+      ]);
+      expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected"]);
+      expect((results[1] as PromiseRejectedResult).reason.message).toMatch(/already active/);
+      expect(directory.list().filter((actor) => actor.name === "same")).toHaveLength(1);
+      await expect(directory.create({ scope: second, name: "next", instructions: "Next." })).resolves.toMatchObject({ name: "next" });
+    },
+  );
+
   it("finishes closing both scopes before it reports a failed close", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-actor-directory-"));
     roots.push(root);
