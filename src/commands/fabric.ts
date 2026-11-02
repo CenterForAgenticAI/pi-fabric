@@ -123,7 +123,9 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
     await state.ensure(context);
     if (!state.config.mesh.enabled) return { reason: "Fabric mesh is disabled; durable decisions are unavailable" };
     const store = state.decisionStore();
-    return store ? { store } : { reason: "Durable decisions are unavailable in this Fabric host" };
+    return store
+      ? { store, supervisorSources: state.config.decisions.supervisorSources }
+      : { reason: "Durable decisions are unavailable in this Fabric host" };
   };
   const unsubscribeDecisionsCapability = pi.events?.on?.(FABRIC_DECISIONS_CAPABILITY_EVENT, (value) => {
     const request = readFabricDecisionsCapabilityRequestV1(value);
