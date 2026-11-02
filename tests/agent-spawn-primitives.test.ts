@@ -575,6 +575,7 @@ describe("agents provider seeds and confinement", () => {
       resolveKernel: () => undefined,
       resolvePythonRuntime: () => "monty",
       resolveCwd: (cwd: string) => cwd,
+      applyRecursiveDefault: (request: AgentRunRequest) => request,
       childThinkingBounds: () => ({}),
       detachSignal() {},
       spawn: async (request: AgentRunRequest) => {
