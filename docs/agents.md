@@ -646,6 +646,23 @@ A reply can set only those two headers. `traceparent` must be a lowercase W3C `v
 
 [Model-guidance components](components.md#model-facing-guidance-components) can target participants by canonical provider/model. Direct agents and actors retain their role prompt and receive matching append guidance after it. Recursive Pi children load the project components and resolve their own replaceable Fabric execution slot, so the parent does not duplicate guidance. Durable owners use the latest atomically committed guidance snapshot for each launch. Guidance changes prompts only; it cannot widen tools, approvals, or committed capabilities. Task text, message envelopes, run IDs, and timestamps stay out of the guidance system prompt, so repeated runs with the same role, model, and component projection retain a byte-stable prefix.
 
+### Run status events
+
+A status line, dashboard, or other extension can follow child runs without polling `agents.list()`. Fabric emits `FABRIC_AGENT_RUN_EVENT` (`pi-fabric:agent-run:v1`) on Pi's event bus each time a run's status changes:
+
+```ts
+import { FABRIC_AGENT_RUN_EVENT, type FabricAgentRunEventV1 } from "pi-fabric/protocol";
+
+pi.events.on(FABRIC_AGENT_RUN_EVENT, (value) => {
+  const event = value as FabricAgentRunEventV1;
+  statusLine.set(event.runId, event.label ?? event.runId, event.to);
+});
+```
+
+The event is `{ version: 1, runId, parentSessionId?, invocationId?, label?, from?, to, at }`. `to` is one of the run statuses `queued`, `running`, `completed`, `failed`, `stopped`, and `timed_out`, plus `waiting` while a [routed child question](decisions.md#routed-child-questions) is open. `from` is absent on a run's first event. `invocationId` is the outer `fabric_exec` call that started the run, and `label` is the `name` (or actor name) the caller gave; a run without one has no label.
+
+The first event arrives before `agents.spawn` returns, so a listener sees `queued` or `running` before the child's first turn. A resume or startup retry keeps the run `running`. Every run ends with exactly one terminal event, including a failed launch and a stop before the run started. The event carries ids, the label and status only, never task, prompt, result, or error text. Fabric emits it synchronously; a listener that throws is logged and never affects the run.
+
 ## Unified participants and steering
 
 Fabric uses one participant directory for each project. Every live entity has a fixed `kind` of `root`, `agent`, `actor`, or `provider` (work a provider registered as a [participant](providers.md#provider-participants), with `provider` set and no `runner`). It also has a `rootId`, an optional `parentId`, an `ownerHostId`, and an authenticated owner identity for the process that controls its lifecycle. **Main** is the local user-facing view of one root. **Peers** provide compatibility views of the other roots. These views do not use separate registries or control planes. **Fabric reserves Peer for another root Pi session. The term never means a child agent.** When asked about a peer, call `agents.peers()` first. `agents.list()` reports only child agents, so it cannot determine whether a peer root has settled.
