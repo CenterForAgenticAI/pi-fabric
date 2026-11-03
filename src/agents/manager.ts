@@ -53,6 +53,7 @@ import {
   type InheritedSessionPin,
 } from "./session-pins.js";
 import { tokenUsagePayloadFromValue } from "../lifecycle/types.js";
+import type { FabricAgentRunEventV1, FabricAgentRunStatusV1 } from "../protocol.js";
 import {
   readTraceContext,
   type FabricChildTraceContextLaunch,
@@ -423,6 +424,24 @@ const traceOrigin = (origin: AgentRunRequest["traceOrigin"]): NonNullable<AgentR
   ...(typeof origin?.nestedToolCallId === "string" ? { nestedToolCallId: origin.nestedToolCallId } : {}),
 });
 
+/** Ids and label an agent-run event carries: never task text, so no runName fallback. */
+interface RunEventOrigin {
+  label?: string;
+  invocationId?: string;
+}
+
+const runEventOrigin = (request: AgentRunRequest): RunEventOrigin => {
+  const label = request.actorName ?? request.name;
+  const invocationId = request.traceOrigin?.parentToolCallId;
+  return {
+    ...(typeof label === "string" && label.trim() ? { label: safeName(label) } : {}),
+    ...(typeof invocationId === "string" && invocationId ? { invocationId } : {}),
+  };
+};
+
+const actorOrigin = (managed: { actorName?: string }): RunEventOrigin =>
+  managed.actorName ? { label: safeName(managed.actorName) } : {};
+
 const runName = (request: AgentRunRequest): string =>
   safeName(request.name ?? request.task.split("\n", 1)[0] ?? "Fabric agent");
 
@@ -628,6 +647,9 @@ export class AgentManager {
   readonly #onBackgroundComplete: ((result: AgentRunResult) => void) | undefined;
   readonly #onResultConsumed: ((id: string) => void) | undefined;
   readonly #onLifecycle: ((event: FabricLifecyclePublishRequest) => void) | undefined;
+  readonly #onRunEvent: ((event: FabricAgentRunEventV1) => void) | undefined;
+  /** Last reported status per unsettled run, with the ids and label its events carry. */
+  readonly #runEvents = new Map<string, RunEventOrigin & { status: FabricAgentRunStatusV1 }>();
   readonly #onChildQuestion:
     | ((request: AgentChildQuestionRequest) => Promise<AgentChildQuestionResponse>)
     | undefined;
@@ -693,6 +715,8 @@ export class AgentManager {
       onBackgroundComplete?: (result: AgentRunResult) => void;
       onResultConsumed?: (id: string) => void;
       onLifecycle?: (event: FabricLifecyclePublishRequest) => void;
+      /** Host-local run status stream: ids, label and status only (FABRIC_AGENT_RUN_EVENT). */
+      onRunEvent?: (event: FabricAgentRunEventV1) => void;
       /** agents.childQuestions "route": answer a child dialog via parent UI or a decision. */
       onChildQuestion?: (request: AgentChildQuestionRequest) => Promise<AgentChildQuestionResponse>;
       preparePiModel?: (model: string | undefined, options?: { modelMatch?: FabricModelMatch }) => Promise<string | void>;
@@ -732,6 +756,7 @@ export class AgentManager {
     this.#onBackgroundComplete = options.onBackgroundComplete;
     this.#onResultConsumed = options.onResultConsumed;
     this.#onLifecycle = options.onLifecycle;
+    this.#onRunEvent = options.onRunEvent;
     this.#onChildQuestion = options.onChildQuestion;
     this.#preparePiModel = options.preparePiModel;
     this.#resolveHandoffCompactionBudget = options.resolveHandoffCompactionBudget;
@@ -924,6 +949,7 @@ export class AgentManager {
           const outcome = new Promise<QueuedOutcome>((done) => { settle = done; });
           entry = { ...snapshot, id, queuedAt: Date.now(), control, outcome, settle, background: false, stopRequested: false };
           this.#queued.set(id, entry);
+          this.#runTransition(id, "queued", runEventOrigin(request));
           this.#invalidateUiList();
           resolve(this.#queuedHandle(entry));
         },
@@ -952,6 +978,7 @@ export class AgentManager {
               : error instanceof Error ? error.message : String(error);
           const result = queuedResult(entry, stopped ? "stopped" : "failed", message);
           entry.result = result;
+          this.#runTransition(id, result.status);
           entry.settle({ result });
           this.#invalidateUiList();
           this.#notifyBackgroundComplete(entry, result);
@@ -1504,6 +1531,7 @@ export class AgentManager {
         callerSignal.addEventListener("abort", managed.abortHandler, { once: true });
       }
       this.#runs.set(id, managed);
+      this.#runTransition(id, "running", runEventOrigin(request));
       this.#unregisteredTransports.delete(transport);
       if (recoveryPolicy !== undefined) {
         managed.workerRecovery = { deadlineAt: Date.now() + timeoutMs, policy: recoveryPolicy };
@@ -1579,6 +1607,7 @@ export class AgentManager {
       release: launch.release,
       signal: launch.signal,
       recovered: false,
+      origin: runEventOrigin(launch.request),
       ...(launch.requestedThinking ? { requestedThinking: launch.requestedThinking } : {}),
     });
     await hosted.start();
@@ -1608,6 +1637,8 @@ export class AgentManager {
       signal?: AbortSignal | undefined;
       /** Re-attached after a restart: background completion, usage already ledgered. */
       recovered: boolean;
+      /** Ids and label for run events; recovered runs carry only an actor name. */
+      origin?: RunEventOrigin;
       requestedThinking?: AgentRunRequest["thinking"];
     },
   ): ManagedAgent {
@@ -1656,6 +1687,7 @@ export class AgentManager {
       options.signal.addEventListener("abort", managed.abortHandler, { once: true });
     }
     this.#runs.set(managed.id, managed);
+    this.#runTransition(managed.id, "running", options.origin ?? actorOrigin(managed));
     this.#invalidateUiList();
     return managed;
   }
@@ -1944,6 +1976,7 @@ export class AgentManager {
         usageEmitted: { ...record.usage },
       };
       this.#runs.set(entry, managed);
+      this.#runTransition(entry, "running", actorOrigin(managed));
       this.#invalidateUiList();
       if (liveness === "dead") {
         managed.resumeAttempts += 1;
@@ -2858,6 +2891,7 @@ export class AgentManager {
     this.#emitLifecycle(managed, `run.${result.status}`, result.finishedAt ?? Date.now(), {
       status: result.status,
     });
+    this.#runTransition(managed.id, result.status);
 
     if (this.#budget) {
       this.#settleBudgetGap(managed, result);
@@ -2990,6 +3024,7 @@ export class AgentManager {
     // A run can have several questions open; each answer removes only its own.
     const open: { title: string; decisionId?: string } = { title };
     (managed.openQuestions ??= []).push(open);
+    if (managed.openQuestions.length === 1) this.#runTransition(managed.id, "waiting");
     this.#invalidateUiList();
     const asked = this.#onChildQuestion({
       runId: managed.id,
@@ -3006,6 +3041,7 @@ export class AgentManager {
       },
     }).catch((): AgentChildQuestionResponse => ({ cancelled: true })).then((response) => {
       managed.openQuestions!.splice(managed.openQuestions!.indexOf(open), 1);
+      if (managed.openQuestions!.length === 0 && !managed.settled) this.#runTransition(managed.id, "running");
       managed.asks?.delete(asked);
       this.#invalidateUiList();
       return response;
@@ -3059,6 +3095,41 @@ export class AgentManager {
     const residualTokens =
       residual.input + residual.output + residual.cacheRead + residual.cacheWrite;
     this.#appendAttributedBudgetLedger(managed, residualTokens, residual.cost);
+  }
+
+  /**
+   * Report a run status change on the host-local agent-run stream. `origin`
+   * starts a run's stream at registration; any later change applies only to a
+   * run already reported, so a run reports exactly one terminal status and
+   * nothing reopens it.
+   */
+  #runTransition(id: string, to: FabricAgentRunStatusV1, origin?: RunEventOrigin): void {
+    const previous = this.#runEvents.get(id);
+    if (previous?.status === to) return;
+    if (!previous && !origin) return;
+    const terminal = terminalStatuses.has(to);
+    const current = { ...(previous ?? origin), status: to };
+    if (terminal) this.#runEvents.delete(id);
+    else this.#runEvents.set(id, current);
+    if (!this.#onRunEvent) return;
+    const parentSessionId = this.#sessionId?.();
+    const event: FabricAgentRunEventV1 = {
+      version: 1,
+      runId: id,
+      ...(parentSessionId ? { parentSessionId } : {}),
+      ...(current.invocationId ? { invocationId: current.invocationId } : {}),
+      ...(current.label ? { label: current.label } : {}),
+      ...(previous ? { from: previous.status } : {}),
+      to,
+      at: Date.now(),
+    };
+    try {
+      this.#onRunEvent(event);
+    } catch (error) {
+      console.warn(
+        `[pi-fabric] agent run event listener failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   #emitLifecycle(

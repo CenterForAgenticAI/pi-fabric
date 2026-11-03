@@ -65,6 +65,38 @@ export interface FabricWorkflowItemEventV1 {
   meta?: Record<string, unknown>;
 }
 
+/**
+ * Host-emitted when an agent run is queued, changes status, or settles;
+ * observation only. Carries ids, label and status, never task or result text.
+ */
+export const FABRIC_AGENT_RUN_EVENT = "pi-fabric:agent-run:v1";
+
+/** `AgentRunStatus` plus `waiting`: the run is blocked on a routed child question. */
+export type FabricAgentRunStatusV1 =
+  | "queued"
+  | "running"
+  | "waiting"
+  | "completed"
+  | "failed"
+  | "stopped"
+  | "timed_out";
+
+export interface FabricAgentRunEventV1 {
+  version: 1;
+  runId: string;
+  /** The Pi session that owns the run's manager. */
+  parentSessionId?: string;
+  /** The outer `fabric_exec` tool call that started the run, when one did. */
+  invocationId?: string;
+  /** The run's `name` or actor name when the caller set one; never derived from the task. */
+  label?: string;
+  /** Absent on the run's first status. */
+  from?: FabricAgentRunStatusV1;
+  to: FabricAgentRunStatusV1;
+  /** Synchronous observation time (epoch ms). */
+  at: number;
+}
+
 /** Host-local request: run a saved program or caller-supplied code without the model, like `/fabric run`. */
 export const FABRIC_PROGRAM_RUN_EVENT = "pi-fabric:program:run:v1";
 
