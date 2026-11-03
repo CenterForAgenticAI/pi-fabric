@@ -140,6 +140,7 @@ import { SchemaProvider } from "./providers/schema-provider.js";
 import { SchemaController } from "./schema/controller.js";
 import { StateStore } from "./state/store.js";
 import {
+  FABRIC_AGENT_RUN_EVENT,
   FABRIC_COMPONENT_DISCOVER_EVENT,
   FABRIC_PROVIDER_DISCOVER_EVENT,
   type FabricActionDescriptor,
@@ -916,6 +917,7 @@ export class FabricRuntimeState {
         const lifecycle = this.#lifecycle;
         if (lifecycle) void lifecycle.publish(event).catch(() => undefined);
       },
+      onRunEvent: (event) => this.pi.events?.emit(FABRIC_AGENT_RUN_EVENT, event),
       onBackgroundComplete: (result) => completionInbox.enqueue(result),
       onResultConsumed: (id) => completionInbox.acknowledge(id),
       onChildQuestion: (request) => {
