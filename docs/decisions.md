@@ -153,12 +153,25 @@ A parent waiting on the old decision sees it settle `cancelled`, with `via: "abo
 
 Another extension in the same session can hand a question to a person through two host-local, versioned events on `pi.events`. A question tool uses them when it has no screen to ask on.
 
-- `pi-fabric:decisions:capability:v1` claims and resolves with `{ ok: true, available: true, inputs, maxOptions, maxTitleChars, maxBodyChars, maxTextChars, minTimeoutMs, maxTimeoutMs }`, or `{ ok: true, available: false, reason }` when the mesh is disabled or the host is managed. An unclaimed request means no compatible Fabric runtime is loaded.
-- `pi-fabric:decisions:request:v1` takes `question: { title, body?, input?, options?, timeoutMs? }`, an optional `source`, an optional `AbortSignal`, and an optional `onRaised(id)` callback. It raises a `kind: "question"` decision and resolves once it settles: `{ ok: true, id, status: "answered", answer }`, `{ ok: true, id, status: "cancelled" | "expired" }`, or `{ ok: false, error, id? }`.
+- `pi-fabric:decisions:capability:v1` claims and resolves with `{ ok: true, available: true, inputs, maxOptions, maxTitleChars, maxBodyChars, maxTextChars, minTimeoutMs, maxTimeoutMs, supervisor }`, or `{ ok: true, available: false, reason }` when the mesh is disabled or the host is managed. An unclaimed request means no compatible Fabric runtime is loaded.
+- `pi-fabric:decisions:request:v1` takes `question: { title, body?, input?, options?, timeoutMs? }`, an optional `source`, an optional [`supervisor`](#naming-a-supervisor-opt-in), an optional `AbortSignal`, and an optional `onRaised(id)` callback. It raises a `kind: "question"` decision and resolves once it settles: `{ ok: true, id, status: "answered", answer }`, `{ ok: true, id, status: "cancelled" | "expired" }`, or `{ ok: false, error, id? }`.
 
-Fabric copies only those question fields. The decision is always held by `"user"` with `onExpire: "cancel"`, so a caller cannot route it to a program, add an escalation chain, or set a default that settles without a person. Only `answered` carries an answer. Omit `timeoutMs` to wait until a person answers or cancels; aborting the signal cancels the stored decision. At session shutdown Fabric aborts every request still waiting: it resolves `{ ok: false, id, error: "Decision request aborted: the session shut down" }` and its stored decision is cancelled.
+Fabric copies only those question fields. The decision is held by `"user"` with `onExpire: "cancel"` unless the host has opted a trusted source into [naming a supervisor](#naming-a-supervisor-opt-in), so a caller cannot route it to a program, add an escalation chain, or set a default that settles without a person. Only `answered` carries an answer. Omit `timeoutMs` to wait until a person answers or cancels; aborting the signal cancels the stored decision. At session shutdown Fabric aborts every request still waiting: it resolves `{ ok: false, id, error: "Decision request aborted: the session shut down" }` and its stored decision is cancelled.
 
 `source` names the asking extension, for example its package name. The record stores it as `raisedBy.participantId: "extension:<source>"` next to the session id, so a person can see who asked. It must match `[A-Za-z0-9@][A-Za-z0-9@._/-]{0,63}`; any other value is refused before a decision is raised. Without `source`, the session is the raiser.
+
+### Naming a supervisor (opt-in)
+
+A host can let a trusted extension route its question to another Fabric participant first, for example the overseer session of a worker. It is off by default. List the asking sources in `decisions.supervisorSources` (trusted global or project settings; the asker cannot set it). A request that carries `supervisor` and whose `source` is listed is raised as:
+
+- `holder: "supervisor:<supervisor>"`, `onExpire: "escalate"`, and `escalation: { chain: ["supervisor:<supervisor>", "user"], hopTimeoutMs: 7 days, onFinal: "cancel" }`.
+- The chain never contains `root`. The asking session is a main session and would pass a `root` hold, so only the named participant can answer until the hold ends.
+- `timeoutMs` is how long the supervisor holds the question. When it passes, the decision moves to `user`, where only a person can answer, for up to 7 days. If nobody answers by then, the request resolves `cancelled` or `expired`, never with an answer.
+
+`supervisor` is a participant id such as `session:<piSessionId>`. Fabric refuses the request with `{ ok: false, error }` and raises nothing when an allow-listed source names `user`, `root`, an `extension:` id, the raising session's own id, or a value that is not a valid participant id. A request from a source that is not listed is raised as usual with the `user` holder, whatever `supervisor` says. The capability reply carries `supervisor: true` when the request's `source` is listed, so a caller can tell before it asks; send the same `source` in the capability request.
+
+Authority is the same as for any `supervisor:<id>` holder (see [who may answer](#who-may-answer)): the mesh is a shared directory, so any process that runs as the same OS user can still answer through the CLI.
+
 
 ## Question renderers
 
@@ -219,6 +232,7 @@ With an active renderer and a decision store, a routed child question that would
 | `approvals.headlessTimeoutMs` | `300000` | headless approval deadline (1 s to 24 h) |
 | `approvals.policyHooks` | off | consult [extension action policy hooks](configuration.md#extension-action-policy-hooks); a `hold` uses the headless path above |
 | `agents.childQuestions` | `"cancel"` | `"route"` forwards child dialogs to the parent |
+| `decisions.supervisorSources` | `[]` | sources whose [extension questions](#extension-questions) may name a [supervisor](#naming-a-supervisor-opt-in) holder |
 | `ui.questionRenderers` | off | offer decisions shown at this terminal to [question renderers](#question-renderers) |
 | `agents.childQuestionTimeoutMs` | `600000` | default routed dialog deadline (1 s to 24 h) |
 | `agents.childQuestionTools` | `["ask"]` | tools a routed Pi child gets for asking; `[]` grants none |

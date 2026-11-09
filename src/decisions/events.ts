@@ -16,6 +16,8 @@ import {
   type DecisionRaiseInput,
   type DecisionRecord,
   type DecisionStore,
+  MAX_ESCALATION_HOP_MS,
+  isParticipantId,
 } from "./store.js";
 
 // The `pi.events` decisions channel lets another extension (for example a
@@ -24,8 +26,19 @@ import {
 // fixes who holds it ("user"), what expiry does ("cancel"), and the kind
 // ("question"), so a caller cannot route it to a program, escalate it, or
 // attach a default answer that settles without a person.
+//
+// One opt-in exception: the host lists trusted sources in
+// `decisions.supervisorSources`. A request from such a source may name a
+// `supervisor` participant that holds the decision first, with the fixed chain
+// [supervisor:<id>, "user"]. `root` is never in that chain, so the asking
+// session cannot answer, and the last hop is always the user.
 
-export type FabricDecisionsTarget = { store: DecisionStore } | { reason: string };
+export interface FabricDecisionsTargetStore {
+  store: DecisionStore;
+  /** Trusted `decisions.supervisorSources`; absent or empty means no source may name a supervisor. */
+  supervisorSources?: readonly string[];
+}
+export type FabricDecisionsTarget = FabricDecisionsTargetStore | { reason: string };
 export type ResolveFabricDecisions = (context: ExtensionContext) => Promise<FabricDecisionsTarget>;
 
 // A source names the asking extension. It cannot contain ":", so the stored
@@ -43,8 +56,29 @@ const message = (error: unknown): string => error instanceof Error ? error.messa
 const optionField = (option: unknown, field: "id" | "label"): unknown =>
   typeof option === "object" && option !== null ? (option as Record<string, unknown>)[field] : undefined;
 
+const sourceMaySupervise = (source: string | undefined, allowed: readonly string[] | undefined): boolean =>
+  source !== undefined && SOURCE_PATTERN.test(source) && (allowed ?? []).includes(source);
+
+/**
+ * The supervisor to hold the decision first, or undefined for the user. Only an
+ * allow-listed source can name one; every other request keeps the user holder.
+ * Throws when an allow-listed source names a participant that must not hold it.
+ */
+const supervisorFor = (
+  request: Pick<FabricDecisionRequestV1, "source" | "supervisor">,
+  target: FabricDecisionsTargetStore,
+): string | undefined => {
+  const supervisor = request.supervisor;
+  if (supervisor === undefined || !sourceMaySupervise(request.source, target.supervisorSources)) return undefined;
+  if (!isParticipantId(supervisor)) throw new Error("Decision supervisor must be a Fabric participant id");
+  if (supervisor === "user" || supervisor === "root") throw new Error(`Decision supervisor cannot be "${supervisor}"`);
+  if (supervisor.startsWith("extension:")) throw new Error('Decision supervisor cannot be an "extension:" participant');
+  if (supervisor === target.store.identity.id) throw new Error("Decision supervisor cannot be the asking session");
+  return supervisor;
+};
+
 /** Copy only the named question fields; the store validates their values. */
-const decisionInputFromQuestion = (question: FabricDecisionQuestionV1): DecisionRaiseInput => {
+const decisionInputFromQuestion = (question: FabricDecisionQuestionV1, supervisor?: string): DecisionRaiseInput => {
   const source = question as unknown as Record<string, unknown>;
   const options = source.options;
   return {
@@ -60,8 +94,14 @@ const decisionInputFromQuestion = (question: FabricDecisionQuestionV1): Decision
         }
       : {}),
     ...(source.timeoutMs !== undefined ? { timeoutMs: source.timeoutMs } : {}),
-    holder: "user",
-    onExpire: "cancel",
+    ...(supervisor !== undefined
+      ? {
+          holder: `supervisor:${supervisor}`,
+          onExpire: "escalate",
+          // Never "root": the asking session is a main session and could answer as root.
+          escalation: { chain: [`supervisor:${supervisor}`, "user"], hopTimeoutMs: MAX_ESCALATION_HOP_MS, onFinal: "cancel" },
+        }
+      : { holder: "user", onExpire: "cancel" }),
   };
 };
 
@@ -118,6 +158,7 @@ export const answerFabricDecisionsCapability = async (
       maxTextChars: MAX_DECISION_TEXT_CHARS,
       minTimeoutMs: MIN_DECISION_TIMEOUT_MS,
       maxTimeoutMs: MAX_DECISION_DEADLINE_MS,
+      supervisor: sourceMaySupervise(request.source, target.supervisorSources),
     });
   } catch (error) {
     respond({ ok: false, error: message(error) });
@@ -145,7 +186,7 @@ export const answerFabricDecisionRequest = async (
     signal?.throwIfAborted();
     const record = await raiseAndWait(
       target.store,
-      decisionInputFromQuestion(request.question),
+      decisionInputFromQuestion(request.question, supervisorFor(request, target)),
       raisedBy,
       signal,
       (id) => {
