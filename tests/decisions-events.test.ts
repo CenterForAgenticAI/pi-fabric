@@ -234,7 +234,7 @@ describe("decisions event channel", () => {
     } as unknown as ExtensionAPI;
     const state = {
       ensure: async () => undefined,
-      config: { mesh: { enabled: true } },
+      config: { mesh: { enabled: true }, decisions: { supervisorSources: [] } },
       decisionStore: () => store,
     } as unknown as FabricState;
     registerFabricCommand(pi, {
