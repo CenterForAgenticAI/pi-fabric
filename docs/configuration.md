@@ -183,6 +183,7 @@ where absent values do not participate, and time spent inside a `humanWaitRefs` 
     "maxTokensPerChild": 0,
     "sessionExport": true,
     "sessionExportDir": "",
+    "runRootParent": "",
     "childQuestions": "cancel",
     "childQuestionTimeoutMs": 600000,
     "childQuestionTools": ["ask"]
@@ -702,6 +703,7 @@ Other agent settings:
 - `sessionExportDir`: override the export store root (default `~/.pi-fabric/agent`, with `PI_FABRIC_AGENT_DIR` taking precedence).
 - `worktree.root`: directory relative to the selected Git repository root (default `.pi/fabric/worktrees`). Worktrees are created at `<root>/<agent-id>`. Absolute paths, empty/dot/parent components, `.git` components (including Windows aliases), trailing dots/spaces, control characters, colons and symlink ancestors are rejected. The actual root is excluded from Git status and copy-on-write cloning.
 - `worktree.branch`: branch template (default `pi-fabric/{name}-{id8}`). Supports `{name}` (lowercase, sanitized agent name, at most 30 characters), `{id}` (full agent ID) and `{id8}` (first eight ID characters). For example, `issue/{name}-{id}`. The expanded name must be a valid Git branch. Branch collisions fail and leave the existing branch unchanged.
+- `runRootParent`: directory that holds each session's run root (`<parent>/pi-fabric-runs-XXXXXX`), default the system temporary directory. Set an absolute path (`~/` expands) when `/tmp` is a small or quota-limited `tmpfs`; `PI_FABRIC_RUN_ROOT_PARENT` takes precedence. Many sessions may share one parent: each still creates, owns, sweeps and removes only its own root, and sweeps dead sessions' roots in both the parent and the temporary directory. A relative path, a path inside a Fabric run root (also through a symlink), or a path that cannot be created falls back to the temporary directory. Changing it requires `/fabric reload`. Do not use `PI_FABRIC_RUN_ROOT` for this: it names one exact root, which Fabric uses for nested children. A session given that root does not own it, so it writes no ownership marker and no sweep reclaims it, and with `retainRuns: false` the session deletes the whole directory on shutdown, including other sessions' runs in it.
 - `worktree.setup`: optional shell command (`/bin/sh`, or `cmd.exe` on Windows) run in each new `worktree: true` checkout before the child starts (unset by default; blank values are ignored). A per-request `worktreeSetup` overrides it, and a non-zero exit fails the launch. See [worktree results and setup](agents.md#transports).
 - `childQuestions`: `"cancel"` (default) cancels every dialog a Pi child opens; `"route"` forwards it to the parent's UI, or to a root-held [decision](decisions.md#routed-child-questions) when the parent has no UI. Durable runs always use a decision.
 - `childQuestionTimeoutMs`: default deadline for a routed child dialog (default `600000`, bounded to 1 s..24 h); a dialog's own timeout wins.
