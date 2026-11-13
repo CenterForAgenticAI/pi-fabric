@@ -620,7 +620,7 @@ The terminal transports set them through `/usr/bin/env`, with each value passed 
 
 The wrapper composes with write confinement: the policy still applies inside the child, and the wrapper can mirror it at the OS level from `PI_FABRIC_LAUNCH_WRITE_POLICY`. A child that starts its own children re-runs the wrapper for each, because it reads the same configuration. A wrapper should detect that it already runs inside its sandbox and exec the rest of its argv directly.
 
-A wrapper that is not an executable file, or that exits before the worker writes a record, fails the run with an error that names the wrapper, after the usual bounded startup retries. The `process` transport also reports the wrapper's exit code and stderr. Durable residency (`residency: "durable"` agents and actors) is refused while the setting is on, because the shared resident host would run outside the wrapper. The refusal follows the configuration the session started with.
+A wrapper that is not an executable file, or that exits before the worker writes a record, fails the run with an error that names the wrapper, after the usual bounded startup retries. The `process` transport also reports the wrapper's exit code and stderr. Durable residency (`residency: "durable"` agents and actors) is refused while the setting is on, because the shared resident host would run outside the wrapper. The refusal follows the live configuration, so a `/fabric reload` that adds the setting refuses the next durable spawn or actor without a restart.
 
 ### Scope narrowing
 
