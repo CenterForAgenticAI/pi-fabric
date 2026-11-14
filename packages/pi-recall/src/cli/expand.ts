@@ -269,7 +269,8 @@ const renderEntry = (entry: ExpandEntry): string[] => {
 // Continuations are pasted into POSIX shells or PowerShell. Quote whole
 // key=value operands so paths and custom roles cannot become extra arguments.
 const quoteArgument = (value: string): string => {
-  if (/^[a-zA-Z0-9_./:=,+-]+$/.test(value)) return value;
+  const portable = process.platform === "win32" ? value.replace(/\\/g, "/") : value;
+  if (/^[a-zA-Z0-9_./:=,+-]+$/.test(portable)) return value;
   const apostrophe = process.platform === "win32" ? "''" : "'\\''";
   return `'${value.replace(/'/g, apostrophe)}'`;
 };
