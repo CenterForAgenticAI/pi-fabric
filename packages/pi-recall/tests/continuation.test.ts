@@ -30,7 +30,12 @@ const setup = (branch = false) => {
 const continuation = (lines: string[]) => {
   const hint = lines.find(line => line.includes("more entries"));
   expect(hint).toBeDefined();
-  return parseExpandArgv(hint!.split("continue with: ")[1]!.replace(/\)$/, "").split(" "));
+  const operands = hint!.split("continue with: ")[1]!.replace(/\)$/, "");
+  // Decode the formatter's single-quoted fixture operands. The subprocess
+  // test below separately verifies real POSIX and PowerShell escaping.
+  const tokens = operands.match(/'(?:[^']|'')*'|\S+/g) ?? [];
+  return parseExpandArgv(tokens.map(token => token.startsWith("'")
+    ? token.slice(1, -1).replace(/''/g, "'") : token));
 };
 
 describe("bound CLI continuations", () => {
