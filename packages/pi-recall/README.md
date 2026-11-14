@@ -42,6 +42,10 @@ while both surfaces coexist.
     pi-recall outline session=<path|sid> role=user --json
     pi-recall sessions --scope global
 
+Copy the complete printed continuation command when paging expansion. It carries
+the source hash, lineage fingerprint, branch mode, role and text budget; a changed
+source is refused even if the index has been rebuilt.
+
 Run with bun from the repo: `bun run bin/pi-recall recall 'query'`.
 Agent tree: `~/.pi/agent` (`PI_CODING_AGENT_DIR` honored). Index location:
 `${agentDir}/fabric/memory-index` (`PI_RECALL_INDEX_DIR` honored — point

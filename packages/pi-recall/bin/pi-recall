@@ -36,6 +36,7 @@ const USAGE = [
   "  --phrase | --regex    query mode (default: literal terms)",
   "  --all                 require every term in one hot entry",
   "expand keys: id= session= idx= offset= textOffset= maxChars= branches= role=",
+  "             expectedSourceHash= expectedLineageFingerprint=",
   "outline keys: session= role= branches=   flags: --branches <b> --json",
 ].join("\n");
 

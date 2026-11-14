@@ -15,6 +15,8 @@ const EXPAND_ARGV_HELP = [
   "  maxChars=<n>         total text budget",
   "  branches=<b>         active | all",
   "  role=<r>             exact normalized entry role filter",
+  "  expectedSourceHash=<hash>          source binding from the continuation",
+  "  expectedLineageFingerprint=<hash> lineage binding from the continuation",
 ].join("\n");
 
 export interface ExpandCall {
@@ -26,6 +28,8 @@ export interface ExpandCall {
   maxChars?: number;
   branches?: string;
   role?: string;
+  expectedSourceHash?: string;
+  expectedLineageFingerprint?: string;
 }
 
 const integerArg = (key: string, value: string): number => {
@@ -73,6 +77,12 @@ export const parseExpandArgv = (lines: string[]): ExpandCall => {
         break;
       case "role":
         call.role = value;
+        break;
+      case "expectedSourceHash":
+        call.expectedSourceHash = value;
+        break;
+      case "expectedLineageFingerprint":
+        call.expectedLineageFingerprint = value;
         break;
       default:
         throw new Error(`unknown expand argument: ${key}\n${EXPAND_ARGV_HELP}`);
@@ -250,7 +260,7 @@ const renderEntry = (entry: ExpandEntry): string[] => {
   const range = entry.textRange;
   if (range !== undefined && !range.complete) {
     lines.push(
-      `# (text ${range.end}/${range.total} — continue with textOffset=${range.end})`,
+      `# (text ${range.end}/${range.total}; use the bound continuation below)`,
     );
   }
   return lines;
@@ -263,7 +273,7 @@ export const runExpandCall = async (
   let sessionFile: string | undefined;
   let indices = call.idx;
   let entryId: string | undefined;
-  let expectedSourceHash: string | undefined;
+  let expectedSourceHash = call.expectedSourceHash;
   if (call.id !== undefined) {
     const matches = resolveMemoryId(call.id, context);
     if (matches.length === 0) {
@@ -293,7 +303,7 @@ export const runExpandCall = async (
     // still identifies the same entry instead of trusting a cached index
     // into a session that may have changed.
     entryId = call.id;
-    expectedSourceHash = match.sourceHash;
+    expectedSourceHash ??= match.sourceHash;
     indices = [];
   } else if (call.session !== undefined) {
     sessionFile = resolveSessionFile(call.session, context);
@@ -312,9 +322,10 @@ export const runExpandCall = async (
   const response = (await processMemoryExpand(
     {
       session: sessionFile,
-      ...(entryId !== undefined
-        ? { entryIds: [entryId], ...(expectedSourceHash !== undefined ? { expectedSourceHash } : {}) }
-        : { indices }),
+      ...(entryId !== undefined ? { entryIds: [entryId] } : { indices }),
+      ...(expectedSourceHash !== undefined ? { expectedSourceHash } : {}),
+      ...(call.expectedLineageFingerprint !== undefined
+        ? { expectedLineageFingerprint: call.expectedLineageFingerprint } : {}),
       ...(call.offset !== undefined ? { entryOffset: call.offset } : {}),
       ...(call.textOffset !== undefined ? { textOffset: call.textOffset } : {}),
       ...(call.maxChars !== undefined ? { maxChars: call.maxChars } : {}),
@@ -345,15 +356,21 @@ export const runExpandCall = async (
     const textOffset = typeof args.textOffset === "number" && args.textOffset > 0
       ? args.textOffset
       : undefined;
-    const selection = entryId !== undefined
-      ? `id=${entryId}`
-      : `session=${sessionFile} idx=${indices.join(",")}`;
-    lines.push(
-      `# (more entries — continue with: ${selection}${
-        call.role !== undefined ? ` role=${call.role}` : ""
-      } offset=${entryOffset}` +
-        `${textOffset !== undefined ? ` textOffset=${textOffset}` : ""})`,
-    );
+    // Copy the engine's bound, canonical selection. Re-resolving an id or
+    // reconstructing only offsets can silently read a different branch/source.
+    const selectedIndices = Array.isArray(args.indices) ? args.indices : indices;
+    const tokens = [
+      `session=${args.session ?? sessionFile}`,
+      `idx=${selectedIndices.join(",")}`,
+      `branches=${args.branches}`,
+      `expectedSourceHash=${args.expectedSourceHash}`,
+      `expectedLineageFingerprint=${args.expectedLineageFingerprint}`,
+      `maxChars=${args.maxChars}`,
+      ...(typeof args.role === "string" ? [`role=${args.role}`] : []),
+      `offset=${entryOffset}`,
+      ...(textOffset !== undefined ? [`textOffset=${textOffset}`] : []),
+    ];
+    lines.push(`# (more entries — continue with: ${tokens.join(" ")})`);
   }
   return { ok: true, lines };
 };
