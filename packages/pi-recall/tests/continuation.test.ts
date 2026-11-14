@@ -78,6 +78,29 @@ describe("bound CLI continuations", () => {
     expect(pages).toBe(3);
   });
 
+  test("prints an executable continuation for paths with spaces and apostrophes", async () => {
+    const { file, context } = setup();
+    const quoted = path.join(path.dirname(file), "session with 'quote.jsonl");
+    writeFileSync(quoted, [
+      { type: "session", id: "quoted", cwd: "/review" },
+      { type: "message", id: "q", parentId: null, message: { role: "user", content: "Q".repeat(600) } },
+    ].map(row => JSON.stringify(row)).join("\n") + "\n");
+    const first = await runExpandCall({ session: quoted, idx: [0], maxChars: 256 }, context);
+    expect(first.ok).toBe(true);
+    const hint = first.lines.find(line => line.includes("more entries"))!;
+    const operands = hint.split("continue with: ")[1]!.replace(/\)$/, "");
+    const bin = path.resolve(import.meta.dir, "../bin/pi-recall");
+    const command = `bun "${bin}" expand ${operands}`;
+    const proc = Bun.spawnSync(process.platform === "win32"
+      ? ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command]
+      : ["sh", "-c", command], {
+      env: { ...process.env, PI_CODING_AGENT_DIR: context.agentDir, PI_RECALL_INDEX_DIR: context.config.indexDir! },
+    });
+    expect(new TextDecoder().decode(proc.stderr)).toBe("");
+    expect(proc.exitCode).toBe(0);
+    expect(new TextDecoder().decode(proc.stdout)).toContain("Q".repeat(256));
+  });
+
   test("enforces a caller-supplied lineage binding", async () => {
     const { file, context } = setup();
     const page = await runExpandCall({ session: file, idx: [0], expectedLineageFingerprint: "stale" }, context);

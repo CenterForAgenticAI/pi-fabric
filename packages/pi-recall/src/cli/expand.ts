@@ -266,6 +266,14 @@ const renderEntry = (entry: ExpandEntry): string[] => {
   return lines;
 };
 
+// Continuations are pasted into POSIX shells or PowerShell. Quote whole
+// key=value operands so paths and custom roles cannot become extra arguments.
+const quoteArgument = (value: string): string => {
+  if (/^[a-zA-Z0-9_./:=,+-]+$/.test(value)) return value;
+  const apostrophe = process.platform === "win32" ? "''" : "'\\''";
+  return `'${value.replace(/'/g, apostrophe)}'`;
+};
+
 export const runExpandCall = async (
   call: ExpandCall,
   context: MemoryProviderContext,
@@ -370,7 +378,7 @@ export const runExpandCall = async (
       `offset=${entryOffset}`,
       ...(textOffset !== undefined ? [`textOffset=${textOffset}`] : []),
     ];
-    lines.push(`# (more entries — continue with: ${tokens.join(" ")})`);
+    lines.push(`# (more entries — continue with: ${tokens.map(quoteArgument).join(" ")})`);
   }
   return { ok: true, lines };
 };
