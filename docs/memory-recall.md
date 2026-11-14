@@ -501,18 +501,18 @@ addresses return `index_out_of_bounds`; Fabric never clamps them.
 ## Session outline
 
 `memory.outline` maps one resolved session before reading it. It resolves the
-session exactly like `memory.expand` — same `source`, `branches`, and pointer
-arguments — and returns a deterministic skeleton: one bounded row per
+session with the same `source`, `branches`, and pointer arguments as
+`memory.expand` and returns a deterministic skeleton: one bounded row per
 normalized entry with `index`, `type`, `role`, `tool`, a whitespace-collapsed
 single-line `preview` (at most 120 characters, never splitting a surrogate
 pair), and `size`, the entry-text length a later `memory.expand` returns for
 that index. No scores, no ranking, no continuation. `maxEntries` caps the rows
-(default 200); `total` counts the entries that match `role` — or all entries
-when no role is set — and `truncated` is true only when matching entries
+(default 200); `total` counts the entries that match `role`, or all entries
+when no role is set, and `truncated` is true only when matching entries
 exceed the returned rows. `entryCount` always counts the resolved session
 before any filter. When the session's index coverage is incomplete (a host
 source that retained only part of the session), the response carries
-`coverage: { complete: false, reasons }` instead of posing as complete.
+`coverage: { complete: false, reasons }` to identify the partial view.
 
 An optional `role` argument filters the skeleton by exact normalized role, and
 `memory.expand` accepts the same `role` argument: it filters the resolved
@@ -522,10 +522,14 @@ match returns a plain empty view with `next: null`.
 ```ts
 const map = await memory.outline({ session });
 const userRows = map.entries.filter((row) => row.role === "user");
-// Expand a matching row only after checking it exists — an outline with no
+// Expand a matching row only after checking it exists. An outline with no
 // user row (or an empty session) has no index 0 to read.
 const first = userRows.length > 0
-  ? await memory.expand({ session, indices: [userRows[0]!.index] })
+  ? await memory.expand({
+      session, indices: [userRows[0]!.index],
+      expectedSourceHash: map.sourceHash,
+      expectedLineageFingerprint: map.lineageFingerprint,
+    })
   : null;
 ```
 
