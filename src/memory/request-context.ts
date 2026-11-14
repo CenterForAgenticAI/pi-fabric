@@ -44,7 +44,7 @@ export const resolveIndexOptions = (
   branches: MemoryBranches,
   liveBranchForFile?: MemoryIndexOptions["liveBranchForFile"],
 ): MemoryIndexOptions => ({
-  indexDir: config.indexDir ?? `${agentDir}/fabric/memory-index`,
+  indexDir: config.indexDir ?? path.join(agentDir, "fabric", "memory-index"),
   maxEntryChars: config.maxEntryChars,
   branches,
   indexThinking: config.indexThinking ?? false,

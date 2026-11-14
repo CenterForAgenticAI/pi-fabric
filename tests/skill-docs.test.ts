@@ -7,7 +7,7 @@ import { GUEST_TYPE_DECLARATIONS } from "../src/runtime/guest-types.js";
 import { typeCheckFabricCode } from "../src/runtime/type-checker.js";
 
 const stableProviderActions = {
-  memory: ["recall", "expand", "sessions"],
+  memory: ["recall", "expand", "outline", "sessions"],
   state: ["transition", "get", "history", "complexity", "verify", "goal", "checkGoal"],
   schema: ["status", "hypothesize", "verify", "commit", "abort"],
   compact: ["request", "status", "pressure", "carry", "cancel"],

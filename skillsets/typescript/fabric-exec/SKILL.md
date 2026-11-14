@@ -68,6 +68,7 @@ All calls return promises. Fields ending in `?` are optional; `unknown` marks pr
 |------|-------------|
 | `memory.recall(args?)` | `{total,hits:MemoryRecallHit[],next:{ref:"memory.recall",args}|null,coverage:MemoryCoverage,error?}` |
 | `memory.expand(args)` | `{session?,sourceHash?,branches?,lineageFingerprint?,entryCount?,entries:ExpandedSessionEntry[],next?:{ref:"memory.expand",args}|null,error?}` |
+| `memory.outline(args)` | `{session?,sourceHash?,branches?,lineageFingerprint?,entryCount?,total?,truncated?,coverage?,entries,error?}`; bounded ordered entry previews |
 | `memory.walk(args, visitor)` (TypeScript guest only) | `{visited,stopped,error?}`; guest-local paging and full-entry reassembly over `memory.expand` |
 | `memory.sessions(args?)` | `{scope?,branches?,sessions?:SessionInfo[],error?}`; slice `result.sessions ?? []`, not the wrapper |
 | `state.transition(args)` | `{event:FabricMeshEvent,head:unknown}` |

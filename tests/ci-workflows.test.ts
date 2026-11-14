@@ -42,6 +42,15 @@ describe("CI Node runtime prerequisites", () => {
     for (const name of required) expect(files.filter(file => file === `tests/${name}.test.ts`)).toHaveLength(1);
   });
 
+  it("checks the standalone memory package on both platforms", () => {
+    const workflow = parse(fs.readFileSync(new URL(".github/workflows/test.yml", root), "utf8"));
+    const step = workflow.jobs.check.steps.find((entry: { name?: string }) => entry.name === "Test standalone memory package");
+    expect(step["working-directory"]).toBe("packages/pi-recall");
+    expect(step.if).toBeUndefined();
+    expect(step.run).toContain("bun run typecheck");
+    expect(step.run).toContain("tests/continuation.test.ts");
+  });
+
   it.each(workflows)("%s configures the declared Node runtime before install and execution", (file) => {
     const workflow = parse(fs.readFileSync(new URL(`.github/workflows/${file}`, root), "utf8")) as {
       jobs: Record<string, { steps?: Step[] }>;

@@ -13,6 +13,7 @@ Recommend the smallest sufficient path; do not invoke it. Core coding needs no a
 | Finite discover → fan-out → verify work | `/skill:fabric-workflow` |
 | Independent roles and synthesis, optionally one model per seat | `/skill:fabric-council` |
 | Different models compared by a judge, or read-only references executed by one actor | `/skill:fabric-fusion` |
+| Search past session evidence or inspect its entry structure | `/skill:fabric-memory` |
 | Work too large for one context window | `/skill:fabric-rlm` |
 | Evidence-gated or transactional local-file mutation | `/skill:fabric-schema` |
 | Typed semantic judgments or a code-owned observe → judge → act loop | `/skill:fabric-jev` |
