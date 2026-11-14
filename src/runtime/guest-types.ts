@@ -1014,6 +1014,7 @@ interface FabricMemoryRecallArgs {
 interface FabricMemoryExpandArgs {
   source?: string;
   session: string;
+  role?: string;
   expectedSourceHash?: string;
   expectedLineageFingerprint?: string;
   branches?: FabricMemoryBranches;
@@ -1136,6 +1137,27 @@ interface FabricMemoryExpandResult {
   next?: FabricMemoryCall<"memory.expand", FabricMemoryExpandArgs> | null;
   error?: FabricMemoryError;
 }
+interface FabricMemoryOutlineArgs {
+  source?: string;
+  session: string;
+  expectedSourceHash?: string;
+  expectedLineageFingerprint?: string;
+  branches?: FabricMemoryBranches;
+  role?: string;
+  maxEntries?: number;
+}
+interface FabricMemoryOutlineResult {
+  session?: string;
+  sourceHash?: string;
+  branches?: FabricMemoryBranches;
+  lineageFingerprint?: string;
+  entryCount?: number;
+  total?: number;
+  truncated?: boolean;
+  coverage?: { complete: boolean; reasons: string[] };
+  entries: Array<{ index: number; type: string; role?: string; tool?: string; preview: string; size: number }>;
+  error?: FabricMemoryError;
+}
 interface FabricMemoryWalkResult {
   visited: number;
   stopped: boolean;
@@ -1154,6 +1176,7 @@ interface FabricMemorySessionInfo {
 interface FabricMemoryApi {
   recall(args?: FabricMemoryRecallArgs): Promise<FabricMemoryRecallResult>;
   expand(args: FabricMemoryExpandArgs): Promise<FabricMemoryExpandResult>;
+  outline(args: FabricMemoryOutlineArgs): Promise<FabricMemoryOutlineResult>;
   walk(
     args: FabricMemoryExpandArgs,
     visitor: (
