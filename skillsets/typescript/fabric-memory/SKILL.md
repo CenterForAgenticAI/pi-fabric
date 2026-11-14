@@ -59,7 +59,9 @@ Expand supports exact indices, entry IDs, operation addresses or an inclusive
 the resolved selection and is retained in `next.args`.
 
 ```ts
-await memory.walk({ session, role: "user" }, async (entry) => {
+const catalog = await memory.sessions({ scope: "project" });
+const session = catalog.sessions?.[0]?.file;
+if (session) await memory.walk({ session, role: "user" }, async (entry) => {
   print({ index: entry.index, text: entry.text });
 });
 ```
