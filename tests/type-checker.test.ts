@@ -126,6 +126,17 @@ return { answer, binding: session.binding, defaults: session.projectDefaults };
     );
     expect(result.errors).toEqual([]);
   });
+  it("accepts typed outlines and role-filtered expansion", () => {
+    const result = typeCheckFabricCode(`
+const outline = await memory.outline({ session: "session-id", role: "user", maxEntries: 10 });
+const indices: number[] = outline.entries.map(row => row.index);
+const sizes: number[] = outline.entries.map(row => row.size);
+const page = await memory.expand({ session: "session-id", indices, role: "user", expectedSourceHash: outline.sourceHash });
+return { page, sizes, incomplete: outline.coverage?.complete === false };
+`, GUEST_TYPE_DECLARATIONS);
+    expect(result.errors).toEqual([]);
+  });
+
   it("rejects unknown memory arguments", () => {
     const result = typeCheckFabricCode(
       'return memory.expand({ session: "session-id", befroe: 2 });',

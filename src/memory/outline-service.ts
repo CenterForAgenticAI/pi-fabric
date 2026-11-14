@@ -19,7 +19,7 @@ import type { NormalizedEntry } from "./normalize.js";
 /** One skeleton row of the session outline: the addressable position, the
  *  entry shape, a bounded one-line preview, and the rendered size that
  *  memory.expand will return for that entry. */
-export interface MemoryOutlineRow {
+interface MemoryOutlineRow {
   index: number;
   type: string;
   role?: string;
@@ -143,6 +143,7 @@ export async function processMemoryOutline(
     if (!pointerCurrent(!sourceChanged, !lineageChanged)) {
       return {
         session: ref.file,
+        branches,
         error: stalePointerError(
           ref.file,
           expectedSourceHash,

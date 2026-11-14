@@ -13,6 +13,7 @@ export const TIER_A_SPECULATION_REFS: ReadonlySet<string> = new Set([
   "pi.ls",
   "memory.recall",
   "memory.expand",
+  "memory.outline",
   "memory.sessions",
   "state.get",
   "state.history",
