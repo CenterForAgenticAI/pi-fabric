@@ -568,7 +568,11 @@ const main = async (): Promise<void> => {
     recoveryWatchdog.dispose();
     stallWatchdog.dispose();
     if (closeTimer) clearTimeout(closeTimer);
-    terminateChild(child, "SIGTERM");
+    // RPC EOF disposes the Pi runtime (including session_shutdown handlers).
+    // Do not also send SIGTERM: older Pi versions treat EOF during signal
+    // shutdown as a second shutdown request and exit before async hooks finish.
+    // Other runners still need a signal; every runner retains the hard deadline.
+    if (!isPi) terminateChild(child, "SIGTERM");
     killTimer ??= setTimeout(() => terminateChild(child, "SIGKILL"), KILL_GRACE_MS);
     killTimer.unref();
     child.stdin?.end();
