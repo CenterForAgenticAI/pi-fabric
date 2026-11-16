@@ -24,7 +24,18 @@ export default function (pi: ExtensionAPI) {
       setInterval(() => {}, 1_000);
       await new Promise(() => {});
     }
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // The parent releases the hook only after observing shutdown-started.
+    // A filesystem watcher keeps the child alive without a timing-based sleep.
+    await new Promise<void>(resolve => {
+      const release = path.join(root, "shutdown-release");
+      const check = () => {
+        if (!fs.existsSync(release)) return;
+        watcher.close();
+        resolve();
+      };
+      const watcher = fs.watch(root, check);
+      check();
+    });
     fs.writeFileSync(path.join(root, "shutdown-finished"), "finished");
   });
 }
