@@ -1517,6 +1517,16 @@ export class AgentManager {
         cwd: agentCwd,
         workerPath: runnerLaunch.workerPath,
         workerArguments: [...runnerLaunch.workerArguments],
+        ...(this.config.launchWrapper
+          ? {
+              launchWrapper: {
+                argv: [...this.config.launchWrapper],
+                runDirectory,
+                ...(writePolicy ? { writePolicy } : {}),
+                depth: this.#currentDepth + 1,
+              },
+            }
+          : {}),
       };
       admissionSignal.throwIfAborted();
       if (this.#closing) throw new Error("Fabric agent manager is closing");
