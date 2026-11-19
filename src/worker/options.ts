@@ -149,6 +149,7 @@ export const parseWorkerOptions = (
     if (!traceContext) throw new Error("Invalid worker trace context");
   }
   const maxTokens = optional(args, "max-tokens");
+  const maxTurns = optional(args, "max-turns");
   const carryOverSource = optional(args, "carry-over");
   const runnerSessionId = optional(args, "runner-session-id");
   const inheritedSessionPinsSource = optional(args, "inherited-session-pins");
@@ -272,6 +273,7 @@ export const parseWorkerOptions = (
     ...(lineage ? { lineage } : {}),
     ...(traceContext ? { traceContext } : {}),
     ...(maxTokens ? { maxTokens: Number(maxTokens) } : {}),
+    ...(maxTurns ? { maxTurns: Number(maxTurns) } : {}),
     ...(carryOver ? { carryOver } : {}),
     ...(inheritedSessionPins && inheritedSessionPins.length > 0 ? { inheritedSessionPins } : {}),
   };

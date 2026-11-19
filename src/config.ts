@@ -244,6 +244,8 @@ export interface FabricAgentConfig {
   notifyOnComplete: boolean;
   budgetUsd: number;
   maxTokensPerChild: number;
+  /** Turns one child may take before it is stopped (0 disables). */
+  maxTurnsPerChild: number;
   /** Write usage-only pi-format session files per agent run for external trackers. */
   sessionExport: boolean;
   /** Export store root override; PI_FABRIC_AGENT_DIR wins. Empty = ~/.pi-fabric/agent. */
@@ -603,6 +605,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     notifyOnComplete: true,
     budgetUsd: 0,
     maxTokensPerChild: 0,
+    maxTurnsPerChild: 0,
     sessionExport: true,
     sessionExportDir: "",
     modelAdmission: "strict",
@@ -1351,6 +1354,12 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         DEFAULT_FABRIC_CONFIG.agents.maxTokensPerChild,
         0,
         100_000_000,
+      ),
+      maxTurnsPerChild: boundedInteger(
+        agents.maxTurnsPerChild,
+        DEFAULT_FABRIC_CONFIG.agents.maxTurnsPerChild,
+        0,
+        1_000_000,
       ),
       sessionExport: booleanValue(
         agents.sessionExport,
