@@ -11,7 +11,7 @@ import {
 } from "./ui/code-preview-shell.js";
 import { registerFabricActorHostEventObservers } from "./actors/host-event-observer.js";
 import { CapturedToolCatalog } from "./capture/catalog.js";
-import { isSelectedNativeMcpTool } from "./core/native-mcp-identity.js";
+import { isPiMcpResourceToolName, isSelectedNativeMcpTool } from "./core/native-mcp-identity.js";
 import { installRegisteredToolCapture } from "./capture/interceptor.js";
 import { registerFabricCommand } from "./commands/fabric.js";
 import { resolveAgentDir } from "./core/agent-dir.js";
@@ -1300,12 +1300,17 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     // captured-tools provider refuses the rest as "not permitted by this
     // child's tool allowlist".
     const toolAllowlist = readChildToolAllowlist();
+    // The roster is part of the cached system prompt, so it leaves out Pi's
+    // MCP resource tools: they come and go as servers with resources connect,
+    // and each flip would rewrite the provider's whole prompt cache. Scripts
+    // still reach them as extensions.* and find them with tools.list/search.
     const overrideGuidance = effectiveFullCodeMode && !managedHost
       ? coreOverridePromptGuidance(capturedTools, toolAllowlist).trim()
       : undefined;
     const extensionRoster = effectiveFullCodeMode && !managedHost
       ? extensionToolRosterGuidance(capturedTools.list().filter(entry =>
           (toolAllowlist === undefined || toolAllowlist.has(entry.name)) &&
+          !isPiMcpResourceToolName(entry.name) &&
           (!config.mcp.enabled || !isSelectedNativeMcpTool(entry.definition, config.mcp.nativeServers)),
         ), new Set(PI_CORE_TOOL_NAMES), config.executor.kernel === "typescript" && config.executor.codemodeProfile === "native")
       : undefined;
