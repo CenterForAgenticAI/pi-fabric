@@ -20,3 +20,17 @@ export function isSelectedNativeMcpTool(
   const identity = nativeMcpIdentity(definition);
   return identity !== undefined && servers.includes(identity.server);
 }
+// Pi's MCP extension registers these while any connected server offers
+// resources and re-registers them hidden when none does (syncResourceTools in
+// Pi's extensions/mcp). Mirrors the resource half of Pi's isMcpToolName, which
+// Pi does not export from its package entry.
+const PI_MCP_RESOURCE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "list_mcp_resources",
+  "list_mcp_resource_templates",
+  "read_mcp_resource",
+]);
+
+/** Whether a tool is one of Pi's MCP resource tools, whose registration follows server state. */
+export function isPiMcpResourceToolName(name: string): boolean {
+  return PI_MCP_RESOURCE_TOOL_NAMES.has(name);
+}

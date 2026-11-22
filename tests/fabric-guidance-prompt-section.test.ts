@@ -103,6 +103,35 @@ describe("Fabric guidance as a Pi prompt section", () => {
     expect(second.options.sections).toEqual(first.options.sections);
   });
 
+  it("keeps the fabric section byte-identical while Pi's MCP resource tools come and go", async () => {
+    // Pi's MCP extension registers list_mcp_resources, list_mcp_resource_templates
+    // and read_mcp_resource while a connected server offers resources and
+    // re-registers them hidden when none does. Each flip used to change the
+    // roster line and rewrite the provider's whole prompt cache.
+    const builtin = (name: string) => ({
+      name, definition: { name, label: name }, sourceInfo: { source: "builtin" },
+    });
+    const stable = [builtin("codemode"), builtin("tool_search")];
+    const withResources = [
+      ...stable,
+      builtin("list_mcp_resource_templates"), builtin("list_mcp_resources"), builtin("read_mcp_resource"),
+    ];
+    const fabric = extension("pi-fabric", await loadFabric());
+    const list = vi.spyOn(CapturedToolCatalog.prototype, "list");
+    const sectionWith = async (tools: typeof stable) => {
+      list.mockReturnValue(tools as never);
+      const { options, errors } = await startRun([fabric]);
+      expect(errors).toEqual([]);
+      return options.sections.fabric;
+    };
+    const registered = await sectionWith(withResources);
+    const hidden = await sectionWith(stable);
+    const reRegistered = await sectionWith(withResources);
+    expect(registered).toContain("- builtin: codemode, tool_search");
+    expect(hidden).toBe(registered);
+    expect(reRegistered).toBe(registered);
+  });
+
   it("deduplicates a previously rendered prompt frozen by an earlier extension", async () => {
     const earlier = extension("earlier", new Map([["before_agent_start", [(event: unknown) => ({
       systemPrompt: (event as { systemPrompt: string }).systemPrompt,

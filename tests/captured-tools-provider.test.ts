@@ -249,6 +249,61 @@ describe("CapturedToolsProvider", () => {
     });
   });
 
+  it("keeps Pi's MCP resource tools callable and listed although the roster omits them", async () => {
+    // The fabric prompt roster leaves these out because Pi registers and hides
+    // them as resource servers connect. Scripts must still reach them.
+    const names = ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"];
+    const calls: string[] = [];
+    const definitions = names.map((name) => defineTool({
+      name, label: name, description: `Pi MCP resource tool ${name}`,
+      parameters: Type.Object({}),
+      async execute() {
+        calls.push(name);
+        return { content: [{ type: "text" as const, text: `${name} ran` }], details: {} };
+      },
+    }));
+    const runner = {
+      createContext: () => ({ cwd: process.cwd() }), getActiveTools: () => [],
+      emit: vi.fn(async () => {}), emitToolCall: vi.fn(async () => undefined),
+      emitToolResult: vi.fn(async () => undefined),
+    } as unknown as ExtensionRunner;
+    const catalog = new CapturedToolCatalog();
+    catalog.replace(
+      definitions.map((definition) => ({ definition, sourceInfo: createSyntheticSourceInfo("<builtin:mcp>", { source: "builtin" }) })),
+      runner, DEFAULT_FABRIC_CONFIG.capture, "/extensions/pi-fabric/index.ts",
+    );
+    const registry = new ActionRegistry();
+    registry.register(new CapturedToolsProvider(catalog));
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.approvals.execute = "allow";
+    const state = {
+      config, ensure: async () => {}, claimHandoff: async () => undefined,
+      prewalk: new PrewalkController(),
+      execution: new FabricExecutionService(registry, config),
+    } as unknown as FabricState;
+    const tool = createFabricExecTool(state, defaultCodePreviewSettings(), new Map(), (tool) => tool);
+    const output = await tool.execute("mcp-resources", {
+      code: [
+        "const listed = (await tools.list({ provider: 'extensions' })).map((action) => action.ref);",
+        "const found = (await tools.search('mcp_resource')).map((action) => action.ref);",
+        "const ran = [];",
+        `for (const name of ${JSON.stringify(names)}) ran.push((await tools.call({ ref: 'extensions.' + name, args: {} })).text);`,
+        "return JSON.stringify({ listed, found, ran });",
+      ].join("\n"),
+    }, undefined, undefined, {
+      cwd: process.cwd(), hasUI: false, sessionManager: { getSessionId: () => "fixture" },
+      tools: [], executeTool: async () => { throw new Error("unexpected nested host call"); },
+    } as unknown as import("@earendil-works/pi-coding-agent").ExtensionToolContext);
+    expect(output).not.toMatchObject({ isError: true });
+    const text = output.content.map((part) => part.type === "text" ? part.text : "").join("");
+    const result = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)) as { listed: string[]; found: string[]; ran: string[] };
+    const refs = names.map((name) => `extensions.${name}`);
+    expect(result.listed).toEqual(expect.arrayContaining(refs));
+    expect(result.found).toEqual(expect.arrayContaining(refs));
+    expect(result.ran).toEqual(names.map((name) => `${name} ran`));
+    expect(calls).toEqual(names);
+  });
+
   it("removes tools from discovery when a captured tool deactivates them (#113)", async () => {
     let activeTools = ["selector", "retired_tool"];
     const selector = defineTool({
