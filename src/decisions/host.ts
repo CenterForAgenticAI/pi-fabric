@@ -1,8 +1,19 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentChildQuestionRequest, AgentChildQuestionResponse } from "../agents/types.js";
 import type { ResolvedFabricAction } from "../core/action-registry.js";
-import { renderDecision, terminalOperator, watchDecision, type DecisionBy } from "./render.js";
+import {
+  renderDecision,
+  renderExternalQuestion,
+  terminalOperator,
+  watchDecision,
+  type DecisionBy,
+} from "./render.js";
 import type { FabricQuestionRenderers } from "../fabric-state.js";
+import {
+  readFabricQuestionExternalRecordV1,
+  type FabricQuestionDecisionV1,
+  type FabricQuestionExternalRecordV1,
+} from "../protocol.js";
 import {
   MAX_DECISION_BODY_CHARS,
   MAX_DECISION_DEADLINE_MS,
@@ -24,6 +35,18 @@ const CANCELLED: AgentChildQuestionResponse = { cancelled: true };
 const clip = (value: string, max: number): string =>
   value.length <= max ? value : `${value.slice(0, max - 1)}…`;
 
+const isWithdrawnAbort = (reason: unknown): boolean =>
+  reason instanceof Error && reason.name === "ChildQuestionWithdrawnError";
+
+const cancelIdentity = (
+  store: DecisionStore,
+  request: Pick<AgentChildQuestionRequest, "actorId" | "runId">,
+  signal: AbortSignal | undefined,
+): DecisionBy =>
+  isWithdrawnAbort(signal?.reason)
+    ? { answeredBy: request.actorId ?? request.runId, via: "withdrawn" }
+    : { answeredBy: store.identity.id, via: "abort" };
+
 /** Raise a decision and wait for it; an aborted wait cancels the decision. */
 export const raiseAndWait = async (
   store: DecisionStore,
@@ -31,13 +54,15 @@ export const raiseAndWait = async (
   raisedBy: Partial<DecisionRecord["raisedBy"]>,
   signal: AbortSignal | undefined,
   onRaised?: (id: string) => void,
+  cancelBy?: (signal: AbortSignal | undefined) => DecisionBy,
 ): Promise<DecisionRecord> => {
   const record = await store.raise(input, raisedBy);
   onRaised?.(record.id);
   try {
     return await store.wait(record.id, signal ? { signal } : {});
   } catch (error) {
-    await store.cancel(record.id, { answeredBy: store.identity.id, via: "abort" }).catch(() => undefined);
+    const by = cancelBy ? cancelBy(signal) : { answeredBy: store.identity.id, via: "abort" };
+    await store.cancel(record.id, by).catch(() => undefined);
     throw error;
   }
 };
@@ -217,6 +242,28 @@ const recordable = (label: string, question: ChildQuestion): boolean => {
   );
 };
 
+const childRaisedBy = (request: AgentChildQuestionRequest): Partial<DecisionRecord["raisedBy"]> => ({
+  participantId: request.actorId ?? request.runId,
+  runId: request.runId,
+  ...(request.childSessionId ? { sessionId: request.childSessionId } : {}),
+});
+
+const notifyBestEffort = (ui: ExtensionContext["ui"] | undefined, message: string): void => {
+  if (!ui) return;
+  try {
+    ui.notify(message, "info");
+  } catch {
+    // A notice is best-effort.
+  }
+};
+
+const waitUntilAborted = (signal: AbortSignal): Promise<void> =>
+  signal.aborted
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+
 /**
  * Show a recorded child question to the person at this terminal: through a
  * registered question renderer, else through `ctx.ui`. The first answer wins,
@@ -232,7 +279,7 @@ const askRecorded = async (
   const { store } = deps;
   const record = await store.raise(
     childDecisionInput(label, question, Math.max(1_000, question.timeout)),
-    { participantId: request.actorId ?? request.runId, runId: request.runId },
+    childRaisedBy(request),
   );
   request.onDecision(record.id);
   const by: DecisionBy = { answeredBy: terminalOperator(), via: "tui" };
@@ -258,7 +305,7 @@ const askRecorded = async (
       watch,
       by,
     });
-    // The asker went away: the catch below cancels the record as an abort.
+    // The asker went away or withdrew: the catch below cancels the record.
     request.signal.throwIfAborted();
     let settled: DecisionRecord;
     if (rendered.kind === "settled") settled = rendered.record;
@@ -271,11 +318,113 @@ const askRecorded = async (
     }
     return responseFromDecision(question, settled);
   } catch (error) {
-    await store.cancel(record.id, { answeredBy: store.identity.id, via: "abort" }).catch(() => undefined);
+    await store.cancel(record.id, cancelIdentity(store, request, request.signal)).catch(() => undefined);
     throw error;
   } finally {
     watch.stop();
   }
+};
+
+/**
+ * Offer a held root decision to registered question renderers without blocking
+ * the session on `ctx.ui`: dismissing or declining leaves the decision open,
+ * notifies the operator, and keeps waiting on the store until answered or aborted.
+ */
+const askHeldRendered = async (
+  request: AgentChildQuestionRequest,
+  deps: { ui: ExtensionContext["ui"]; store: DecisionStore; renderers: FabricQuestionRenderers },
+  label: string,
+  question: ChildQuestion,
+): Promise<AgentChildQuestionResponse> => {
+  const { store } = deps;
+  const record = await store.raise(
+    childDecisionInput(label, question, MAX_DECISION_DEADLINE_MS),
+    childRaisedBy(request),
+  );
+  request.onDecision(record.id);
+  const by: DecisionBy = { answeredBy: terminalOperator(), via: "tui" };
+  const watch = watchDecision(store, record.id, request.signal);
+  try {
+    const rendered = await renderDecision({
+      renderers: deps.renderers,
+      surface: "child-question",
+      ui: deps.ui,
+      store,
+      record,
+      watch,
+      by,
+    });
+    request.signal.throwIfAborted();
+    if (rendered.kind === "settled") return responseFromDecision(question, rendered.record);
+    const settledElsewhere = watch.current();
+    if (settledElsewhere && settledElsewhere.status !== "open") {
+      return responseFromDecision(question, settledElsewhere);
+    }
+    watch.stop();
+    notifyBestEffort(
+      deps.ui,
+      `${label}: decision ${record.id} is held for you (up to 30 days); answer it with /fabric decisions`,
+    );
+    const settled = await store.wait(record.id, { signal: request.signal });
+    return responseFromDecision(question, settled);
+  } catch (error) {
+    await store.cancel(record.id, cancelIdentity(store, request, request.signal)).catch(() => undefined);
+    throw error;
+  } finally {
+    watch.stop();
+  }
+};
+
+/**
+ * Route a child ask that already has an authoritative external record (for
+ * example `pi-decision`). Fabric creates NO duplicate Fabric decision; it offers
+ * the external record to registered question renderers and otherwise waits until
+ * the child withdraws the ask or settles.
+ */
+const routeExternalRecordQuestion = async (
+  request: AgentChildQuestionRequest,
+  externalRecord: FabricQuestionExternalRecordV1,
+  label: string,
+  deps: {
+    context?: Pick<ExtensionContext, "hasUI" | "ui">;
+    renderers?: FabricQuestionRenderers;
+  },
+): Promise<AgentChildQuestionResponse> => {
+  if (request.signal.aborted) return CANCELLED;
+  const decision: FabricQuestionDecisionV1 = {
+    id: `ext:${externalRecord.system}:${externalRecord.id}`,
+    kind: "question",
+    title: clip(label, MAX_DECISION_TITLE_CHARS),
+    input: "text",
+    holder: "root",
+    raisedBy: {
+      participantId: request.actorId ?? request.runId,
+      runId: request.runId,
+      ...(request.childSessionId ? { sessionId: request.childSessionId } : {}),
+    },
+    createdAt: Date.now(),
+    externalRecord,
+  };
+  if (deps.context?.hasUI && deps.renderers) {
+    const outcome = await renderExternalQuestion({
+      renderers: deps.renderers,
+      surface: "child-question",
+      ui: deps.context.ui,
+      decision,
+      signal: request.signal,
+    });
+    if (outcome.kind === "settled" || outcome.kind === "aborted") {
+      return CANCELLED;
+    }
+  }
+  if (deps.context?.hasUI) {
+    notifyBestEffort(
+      deps.context.ui,
+      `${label}: waiting in ${externalRecord.system} (${externalRecord.id})`,
+    );
+  }
+  await waitUntilAborted(request.signal);
+  return CANCELLED;
 };
 
 /**
@@ -285,18 +434,17 @@ const askRecorded = async (
  * UI at all (the resident host) omits `context` and only ever raises a decision.
  *
  * A held request (`request.hold`, set by the manager for a holdQuestions run)
- * always becomes a root-held decision with the store's longest deadline
- * (MAX_DECISION_DEADLINE_MS, 30 days), even with a UI, so a
- * blocking dialog never stalls the session: the UI is only told the decision is
- * waiting. It stays open until answered, until the run settles, or until the
- * deadline passes and the child's question is cancelled. Without a
- * decision store it falls back to the UI dialog, with no timeout.
+ * becomes a root-held decision with the store's longest deadline
+ * (MAX_DECISION_DEADLINE_MS, 30 days), even with a UI, so a blocking dialog
+ * never stalls the session. When `renderers` is active and the question is
+ * lossless, registered renderers get a chance to show it; dismissing or
+ * declining leaves the decision open and notifies the operator instead of
+ * falling back to a blocking `ctx.ui` dialog. Without a decision store it falls
+ * back to the UI dialog, with no timeout.
  *
- * `renderers` is passed only when `ui.questionRenderers` is on and an
- * extension registered one. Then a question that would use the UI dialog is
- * recorded as a root-held decision first, so a renderer and Fabric's own
- * dialog show the same record; see askRecorded. Without `renderers` the UI
- * path does not touch the store.
+ * When a child ask carries an `externalRecord` (for example `pi-decision`),
+ * Fabric creates no duplicate decision: it offers the ask directly to
+ * registered renderers and waits for settlement or child withdrawal.
  */
 export const routeChildQuestion = async (
   request: AgentChildQuestionRequest,
@@ -306,8 +454,15 @@ export const routeChildQuestion = async (
     renderers?: FabricQuestionRenderers;
   },
 ): Promise<AgentChildQuestionResponse> => {
+  if (request.signal.aborted) return CANCELLED;
+  const externalRecord = readFabricQuestionExternalRecordV1(request.question.externalRecord);
+  if (externalRecord) {
+    const rawTitle = typeof request.question.title === "string" ? request.question.title : "";
+    const label = `${request.name}: ${rawTitle || "question"}`;
+    return routeExternalRecordQuestion(request, externalRecord, label, deps);
+  }
   const question = parseChildQuestion(request.question);
-  if (!question || request.signal.aborted) return CANCELLED;
+  if (!question) return CANCELLED;
   const label = `${request.name}: ${question.title || "question"}`;
   const hold = request.hold === true;
   if (deps.context?.hasUI && (!hold || !deps.store)) {
@@ -317,25 +472,28 @@ export const routeChildQuestion = async (
     return askViaUi(deps.context.ui, label, question, request.signal, hold);
   }
   if (!deps.store) return CANCELLED;
+  if (hold && deps.context?.hasUI && deps.renderers && recordable(label, question)) {
+    return askHeldRendered(request, { ui: deps.context.ui, store: deps.store, renderers: deps.renderers }, label, question);
+  }
   // A held decision gets the longest deadline the store allows, not none: if the
   // session that raised it dies without shutdown, nothing else cancels it.
   const input = childDecisionInput(label, question, hold ? MAX_DECISION_DEADLINE_MS : Math.max(1_000, question.timeout));
   const onRaised = hold && deps.context?.hasUI
     ? (id: string): void => {
         request.onDecision(id);
-        try {
-          deps.context!.ui.notify(`${label}: decision ${id} is held for you (up to 30 days); answer it with /fabric decisions`, "info");
-        } catch {
-          // A notice is best-effort; the decision is already durable.
-        }
+        notifyBestEffort(
+          deps.context?.ui,
+          `${label}: decision ${id} is held for you (up to 30 days); answer it with /fabric decisions`,
+        );
       }
     : request.onDecision;
   const decision = await raiseAndWait(
     deps.store,
     input,
-    { participantId: request.actorId ?? request.runId, runId: request.runId },
+    childRaisedBy(request),
     request.signal,
     onRaised,
+    (sig) => cancelIdentity(deps.store!, request, sig),
   );
   return responseFromDecision(question, decision);
 };

@@ -157,3 +157,74 @@ export const renderDecision = async (options: {
   }
   return { kind: "fallback" };
 };
+
+export type ExternalRenderOutcome =
+  | { kind: "settled" }
+  | { kind: "dismissed" }
+  | { kind: "aborted" }
+  | { kind: "fallback" };
+
+const cloneExternalDecision = (decision: FabricQuestionDecisionV1): FabricQuestionDecisionV1 => ({
+  id: decision.id,
+  kind: decision.kind,
+  title: decision.title,
+  ...(decision.body !== undefined ? { body: decision.body } : {}),
+  input: decision.input,
+  ...(decision.options ? { options: decision.options.map(({ id, label }) => ({ id, label })) } : {}),
+  holder: decision.holder,
+  raisedBy: {
+    participantId: decision.raisedBy.participantId,
+    ...(decision.raisedBy.runId !== undefined ? { runId: decision.raisedBy.runId } : {}),
+    ...(decision.raisedBy.sessionId !== undefined ? { sessionId: decision.raisedBy.sessionId } : {}),
+  },
+  createdAt: decision.createdAt,
+  ...(decision.deadline !== undefined ? { deadline: decision.deadline } : {}),
+  ...(decision.externalRecord
+    ? { externalRecord: { system: decision.externalRecord.system, id: decision.externalRecord.id } }
+    : {}),
+});
+
+/**
+ * Offer one externally tracked child question (no Fabric decision copy) to
+ * registered renderers in registration order. The renderer itself owns writing
+ * to or observing the outside store; Fabric treats `answered`/`cancelled` as
+ * settled and `dismissed` as still waiting in the external store.
+ */
+export const renderExternalQuestion = async (options: {
+  renderers: FabricQuestionRenderers;
+  surface: FabricQuestionRenderSurfaceV1;
+  ui: ExtensionContext["ui"];
+  decision: FabricQuestionDecisionV1;
+  signal: AbortSignal;
+}): Promise<ExternalRenderOutcome> => {
+  const { decision, signal } = options;
+  const stop = new Promise<typeof STOPPED>((resolve) => {
+    if (signal.aborted) resolve(STOPPED);
+    else signal.addEventListener("abort", () => resolve(STOPPED), { once: true });
+  });
+  for (const { render } of options.renderers.list()) {
+    if (signal.aborted) return { kind: "aborted" };
+    const input: FabricQuestionRenderInputV1 = {
+      version: 1,
+      surface: options.surface,
+      ui: options.ui,
+      decision: cloneExternalDecision(decision),
+      signal,
+    };
+    const rendered = (async () => render(input))();
+    rendered.catch(() => undefined);
+    let value: unknown;
+    try {
+      value = await Promise.race([rendered, stop]);
+    } catch {
+      return signal.aborted ? { kind: "aborted" } : { kind: "fallback" };
+    }
+    if (value === STOPPED || signal.aborted) return { kind: "aborted" };
+    if (value === undefined) continue;
+    const result = parseResult(value, decision.id);
+    if (!result) return { kind: "fallback" };
+    if (result.status === "dismissed") return { kind: "dismissed" };
+    return { kind: "settled" };
+  }
+  return { kind: "fallback" };
+};

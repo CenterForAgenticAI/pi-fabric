@@ -35,6 +35,7 @@ export class PiModelControl {
     send(frame: Record<string, unknown>): void;
     admitted(model?: string, thinking?: string): void;
     observed(model: string): void;
+    sessionId?: (sessionId: string) => void;
     fail(error: string): void;
   };
 
@@ -108,6 +109,11 @@ export class PiModelControl {
       return true;
     }
     if (this.#awaitingStartup) {
+      const startupState = object(event.data);
+      const startupSessionId = typeof startupState?.sessionId === "string" && startupState.sessionId.trim()
+        ? startupState.sessionId.trim()
+        : undefined;
+      if (startupSessionId) this.io.sessionId?.(startupSessionId);
       this.#awaitingStartup = false;
       this.#resolveModel();
     } else if (command === "get_available_models") {
@@ -128,6 +134,10 @@ export class PiModelControl {
       this.#send("get_state");
     } else {
       const state = object(event.data);
+      const sessionId = typeof state?.sessionId === "string" && state.sessionId.trim()
+        ? state.sessionId.trim()
+        : undefined;
+      if (sessionId) this.io.sessionId?.(sessionId);
       const actual = identity(state?.model);
       if (actual) this.io.observed(key(actual));
       // A virtual provider key resolves to a concrete backend at stream time.
