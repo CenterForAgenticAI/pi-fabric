@@ -875,6 +875,13 @@ export const FABRIC_QUESTION_RENDERER_REGISTER_EVENT = "pi-fabric:question-rende
 export type FabricQuestionRenderSurfaceV1 = "child-question" | "decisions-command";
 
 /** A copy of the stored decision. Changing it changes nothing in the store. */
+/** Identifies an outside record that owns a routed child question (for example `pi-decision`). */
+export interface FabricQuestionExternalRecordV1 {
+  system: string;
+  id: string;
+}
+
+/** A copy of the stored decision. Changing it changes nothing in the store. */
 export interface FabricQuestionDecisionV1 {
   id: string;
   kind: "approval" | "question" | "escalation";
@@ -888,6 +895,8 @@ export interface FabricQuestionDecisionV1 {
   createdAt: number;
   /** Epoch ms after which the decision expires and `signal` aborts. */
   deadline?: number;
+  /** Present when the child raised its own record in an outside system; Fabric creates no copy. */
+  externalRecord?: FabricQuestionExternalRecordV1;
 }
 
 export interface FabricQuestionRenderInputV1 {
@@ -948,6 +957,98 @@ export const readFabricQuestionRendererRegistrationV1 = (
     name: record.name,
     render: record.render as FabricQuestionRendererV1,
     ...(record.respond ? { respond: record.respond as NonNullable<FabricQuestionRendererRegistrationV1["respond"]> } : {}),
+  };
+};
+
+/**
+ * RPC `setStatus` key used by child extensions (via `FABRIC_CHILD_QUESTION_ROUTE_EVENT`)
+ * to announce and withdraw externally tracked child asks without opening an RPC dialog.
+ */
+export const FABRIC_CHILD_QUESTION_STATUS_KEY = "__pi_fabric_child_question__";
+
+/**
+ * Child-side event for an extension inside a routed Pi worker (`agents.childQuestions: "route"`)
+ * to surface an ask backed by an external record (for example `pi-decision`) to the parent's
+ * question renderer without opening a blocking RPC dialog or creating a Fabric decision copy.
+ */
+export const FABRIC_CHILD_QUESTION_ROUTE_EVENT = "pi-fabric:child-question:route:v1";
+
+export interface FabricChildQuestionRouteRequestV1 {
+  version: 1;
+  context: Pick<ExtensionContext, "mode" | "ui">;
+  requestId: string;
+  title: string;
+  externalRecord: FabricQuestionExternalRecordV1;
+  hold?: boolean;
+  timeout?: number;
+  signal?: AbortSignal;
+  claim: () => void;
+  respond?: (result: { ok: true } | { ok: false; error: string }) => void;
+}
+
+const EXTERNAL_RECORD_SYSTEM = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const CONTROL_CHAR_RE = /[\x00-\x1f\x7f]/;
+
+export const readFabricQuestionExternalRecordV1 = (
+  value: unknown,
+): FabricQuestionExternalRecordV1 | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.system !== "string" ||
+    !EXTERNAL_RECORD_SYSTEM.test(record.system) ||
+    typeof record.id !== "string" ||
+    !record.id.trim() ||
+    record.id.length > 128 ||
+    CONTROL_CHAR_RE.test(record.id)
+  ) {
+    return undefined;
+  }
+  return { system: record.system, id: record.id };
+};
+
+export const readFabricChildQuestionRouteRequestV1 = (
+  value: unknown,
+): FabricChildQuestionRouteRequestV1 | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.version !== 1) return undefined;
+  if (typeof record.context !== "object" || record.context === null) return undefined;
+  const ctx = record.context as Record<string, unknown>;
+  if (typeof ctx.mode !== "string" || typeof ctx.ui !== "object" || ctx.ui === null) return undefined;
+  if (typeof (ctx.ui as Record<string, unknown>).setStatus !== "function") return undefined;
+  if (
+    typeof record.requestId !== "string" ||
+    !record.requestId ||
+    record.requestId.length > 256 ||
+    CONTROL_CHAR_RE.test(record.requestId)
+  ) {
+    return undefined;
+  }
+  if (typeof record.title !== "string" || record.title.length > 1_000) return undefined;
+  const externalRecord = readFabricQuestionExternalRecordV1(record.externalRecord);
+  if (!externalRecord) return undefined;
+  if (typeof record.claim !== "function") return undefined;
+  if (record.respond !== undefined && typeof record.respond !== "function") return undefined;
+  if (record.hold !== undefined && typeof record.hold !== "boolean") return undefined;
+  if (
+    record.timeout !== undefined &&
+    (typeof record.timeout !== "number" || !Number.isFinite(record.timeout) || record.timeout < 1_000)
+  ) {
+    return undefined;
+  }
+  if (record.signal !== undefined && !(record.signal instanceof AbortSignal)) return undefined;
+  return {
+    version: 1,
+    context: record.context as Pick<ExtensionContext, "mode" | "ui">,
+    requestId: record.requestId,
+    title: record.title,
+    externalRecord,
+    ...(record.hold !== undefined ? { hold: record.hold } : {}),
+    ...(record.timeout !== undefined ? { timeout: Math.floor(record.timeout) } : {}),
+    ...(record.signal !== undefined ? { signal: record.signal } : {}),
+    claim: record.claim as () => void,
+    ...(record.respond ? { respond: record.respond as NonNullable<FabricChildQuestionRouteRequestV1["respond"]> } : {}),
   };
 };
 

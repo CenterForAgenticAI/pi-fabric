@@ -500,6 +500,8 @@ const main = async (): Promise<void> => {
       ...(options.runRoot ? { PI_FABRIC_RUN_ROOT: options.runRoot } : {}),
       // Supported child contract (docs/agents.md "Child environment contract").
       ...(options.lineage ? { PI_FABRIC_LINEAGE: options.lineage } : {}),
+      // Child extensions check this to route external-record asks over the structured channel.
+      PI_FABRIC_CHILD_QUESTIONS: options.childQuestionTimeoutMs !== undefined ? "route" : undefined,
       // An extension's reply replaces both headers; without one the child keeps
       // whatever this worker inherited.
       ...(options.traceContext
@@ -537,6 +539,7 @@ const main = async (): Promise<void> => {
   let recordedResultPending = false;
   let recordedResultTimer: NodeJS.Timeout | undefined;
   const recordedResultId = `fabric-recorded-result:${options.id}`;
+  const sessionProbeId = `fabric-session:${options.id}`;
 
   const update = (): void => updateRunRecord(options.statusFile, record);
   // Bounds a silent turn and a fabric_exec call that outlives its deadline.
@@ -544,7 +547,8 @@ const main = async (): Promise<void> => {
   // agents.childQuestions "route": child dialogs wait for a parent ui_response.
   const questionRelay = options.childQuestionTimeoutMs !== undefined && isPi && options.steerFile
     ? new (await loadWorkerQuestions()).ChildQuestionRelay(options.childQuestionTimeoutMs, {
-        emit: (question) => emitLifecycle("question", { ...question }),
+        emit: (question) => emitLifecycle("question", { ...question, ...(record.runnerSessionId ? { childSessionId: record.runnerSessionId } : {}) }),
+        cancel: (requestId) => emitLifecycle("question_cancelled", { requestId }),
         send: (frame) => child.stdin?.write(`${JSON.stringify(frame)}\n`),
         blocked: (since, decisionId) => {
           stallWatchdog.blocked(since !== undefined);
@@ -624,6 +628,11 @@ const main = async (): Promise<void> => {
       record.model = model;
       update();
     },
+    sessionId(sessionId) {
+      if (!sessionId || record.runnerSessionId === sessionId) return;
+      record.runnerSessionId = sessionId;
+      update();
+    },
     admitted(model, effectiveThinking) {
       if (terminalStatus) return;
       if (model) record.model = model;
@@ -631,6 +640,10 @@ const main = async (): Promise<void> => {
         record.thinking = effectiveThinking as NonNullable<AgentRunRecord["thinking"]>;
       }
       update();
+      // Non-blocking sessionId probe before prompt so runnerSessionId arrives before any tool call.
+      if (isPi && options.childQuestionTimeoutMs !== undefined && !options.model && !record.runnerSessionId) {
+        child.stdin?.write(`${JSON.stringify({ type: "get_state", id: sessionProbeId })}\n`);
+      }
       taskPrompt.sent(PI_TASK_PROMPT_ID);
       child.stdin?.write(`${JSON.stringify({ type: "prompt", id: PI_TASK_PROMPT_ID, message: task, ...(images.length > 0 ? { images } : {}) })}\n`);
     },
@@ -1095,6 +1108,15 @@ const main = async (): Promise<void> => {
     }
     compactControl.observe(event);
     if (modelControl.observe(event)) return;
+    if (event.type === "response" && event.id === sessionProbeId && event.command === "get_state" && event.success === true) {
+      const data = event.data as { sessionId?: unknown } | undefined;
+      const sessionId = typeof data?.sessionId === "string" && data.sessionId.trim() ? data.sessionId.trim() : undefined;
+      if (sessionId && record.runnerSessionId !== sessionId) {
+        record.runnerSessionId = sessionId;
+        update();
+      }
+      return;
+    }
     taskPrompt.observe(event);
     if (event.type === "message_start" && !terminalStatus) {
       const message = event.message;
@@ -1146,6 +1168,7 @@ const main = async (): Promise<void> => {
       return;
     }
     if (event.type === "extension_ui_request") {
+      if (questionRelay?.controlStatus(event)) return;
       const method = event.method;
       if (
         typeof event.id === "string" &&
@@ -1156,6 +1179,10 @@ const main = async (): Promise<void> => {
           `${JSON.stringify({ type: "extension_ui_response", id: event.id, cancelled: true })}\n`,
         );
       }
+      return;
+    }
+    if (event.type === "extension_ui_cancel") {
+      questionRelay?.cancel(event);
       return;
     }
     if (event.type === "tool_execution_start") {
