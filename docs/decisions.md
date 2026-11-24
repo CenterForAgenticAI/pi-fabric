@@ -29,7 +29,7 @@ Decisions live under the reserved mesh key prefix `decisions/<id>`. `mesh.get` a
   escalation?: { chain, hop, hopTimeoutMs, onFinal: "cancel" | "default" },
   history?: [{ holder, until, reason: "expired" | "escalated", text?, by? }],
   status: "open" | "answered" | "expired" | "cancelled",
-  answer?: { optionId?, text?, answeredBy, via, at },
+  answer?: { optionId?, text?, answeredBy, via, answererKind?, at },
 }
 ```
 
@@ -172,6 +172,16 @@ A host can let a trusted extension route its question to another Fabric particip
 
 Authority is the same as for any `supervisor:<id>` holder (see [who may answer](#who-may-answer)): the mesh is a shared directory, so any process that runs as the same OS user can still answer through the CLI.
 
+## Following and answering decisions from an extension
+
+Two more host-local events let an extension in the same Pi process follow the decision store and answer from its own interface. Fabric's store stays the record of every decision.
+
+- `pi-fabric:decisions:changed:v1` (`FABRIC_DECISIONS_CHANGED_EVENT`) is emitted once for each lifecycle change on the session's mesh: `{ version: 1, change, decision }`, where `change` is `raised`, `answered`, `expired`, `cancelled` or `escalated` and `decision` is the full stored record after the change, deeply frozen. A change made in this process arrives right after it is written. A change made by another process on the mesh (the `pi-fabric decisions` CLI, a child agent, another session) arrives after Fabric reads its `fabric.decisions` wake hint, with the record as stored at that moment; when several such changes land between two reads, only the latest state arrives. Fabric tracks the mesh version of each record and emits a version only once, so a subscriber never sees one change twice. Managed hosts and sessions without the mesh emit nothing.
+- `pi-fabric:decisions:answer:v1` (`FABRIC_DECISION_ANSWER_EVENT`) answers or cancels one open decision. It takes `source`, `id`, `action: "answer" | "cancel"`, `answer: { optionId?, text? }` for an answer, `answeredBy` (who answered, matching `[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}`) and `answerer: "person" | "agent"`, with `claim` and `respond`. It responds `{ ok: true, decision }` with the stored record, or `{ ok: false, id, error }`.
+
+The answer goes through the same compare-and-swap as every other answer, so the first answer wins against a dialog, the CLI, a program or a deadline, and the loser gets `Decision <id> is answered, not open`. Fabric records `via: "extension:<source>"`, `answeredBy` and `answererKind` on the answer and copies only `optionId` and `text`. It refuses an unknown option and a closed decision like any other answer, an agent answering or cancelling a decision held by `"user"`, and an extension answering a decision it raised itself (`raisedBy.participantId` is `"extension:<source>"`); it may cancel one. `source` follows the pattern in [Extension questions](#extension-questions).
+
+Both events carry functions or a live context, so only code in the Pi process can use them: bash, the CLI and a program's tool calls cannot. Without a subscriber or a caller, decisions behave exactly as before.
 
 ## Question renderers
 
