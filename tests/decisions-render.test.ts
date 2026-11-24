@@ -315,20 +315,79 @@ describe("question renderers for routed child questions", () => {
     expect((await store.get(seen[0]!.decision.id))?.status).toBe("cancelled");
   });
 
-  it("leaves a held question on the hold path: the renderer is not consulted", async () => {
+  it("offers a held question to registered renderers and answers it without ctx.ui dialogs", async () => {
     const store = decisionStore();
     const notify = vi.fn();
     const select = vi.fn();
     const context = { hasUI: true, ui: { select, notify } } as unknown as ExtensionContext;
-    const { renderers, seen } = withRenderer(() => undefined);
+    const { renderers, seen } = withRenderer((input) => ({
+      status: "answered",
+      decisionId: input.decision.id,
+      answer: { optionId: "o2" },
+    }));
     const routed = { ...request({ ...pick, hold: true }), hold: true as const };
-    const pending = routeChildQuestion(routed, { context, store, renderers });
-    await vi.waitFor(() => expect(routed.onDecision).toHaveBeenCalledTimes(1));
-    const id = routed.onDecision.mock.calls[0]![0];
-    expect(notify).toHaveBeenCalledWith(expect.stringContaining(id), "info");
-    await store.answer(id, { optionId: "o1" }, human);
-    expect(await pending).toEqual({ value: "Alpha" });
-    expect(seen).toHaveLength(0);
+    expect(await routeChildQuestion(routed, { context, store, renderers })).toEqual({ value: "Beta" });
+    expect(seen).toHaveLength(1);
+    expect(select).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    expect(await store.get(seen[0]!.decision.id)).toMatchObject({
+      status: "answered",
+      answer: { optionId: "o2", via: "tui" },
+    });
+  });
+
+  it("keeps a held decision open and notifies instead of opening ctx.ui when a renderer dismisses or declines", async () => {
+    for (const outcome of [
+      (input: RenderInput) => ({ status: "dismissed", decisionId: input.decision.id }),
+      () => undefined,
+      () => { throw new Error("renderer broke"); },
+    ]) {
+      const store = decisionStore();
+      const notify = vi.fn();
+      const select = vi.fn();
+      const context = { hasUI: true, ui: { select, notify } } as unknown as ExtensionContext;
+      const { renderers, seen } = withRenderer(outcome);
+      const routed = { ...request({ ...pick, hold: true }), hold: true as const };
+      const pending = routeChildQuestion(routed, { context, store, renderers });
+      await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(1));
+      const id = routed.onDecision.mock.calls[0]![0];
+      expect(seen).toHaveLength(1);
+      expect(select).not.toHaveBeenCalled();
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining(id), "info");
+      expect((await store.get(id))?.status).toBe("open");
+      await store.answer(id, { optionId: "o1" }, human);
+      expect(await pending).toEqual({ value: "Alpha" });
+    }
+  });
+
+  it("offers an external-record question to renderers without creating a Fabric decision", async () => {
+    const store = decisionStore();
+    const notify = vi.fn();
+    const select = vi.fn();
+    const context = { hasUI: true, ui: { select, notify } } as unknown as ExtensionContext;
+    const { renderers, seen } = withRenderer((input) => ({
+      status: "answered",
+      decisionId: input.decision.id,
+      answer: { text: "handled externally" },
+    }));
+    const routed = {
+      ...request({
+        method: "external",
+        title: "External ask",
+        externalRecord: { system: "pi-decision", id: "dec_ext_42" },
+      }),
+      childSessionId: "child-session-42",
+      hold: true as const,
+    };
+    expect(await routeChildQuestion(routed, { context, store, renderers })).toEqual({ cancelled: true });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.decision).toMatchObject({
+      title: "worker: External ask",
+      externalRecord: { system: "pi-decision", id: "dec_ext_42" },
+      raisedBy: { participantId: "run-1", runId: "run-1", sessionId: "child-session-42" },
+    });
+    expect(await store.list()).toEqual([]);
+    expect(routed.onDecision).not.toHaveBeenCalled();
     expect(select).not.toHaveBeenCalled();
   });
 

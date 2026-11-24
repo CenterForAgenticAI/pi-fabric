@@ -439,6 +439,8 @@ export interface AgentChildQuestionRequest {
   runId: string;
   name: string;
   actorId?: string;
+  /** Real Pi session id of the asking child when observed by the worker. */
+  childSessionId?: string;
   question: Record<string, unknown>;
   /**
    * Set by the manager, never by the child: the run asked to hold questions and
