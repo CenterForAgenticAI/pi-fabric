@@ -87,6 +87,9 @@ import {
   FABRIC_PROVIDER_REGISTER_EVENT,
   FABRIC_PROVIDER_WITHDRAW_EVENT,
   FABRIC_QUESTION_RENDERER_REGISTER_EVENT,
+  FABRIC_CHILD_QUESTION_ROUTE_EVENT,
+  FABRIC_CHILD_QUESTION_STATUS_KEY,
+  readFabricChildQuestionRouteRequestV1,
   FABRIC_TOOL_PLACEMENT_EVENT,
   readFabricActionPolicyRegistrationV1,
   readFabricQuestionRendererRegistrationV1,
@@ -391,6 +394,57 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
         return;
       }
       registration.respond?.({ ok: true, unregister });
+    },
+  );
+
+  // Child-side structured routing for asks backed by an outside store (for
+  // example pi-decision). Active only inside a Pi RPC worker whose parent
+  // enabled agents.childQuestions: "route".
+  const isRoutedChildWorker = (): boolean => {
+    if (process.env.PI_FABRIC_CHILD_QUESTIONS !== "route") return false;
+    const raw = process.env.PI_FABRIC_LINEAGE;
+    if (!raw) return false;
+    try {
+      const parsed = JSON.parse(raw) as { version?: unknown; worker?: unknown; runId?: unknown };
+      return parsed?.version === 1 && parsed?.worker === true && typeof parsed?.runId === "string";
+    } catch {
+      return false;
+    }
+  };
+  const unsubscribeChildQuestionRoute = pi.events.on(
+    FABRIC_CHILD_QUESTION_ROUTE_EVENT,
+    (value: unknown) => {
+      const request = readFabricChildQuestionRouteRequestV1(value);
+      if (!request) throw new Error("Invalid Pi Fabric child question route request");
+      if (!isRoutedChildWorker() || request.context.mode !== "rpc") {
+        request.respond?.({ ok: false, error: "not a routed Fabric RPC worker session" });
+        return;
+      }
+      request.claim();
+      const sendFrame = (payload: Record<string, unknown>): void => {
+        try {
+          request.context.ui.setStatus(FABRIC_CHILD_QUESTION_STATUS_KEY, JSON.stringify(payload));
+        } catch {
+          // Best-effort when the child UI channel has already closed.
+        }
+      };
+      sendFrame({
+        v: 1,
+        action: "open",
+        requestId: request.requestId,
+        title: request.title,
+        externalRecord: request.externalRecord,
+        ...(request.hold !== undefined ? { hold: request.hold } : {}),
+        ...(request.timeout !== undefined ? { timeout: request.timeout } : {}),
+      });
+      if (request.signal) {
+        const sendWithdraw = (): void => {
+          sendFrame({ v: 1, action: "withdraw", requestId: request.requestId });
+        };
+        if (request.signal.aborted) sendWithdraw();
+        else request.signal.addEventListener("abort", sendWithdraw, { once: true });
+      }
+      request.respond?.({ ok: true });
     },
   );
 
@@ -1437,6 +1491,7 @@ return async function piFabric(pi: ExtensionAPI, options: { managedHost?: Fabric
     state.sessionApprovals.clear();
     state.actionPolicyHooks.clear();
     unsubscribeQuestionRendererRegistration();
+    unsubscribeChildQuestionRoute();
     state.questionRenderers.clear();
     programRunContext = undefined;
     pendingHandoffs.clear();
