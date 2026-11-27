@@ -270,7 +270,7 @@ interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
   /** Routed child dialogs in flight; aborted at settlement and when a durable hosted run is detached. */
   questions?: AbortController;
   /** Open routed dialogs, oldest first: each title, and the decision behind it once raised. */
-  openQuestions?: Array<{ title: string; decisionId?: string }>;
+  openQuestions?: Array<{ requestId?: string; title: string; decisionId?: string; abort?: AbortController }>;
   /** Routed dialogs not yet answered; close awaits a detached run's cancellations. */
   asks?: Set<Promise<AgentChildQuestionResponse>>;
   latestRecord?: AgentRunRecord;
@@ -2982,6 +2982,10 @@ export class AgentManager {
           this.#routeChildQuestion(managed, parsed.data);
           continue;
         }
+        if (parsed.event === "question_cancelled") {
+          this.#cancelChildQuestion(managed, parsed.data);
+          continue;
+        }
         if (parsed.event === "tokens.usage") {
           if (!Object.prototype.hasOwnProperty.call(parsed, "data")) continue;
           const usage = tokenUsagePayloadFromValue(parsed.data);
@@ -3010,6 +3014,13 @@ export class AgentManager {
     if (typeof data !== "object" || data === null || typeof (data as { requestId?: unknown }).requestId !== "string") return;
     const question = data as Record<string, unknown>;
     const requestId = question.requestId as string;
+    if (
+      typeof question.childSessionId === "string" &&
+      question.childSessionId.trim() &&
+      !managed.runnerSessionId
+    ) {
+      managed.runnerSessionId = question.childSessionId.trim();
+    }
     const steer = (command: Record<string, unknown>): void => {
       try {
         fs.appendFileSync(
@@ -3036,6 +3047,17 @@ export class AgentManager {
     });
   }
 
+  #cancelChildQuestion(managed: ManagedAgent, data: unknown): void {
+    if (typeof data !== "object" || data === null) return;
+    const requestId = (data as { requestId?: unknown }).requestId;
+    if (typeof requestId !== "string" || !requestId) return;
+    const open = managed.openQuestions?.find((entry) => entry.requestId === requestId);
+    if (!open?.abort || open.abort.signal.aborted) return;
+    const error = new Error("Child withdrew question");
+    error.name = "ChildQuestionWithdrawnError";
+    open.abort.abort(error);
+  }
+
   /** One routed dialog for a worker or hosted run; any failure cancels it. */
   #askParent(
     managed: ManagedAgent,
@@ -3044,27 +3066,45 @@ export class AgentManager {
   ): Promise<AgentChildQuestionResponse> {
     if (!this.#onChildQuestion || managed.settled) return Promise.resolve({ cancelled: true });
     managed.questions ??= new AbortController();
+    const requestId = typeof question.requestId === "string" ? question.requestId : undefined;
     const title =
       typeof question.title === "string" && question.title.trim() ? question.title.trim() : "question";
-    // A run can have several questions open; each answer removes only its own.
-    const open: { title: string; decisionId?: string } = { title };
+    const questionAbort = new AbortController();
+    const signal = AbortSignal.any([managed.questions.signal, questionAbort.signal]);
+    const childSessionId =
+      (typeof question.childSessionId === "string" && question.childSessionId.trim()
+        ? question.childSessionId.trim()
+        : undefined) ??
+      managed.runnerSessionId ??
+      readRecord(managed.statusFile)?.runnerSessionId;
+    if (childSessionId && !managed.runnerSessionId) {
+      managed.runnerSessionId = childSessionId;
+    }
+    // A run can have several questions open; each answer or withdrawal removes only its own.
+    const open: { requestId?: string; title: string; decisionId?: string; abort?: AbortController } = {
+      ...(requestId ? { requestId } : {}),
+      title,
+      abort: questionAbort,
+    };
     (managed.openQuestions ??= []).push(open);
     this.#invalidateUiList();
     const asked = this.#onChildQuestion({
       runId: managed.id,
       name: managed.actorName ?? managed.name,
       ...(managed.actorId ? { actorId: managed.actorId } : {}),
+      ...(childSessionId ? { childSessionId } : {}),
       // Both sides must agree: the run asked to hold, and this question carries no deadline of its own.
       ...(managed.holdQuestions && question.hold === true ? { hold: true as const } : {}),
       question,
-      signal: managed.questions.signal,
+      signal,
       onDecision: (decisionId) => {
         open.decisionId = decisionId;
         onDecision?.(decisionId);
         this.#invalidateUiList();
       },
     }).catch((): AgentChildQuestionResponse => ({ cancelled: true })).then((response) => {
-      managed.openQuestions!.splice(managed.openQuestions!.indexOf(open), 1);
+      const idx = managed.openQuestions?.indexOf(open) ?? -1;
+      if (idx >= 0) managed.openQuestions!.splice(idx, 1);
       managed.asks?.delete(asked);
       this.#invalidateUiList();
       return response;

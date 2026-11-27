@@ -76,7 +76,13 @@ const tokenUsage = Type.Object({
 
 const childQuestion = Type.Object({
   requestId: Type.String({ minLength: 1, maxLength: 256 }),
-  method: Type.Union([Type.Literal("select"), Type.Literal("confirm"), Type.Literal("input"), Type.Literal("editor")]),
+  method: Type.Union([
+    Type.Literal("select"),
+    Type.Literal("confirm"),
+    Type.Literal("input"),
+    Type.Literal("editor"),
+    Type.Literal("external"),
+  ]),
   title: Type.String({ maxLength: 1_000 }),
   message: Type.Optional(Type.String({ maxLength: 8_000 })),
   options: Type.Optional(Type.Array(Type.String(), { maxItems: 64 })),
@@ -85,6 +91,13 @@ const childQuestion = Type.Object({
   timeout: Type.Integer({ minimum: 1, maximum: 86_400_000 }),
   /** The run holds this question with no deadline; `timeout` is then nominal. */
   hold: Type.Optional(Type.Literal(true)),
+  /** Outside record that owns this question (for example `pi-decision`); Fabric creates no copy. */
+  externalRecord: Type.Optional(Type.Object({
+    system: Type.String({ minLength: 1, maxLength: 64 }),
+    id: Type.String({ minLength: 1, maxLength: 128 }),
+  })),
+  /** Real Pi session id of the asking child when observed by the worker. */
+  childSessionId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
 });
 
 /** `lifecycleFile`: one JSON object per line, appended. */
@@ -102,6 +115,13 @@ export const LifecycleLineSchema = Type.Union([
     occurredAt: Type.Number(),
     /** Answered by a `ui_response` steer command with the same requestId. */
     data: childQuestion,
+  }),
+  Type.Object({
+    version: Type.Literal(1),
+    event: Type.Literal("question_cancelled"),
+    occurredAt: Type.Number(),
+    /** Withdrawn by the child (for example after an outside store answered it). */
+    data: Type.Object({ requestId: Type.String({ minLength: 1, maxLength: 256 }) }),
   }),
   Type.Object({
     version: Type.Literal(1),
